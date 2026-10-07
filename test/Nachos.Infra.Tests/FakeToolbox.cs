@@ -1,7 +1,7 @@
 namespace Nachos.Infra.Tests;
 
 /// <summary>
-/// Runs the real <c>postprovision.sh</c> against fake <c>az</c>, <c>sqlcmd</c>, <c>curl</c>, <c>dotnet</c> and
+/// Runs the real <c>postprovision.sh</c> / <c>postdeploy.sh</c> against fake <c>az</c>, <c>sqlcmd</c>, <c>curl</c>, <c>dotnet</c> and
 /// <c>sleep</c> executables placed first on PATH, so the script's control flow can be exercised without any
 /// Azure access. PATH is reduced to the fake directory plus the system directories; a real <c>az</c> installed
 /// elsewhere is never reachable, and every fake call is recorded in a log.
@@ -10,6 +10,9 @@ internal sealed class FakeToolbox : IDisposable
 {
     /// <summary>What the fake <c>az keyvault secret download</c> writes as the existing signing secret.</summary>
     public const string SigningMaterial = "fake-signing-material";
+
+    /// <summary>The SID the fake <c>sqlcmd</c> computes from the managed identity's client id.</summary>
+    public const string ExpectedSid = "0x0123456789ABCDEF0123456789ABCDEF";
 
     private readonly string directory = Directory.CreateTempSubdirectory("nachos-fakes-").FullName;
 
@@ -42,12 +45,22 @@ internal sealed class FakeToolbox : IDisposable
             esac
             exit 0
             """);
-        Install("sqlcmd", """
+        Install("sqlcmd", $$"""
             echo "sqlcmd $*" >> "$FAKE_LOG"
-            if [[ "$*" == *"CONVERT(varchar(34)"* ]]; then echo 0x0123456789ABCDEF0123456789ABCDEF; fi
+            case "$*" in
+              # The existing user's SID (empty: no such user yet).
+              *"CONVERT(varchar(34), sid, 1)"*) if [[ -n "${FAKE_EXISTING_SID:-}" ]]; then echo "$FAKE_EXISTING_SID"; fi ;;
+              # The SID computed from the client id.
+              *"CONVERT(varchar(34), CAST"*) echo {{ExpectedSid}} ;;
+            esac
             exit 0
             """);
-        Install("curl", "echo 203.0.113.7");
+        Install("curl", """
+            echo "curl $*" >> "$FAKE_LOG"
+            if [[ "$*" == *"api.ipify.org"* ]]; then echo 203.0.113.7; exit 0; fi
+            printf '%s' "${FAKE_CURL_BODY:-}"
+            exit 0
+            """);
         Install("dotnet", """
             echo "dotnet $*" >> "$FAKE_LOG"
             if [[ "$*" == *"keys create"* ]]; then printf '%b' "${FAKE_KEY_OUTPUT:-}"; fi
@@ -69,13 +82,15 @@ internal sealed class FakeToolbox : IDisposable
         return File.Exists(path) ? File.ReadAllText(path) : null;
     }
 
-    public ProcessResult RunPostprovision(string? keyOutput = null, int forbiddenListings = 0, string? listError = null, string listNames = "")
+    public ProcessResult RunPostprovision(
+        string? keyOutput = null, int forbiddenListings = 0, string? listError = null, string listNames = "", string existingSid = "")
     {
         var environment = new Dictionary<string, string>
         {
             ["PATH"] = directory + Path.PathSeparator + "/usr/bin" + Path.PathSeparator + "/bin",
             ["FAKE_LOG"] = Log,
             ["FAKE_DIR"] = directory,
+            ["FAKE_EXISTING_SID"] = existingSid,
             ["FAKE_LIST_FORBIDDEN"] = forbiddenListings.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["FAKE_LIST_ERROR"] = listError ?? string.Empty,
             ["FAKE_LIST_NAMES"] = listNames,
@@ -91,6 +106,20 @@ internal sealed class FakeToolbox : IDisposable
         };
 
         return Tools.Run(Tools.Require("bash"), [RepoPaths.Combine("infra/hooks/postprovision.sh")], environment: environment);
+    }
+
+    /// <summary>Runs <c>postdeploy.sh</c>; the fake <c>curl</c> answers the readiness GET with <paramref name="body"/>.</summary>
+    public ProcessResult RunPostdeploy(string body)
+    {
+        var environment = new Dictionary<string, string>
+        {
+            ["PATH"] = directory + Path.PathSeparator + "/usr/bin" + Path.PathSeparator + "/bin",
+            ["FAKE_LOG"] = Log,
+            ["FAKE_CURL_BODY"] = body,
+            ["NACHOS_API_URI"] = "https://nachos-api.example.test",
+        };
+
+        return Tools.Run(Tools.Require("bash"), [RepoPaths.Combine("infra/hooks/postdeploy.sh")], environment: environment);
     }
 
     public void Dispose() => Directory.Delete(directory, recursive: true);

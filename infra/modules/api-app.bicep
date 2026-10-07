@@ -6,7 +6,7 @@ param environmentId string
 @description('Resource id of the user-assigned managed identity.')
 param identityId string
 
-@description('Client id of the managed identity; DefaultAzureCredential and SQL use it.')
+@description('Client id of the user-assigned managed identity. The API uses it (AZURE_CLIENT_ID) for Key Vault and SQL.')
 param identityClientId string
 
 param registryLoginServer string
@@ -18,17 +18,16 @@ param sqlDatabaseName string
 @description('Azure OpenAI endpoint; empty in M1, in which case the variable is not set.')
 param openAiEndpoint string = ''
 
-@description('True once the app exists (azd sets SERVICE_API_RESOURCE_EXISTS). Then the image currently on the app is kept.')
+@description('True once the app exists (azd sets SERVICE_API_RESOURCE_EXISTS). Then the image and the key ring currently on the app are kept.')
 param apiExists bool
 
-// Placeholder for the very first provision only. It listens on 8080 like the real API (the older
-// containerapps-helloworld image listens on 80, so its revision could never become ready).
-// Changing this default needs an explicit migration: probes switch on when the image in use differs from it, so an app still on the OLD placeholder would get /health probes on the next provision and fail.
-param containerImage string = 'mcr.microsoft.com/dotnet/samples:aspnetapp'
+@description('Image for the very first revision, before `azd deploy` replaces it (main.bicep: placeholderImage).')
+param containerImage string
 
 var targetPort = 8080
 
-// Without this, every later `azd provision` would put the placeholder back over the deployed image.
+// Without this, every later `azd provision` would put the placeholder back over the deployed image and reset
+// the signing-key ring.
 module existingImage 'fetch-container-image.bicep' = if (apiExists) {
   name: '${name}-image'
   params: {
@@ -43,9 +42,10 @@ var image = apiExists ? existingImage!.outputs.image : containerImage
 // postprovision hook), so this connection string holds no secret.
 var sqlConnectionString = 'Server=tcp:${sqlServerFqdn},1433;Database=${sqlDatabaseName};Authentication=Active Directory Managed Identity;User Id=${identityClientId};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30'
 
-// TODO(task-10): how the API loads the JWT signing secret from Key Vault is undecided (Key Vault
-// configuration provider using AZURE_KEY_VAULT_ENDPOINT + AZURE_CLIENT_ID, versus an ACA secret
-// reference). Only the inputs for the former are provided here; no secret is declared in Bicep.
+// Signing-key contract (issue #2): with auth enabled, the API reads Key Vault secret
+// `nachos-signing-key-{Keys[i].Kid}` from AZURE_KEY_VAULT_ENDPOINT as the user-assigned identity AZURE_CLIENT_ID,
+// for each ring entry in order. It fails closed: no ring or an unreadable secret stops startup, and there is no
+// local-secret fallback. No secret value is declared in Bicep.
 var baseEnv = [
   { name: 'AZURE_CLIENT_ID', value: identityClientId }
   { name: 'AZURE_KEY_VAULT_ENDPOINT', value: keyVaultEndpoint }
@@ -53,7 +53,18 @@ var baseEnv = [
   { name: 'Nachos__SqlServer__ConnectionString', value: sqlConnectionString }
   { name: 'Nachos__SqlServer__AutomaticSchemaDeploymentEnabled', value: 'false' }
   { name: 'ASPNETCORE_FORWARDEDHEADERS_ENABLED', value: 'true' }
+  { name: 'Nachos__Auth__Enabled', value: 'true' }
 ]
+
+// Ownership rule: Bicep owns every env var EXCEPT the Nachos__Auth__NachosKey__Keys__* namespace, which is
+// rotation state owned by the running app. Bicep copies that namespace verbatim (in order, whole objects, so a
+// secretRef entry stays one; note its secret would also have to be kept in configuration.secrets, which the
+// Key Vault contract does not use) and only seeds Keys__0__Kid=0 when the namespace is empty. baseEnv must
+// never set a name with this prefix.
+var ringPrefix = 'Nachos__Auth__NachosKey__Keys__'
+var existingEnv = apiExists ? existingImage!.outputs.env : []
+var existingRing = filter(existingEnv, e => startsWith(e.name, ringPrefix))
+var ringEnv = empty(existingRing) ? [ { name: '${ringPrefix}0__Kid', value: '0' } ] : existingRing
 var openAiEnv = empty(openAiEndpoint) ? [] : [
   { name: 'AZURE_OPENAI_ENDPOINT', value: openAiEndpoint }
 ]
@@ -96,13 +107,10 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: concat(baseEnv, openAiEnv)
-          // Probes follow the image in use, not apiExists: azd sets apiExists as soon as the app exists, which can
-          // be before any real image was deployed (a failed postprovision, or a second `azd provision`). While the
-          // placeholder runs there are no /health routes, so explicit HTTP probes would keep the revision from ever
-          // becoming ready (ACA's default TCP probes on the target port apply instead). They switch on at the first
-          // provision after `azd deploy` replaced the image; the postdeploy hook smoke-tests /health/ready.
-          probes: image != containerImage ? [
+          env: concat(baseEnv, ringEnv, openAiEnv)
+          // Always on. `azd deploy` copies the live app and swaps only the image, so the first real revision gets
+          // exactly these probes; the placeholder answers 200 on every path, so revision 1 is healthy too.
+          probes: [
             {
               type: 'Liveness'
               httpGet: {
@@ -121,7 +129,7 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               initialDelaySeconds: 5
               periodSeconds: 10
             }
-          ] : []
+          ]
         }
       ]
       scale: {

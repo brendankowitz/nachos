@@ -12,6 +12,16 @@ public sealed class InfraTests
 {
     private const string MainBicep = "infra/main.bicep";
 
+    /// <summary>
+    /// mendhak/http-https-echo (MIT), OCI index of tag 42: answers 200 on every path on 8080. To replace it, change
+    /// the default in main.bicep and main.parameters.json and re-run <see cref="Placeholder_Answers_ProbePaths"/>.
+    /// </summary>
+    private const string PlaceholderStillServing =
+        "The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.";
+
+    private const string PlaceholderImage =
+        "ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4";
+
     private static readonly string[] HookFiles =
     [
         "infra/hooks/postprovision.sh",
@@ -39,7 +49,8 @@ public sealed class InfraTests
         result.ExitCode.ShouldBe(0, result.StdErr);
         // Zero diagnostics (unknown API versions, lint rules): build emits them all on stderr. Other stderr
         // noise from the `az` wrapper is not a Bicep diagnostic and is ignored.
-        BicepDiagnostics.Find(result.StdErr).ShouldBeEmpty("bicep build must be warning-free");
+        var diagnostics = BicepDiagnostics.Find(result.StdErr);
+        diagnostics.ShouldBeEmpty(diagnostics.Count == 0 ? null : BicepCli.Explain(diagnostics, BicepCli.Version()));
     }
 
     [RequiresToolFact("az", "bicep")]
@@ -97,7 +108,8 @@ public sealed class InfraTests
                 var result = BicepCli.BuildParams(bicepparam);
 
                 result.ExitCode.ShouldBe(0, result.StdErr);
-                BicepDiagnostics.Find(result.StdErr).ShouldBeEmpty();
+                var diagnostics = BicepDiagnostics.Find(result.StdErr);
+                diagnostics.ShouldBeEmpty(diagnostics.Count == 0 ? null : BicepCli.Explain(diagnostics, BicepCli.Version()));
             }
         }
         finally
@@ -158,42 +170,59 @@ public sealed class InfraTests
         scale.GetProperty("minReplicas").GetInt32().ShouldBe(1);
         scale.GetProperty("maxReplicas").GetInt32().ShouldBe(10);
 
-        // The probes are an ARM expression keyed on the image actually in use, NOT on apiExists: azd sets
-        // apiExists as soon as the app exists, which can be before any real image was deployed (a failed
-        // postprovision, or a second `azd provision`). The placeholder has no /health routes.
-        var container = containerTemplate.GetProperty("containers").EnumerateArray().Single();
-        var probes = container.GetProperty("probes");
-        probes.ValueKind.ShouldBe(JsonValueKind.String, "probes must be conditional on the image in use");
-        var expression = probes.GetString()!;
-        // Probes apply when the image in use (the container's own image expression) differs from the placeholder.
-        var imageExpression = container.GetProperty("image").GetString()!;
-        imageExpression.ShouldStartWith("[");
-        expression.ShouldStartWith($"[if(not(equals({imageExpression[1..^1]}, parameters('containerImage'))), ");
-        expression.ShouldEndWith(", createArray())]");
-        expression.ShouldContain("'/health/live'");
-        expression.ShouldContain("'/health/ready'");
-        expression.ShouldContain("'Liveness'");
-        expression.ShouldContain("'Readiness'");
-        expression.ShouldContain("variables('targetPort')");
+        // Always-on HTTP probes, as a literal array: `azd deploy` copies the live app and swaps only the image,
+        // so the first real revision inherits exactly the probes the placeholder revision had (C3).
+        var probes = ApiContainer(template).GetProperty("probes");
+        probes.ValueKind.ShouldBe(JsonValueKind.Array, "probes must be a literal array, not a conditional expression");
+        var byType = probes.EnumerateArray().ToDictionary(p => p.GetProperty("type").GetString()!, StringComparer.Ordinal);
+        byType.Keys.Order(StringComparer.Ordinal).ShouldBe(["Liveness", "Readiness"]);
+        foreach (var (type, path) in new[] { ("Liveness", "/health/live"), ("Readiness", "/health/ready") })
+        {
+            var probe = byType[type];
+            probe.TryGetProperty("tcpSocket", out _).ShouldBeFalse($"{type} must be an HTTP probe");
+            var httpGet = probe.GetProperty("httpGet");
+            httpGet.GetProperty("path").GetString().ShouldBe(path);
+            ResolveInt(template, httpGet.GetProperty("port")).ShouldBe(8080);
+        }
+    }
+
+    [Theory]
+    [InlineData(PlaceholderImage, true)]
+    [InlineData("x:42", false)]
+    [InlineData("x:42@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4", false)]
+    [InlineData("x:latest", false)]
+    [InlineData("x@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d", false)]
+    [InlineData("ghcr.io/mendhak/http-https-echo", false)]
+    [InlineData("latest@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4", false)]
+    public void DigestPin_AcceptsOnlyTaglessDigestReferences(string reference, bool pinned)
+    {
+        IsDigestPinned(reference).ShouldBe(pinned, reference);
     }
 
     [RequiresToolFact("az", "bicep")]
-    public void Container_App_Image_IsAspNetPlaceholder_AndKeepsDeployedImageWhenItExists()
+    public void Container_App_Image_IsDigestPinnedPlaceholder_AndKeepsDeployedImageWhenItExists()
     {
         using var template = ArmTemplate();
 
-        // The placeholder must listen on the target port (8080); the old helloworld image listens on 80.
-        var defaults = Descendants(template.RootElement)
-            .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("containerImage", out var p) && p.TryGetProperty("defaultValue", out _))
-            .Select(e => e.GetProperty("containerImage").GetProperty("defaultValue").GetString())
-            .ToList();
-        defaults.ShouldBe(["mcr.microsoft.com/dotnet/samples:aspnetapp"]);
+        // A third-party image runs with the managed identity until the first deploy, so it is pinned by digest.
+        var placeholder = template.RootElement.GetProperty("parameters").GetProperty("placeholderImage")
+            .GetProperty("defaultValue").GetString()!;
+        placeholder.ShouldBe(PlaceholderImage);
+        IsDigestPinned(placeholder).ShouldBeTrue();
+        var apiDeployment = Descendants(template.RootElement).Single(e =>
+            e.ValueKind == JsonValueKind.Object
+            && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Resources/deployments"
+            && e.TryGetProperty("name", out var n) && n.GetString() == "api-app");
+        apiDeployment.GetProperty("properties").GetProperty("parameters").GetProperty("containerImage").GetProperty("value")
+            .GetString().ShouldBe("[parameters('placeholderImage')]");
 
-        var app = Resources(template, "Microsoft.App/containerApps").ShouldHaveSingleItem();
-        var image = app.GetProperty("properties").GetProperty("template").GetProperty("containers").EnumerateArray().Single()
-            .GetProperty("image").GetString()!;
+        var container = ApiContainer(template);
+        var image = container.GetProperty("image").GetString()!;
         image.ShouldStartWith("[if(parameters('apiExists'),");
-        image.ShouldContain("parameters('containerImage')");
+        image.ShouldEndWith(", parameters('containerImage'))]");
+        // The placeholder needs no arguments; nothing placeholder-specific may leak into the real revision.
+        container.TryGetProperty("args", out _).ShouldBeFalse();
+        container.TryGetProperty("command", out _).ShouldBeFalse();
 
         // The existing app's image is read by a deployment that only runs when the app already exists.
         Descendants(template.RootElement)
@@ -213,6 +242,132 @@ public sealed class InfraTests
         // azd sets SERVICE_API_RESOURCE_EXISTS after the first deploy; the default covers the first provision.
         values.GetProperty("apiExists").GetProperty("value").GetString().ShouldBe("${SERVICE_API_RESOURCE_EXISTS=false}");
         values.GetProperty("principalType").GetProperty("value").GetString().ShouldBe("${AZURE_PRINCIPAL_TYPE=User}");
+        values.GetProperty("placeholderImage").GetProperty("value").GetString().ShouldBe("${NACHOS_PLACEHOLDER_IMAGE=" + PlaceholderImage + "}");
+    }
+
+    [RequiresPosixToolFact("docker")]
+    public async Task Placeholder_Answers_ProbePaths()
+    {
+        // Image, paths and port come from the compiled template, so this checks what would really be deployed.
+        using var template = ArmTemplate();
+        var image = template.RootElement.GetProperty("parameters").GetProperty("placeholderImage").GetProperty("defaultValue").GetString()!;
+        var probes = ApiContainer(template).GetProperty("probes").EnumerateArray()
+            .Select(p => p.GetProperty("httpGet"))
+            .Select(h => (Path: h.GetProperty("path").GetString()!, Port: ResolveInt(template, h.GetProperty("port"))))
+            .ToList();
+        probes.ShouldNotBeEmpty();
+        var port = probes.Select(p => p.Port).Distinct().ShouldHaveSingleItem();
+
+        var docker = Tools.Require("docker");
+        var run = Tools.Run(docker, ["run", "-d", "--rm", "-p", $"127.0.0.1::{port}", image]);
+        run.ExitCode.ShouldBe(0, $"docker run {image} failed (a pull failure fails this test): {run.StdErr}");
+        var container = run.StdOut.Trim();
+        try
+        {
+            var mapping = Tools.Run(docker, ["port", container, $"{port}/tcp"]);
+            mapping.ExitCode.ShouldBe(0, mapping.StdErr);
+            var hostPort = mapping.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Trim().Split(':')[^1];
+
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            foreach (var (path, _) in probes)
+            {
+                var uri = new Uri($"http://127.0.0.1:{hostPort}{path}");
+                string? last = null;
+                while (true)
+                {
+                    try
+                    {
+                        using var response = await http.GetAsync(uri);
+                        var status = (int)response.StatusCode;
+                        if (status is >= 200 and < 400)
+                        {
+                            break;
+                        }
+
+                        last = $"HTTP {status}";
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        last = ex.Message;
+                    }
+                    catch (TaskCanceledException ex)
+                    {
+                        last = ex.Message;
+                    }
+
+                    DateTimeOffset.UtcNow.ShouldBeLessThan(deadline, $"{image} never answered {path} with 2xx/3xx; last: {last}");
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                }
+            }
+        }
+        finally
+        {
+            Tools.Run(docker, ["rm", "-f", container]);
+        }
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void Container_App_Env_CarriesTheAuthContract_AndPreservesTheKeyRing()
+    {
+        using var template = ArmTemplate();
+        var apiTemplate = ApiModuleTemplate(template);
+        var variables = apiTemplate.GetProperty("variables");
+
+        // Bicep owns every env var except the ring namespace, which is rotation state owned by the running app.
+        variables.GetProperty("ringPrefix").GetString().ShouldBe("Nachos__Auth__NachosKey__Keys__");
+        var baseEnv = variables.GetProperty("baseEnv").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("name").GetString()!, e => e.GetProperty("value").GetString(), StringComparer.Ordinal);
+        baseEnv["Nachos__Auth__Enabled"].ShouldBe("true");
+        baseEnv.Keys.Where(k => k.StartsWith("Nachos__Auth__NachosKey__Keys__", StringComparison.Ordinal))
+            .ShouldBeEmpty("baseEnv must not set ring entries; they come from the running app or the seed");
+
+        var env = ApiContainer(template).GetProperty("env").GetString()!;
+        env.ShouldStartWith("[concat(variables('baseEnv'), if(empty(filter(");
+        env.ShouldEndWith(", variables('openAiEnv'))]");
+        // Existing ring entries are copied verbatim and in order (filter keeps order and whole objects)...
+        env.ShouldContain("lambda('e', startsWith(lambdaVariables('e').name, variables('ringPrefix')))");
+        env.ShouldContain(".outputs.env.value");
+        // ...and Keys__0__Kid=0 is seeded only when the namespace is empty.
+        env.ShouldContain("createArray(createObject('name', format('{0}0__Kid', variables('ringPrefix')), 'value', '0'))");
+
+        var fetchOutputs = Descendants(template.RootElement)
+            .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("outputs", out var o) && o.ValueKind == JsonValueKind.Object
+                && o.TryGetProperty("image", out _) && o.TryGetProperty("env", out _))
+            .Select(e => e.GetProperty("outputs"))
+            .ShouldHaveSingleItem();
+        fetchOutputs.GetProperty("env").GetProperty("value").GetString()!
+            .ShouldMatch(@"^\[coalesce\(tryGet\(reference\(.*\)\.template\.containers\[0\], 'env'\), createArray\(\)\)\]$");
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void Sql_ReassertsEntraOnlyAuthentication_OnEveryProvision()
+    {
+        using var template = ArmTemplate();
+
+        var child = Resources(template, "Microsoft.Sql/servers/azureADOnlyAuthentications").ShouldHaveSingleItem();
+        child.GetProperty("name").GetString()!.ShouldEndWith("'Default')]");
+        child.GetProperty("properties").GetProperty("azureADOnlyAuthentication").ValueKind.ShouldBe(JsonValueKind.True);
+    }
+
+    [Fact]
+    public void BicepVersion_ExplainsUnknownApiVersions_OnOlderBicep()
+    {
+        string[] diagnostics = ["main.bicep(3,1) : Warning BCP081: Resource type \"Microsoft.App/containerApps@2026-01-01\" does not have types available."];
+
+        BicepCli.Explain(diagnostics, new Version(0, 39, 0))
+            .ShouldContain("Bicep 0.39.0 is older than the 0.48.1 type data these API versions need");
+        BicepCli.Explain(diagnostics, BicepCli.MinimumVersion).ShouldNotContain("is older than");
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void Bicep_IsAtLeastMinimumVersion()
+    {
+        var version = BicepCli.Version();
+
+        version.ShouldBeGreaterThanOrEqualTo(
+            BicepCli.MinimumVersion,
+            $"Bicep {version} is older than the {BicepCli.MinimumVersion} type data these API versions need; upgrade Bicep.");
     }
 
     [RequiresToolFact("az", "bicep")]
@@ -427,6 +582,8 @@ public sealed class InfraTests
         output.ShouldNotContain(FakeToolbox.SigningMaterial);
         toolbox.Calls.Where(c => c.StartsWith("dotnet run", StringComparison.Ordinal))
             .ShouldAllBe(c => c.Contains("--no-launch-profile", StringComparison.Ordinal));
+        toolbox.Calls.Where(c => c.Contains("keys create", StringComparison.Ordinal)).ShouldHaveSingleItem()
+            .ShouldContain("--admin --kid 0 --signing-secret-env NACHOS_SIGNING_SECRET");
     }
 
     [RequiresPosixToolFact("bash")]
@@ -450,6 +607,133 @@ public sealed class InfraTests
         // $PSNativeCommandUseErrorActionPreference needs 7.4; without it a failed `secret list` would read as "absent".
         Regex.IsMatch(ReadHook("infra/hooks/postprovision.ps1"), @"^#Requires -Version 7\.4\s*$", RegexOptions.Multiline)
             .ShouldBeTrue();
+    }
+
+    [Fact]
+    public void AzureYaml_Hooks_FailClosed()
+    {
+        // A failed postprovision must stop `azd up` before `azd deploy` (the bootstrap contract depends on it).
+        var yaml = File.ReadAllText(RepoPaths.Combine("azure.yaml")).Replace("\r", string.Empty, StringComparison.Ordinal);
+        foreach (var hook in new[] { "postprovision", "postdeploy" })
+        {
+            var block = Regex.Match(yaml, $@"^  {hook}:\n((?:    .*\n|\n)*)", RegexOptions.Multiline);
+            block.Success.ShouldBeTrue($"azure.yaml has no {hook} hook");
+            var body = block.Groups[1].Value;
+            foreach (var platform in new[] { "windows", "posix" })
+            {
+                var section = Regex.Match(body, $@"^    {platform}:\n((?:      .*\n)*)", RegexOptions.Multiline);
+                section.Success.ShouldBeTrue($"{hook} has no {platform} section");
+                Regex.IsMatch(section.Groups[1].Value, @"^\s*continueOnError:\s*false\s*$", RegexOptions.Multiline)
+                    .ShouldBeTrue($"{hook}/{platform} must declare continueOnError: false");
+            }
+        }
+    }
+
+    [Fact]
+    public void Hooks_MintAdminKeyWithKidZero()
+    {
+        // The signing-key contract: the bootstrap admin key is signed with ring entry Kid 0 (nachos-signing-key-0).
+        foreach (var hook in PostprovisionHooks)
+        {
+            var mints = LogicalLines(hook).Where(l => l.Contains("keys create", StringComparison.Ordinal)).ToList();
+            mints.ShouldNotBeEmpty($"{hook} never mints the admin key");
+            mints.Where(l => !Regex.IsMatch(l, @"\s--kid\s+0(\s|$)")).ShouldBeEmpty($"{hook}: every keys create needs --kid 0");
+        }
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostprovisionSh_ContinuesWhenTheExistingUserHasTheExpectedSid()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(existingSid: FakeToolbox.ExpectedSid, listNames: "nachos-bootstrap-admin-key");
+
+        result.ExitCode.ShouldBe(0, result.StdErr);
+        toolbox.Count("keyvault secret list").ShouldBe(1);
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostprovisionSh_AbortsWhenTheExistingUserHasAStaleSid()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(existingSid: "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", listNames: "nachos-signing-key-0", keyOutput: "a.b.c\n");
+
+        result.ExitCode.ShouldNotBe(0);
+        result.StdErr.ShouldContain("id-test");
+        result.StdErr.ShouldContain("recreated");
+        toolbox.Count("-i ").ShouldBe(0, "no user/role script may run against a stale user");
+        toolbox.Count("keyvault").ShouldBe(0, "nothing may be written to Key Vault");
+        toolbox.Count("firewall-rule delete").ShouldBe(1);
+    }
+
+    [Fact]
+    public void PostprovisionPs1_ComparesTheExistingUsersSid_BeforeCreatingIt()
+    {
+        var ps1 = CodeOnly("infra/hooks/postprovision.ps1");
+
+        var lookup = ps1.IndexOf("CONVERT(varchar(34), sid, 1) FROM sys.database_principals", StringComparison.Ordinal);
+        lookup.ShouldBeGreaterThanOrEqualTo(0, "postprovision.ps1 must read the existing user's SID");
+        var mismatch = Regex.Match(ps1, @"-cne \$sid\)\s*\{\s*throw ""[^""]*recreated", RegexOptions.Singleline);
+        mismatch.Success.ShouldBeTrue("a stale SID must throw, naming the recreated identity");
+        mismatch.Index.ShouldBeLessThan(ps1.IndexOf("CREATE USER", StringComparison.Ordinal));
+        mismatch.Index.ShouldBeLessThan(ps1.IndexOf("keyvault", StringComparison.Ordinal));
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_AcceptsOnlyTheRealApisHealthyBody()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostdeploy(body: "Healthy\n");
+
+        result.ExitCode.ShouldBe(0, result.StdErr);
+        toolbox.Calls.Where(c => c.StartsWith("curl", StringComparison.Ordinal)).ShouldAllBe(c => c.Contains("--max-time 30", StringComparison.Ordinal));
+        toolbox.Count("--retry 10").ShouldBe(1);
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_FailsWhileThePlaceholderOrAnUnhealthyApiIsServing()
+    {
+        const string Echo = "{\"path\":\"/health/ready\",\"headers\":{\"host\":\"nachos-api\"},\"method\":\"GET\"}";
+        foreach (var body in new[] { Echo, "Degraded", "Unhealthy", "" })
+        {
+            using var toolbox = new FakeToolbox();
+
+            var result = toolbox.RunPostdeploy(body: body);
+
+            result.ExitCode.ShouldNotBe(0, $"body '{body}' must be rejected");
+            result.StdErr.ShouldContain(PlaceholderStillServing);
+        }
+    }
+
+    [Fact]
+    public void Postdeploy_Scripts_RequireExactlyHealthy_AndDocumentTheFailSafe()
+    {
+        const string FailSafe =
+            "If postprovision succeeded but `azd deploy` failed or was skipped, the public placeholder stays live " +
+            "(it echoes request headers); redeploy with `azd deploy`, or `azd down` if that is not possible.";
+        foreach (var hook in new[] { "infra/hooks/postdeploy.sh", "infra/hooks/postdeploy.ps1" })
+        {
+            var text = ReadHook(hook);
+            Regex.Replace(text, @"\s*\n#\s*", " ").ShouldContain(FailSafe, customMessage: $"{hook} must document the fail-safe");
+            text.ShouldContain(PlaceholderStillServing, customMessage: hook);
+        }
+
+        CodeOnly("infra/hooks/postdeploy.sh").ShouldContain("--max-time 30");
+        var ps1 = CodeOnly("infra/hooks/postdeploy.ps1");
+        Regex.IsMatch(ps1, @"\.Trim\(\) -cne 'Healthy'\)\s*\{").ShouldBeTrue("postdeploy.ps1 must require exactly 'Healthy'");
+        ps1.ShouldContain("-TimeoutSec 30");
+    }
+
+    [Fact]
+    public void ServiceDefaults_HealthEndpoints_KeepThePlainTextWriter()
+    {
+        // Cross-task guard: postdeploy recognises the real API by the default writer's plain-text "Healthy" body.
+        var extensions = File.ReadAllText(RepoPaths.Combine("src/Nachos.ServiceDefaults/Extensions.cs"));
+
+        Regex.IsMatch(extensions, @"\bResponseWriter\s*=").ShouldBeFalse(
+            "postdeploy.* asserts the plain-text 'Healthy' body; update them together");
     }
 
     // ---- Spec §18.3: no unattended Azure path ------------------------------------------------------
@@ -784,6 +1068,99 @@ public sealed class InfraTests
         PlantedFileHits("eng/deploy.ps1", "docker `\n  push ghcr.io/x/api:1\n").ShouldHaveSingleItem().Line.ShouldBe(1);
     }
 
+    [Theory]
+    // Flags before the verb; an unknown flag before an allowed verb means the verb cannot be determined.
+    [InlineData("azd --no-prompt up")]
+    [InlineData("azd -e prod deploy")]
+    [InlineData("azd --environment prod provision")]
+    [InlineData("azd --cwd ./app --no-prompt down --force --purge")]
+    [InlineData("azd --mystery-flag package")]
+    // Executable names, quoting and paths.
+    [InlineData("azd.exe up")]
+    [InlineData("azd.cmd provision")]
+    [InlineData("\"azd\" up")]
+    [InlineData("'azd' up")]
+    [InlineData("/usr/local/bin/azd up")]
+    [InlineData(".\\azd.exe up")]
+    [InlineData("& \"C:\\Program Files\\azd\\azd.exe\" up")]
+    [InlineData("az.cmd login --identity")]
+    [InlineData("az.exe group list")]
+    [InlineData("\"az\" login")]
+    [InlineData("az \"login\"")]
+    [InlineData("az --debug login")]
+    [InlineData("az --only-show-errors bicep publish --file x.bicep --target br:registry.example.com/x:v1")]
+    [InlineData("/usr/bin/az account show")]
+    // Hooks via backslash paths.
+    [InlineData("pwsh .\\infra\\hooks\\postprovision.ps1")]
+    [InlineData("bash infra\\hooks/postprovision.sh")]
+    // Az PowerShell and raw ARM / Entra / storage endpoints.
+    [InlineData("Connect-AzAccount -Identity")]
+    [InlineData("New-AzResourceGroupDeployment -ResourceGroupName rg -TemplateFile infra/main.json")]
+    [InlineData("New-AzDeployment -Location eastus -TemplateFile infra/main.json")]
+    [InlineData("Set-AzContext -Subscription x")]
+    [InlineData("Publish-AzWebApp -ResourceGroupName rg -Name x -ArchivePath a.zip")]
+    [InlineData("Invoke-AzRestMethod -Path /subscriptions?api-version=2022-12-01")]
+    [InlineData("curl -X PUT https://management.azure.com/subscriptions/x/resourcegroups/rg")]
+    [InlineData("curl -d @body https://login.microsoftonline.com/tenant/oauth2/v2.0/token")]
+    [InlineData("curl -T app.zip https://acct.blob.core.windows.net/releases/app.zip")]
+    // Other registry pushers.
+    [InlineData("podman push ghcr.io/x/api:1")]
+    [InlineData("skopeo copy docker-archive:api.tar docker://ghcr.io/x/api:1")]
+    [InlineData("oras push ghcr.io/x/artifact:1 file.txt")]
+    [InlineData("crane push api.tar ghcr.io/x/api:1")]
+    [InlineData("crane copy ghcr.io/x/api:1 ghcr.io/y/api:1")]
+    [InlineData("buildah push api ghcr.io/x/api:1")]
+    [InlineData("ctr images push ghcr.io/x/api:1")]
+    [InlineData("ctr -n k8s.io images push ghcr.io/x/api:1")]
+    [InlineData("dotnet publish src/Nachos.Api -t:PublishContainer")]
+    [InlineData("dotnet publish src/Nachos.Api /t:PublishContainer")]
+    [InlineData("dotnet publish src/Nachos.Api -p:ContainerRegistry=ghcr.io")]
+    [InlineData("bicep publish infra/main.bicep --target br:registry.example.com/x:v1")]
+    [InlineData("bicep restore infra/main.bicep")]
+    public void Scanner_FlagsEveryFormOfAzureOrRegistryAccess(string command)
+    {
+        PlantedWorkflowHits(OnPush($"      - run: {command}\n")).ShouldNotBeEmpty(command);
+    }
+
+    [Theory]
+    [InlineData("azd --no-prompt package api")]
+    [InlineData("azd -e dev package")]
+    [InlineData("azd --debug config show")]
+    [InlineData("azd.exe version")]
+    [InlineData("azd --version")]
+    [InlineData("az --only-show-errors bicep build --file infra/main.bicep")]
+    [InlineData("az.cmd bicep lint --file infra/main.bicep")]
+    [InlineData("\"az\" bicep version")]
+    [InlineData("bicep build infra/main.bicep --stdout")]
+    [InlineData("bicep build-params infra/main.bicepparam")]
+    [InlineData("bicep lint infra/main.bicep")]
+    [InlineData("bicep format infra/main.bicep")]
+    [InlineData("bicep decompile main.json")]
+    [InlineData("bicep --version")]
+    [InlineData("dotnet publish src/Nachos.Api -c Release")]
+    [InlineData("curl -fsSL https://aka.ms/install-azd.sh | bash")]
+    public void Scanner_AllowsOfflineFormsOfTheSameTools(string command)
+    {
+        PlantedWorkflowHits(OnPush($"      - run: {command}\n")).ShouldBeEmpty(command);
+    }
+
+    [Fact]
+    public void Scanner_DoesNotFlagProseOrSchemaUrls()
+    {
+        PlantedWorkflowHits(OnPush("      - name: Lint bicep files\n        run: bicep lint infra/main.bicep\n")).ShouldBeEmpty();
+        PlantedWorkflowHits(OnPush("      - name: Install azd\n        run: echo later\n")).ShouldBeEmpty();
+        PlantedFileHits("eng/arm/params.json", "{ \"$schema\": \"https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#\" }\n")
+            .ShouldBeEmpty();
+        PlantedFileHits(".github/scripts/walk.mjs", "files.push(...await markdownFiles(path));\nfiles.push(path);\n").ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void Scanner_ScansGithubScripts_ButNotInstalledPackages()
+    {
+        PlantedFileHits(".github/scripts/deploy.sh", "azd up\n").ShouldHaveSingleItem().File.ShouldBe(".github/scripts/deploy.sh");
+        PlantedFileHits(".github/scripts/node_modules/some-lib/index.js", "exec('az login')\n").ShouldBeEmpty();
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------
 
     private static string OnPush(string steps) => "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps;
@@ -816,6 +1193,22 @@ public sealed class InfraTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    private static bool IsDigestPinned(string reference) =>
+        Regex.IsMatch(reference, @"^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant)
+        && !reference.Contains("latest", StringComparison.OrdinalIgnoreCase);
+
+    private static JsonElement ApiContainer(JsonDocument template) =>
+        Resources(template, "Microsoft.App/containerApps").Single()
+            .GetProperty("properties").GetProperty("template").GetProperty("containers").EnumerateArray().Single();
+
+    /// <summary>The nested template of the api-app module deployment.</summary>
+    private static JsonElement ApiModuleTemplate(JsonDocument template) =>
+        Descendants(template.RootElement).Single(e =>
+                e.ValueKind == JsonValueKind.Object
+                && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Resources/deployments"
+                && e.TryGetProperty("name", out var n) && n.GetString() == "api-app")
+            .GetProperty("properties").GetProperty("template");
 
     private static JsonDocument ArmTemplate()
     {
@@ -906,6 +1299,7 @@ public sealed class InfraTests
         "principalLogin" => "'dev@example.com'",
         "openAiEndpoint" => "''",
         "principalType" => "'User'",
+        "placeholderImage" => $"'{PlaceholderImage}'",
         _ => throw new InvalidOperationException($"Add a sample value for parameter '{parameter}' to SampleValue()."),
     };
 }
