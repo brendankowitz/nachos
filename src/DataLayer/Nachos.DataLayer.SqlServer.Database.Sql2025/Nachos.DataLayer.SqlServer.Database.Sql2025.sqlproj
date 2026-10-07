@@ -8,9 +8,12 @@
     <DSP>Microsoft.Data.Tools.Schema.Sql.Sql170DatabaseSchemaProvider</DSP>
     <ModelCollation>1033, CI</ModelCollation>
     <ReadCommittedSnapshot>True</ReadCommittedSnapshot>
+    <TreatTSqlWarningsAsErrors>true</TreatTSqlWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <Build Include="..\Nachos.DataLayer.SqlServer.Database\Tables\**\*.sql" />
+    <Build Include="..\Nachos.DataLayer.SqlServer.Database\**\*.sql"
+           Exclude="..\Nachos.DataLayer.SqlServer.Database\bin\**;..\Nachos.DataLayer.SqlServer.Database\obj\**;..\Nachos.DataLayer.SqlServer.Database\Scripts\Script.PostDeployment.sql"
+           Link="Shared\%(RecursiveDir)%(Filename)%(Extension)" />
     <PostDeploy Include="..\Nachos.DataLayer.SqlServer.Database\Scripts\Script.PostDeployment.sql"
                 Link="Scripts\Script.PostDeployment.sql" />
   </ItemGroup>

@@ -13,3 +13,8 @@ CREATE TABLE [dbo].[IdempotencyRecords]
     CONSTRAINT [FK_IdempotencyRecords_Workspaces] FOREIGN KEY ([WorkspaceId]) REFERENCES [dbo].[Workspaces] ([Id]),
     CONSTRAINT [UQ_IdempotencyRecords_Workspace_KeyHash] UNIQUE NONCLUSTERED ([WorkspaceId], [KeyHash])
 );
+GO
+
+-- Supports expired-record cleanup.
+CREATE NONCLUSTERED INDEX [IX_IdempotencyRecords_ExpiresAt]
+    ON [dbo].[IdempotencyRecords] ([ExpiresAt]);

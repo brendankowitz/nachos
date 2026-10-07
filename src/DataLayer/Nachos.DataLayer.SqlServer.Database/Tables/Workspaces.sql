@@ -11,5 +11,6 @@ CREATE TABLE [dbo].[Workspaces]
     [CreatedAt]        DATETIMEOFFSET (7) NOT NULL, -- application clock; no DB default
 
     CONSTRAINT [PK_Workspaces] PRIMARY KEY CLUSTERED ([Id]),
-    CONSTRAINT [UQ_Workspaces_Name] UNIQUE NONCLUSTERED ([Name])
+    CONSTRAINT [UQ_Workspaces_Name] UNIQUE NONCLUSTERED ([Name]),
+    CONSTRAINT [CK_Workspaces_LifecycleState] CHECK ([LifecycleState] IN (0, 1, 2))
 );

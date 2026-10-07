@@ -16,9 +16,15 @@ CREATE TABLE [dbo].[Sessions]
     CONSTRAINT [FK_Sessions_Workspaces] FOREIGN KEY ([WorkspaceId]) REFERENCES [dbo].[Workspaces] ([Id]),
     CONSTRAINT [UQ_Sessions_Workspace_Name] UNIQUE NONCLUSTERED ([WorkspaceId], [Name]),
     -- Alternate key: lets child tables use a composite FK that carries WorkspaceId.
-    CONSTRAINT [UQ_Sessions_Workspace_Id] UNIQUE NONCLUSTERED ([WorkspaceId], [Id])
+    CONSTRAINT [UQ_Sessions_Workspace_Id] UNIQUE NONCLUSTERED ([WorkspaceId], [Id]),
+    CONSTRAINT [CK_Sessions_LifecycleState] CHECK ([LifecycleState] IN (0, 1, 2))
 );
 GO
 
 CREATE NONCLUSTERED INDEX [IX_Sessions_Workspace_CreatedAt]
     ON [dbo].[Sessions] ([WorkspaceId], [CreatedAt]);
+GO
+
+-- Serves the "EXISTS active sessions in workspace" check and the is_active list filter.
+CREATE NONCLUSTERED INDEX [IX_Sessions_Workspace_State]
+    ON [dbo].[Sessions] ([WorkspaceId], [LifecycleState]);

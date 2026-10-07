@@ -13,3 +13,8 @@ CREATE TABLE [dbo].[PrincipalGrants]
     -- A filtered index would not be needed and would restrict plan usage.
     CONSTRAINT [UQ_PrincipalGrants_Object_Workspace_Role] UNIQUE NONCLUSTERED ([ObjectId], [WorkspaceId], [Role])
 );
+GO
+
+-- Supports FK validation and workspace purge.
+CREATE NONCLUSTERED INDEX [IX_PrincipalGrants_Workspace]
+    ON [dbo].[PrincipalGrants] ([WorkspaceId]);
