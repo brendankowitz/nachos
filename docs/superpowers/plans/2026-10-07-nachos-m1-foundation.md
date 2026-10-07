@@ -49,16 +49,17 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 | 1 Solution skeleton, ServiceDefaults, wire manifest | Cortado | — |
 | 2 Abstractions: contracts, records, store interfaces, store contract tests | Cortado | 1 |
 | 3 Filter AST, parser, conformance cases | Cortado | 2 |
-| 4 Core: services, validation, tokens, config resolver, hosting | Cedar | 2, 3 |
+| 4a Core helpers: validation, tokens, config resolver, `NachosBuilder`/hosting, key issuer, request hasher | Cedar | 2, 3 |
+| 4b Core service: `NachosService` (`INachosClient` + `CreateMessagesResponseAsync`) | Cedar | 4a |
 | 5 Database projects (Azure + Sql2025) | Cortado | 1 |
 | 6 SchemaDeployer | Cortado | 5 |
-| 7 SQL Server provider | Cortado | 2, 3, 4 (`NachosBuilder`), 6 |
-| 8 In-memory provider | Salsa | 2, 3, 4 (`NachosBuilder`) |
-| 9 API: routes, JSON, errors, pagination, health, 501s | Cedar | 4, 8 |
-| 10 Auth: NachosKey + Entra, keys and grants routes | Cedar | 9 |
-| 11 Idempotency-Key on message create | Cedar | 9; 7 for SQL |
+| 7 SQL Server provider | Cortado | 2, 3, 4a (`NachosBuilder`), 6 |
+| 8 In-memory provider | Salsa | 2, 3, 4a (`NachosBuilder`) |
+| 9 API: routes, JSON, errors, pagination, health, 501s | Cedar | 4b, 8 |
+| 10 Auth: NachosKey + Entra HTTP schemes, keys and grants routes | Cedar | 4a (`IKeyIssuer`), 9 |
+| 11 Idempotency-Key HTTP adapter on message create | Cedar | 4b, 9, 10 (auth-before-replay); 7 for SQL |
 | 12 .NET client | Salsa | 9, 10, 11 |
-| 13 Bootstrap CLI | Cortado | 6, 7, 10 (`IKeyIssuer`) |
+| 13 Bootstrap CLI | Cortado | 4a (`IKeyIssuer`), 6, 7 |
 | 14 Aspire AppHost + FTS image recipe | Cortado | 7, 9 |
 | 15 Bicep + azd (offline) | Salsa | 1 (Bicep, `azure.yaml`, `InfraTests`); 13 (hook CLI verbs; until 13 lands, hooks are written against the documented verbs and only syntax-checked) |
 | 16 Upstream-SDK conformance | Salsa | 10, 11, 13 |
@@ -67,8 +68,8 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 
 Parallel tracks after Task 2:
 - **Cortado:** 3 → 5 → 6 → 7 → 13 → 14.
-- **Cedar:** 17 and the 18 scaffold can start right after Task 1. Then 4 → 9 → 10 → 11 → 18 content.
-- **Salsa:** 15 can start right after Task 1. Then 8 (after Task 4) → 12 → 16.
+- **Cedar:** 17 and the 18 scaffold can start right after Task 1. Then 4a → 4b → 9 → 10 → 11 → 18 content.
+- **Salsa:** 15 can start right after Task 1. Then 8 (after Task 4a) → 12 → 16.
 
 **Three agents (Cortado, Cedar, Salsa).** Each agent owns exactly the files in its tasks' **Files** lists. Shared files are assigned as follows:
 - `Directory.Packages.props` and `Nachos.slnx`: owned by Cortado. Other agents request additions in a PR comment, and Cortado applies them within one heartbeat.
@@ -288,10 +289,14 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 5:** Run it again. Expected: PASS.
 - [ ] **Step 6:** Commit `feat(abstractions): filter AST, parser, shared conformance cases`.
 
-### Task 4: Core: services, validation, tokens, config resolver, hosting (Cedar)
+### Task 4: Core (Cedar). Delivered as 4a (helpers) then 4b (service)
+
+**Split (agreed on #6, 2026-10-07):**
+- **4a** delivers every helper below plus `NachosBuilder`/`AddNachos` hosting, the **key issuer** (moved here from Task 10), and the **request hasher / canonical JSON** (moved here from Task 11). Tasks 7, 8 and 13 consume 4a.
+- **4b** delivers the complete `NachosService`. There is no partial `INachosClient` registration and no fake methods. Task 9 consumes 4b.
 
 **Files:**
-- Create: `src/Nachos.Core/NachosService.cs` (implements `INachosClient`), `Validation/IdValidator.cs`, `Validation/RequestValidator.cs`, `Tokens/ITokenCounter.cs`, `Tokens/TiktokenTokenCounter.cs`, `Configuration/IConfigurationResolver.cs`, `ConfigurationResolver.cs`, `ResolvedConfiguration.cs`, `NachosOptions.cs`; `src/Nachos.Hosting/NachosServiceCollectionExtensions.cs`, `NachosBuilder.cs`; `test/Nachos.Core.Tests/*`.
+- Create: `src/Nachos.Core/NachosService.cs` (implements `INachosClient`), `Validation/IdValidator.cs`, `Validation/RequestValidator.cs`, `Tokens/ITokenCounter.cs`, `Tokens/TiktokenTokenCounter.cs`, `Configuration/IConfigurationResolver.cs`, `ConfigurationResolver.cs`, `ResolvedConfiguration.cs`, `NachosOptions.cs`, `Keys/{IKeyIssuer,HmacKeyIssuer,NachosKeyClaims,SigningKeyOptions}.cs` (4a; moved from Task 10), `Idempotency/{RequestHasher,CanonicalJson,CapturedResponse}.cs` (4a; moved from Task 11); `src/Nachos.Hosting/NachosServiceCollectionExtensions.cs`, `NachosBuilder.cs`; `test/Nachos.Core.Tests/*`. The key-issuer tests (`KeyIssuerTests`: round-trip, expired, rotated-out kid, unknown kid, tampered, and missing-configuration behavior) move to `Nachos.Core.Tests`.
 
 **Interfaces:**
 - Consumes: everything from Tasks 2 and 3.
@@ -454,7 +459,7 @@ These are the input classes most likely to bite users. Each line names the test 
 ### Task 10: Auth: NachosKey + Entra, keys and grants routes (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Core/Keys/{IKeyIssuer,HmacKeyIssuer,NachosKeyClaims,SigningKeyOptions}.cs`; `src/Nachos.Api/Auth/{NachosPrincipal,NachosKeyAuthenticationHandler,EntraPrincipalMapper,NachosAuthorizationHandler,RouteRequirements,MemberReadRoutes}.cs`; `Endpoints/{Key,Grant}Endpoints.cs`; `test/Nachos.Api.Tests/Auth/{ScopeMatrixTests,KeyIssuerTests,MemberReadPolicyTests,EntraMappingTests,KeyEndpointTests}.cs`.
+- Create (the Core key issuer now ships in **Task 4a**; Task 10 consumes it): `src/Nachos.Api/Auth/{NachosPrincipal,NachosKeyAuthenticationHandler,EntraPrincipalMapper,NachosAuthorizationHandler,RouteRequirements,MemberReadRoutes}.cs`; `Endpoints/{Key,Grant}Endpoints.cs`; `test/Nachos.Api.Tests/Auth/{ScopeMatrixTests,KeyIssuerTests,MemberReadPolicyTests,EntraMappingTests,KeyEndpointTests}.cs`.
 
 **Interfaces:**
 - Produces:
@@ -477,7 +482,12 @@ These are the input classes most likely to bite users. Each line names the test 
 | `GET S/peers/{p}/config` | admin; workspace; session; member-read **with `p == peer_id`** |
 
   - `MemberReadRoutes.All` lists exactly the member-read routes above.
-  - `POST /v3/keys` rejects `peer_id` without `workspace_id`, and rejects `peer_id` together with `session_id`, with 422. It returns `KeyResponse`.
+  - `POST /v3/keys` (admin only) follows Honcho's **public** Create Key docs (https://honcho.dev/docs/v3/api-reference/endpoint/keys/create-key.md):
+    - A request with **none** of `workspace_id`, `peer_id`, `session_id` is rejected with 422. An absent scope **never** mints an admin key; admin keys come only from `nachos keys create --admin`.
+    - A `peer_id` or `session_id` without `workspace_id` returns 422.
+    - `peer_id` together with `session_id` returns 422. This is a Nachos restriction, listed in spec §9.4.
+    - When the signing ring isn't configured, or auth is disabled, it returns `422 {"detail": "key issuance requires configured signing keys"}`. A secret is never invented.
+    - On success it returns `KeyResponse`.
   - `POST /v3/admin/grants` takes a body `{ "object_id", "workspace_id"?, "role": "Nachos.Admin" | "Nachos.Workspace" }` and returns 204.
 
 - [ ] **Step 1:** Write the tests:
@@ -492,14 +502,22 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 4:** Run it again. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(auth): NachosKey + Entra schemes, scope matrix, keys and grants routes`.
 
-### Task 11: Idempotency-Key on message create (Cedar)
+### Task 11: Idempotency-Key HTTP adapter on message create (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Api/Idempotency/{IdempotencyFilter,RequestHasher}.cs`; `test/Nachos.Api.Tests/IdempotencyTests.cs`.
+- Create: `src/Nachos.Api/Idempotency/IdempotencyEndpointAdapter.cs`; `test/Nachos.Api.Tests/IdempotencyTests.cs`. `RequestHasher` and the canonical-JSON operation live in Core (Task 4a), and the replay/append logic lives in `NachosService.CreateMessagesResponseAsync` (Task 4b).
 
 **Interfaces:**
 - Produces:
-  - `RequestHasher.Hash(string method, string routeTemplate, IReadOnlyDictionary<string,string> routeValues, ReadOnlySpan<byte> canonicalBody) → string` (lowercase hex SHA-256). The canonical body is compact JSON with recursively sorted keys.
+  - (Task 4a) `RequestHasher.Hash(string method, string routeTemplate, IReadOnlyDictionary<string,string> routeValues, ReadOnlySpan<byte> canonicalBody) → string` (lowercase hex SHA-256). The canonical body is compact JSON with recursively sorted keys that keeps **every** field: unknown fields, explicit `null` versus omitted, and message `configuration`. Both route aliases (`M` and `M/`) map to one canonical target.
+  - (Task 4b) `NachosService.CreateMessagesResponseAsync(string workspaceId, string sessionId, JsonElement requestBody, string? idempotencyKey, CancellationToken ct) → Task<CapturedResponse(int Status, string Body)>`. This is the single validation, token, append, and replay path.
+    - The HTTP adapter passes the **original request envelope** **after authorization**.
+    - The typed `CreateMessagesAsync` forms its documented JSON projection and calls the same method.
+    - The concrete service and `INachosClient` are registered as the same scoped instance.
+    - Replays return the exact `Body`/`Status` **captured inside the original append transaction**, never a later re-read or re-serialization.
+    - A duplicate race re-reads the winner's record. If that record expired before the re-read, the call makes a cancellation-aware fresh atomic attempt, never a false different-hash 422.
+    - Reusing a key for a different session returns 422, and the workspace/key namespace is unchanged.
+    - The HTTP adapter writes the captured UTF-8 JSON and status directly.
   - The filter applies to `POST M` and to the trailing-slash alias. It runs **after authorization** (spec §9.1). The idempotency record's TTL is 24 h.
 
 - [ ] **Step 1:** Write the tests:

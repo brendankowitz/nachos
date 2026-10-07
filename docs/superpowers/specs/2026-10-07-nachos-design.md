@@ -394,6 +394,11 @@ Key defaults (parity values):
     - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
     The same body sent to a different session or endpoint therefore never matches.
   - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal `401` (§9.2), never the stored response.
+  - **Request identity:**
+    - Over HTTP, the payload hashed is the **original request body**, canonicalized as sorted-key compact JSON with every field kept: unknown fields, explicit `null` versus omitted, and `configuration`.
+    - In-process callers (the typed `INachosClient`) hash the documented JSON projection of their typed request. Both paths go through one Core operation.
+    - Both route aliases share one canonical target.
+  - **Replay returns the exact status and body captured inside the original mutation's transaction**, never a later re-read or re-serialization. A racing duplicate re-reads the winner's record. If that record expired before the re-read, the request is a fresh atomic attempt.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.
@@ -403,7 +408,7 @@ Key defaults (parity values):
 **Scheme `NachosKey`** (Honcho-compatible):
 
 - HS256 JWT. Claims: `t` (timestamp), `exp?`, `ad?` (admin), `w?`, `p?`, `s?`. Signing secret is stored in Key Vault and read through managed identity. Key rotation is supported through a `kid` header (additive) and a list of active secrets.
-- `POST /v3/keys` (admin only) mints scoped keys. `nachos keys create` does the same offline, and also bootstraps the first admin key.
+- `POST /v3/keys` (admin only) mints scoped keys, following Honcho's public Create Key docs. At least one of `workspace_id`/`peer_id`/`session_id` is required (an absent scope never mints admin), and a peer or session scope requires `workspace_id`. Each violation returns 422. When signing keys aren't configured, it returns 422 and never invents a secret. `nachos keys create` does the same offline, and also bootstraps the first admin key (`--admin`).
 - **Narrowest-scope rule:** a key with `w` + `p` is peer-scoped. It never gains workspace-wide access because `w` matches.
 - **Member-read:** a peer-scoped key may *read* specific session routes when its peer is an active member. The allowlist is an explicit route list, enforced by a test that fails when a mutating route is added to it. Sub-resource reads (for example `peers/{peer_id}/config`) also require `p == peer_id`.
 
@@ -475,6 +480,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 7. Health endpoints are split into `/health/live` and `/health/ready`. `/health` is kept.
 8. The Entra auth scheme.
 9. The optional `Idempotency-Key` header on non-idempotent mutations (§9.1).
+10. `POST /v3/keys` rejects `peer_id` together with `session_id` (422). Honcho's public docs don't forbid the combination; Nachos keeps keys to a single narrowest scope.
 
 ---
 

@@ -136,6 +136,9 @@ public interface INachosClient
     /// <summary>
     /// Appends 1 to 100 messages, creating sender peers and adding them as members as needed. With an
     /// <paramref name="idempotencyKey"/>, a repeat of the same request replays the original response.
+    /// The request identity is the documented JSON projection of <paramref name="messages"/>, hashed with the
+    /// method and canonical route, and it shares one Core path with the HTTP adapter. A replay returns the
+    /// response captured inside the original append transaction.
     /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     /// <exception cref="IdempotencyKeyReusedException">The key was already used with a different request.</exception>
@@ -169,11 +172,15 @@ public interface INachosClient
         CancellationToken ct = default);
 
     /// <summary>
-    /// Issues a scoped API key (<c>POST /v3/keys</c>). Admin-only. <paramref name="peerId"/> requires
-    /// <paramref name="workspaceId"/> and cannot be combined with <paramref name="sessionId"/>.
+    /// Issues a scoped API key (<c>POST /v3/keys</c>). Admin-only. At least one of
+    /// <paramref name="workspaceId"/>, <paramref name="peerId"/> or <paramref name="sessionId"/> is required. An
+    /// absent scope never mints an admin key. <paramref name="peerId"/> and <paramref name="sessionId"/> each
+    /// require <paramref name="workspaceId"/>, and they cannot be combined.
     /// </summary>
     /// <exception cref="AuthException">The caller is not an admin.</exception>
-    /// <exception cref="RequestValidationException">The scope combination is invalid.</exception>
+    /// <exception cref="NachosValidationException">
+    /// The scope combination is invalid, or signing keys are not configured. A secret is never invented.
+    /// </exception>
     Task<KeyResponse> CreateKeyAsync(
         string? workspaceId = null,
         string? peerId = null,
