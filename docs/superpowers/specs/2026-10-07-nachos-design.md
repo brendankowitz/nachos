@@ -23,6 +23,7 @@
 - **Auth:** Honcho-style scoped JWT keys **plus** Entra ID for admin and service callers.
 - **Scope:** one spec covering **full Honcho v3 functional parity**: dreamer, scopes, webhooks, workspace chat, MCP.
 - **Licensing:** clean-room reimplementation. Write our own prompts and keep MIT.
+- **Docs (added by owner, 2026-10-07):** a **polished README in the style of `ignixa-fhir`**, and a **polished documentation site built with Astro**, deployable to **GitHub Pages** (§22).
 
 ### 1.2 Assumptions (correct these in review)
 
@@ -49,6 +50,7 @@
 - Cover all v3 resources: Workspaces, Peers, Sessions (and membership), Messages (including upload), Conclusions, Scopes, Keys, Webhooks, queue status, dream scheduling, peer chat, workspace chat, representation, peer card, peer context, session context, summaries, and search.
 - Provide all four reasoning agents (Deriver, Summarizer, Dialectic, Dreamer), using Agent Framework.
 - Provide a native .NET client SDK, a native MCP server, and an admin CLI.
+- Ship an Ignixa-style README and an Astro (Starlight) documentation site published to GitHub Pages, kept current every milestone (§22).
 - Provide Azure-native operations: managed identity, Key Vault, OpenTelemetry to Application Insights, KEDA scaling, and dacpac schema lifecycle.
 - Fix reliability gaps that the cross-check found (transactional enqueue, explicit failure states, durable webhook retries, hard token budgets, centralized visibility policy) without changing the wire contract.
 
@@ -221,7 +223,13 @@ test/
   conformance/ (python/, typescript/)  # upstream SDKs as black-box clients
   evals/                          # memory-quality evaluation harness
 infra/                            # Bicep (azd)
+docs/
+  assets/                         # logo, README images
+  site/                           # Astro + Starlight documentation site (§22.2)
+  superpowers/specs/              # design specs (published under Architecture)
+eng/DocsGen/                      # generates OpenAPI/CLI/options reference for the docs site
 azure.yaml
+README.md                         # Ignixa-style README (§22.1)
 ```
 
 Dependency rule: `Abstractions` ← `Core` ← (`DataLayer.*`, `Hosting`) ← (`Api`, `Worker`). `Core` never references SQL types. `Client` references only `Abstractions`.
@@ -868,13 +876,13 @@ Until both hold, the worker stays at `minReplicas = 1`.
 
 | M | Deliverable | Exit criteria |
 |---|---|---|
-| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source) | CRUD conformance scenarios pass with upstream SDKs. `azd up` from a clean clone works with no M2+ artifacts. |
+| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source), **README + Starlight docs scaffold + Pages workflow (§22.3)** | CRUD conformance scenarios pass with upstream SDKs. `azd up` from a clean clone works with no M2+ artifacts. Docs site builds with zero broken links. |
 | **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status, **`VisibilityPolicy` + negative tests for these consumers (§11.8)** | Deriver produces conclusions end to end on Azure. Integration tests are green. No M2 read path bypasses `VisibilityPolicy`. |
 | **M3 — Recall** | Summarizer, hybrid search (all scopes), session context (hard budget), summaries route, deletion jobs + `W/jobs`, visibility rules extended to search/context/summaries | Context and search conformance pass. Budget property tests pass. Visibility negative tests are green. |
 | **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence; all inputs go through the existing `VisibilityPolicy` | SSE/structured conformance pass. First eval baseline is recorded. |
 | **M5 — Dreaming** | Dream scheduler, omni (deduction → induction), card_refresh, reasoning chain, `schedule_dream` | Eval shows an improvement over M4 on cross-session questions. |
 | **M6 — Parity completion** | Scopes (+ backfill/removal), workspace chat, webhooks (durable), upload, session clone | Full curated conformance suite is green. |
-| **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs site, NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
+| **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs polish + "Deploy to Azure" button (§22.3), NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
 
 ---
 
@@ -895,7 +903,90 @@ Until both hold, the worker stays at `minReplicas = 1`.
 
 ---
 
-## 22. References
+## 22. README and documentation site
+
+### 22.1 README (`README.md`, Ignixa style)
+
+The README follows the structure and visual style of `ignixa-fhir/README.md`, with Nachos content. It is created in M1 and refreshed every milestone. Sections, in order:
+
+1. **Centered hero:** a `<div align="center">` block containing:
+   - the logo (`docs/assets/nachos-logo.png`, transparent background, about 350 px);
+   - the `<h1>` title "Nachos";
+   - the bold tagline: "Memory for stateful agents, built on .NET and Azure".
+2. **Badge row** (shields.io): .NET 10, Azure Container Apps, SQL Server / Azure SQL, Agent Framework, NuGet, container image (ghcr.io), License MIT, Docs (GitHub Pages), CI status.
+3. **Project status callout:** the reference-implementation status, the clean-room note (MIT, with Honcho v3 API compatibility as a goal), and the note that it is developed with AI agents under manual review.
+4. **Overview:** what Nachos is (peers, sessions, conclusions, dialectic), library and server modes, and a link to the docs.
+5. **✨ Key Features:** emoji subsections:
+   - 🧠 Memory & Reasoning
+   - 🔌 Honcho-compatible API
+   - ☁️ Azure-native
+   - 🧩 Embeddable .NET library
+   - 🔐 Security
+6. **📦 Deployment:**
+   - `azd up` quick path, plus the resources it creates;
+   - "Deploy to Azure" button once a compiled ARM template is published (M7);
+   - Docker / self-hosted SQL Server 2025.
+7. **🛠️ Quick Start (Local Development):** prerequisites; clone → `dotnet run --project src/Nachos.AppHost` (Aspire); a first request with `curl` and with the Python SDK pointed at Nachos.
+8. **🧩 Use as a library:** an `AddNachos()` snippet and an `INachosClient` example.
+9. **🏗️ Architecture:** the mermaid diagram from §6.1 and a short project table.
+10. **📚 Packages / 💻 Tools:** tables of NuGet packages (`Nachos.Abstractions`, `Nachos.Core`, `Nachos.Client`, `Nachos.DataLayer.SqlServer`, …) and the `nachos` CLI.
+11. **✅ Compatibility & conformance:** a Honcho v3 route coverage summary, the deviations from §9.4, and a link to the latest conformance results.
+12. **🤝 Contributing**, **📄 License** (MIT), and **🙏 Acknowledgments**: credits Honcho / Plastic Labs for the concepts and API design, stating plainly that no source is shared.
+
+README rules:
+
+- Every command shown is exercised by CI or a doc test. No placeholder or future-tense features in the README: it lists what has shipped, with a short "Roadmap" link for the rest.
+- Images live in `docs/assets/`.
+- Honcho documentation text is never copied (§3).
+
+### 22.2 Documentation site (`docs/site/`, Astro + Starlight)
+
+- **Stack:**
+  - [Astro](https://docs.astro.build/) with the **[Starlight](https://starlight.astro.build/)** documentation theme;
+  - MDX content;
+  - Starlight's built-in Pagefind search;
+  - Expressive Code for code blocks;
+  - mermaid diagrams rendered at build time via `rehype-mermaid`, so no client-side JS is required;
+  - Node LTS, with versions pinned in `docs/site/package.json` and `package-lock.json`.
+- **Branding:**
+  - Nachos logo and favicon;
+  - custom accent palette via a Starlight CSS custom-properties override;
+  - light and dark themes;
+  - a splash landing page (`template: splash`) with a hero, quick-start tabs (Azure / Docker / Library), and a feature card grid.
+- **Information architecture:**
+  - *Getting started:* Introduction, Quick start (Aspire), Deploy to Azure (`azd`), Self-host with SQL Server 2025, Use as a .NET library.
+  - *Concepts:* Workspaces & peers, Sessions & messages, Conclusions & representations, Peer cards, Summaries & context, Dialectic chat & reasoning levels, Dreaming, Scopes, Visibility.
+  - *Guides:* Using the Honcho Python/TS SDKs with Nachos, the .NET client, MCP, Webhooks, Auth (keys and Entra), Configuration reference, Schema upgrades, Observability, Scaling the worker.
+  - *Reference:*
+    - REST API, generated from the OpenAPI document produced by `Nachos.Api` at build time and rendered with `starlight-openapi`;
+    - configuration options, generated from `NachosOptions` XML docs;
+    - CLI reference, generated from `nachos --help`;
+    - Honcho compatibility matrix and deviations.
+  - *Architecture & ADRs:* published from `docs/superpowers/specs/` (excluding `research/`) and future ADRs.
+  - *Contributing.*
+- **Generated content:** a `dotnet run --project eng/DocsGen` step runs before `astro build`. It writes the OpenAPI JSON, the CLI and options reference pages, and the conformance results into `docs/site/src/content/docs/reference/_generated/`. The build fails if generation fails.
+- **Deployment to GitHub Pages:** `.github/workflows/docs-site.yml` does the following:
+  - On PRs, it builds the site and runs the link check (`starlight-links-validator`) only.
+  - On pushes to `main` (and on `workflow_dispatch`), it builds with `withastro/action` and deploys with `actions/deploy-pages`. It uses the `pages` concurrency group and `pages: write` / `id-token: write` permissions.
+  - `astro.config.mjs` sets `site: 'https://brendankowitz.github.io'` and `base: '/nachos'`, both overridable for a custom domain.
+  - Publishing is gated on the repository's Pages setting ("GitHub Actions" source). Until it is enabled, the deploy job is skipped and the build still runs.
+- **Quality gates** (part of each milestone's Done criteria):
+  - the site builds with zero broken internal links;
+  - every new public route, option, or CLI command has a reference entry (enforced by generation);
+  - every new concept has a Concepts or Guides page;
+  - the README feature list is updated.
+
+### 22.3 Delivery
+
+| Milestone | README / docs work |
+|---|---|
+| M1 | Logo + README skeleton (hero, badges, overview, quick start, library, architecture). Starlight site scaffold with landing page, Getting started, Concepts (workspaces/peers/sessions/messages), auth and schema guides, generated REST/CLI/config reference, and the Pages workflow. |
+| M2–M6 | Each milestone adds its concept pages and guides, and updates the README feature list and compatibility table. |
+| M7 | MCP guide, "Deploy to Azure" button, polish pass (screenshots, diagrams), and a docs versioning decision. |
+
+---
+
+## 23. References
 
 - Honcho repository and docs: <https://github.com/plastic-labs/honcho>, <https://docs.honcho.dev> (behavioral reference only, per §3)
 - Independent cross-check: [`research/2026-10-07-honcho-feature-map-astra.md`](research/2026-10-07-honcho-feature-map-astra.md)
@@ -907,4 +998,6 @@ Until both hold, the worker stays at `minReplicas = 1`.
 - Aspire + Azure Container Apps: <https://aspire.dev/integrations/cloud/azure/configure-container-apps/>
 - KEDA MSSQL scaler: <https://keda.sh/docs/latest/scalers/mssql/>
 - MCP C# SDK: <https://github.com/modelcontextprotocol/csharp-sdk>
+- Astro: <https://docs.astro.build/>, Starlight: <https://starlight.astro.build/>, Astro GitHub Pages deployment: <https://docs.astro.build/en/guides/deploy/github/>
+- README style reference (internal): `ignixa-fhir/README.md`
 - Ignixa schema-deployment pattern (internal reference): `ignixa-fhir/docs/site/docs/server/configuration.md` § SQL Server Schema Deployment
