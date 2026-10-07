@@ -135,7 +135,7 @@ Legend for the **M** column: milestone in §20. Δ marks an intentional deviatio
 | Pluggable external vector stores | Out of scope. `IVectorIndex` stays as a seam. | — |
 | Redis cache | `HybridCache` (in-proc). Distributed backplane is optional. | M7 |
 | MCP server (TypeScript) | Δ Native C# MCP server (`ModelContextProtocol.AspNetCore`) at `/mcp` (§15). | M7 |
-| CLI | `nachos` .NET tool: schema, keys, inspect, queue (§16). | M7 |
+| CLI | `nachos` .NET tool: schema, keys, and grants (bootstrap, M1); inspect and mcp (M7) (§16). | M1/M7 |
 | Python/TS SDKs | Run unchanged against Nachos as the conformance target. Native `Nachos.Client` for .NET (§16). | M1+ |
 
 ---
@@ -709,13 +709,17 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
 - `WaitForQueueAsync(timeout)`.
 - Entra (`TokenCredential`) or NachosKey auth.
 
-**`Nachos.Cli`** (`dotnet tool install -g nachos`):
+**`Nachos.Cli`** (`dotnet tool install -g nachos`). Delivered in two stages:
 
-- `schema status|report|upgrade [--allow-data-loss]`
-- `keys create`
-- `grants add|list|remove`
-- `inspect workspace|peer|session|queue`
-- `mcp` (stdio)
+- **M1 (bootstrap, required by `azd up`):**
+  - `schema status|report|upgrade [--allow-data-loss]`
+  - `keys create` (including the first admin key)
+  - `grants add|list|remove`
+  These are built and run from source by the azd hooks (`dotnet run --project src/Nachos.Cli`), so a clean-clone deploy needs no published tool.
+- **M7:**
+  - `inspect workspace|peer|session|queue`
+  - `mcp` (stdio)
+  - packaging as a NuGet global tool
 
 ---
 
@@ -811,13 +815,13 @@ Until both hold, the worker stays at `minReplicas = 1`.
 
 | M | Deliverable | Exit criteria |
 |---|---|---|
-| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, Bicep + `azd up` (api only + SQL + KV + MI) | CRUD conformance scenarios pass with upstream SDKs. `azd up` works. |
+| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source) | CRUD conformance scenarios pass with upstream SDKs. `azd up` from a clean clone works with no M2+ artifacts. |
 | **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status | Deriver produces conclusions end to end on Azure. Integration tests are green. |
 | **M3 — Recall** | Summarizer, hybrid search (all scopes), session context (hard budget), summaries route, deletion jobs + `W/jobs` | Context and search conformance pass. Budget property tests pass. |
 | **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence, visibility policy | SSE/structured conformance pass. First eval baseline is recorded. |
 | **M5 — Dreaming** | Dream scheduler, omni (deduction → induction), card_refresh, reasoning chain, `schedule_dream` | Eval shows an improvement over M4 on cross-session questions. |
 | **M6 — Parity completion** | Scopes (+ backfill/removal), workspace chat, webhooks (durable), upload, session clone | Full curated conformance suite is green. |
-| **M7 — Ecosystem & hardening** | Native MCP server, CLI, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs site, NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
+| **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs site, NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
 
 ---
 
