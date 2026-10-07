@@ -57,11 +57,11 @@
 **Non-goals**
 
 - Byte-for-byte Honcho behavior or prompt parity. Parity is measured by contract tests and evaluations.
-- Honcho's legacy `/v2` (App/User) API.
+- Honcho's legacy `/v2` (App/User) API ([#4](https://github.com/brendankowitz/nachos/issues/4)).
 - Storage providers beyond SQL Server and in-memory, such as Postgres, Cosmos DB, Turbopuffer, LanceDB, Qdrant, or Chroma.
 - Redis as a required dependency. `HybridCache` is used in-process, and distributed caching is optional.
 - Honcho's hosted dashboard, billing, and org provisioning.
-- Importing data from an existing Honcho database. This is a possible follow-up spec.
+- Importing data from an existing Honcho deployment. This is a follow-up spec after M6 ([#3](https://github.com/brendankowitz/nachos/issues/3)).
 
 ---
 
@@ -981,8 +981,8 @@ Until both hold, the worker stays at `minReplicas = 1`.
 | R6 | Azure OpenAI model availability and quota differ by region. | Model/deployment names are Bicep parameters. Fallback profiles. Quota preflight in `azd` hook. |
 | R7 | The KEDA `mssql` scaler needs a database identity. Upstream KEDA documents workload identity for mssql from 2.20+, but that does not prove Azure Container Apps exposes this version or auth path. | **Deployment-verification gate in M2.** If ACA supports managed identity for the mssql scale rule, use it. Otherwise scale on CPU with `minReplicas = 1`. **No SQL-login fallback**: the database is Entra-only (§18.2). |
 | R8 | Serverless Azure SQL auto-pause conflicts with a polling worker. | Auto-pause is disabled by default. Documented. |
-| R9 | **Open:** should the .NET in-process mode support SQL Server only, or also allow the in-memory provider for production "embedded" use? | Proposed: in-memory is test/dev only, and is documented as non-durable. |
-| R10 | **Open:** Honcho data import tool? | Proposed: a separate follow-up spec after M6. |
+| R9 | **Decided (Cortado + Cedar, PR #1):** should the in-process mode allow the in-memory provider for production "embedded" use? | **No.** In-memory is test/dev only and documented as non-durable. Production in-process hosting requires SQL Server / Azure SQL. `UseInMemory()` logs a warning at startup outside the `Development` environment. |
+| R10 | **Decided (Cortado + Cedar, PR #1):** Honcho data import tool? | **Out of scope for M1–M7.** It will be a separately specified follow-up after M6: [#3](https://github.com/brendankowitz/nachos/issues/3). Legacy `/v2` compatibility is tracked separately as [#4](https://github.com/brendankowitz/nachos/issues/4). |
 
 ---
 
