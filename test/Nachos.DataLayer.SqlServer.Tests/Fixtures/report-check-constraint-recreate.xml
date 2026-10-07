@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Drop">
+      <Item Value="[dbo].[CK_Sessions_LifecycleState]" Type="SqlCheckConstraint" />
+      <Item Value="[dbo].[CK_Workspaces_LifecycleState]" Type="SqlCheckConstraint" />
+    </Operation>
+    <Operation Name="Create">
+      <Item Value="[dbo].[CK_Sessions_LifecycleState]" Type="SqlCheckConstraint" />
+      <Item Value="[dbo].[CK_Workspaces_LifecycleState]" Type="SqlCheckConstraint" />
+    </Operation>
+  </Operations>
+</DeploymentReport>
