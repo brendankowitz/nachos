@@ -10,6 +10,10 @@
     <Project Path="src/Nachos.Hosting/Nachos.Hosting.csproj" />
     <Project Path="src/Nachos.ServiceDefaults/Nachos.ServiceDefaults.csproj" />
   </Folder>
+  <Folder Name="/src/DataLayer/">
+    <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj" Type="42ea0dbd-9cf1-443e-919e-be9c484e4577" />
+    <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer.Database/Nachos.DataLayer.SqlServer.Database.sqlproj" Type="42ea0dbd-9cf1-443e-919e-be9c484e4577" />
+  </Folder>
   <Folder Name="/test/">
     <Project Path="test/Nachos.Abstractions.Tests/Nachos.Abstractions.Tests.csproj" />
     <Project Path="test/Nachos.Api.Tests/Nachos.Api.Tests.csproj" />

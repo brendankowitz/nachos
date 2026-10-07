@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build">
+  <Sdk Name="Microsoft.Build.Sql" Version="2.2.0" />
+  <PropertyGroup>
+    <Name>Nachos.DataLayer.SqlServer.Database.Sql2025</Name>
+    <!-- SQL Server 2025 (box). Contains NO DDL of its own: it compiles the same table files as the
+         Azure project so both dacpacs always describe the same schema. -->
+    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql170DatabaseSchemaProvider</DSP>
+    <ModelCollation>1033, CI</ModelCollation>
+    <ReadCommittedSnapshot>True</ReadCommittedSnapshot>
+  </PropertyGroup>
+  <ItemGroup>
+    <Build Include="..\Nachos.DataLayer.SqlServer.Database\Tables\**\*.sql" />
+    <PostDeploy Include="..\Nachos.DataLayer.SqlServer.Database\Scripts\Script.PostDeployment.sql"
+                Link="Scripts\Script.PostDeployment.sql" />
+  </ItemGroup>
+</Project>
