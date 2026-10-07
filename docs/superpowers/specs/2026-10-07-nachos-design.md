@@ -79,6 +79,12 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
    - **Distributed artifacts** (NuGet packages, container images, CLI tools, the published docs site's assets, and any embedded third-party code) may use only: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, MS-PL, Unlicense, CC0-1.0, BlueOak-1.0.0, Zlib, PSF-2.0, or Python-2.0.
    - **Unmodified, non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0, through an explicitly reviewed, version-scoped exception recorded in `eng/license-exceptions.json` (package, version, license, purpose, reviewer). Example: `elkjs` used only by the docs Mermaid validator.
    - GPL, AGPL, LGPL, and SSPL are never allowed in either tier.
+   - **Owner-approved shipped-tier exception (2026-10-07):** `Microsoft.SqlServer.DacFx` (pinned version only, currently `170.4.83`) may ship in distributed artifacts (the API image and the CLI) under its **Microsoft Software License Terms, "Distributable Code"** section. It's required for the in-app dacpac schema deployment (§7.3). Conditions:
+     - a version-scoped entry in `eng/license-exceptions.json` with `tier: "shipped"`, the license-text evidence path, and the owner approval reference;
+     - its license terms reproduced or linked in `THIRD-PARTY-NOTICES.md`;
+     - Nachos must comply with the Distributable Code conditions;
+     - **any version change needs a fresh license-text review**;
+     - no other Microsoft-proprietary package is covered by this exception.
    - Required license texts and notices go in `THIRD-PARTY-NOTICES.md` (for example PdfPig, Apache-2.0).
    - **CI enforcement:**
      - Check the locked direct and transitive dependencies **and the emitted artifacts**. `devDependencies` is not treated as a distribution boundary. Bundler module provenance for every docs-site chunk, plus package and image contents, must prove that excepted packages don't ship.
