@@ -87,7 +87,7 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
      - no other Microsoft-proprietary package is covered by this exception.
    - **Owner-approved container platform-layer carve-out (2026-10-07).** The base OS layer of a container image from an **approved base** is evaluated as unmodified third-party platform, not under this rule's package allowlist. Approved bases are:
      - Microsoft .NET images on `mcr.microsoft.com` (for example `dotnet/aspnet`, `dotnet/runtime-deps`), used by Nachos images;
-     - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2).
+     - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2). Nachos neither modifies nor redistributes this image: it is a third-party runtime dependency that Container Apps pulls from its upstream registry, and it is replaced by the first deploy. It is therefore approved **as a whole**, application layer included, provided its full package and license inventory is recorded as evidence (`infra/evidence/placeholder-<digest>/`). Changing its digest requires refreshing that evidence.
 
      Conditions:
      - Base images are referenced **by digest** in release evidence, together with their OS package license inventory.
