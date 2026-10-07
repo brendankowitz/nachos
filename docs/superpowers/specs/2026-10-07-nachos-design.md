@@ -311,7 +311,7 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
 
 | Honcho on Postgres | Nachos on SQL Server |
 |---|---|
-| pgvector HNSW, cosine | `VECTOR(n)` (GA) with **exact** `VECTOR_DISTANCE('cosine', …)` over a pre-filtered candidate set. Collection- and session-scoped filters keep the sets small. Optional `Nachos:Vector:UseApproximateIndex` uses DiskANN `VECTOR_SEARCH`, which is **preview**, so it is off by default and its limits are documented. |
+| pgvector HNSW, cosine | `VECTOR(n)` (GA). Behavior depends on the platform, behind `IVectorIndex`:<br>• **Azure SQL Database** (primary): a DiskANN **vector index** (latest version, which is **GA** with full DML support, iterative `WHERE` filtering, and optimizer-chosen kNN vs. ANN) on `MessageEmbeddings.Embedding` and `Conclusions.Embedding`. Queries use `SELECT TOP (@k) WITH APPROXIMATE … ORDER BY VECTOR_DISTANCE('cosine', …)`. Index creation lives in the post-deploy script, guarded by `EngineEdition = 5`, so the shared DDL stays platform-neutral.<br>• **SQL Server 2025** (self-hosted): the vector index is **preview** (needs `PREVIEW_FEATURES`), so the default is **exact** `VECTOR_DISTANCE` over a pre-filtered candidate set. `Nachos:Vector:UseApproximateIndex = true` opts in.<br>Both paths pass the same ranking conformance tests (recall@k against exact search on fixtures). |
 | `to_tsvector('english')` + GIN | SQL full-text index + `CONTAINSTABLE`. If `SERVERPROPERTY('IsFullTextInstalled') = 0`, `ILexicalIndex` falls back to `LIKE` with tokenized `AND`. |
 | `FOR UPDATE SKIP LOCKED` / `ON CONFLICT DO NOTHING` | Under `READ COMMITTED` with RCSI ON (Azure SQL default): `WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK)`. **No `ROWLOCK`**: it is in the same mutually exclusive hint group as `READCOMMITTEDLOCK`, and `READPAST` under RCSI requires `READCOMMITTEDLOCK`. Lease insert is guarded by a unique PK (catch 2627/2601). See §10.3. |
 | Advisory lock for message seq | Atomic `UPDATE Sessions SET NextMessageSeq += @n OUTPUT inserted…` |
@@ -889,7 +889,7 @@ Until both hold, the worker stays at `minReplicas = 1`.
 | **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence; all inputs go through the existing `VisibilityPolicy` | SSE/structured conformance pass. First eval baseline is recorded. |
 | **M5 — Dreaming** | Dream scheduler, omni (deduction → induction), card_refresh, reasoning chain, `schedule_dream` | Eval shows an improvement over M4 on cross-session questions. |
 | **M6 — Parity completion** | Scopes (+ backfill/removal), workspace chat, webhooks (durable), upload, session clone | Full curated conformance suite is green. |
-| **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs polish + "Deploy to Azure" button (§22.3), NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
+| **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, self-hosted ANN opt-in validation, surprisal prioritizer (flagged), docs polish + "Deploy to Azure" button (§22.3), NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
 
 ---
 
@@ -897,7 +897,7 @@ Until both hold, the worker stays at `minReplicas = 1`.
 
 | # | Risk / question | Mitigation / proposed answer |
 |---|---|---|
-| R1 | DiskANN `VECTOR_SEARCH` is preview. Exact search may be slow for large workspace-wide message search. | Search is always pre-filtered (collection/session/time). Cap candidate rows. Benchmark at 1M messages/workspace in M3. ANN is opt-in. |
+| R1 | The vector index / ANN is GA on Azure SQL but **preview on SQL Server 2025**, so self-hosted search defaults to exact search, which may be slow for large workspace-wide message search. | Search is always pre-filtered (collection/session/time). Cap candidate rows. Benchmark at 1M messages/workspace in M3 on both platforms, then decide whether to recommend ANN opt-in for self-hosting. |
 | R2 | SQL Server Linux containers lack FTS by default. | Custom dev/test image with `mssql-server-fts` plus the `LIKE` fallback. Azure SQL has FTS. |
 | R3 | Clean-room prompts may underperform Honcho's tuned prompts. | Eval harness from M4. Prompt versions are tracked and iterated. |
 | R4 | Wire-compatibility drift as Honcho `main` evolves. | Pin to `v3.2.2`/`e8d8b4a` for conformance. A scheduled job diffs upstream OpenAPI and reports changes. |
