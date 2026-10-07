@@ -20,7 +20,7 @@ public sealed partial class InMemoryMemoryStore
     {
         lock (_state.Gate)
         {
-            var record = new WorkspaceRecord(name, JsonCopy.Own(metadata), new JsonObject(), LifecycleState.Active, createdAt);
+            var record = new WorkspaceRecord(name, JsonCopy.Own(metadata, "metadata"), new JsonObject(), LifecycleState.Active, createdAt);
             _state.Workspaces.Add(name, new WorkspaceEntry(record, _state.NextOrder()));
         }
     }
@@ -30,7 +30,7 @@ public sealed partial class InMemoryMemoryStore
         var workspace = _state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
-            var record = new PeerRecord(workspaceName, name, JsonCopy.Own(metadata), new JsonObject(), IsInternal: false, createdAt);
+            var record = new PeerRecord(workspaceName, name, JsonCopy.Own(metadata, "metadata"), new JsonObject(), IsInternal: false, createdAt);
             workspace.Peers.Add(name, new PeerEntry(record, _state.NextOrder()));
         }
     }
@@ -41,7 +41,7 @@ public sealed partial class InMemoryMemoryStore
         lock (workspace.Gate)
         {
             var state = isActive ? LifecycleState.Active : LifecycleState.Inactive;
-            var record = new SessionRecord(workspaceName, name, state, JsonCopy.Own(metadata), new JsonObject(), createdAt);
+            var record = new SessionRecord(workspaceName, name, state, JsonCopy.Own(metadata, "metadata"), new JsonObject(), createdAt);
             workspace.Sessions.Add(name, new SessionEntry(record, _state.NextOrder()));
         }
     }
@@ -82,7 +82,7 @@ public sealed partial class InMemoryMemoryStore
                 session.LastSeq + 1,
                 content,
                 tokenCount,
-                JsonCopy.Own(metadata),
+                JsonCopy.Own(metadata, "metadata"),
                 createdAt));
         }
     }

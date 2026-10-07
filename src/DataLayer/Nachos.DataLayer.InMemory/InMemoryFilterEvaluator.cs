@@ -212,9 +212,13 @@ internal static class InMemoryFilterEvaluator
     }
 
     /// <summary>
-    /// Compares by numeric value whatever CLR type backs the node (parsed JSON or a C# <c>int</c>, <c>double</c>,
-    /// <c>decimal</c>…): exactly as <see cref="decimal"/> when both fit, otherwise as <see cref="double"/>.
+    /// Compares by numeric value, using the JSON number text (stored JSON is canonical).
     /// </summary>
+    /// <remarks>
+    /// Precision bound: numbers compare as <see cref="System.Decimal"/> when both parse into decimal range; beyond that
+    /// they fall back to <see cref="double"/> (so, for example, values below decimal's smallest step or above its range
+    /// may compare equal). The SQL provider documents its own bound.
+    /// </remarks>
     private static int CompareNumbers(JsonValue left, JsonValue right)
     {
         var leftText = left.ToJsonString();

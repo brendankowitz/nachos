@@ -10,11 +10,22 @@ namespace Nachos.DataLayer.InMemory.Stores;
 
 internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
 {
+    private const string SerializerModifiedStore =
+        "The response serializer modified the store; it must be a pure function of the stored messages.";
+
     /// <remarks>
-    /// Atomicity: under the workspace gate the append first <i>stages</i> everything it will write (sender peers,
-    /// memberships, messages with their Seq values, the idempotency record) without touching stored state, then calls
-    /// <see cref="IdempotencyWrite.SerializeResponse"/>, and only then commits with plain insertions that cannot fail.
-    /// So any exception, the caller's serializer included, leaves nothing behind and no Seq gap.
+    /// <para>
+    /// Atomicity: under the workspace gate the append first stages everything it will write (see
+    /// <see cref="StagedAppend"/>) without touching stored state, then calls
+    /// <see cref="IdempotencyWrite.SerializeResponse"/>, then confirms the staging still matches the store, and only
+    /// then commits with plain insertions that cannot fail. Any exception, the caller's serializer included, leaves
+    /// nothing behind and no Seq gap.
+    /// </para>
+    /// <para>
+    /// The serializer must not call the store. It runs inside the workspace gate, which is re-entrant, so a call on the
+    /// same thread would get in; if it changed anything the staging relied on, the append throws
+    /// <see cref="InvalidOperationException"/> before committing.
+    /// </para>
     /// </remarks>
     public Task<IReadOnlyList<MessageRecord>> AppendAsync(
         string workspaceName,
@@ -25,7 +36,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
         StoreTask.Run<IReadOnlyList<MessageRecord>>(
             () =>
             {
-                var ownedMetadata = messages.Select(message => JsonCopy.Own(message.Metadata)).ToList();
+                var ownedMetadata = messages.Select(message => JsonCopy.Own(message.Metadata, "metadata")).ToList();
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
@@ -40,46 +51,9 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                         throw new IdempotencyDuplicateException(idempotency.Key);
                     }
 
-                    // Stage.
-                    var newPeers = new Dictionary<string, PeerEntry>(StringComparer.Ordinal);
-                    var memberships = new Dictionary<string, Membership>(StringComparer.Ordinal);
-                    foreach (var sender in messages.Select(message => message.PeerName).Distinct(StringComparer.Ordinal))
-                    {
-                        if (!workspace.Peers.ContainsKey(sender))
-                        {
-                            newPeers.Add(sender, PeerEntry.CreateDefault(workspaceName, sender, now, state.NextOrder()));
-                        }
-
-                        // A former member is reactivated in place, keeping its config.
-                        var membership = session.Members.GetValueOrDefault(sender);
-                        if (membership is not { IsActive: true })
-                        {
-                            memberships.Add(
-                                sender,
-                                membership is null
-                                    ? new Membership(new SessionPeerConfig(), now, LeftAt: null)
-                                    : membership with { JoinedAt = now, LeftAt = null });
-                        }
-                    }
-
-                    var publicIds = new HashSet<string>(StringComparer.Ordinal);
-                    var records = new List<MessageRecord>(messages.Count);
-                    for (var i = 0; i < messages.Count; i++)
-                    {
-                        var message = messages[i];
-                        records.Add(new MessageRecord(
-                            NewPublicId(session, publicIds),
-                            workspaceName,
-                            sessionName,
-                            message.PeerName,
-                            session.LastSeq + i + 1,
-                            message.Content,
-                            message.TokenCount,
-                            ownedMetadata[i],
-                            message.CreatedAt ?? now));
-                    }
-
-                    var result = records.Select(JsonCopy.Out).ToList();
+                    var staged = new StagedAppend(
+                        workspace, session, messages, ownedMetadata, idempotency?.Key, now, state.NextOrder);
+                    var result = staged.Messages.Select(JsonCopy.Out).ToList();
                     var idempotencyRecord = idempotency is null
                         ? null
                         : new IdempotencyRecord(
@@ -89,27 +63,12 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                             idempotency.SerializeResponse(result),
                             now + idempotency.Ttl);
 
-                    // Commit.
-                    foreach (var (name, peer) in newPeers)
+                    if (!staged.IsCurrent())
                     {
-                        workspace.Peers.Add(name, peer);
+                        throw new InvalidOperationException(SerializerModifiedStore);
                     }
 
-                    foreach (var (name, membership) in memberships)
-                    {
-                        session.Members[name] = membership;
-                    }
-
-                    foreach (var record in records)
-                    {
-                        session.AppendMessage(record);
-                    }
-
-                    if (idempotencyRecord is not null)
-                    {
-                        workspace.Idempotency[idempotencyRecord.Key] = idempotencyRecord;
-                    }
-
+                    staged.Commit(idempotencyRecord);
                     return result;
                 }
             },
@@ -135,7 +94,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
         StoreTask.Run(
             () =>
             {
-                var ownedMetadata = JsonCopy.Own(metadata);
+                var ownedMetadata = JsonCopy.Own(metadata, "metadata");
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
@@ -163,20 +122,4 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                 }
             },
             ct);
-
-    /// <summary>
-    /// A public id unused in the session and in this batch. Collisions are astronomically unlikely, but the commit
-    /// phase must not be able to fail, so they are ruled out while staging.
-    /// </summary>
-    private static string NewPublicId(SessionEntry session, HashSet<string> batch)
-    {
-        string id;
-        do
-        {
-            id = PublicId.New();
-        }
-        while (session.ContainsMessage(id) || !batch.Add(id));
-
-        return id;
-    }
 }

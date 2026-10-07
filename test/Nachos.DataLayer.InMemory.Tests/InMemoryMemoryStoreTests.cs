@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
@@ -175,30 +174,252 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Workspaces.GetAsync("ws", Ct)).ShouldBeNull();
     }
 
-    [Fact]
-    public async Task AddInMemoryMemoryStore_RegistersSingletonOnRegisteredClock()
+    // ---------------------------------------------------------------- serializer re-entrancy
+
+    private const string SerializerModifiedStore =
+        "The response serializer modified the store; it must be a pure function of the stored messages.";
+
+    public static TheoryData<string> Interferences() => new() { "append", "create-sender-peer", "reactivate-sender" };
+
+    /// <summary>A serializer that writes to the store invalidates what the append staged, so nothing of it may commit.</summary>
+    [Theory]
+    [MemberData(nameof(Interferences))]
+    public async Task Append_SerializerThatWritesToTheStore_IsRejectedBeforeAnythingCommits(string interference)
     {
-        var clock = new FakeTimeProvider(Start);
-        using var provider = new ServiceCollection()
-            .AddSingleton<TimeProvider>(clock)
-            .AddInMemoryMemoryStore()
-            .BuildServiceProvider();
+        var (store, _) = await NewSessionStoreAsync();
+        await store.Sessions.AddPeersAsync("ws", "s", new Dictionary<string, SessionPeerConfig> { ["left"] = new(true, false) }, Ct);
+        await store.Sessions.RemovePeersAsync("ws", "s", ["left"], Ct);
+        var reentrant = new IdempotencyWrite(
+            "key",
+            new string('a', 64),
+            201,
+            _ =>
+            {
+                Interfere(store, interference);
+                return "body";
+            },
+            TimeSpan.FromMinutes(1));
 
-        var store = provider.GetRequiredService<IMemoryStore>();
+        var thrown = await Should.ThrowAsync<InvalidOperationException>(
+            () => store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message"), Msg("left", "left-message")], reentrant, Ct));
 
-        store.ShouldBeOfType<InMemoryMemoryStore>();
-        provider.GetRequiredService<IMemoryStore>().ShouldBeSameAs(store);
-        (await store.Workspaces.GetOrCreateAsync("ws", null, null, Ct)).CreatedAt.ShouldBe(Start);
+        thrown.Message.ShouldBe(SerializerModifiedStore);
+        var stored = (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Items;
+        stored.ShouldNotContain(m => m.Content == "outer-message" || m.Content == "left-message");
+        stored.Select(m => m.Seq).ShouldBe(Enumerable.Range(1, stored.Count).Select(i => (long)i));
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct)).ShouldBeNull();
+        if (interference != "reactivate-sender")
+        {
+            (await store.Sessions.IsActiveMemberAsync("ws", "s", "left", Ct)).ShouldBeFalse();
+        }
+
+        if (interference == "append")
+        {
+            (await store.Peers.GetAsync("ws", "outer", Ct)).ShouldBeNull();
+            (await store.Sessions.IsActiveMemberAsync("ws", "s", "outer", Ct)).ShouldBeFalse();
+        }
+
+        (await store.Messages.AppendAsync("ws", "s", [Msg("next", "after")], null, Ct))[0].Seq.ShouldBe(stored.Count + 1);
+    }
+
+    /// <summary>Called from inside a serializer, where blocking is unavoidable; the store completes synchronously.</summary>
+    private static void Interfere(InMemoryMemoryStore store, string interference)
+    {
+        var write = interference switch
+        {
+            "append" => store.Messages.AppendAsync("ws", "s", [Msg("inner", "inner-message")], null, Ct),
+            "create-sender-peer" => store.Peers.GetOrCreateAsync("ws", "outer", null, null, Ct),
+            _ => store.Sessions.AddPeersAsync("ws", "s", new Dictionary<string, SessionPeerConfig> { ["left"] = new(false, false) }, Ct),
+        };
+        write.GetAwaiter().GetResult();
+    }
+
+    // ---------------------------------------------------------------- get-or-create races
+
+    /// <summary>
+    /// Runs <paramref name="count"/> calls on dedicated threads released together, for more real overlap than the thread
+    /// pool gives. The store reports failures through its tasks, so the threads never throw.
+    /// </summary>
+    private static async Task<T[]> RaceOnThreadsAsync<T>(int count, Func<int, Task<T>> operation)
+    {
+        var tasks = new Task<T>[count];
+        using var start = new ManualResetEventSlim();
+        var threads = Enumerable.Range(0, count)
+            .Select(i => new Thread(() =>
+            {
+                start.Wait();
+                tasks[i] = operation(i);
+            }))
+            .ToList();
+        threads.ForEach(thread => thread.Start());
+        start.Set();
+        threads.ForEach(thread => thread.Join());
+        return await Task.WhenAll(tasks);
     }
 
     [Fact]
-    public async Task AddInMemoryMemoryStore_WithoutRegisteredClock_UsesSystemClock()
+    public async Task GetOrCreateWorkspace_Repeated32WayRace_YieldsOneRowAndIdenticalResults()
     {
-        using var provider = new ServiceCollection().AddInMemoryMemoryStore().BuildServiceProvider();
-        var before = DateTimeOffset.UtcNow;
+        for (var iteration = 0; iteration < 200; iteration++)
+        {
+            var store = new InMemoryMemoryStore(TimeProvider.System);
 
-        var created = await provider.GetRequiredService<IMemoryStore>().Workspaces.GetOrCreateAsync("ws", null, null, Ct);
+            var results = await RaceOnThreadsAsync(
+                32, i => store.Workspaces.GetOrCreateAsync("ws", new JsonObject { ["caller"] = i }, null, Ct));
 
-        created.CreatedAt.ShouldBeInRange(before, DateTimeOffset.UtcNow);
+            results.Select(w => w.Metadata.ToJsonString()).Distinct().Count().ShouldBe(1);
+            results.Select(w => w.CreatedAt).Distinct().Count().ShouldBe(1);
+            (await store.Workspaces.ListAsync(null, new PageRequest(), Ct)).Total.ShouldBe(1);
+            (await store.Workspaces.GetAsync("ws", Ct))!.Metadata.ToJsonString().ShouldBe(results[0].Metadata.ToJsonString());
+        }
+    }
+
+    [Fact]
+    public async Task GetOrCreatePeer_Repeated32WayRace_YieldsOneRowAndIdenticalResults()
+    {
+        for (var iteration = 0; iteration < 200; iteration++)
+        {
+            var store = new InMemoryMemoryStore(TimeProvider.System);
+            await store.Workspaces.GetOrCreateAsync("ws", null, null, Ct);
+
+            var results = await RaceOnThreadsAsync(
+                32, i => store.Peers.GetOrCreateAsync("ws", "alice", new JsonObject { ["caller"] = i }, null, Ct));
+
+            results.Select(p => p.Metadata.ToJsonString()).Distinct().Count().ShouldBe(1);
+            results.Select(p => p.CreatedAt).Distinct().Count().ShouldBe(1);
+            (await store.Peers.ListAsync("ws", PeerKind.All, null, new PageRequest(), Ct)).Total.ShouldBe(1);
+            (await store.Peers.GetAsync("ws", "alice", Ct))!.Metadata.ToJsonString().ShouldBe(results[0].Metadata.ToJsonString());
+        }
+    }
+
+    // ---------------------------------------------------------------- ordering under a frozen clock
+
+    private static Dictionary<string, SessionPeerConfig> Members(params string[] names) =>
+        names.ToDictionary(name => name, _ => new SessionPeerConfig(true, true));
+
+    [Fact]
+    public async Task ListPeers_FrozenClock_UsesPeerCreationOrderNotJoinOrder()
+    {
+        // The clock never moves, so only the insertion tiebreak orders the peers. Names are deliberately not sorted.
+        var (store, _) = await NewSessionStoreAsync();
+        string[] created = ["p-zulu", "p-alpha", "p-mike", "p-bravo"];
+        foreach (var name in created)
+        {
+            await store.Peers.GetOrCreateAsync("ws", name, null, null, Ct);
+        }
+
+        // Join in a different order than creation, through both membership paths.
+        await store.Sessions.AddPeersAsync("ws", "s", Members("p-mike", "p-zulu"), Ct);
+        await store.Messages.AppendAsync("ws", "s", [Msg("p-bravo", "x"), Msg("p-alpha", "y")], null, Ct);
+
+        async Task<string[]> ListAsync(PageRequest page) =>
+            [.. (await store.Sessions.ListPeersAsync("ws", "s", page, Ct)).Items.Select(p => p.Name)];
+
+        (await ListAsync(new PageRequest())).ShouldBe(created);
+        (await ListAsync(new PageRequest(1, 50, true))).ShouldBe(created.Reverse());
+        (await ListAsync(new PageRequest(1, 3))).ShouldBe(created[..3]);
+        (await ListAsync(new PageRequest(2, 3))).ShouldBe(created[3..]);
+
+        // A peer that leaves and rejoins keeps its original position.
+        await store.Sessions.RemovePeersAsync("ws", "s", ["p-zulu"], Ct);
+        (await ListAsync(new PageRequest())).ShouldBe(created[1..]);
+        await store.Sessions.AddPeersAsync("ws", "s", Members("p-zulu"), Ct);
+        (await ListAsync(new PageRequest())).ShouldBe(created);
+    }
+
+    [Fact]
+    public async Task ListSessionsForPeer_FrozenClock_UsesSessionCreationOrderNotJoinOrder()
+    {
+        var store = new InMemoryMemoryStore(new FakeTimeProvider(Start));
+        await store.Workspaces.GetOrCreateAsync("ws", null, null, Ct);
+        string[] created = ["s-zulu", "s-alpha", "s-mike", "s-bravo"];
+        foreach (var name in created)
+        {
+            await store.Sessions.GetOrCreateAsync("ws", name, null, null, null, Ct);
+        }
+
+        foreach (var name in new[] { "s-mike", "s-bravo", "s-zulu" })
+        {
+            await store.Sessions.AddPeersAsync("ws", name, Members("alice"), Ct);
+        }
+
+        async Task<string[]> ListAsync(PageRequest page) =>
+            [.. (await store.Peers.ListSessionsForPeerAsync("ws", "alice", null, page, Ct)).Items.Select(s => s.Name)];
+
+        string[] expected = ["s-zulu", "s-mike", "s-bravo"];
+        (await ListAsync(new PageRequest())).ShouldBe(expected);
+        (await ListAsync(new PageRequest(1, 50, true))).ShouldBe(expected.Reverse());
+
+        // Leaving and rejoining keeps the session's place.
+        await store.Sessions.RemovePeersAsync("ws", "s-zulu", ["alice"], Ct);
+        (await ListAsync(new PageRequest())).ShouldBe(expected[1..]);
+        await store.Sessions.AddPeersAsync("ws", "s-zulu", Members("alice"), Ct);
+        (await ListAsync(new PageRequest())).ShouldBe(expected);
+    }
+
+    // ---------------------------------------------------------------- paging, numbers, idempotency keys
+
+    [Fact]
+    public async Task Paging_ReportsCeilingPageCount_AndZeroPagesWhenEmpty()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+
+        var empty = await store.Messages.ListAsync("ws", "s", null, new PageRequest(1, 2), Ct);
+        empty.Items.ShouldBeEmpty();
+        empty.Total.ShouldBe(0);
+        empty.Pages.ShouldBe(0);
+        empty.PageNumber.ShouldBe(1);
+        empty.Size.ShouldBe(2);
+        (await store.Peers.ListAsync("ws", PeerKind.All, null, new PageRequest(3, 7), Ct)).Pages.ShouldBe(0);
+
+        await store.Messages.AppendAsync("ws", "s", [.. Enumerable.Range(0, 5).Select(i => Msg("alice", $"m{i}"))], null, Ct);
+
+        var last = await store.Messages.ListAsync("ws", "s", null, new PageRequest(3, 2), Ct);
+        last.Items.Select(m => m.Content).ShouldBe(["m4"]);
+        (last.Total, last.Pages).ShouldBe((5L, 3));
+        var beyond = await store.Messages.ListAsync("ws", "s", null, new PageRequest(4, 2), Ct);
+        beyond.Items.ShouldBeEmpty();
+        (beyond.Total, beyond.Pages, beyond.PageNumber).ShouldBe((5L, 3, 4));
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(1, 5), Ct)).Pages.ShouldBe(1);
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(1, 4), Ct)).Pages.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task MetadataNumbers_CompareByExactValue_NotThroughDouble()
+    {
+        // FilterOp remarks: "Numbers compare by numeric value". These two values differ, yet are the same double.
+        const string Precise = "0.1000000000000000055511151231258";
+        ((double)decimal.Parse(Precise, System.Globalization.CultureInfo.InvariantCulture)).ShouldBe(0.1);
+        var store = new InMemoryMemoryStore(TimeProvider.System);
+        await store.Workspaces.GetOrCreateAsync("ws", null, null, Ct);
+        await store.Peers.GetOrCreateAsync("ws", "precise", (JsonObject)JsonNode.Parse($$"""{"n":{{Precise}}}""")!, null, Ct);
+        await store.Peers.GetOrCreateAsync("ws", "tenth", (JsonObject)JsonNode.Parse("""{"n":0.1}""")!, null, Ct);
+
+        async Task<string[]> MatchAsync(string filter) =>
+            [.. (await store.Peers.ListAsync("ws", PeerKind.All, FilterParser.Parse(filter, ResourceKind.Peer), new PageRequest(), Ct))
+                .Items.Select(p => p.Name)];
+
+        (await MatchAsync("""{"metadata":{"n":0.1}}""")).ShouldBe(["tenth"]);
+        (await MatchAsync("{\"metadata\":{\"n\":" + Precise + "}}")).ShouldBe(["precise"]);
+        (await MatchAsync("""{"metadata":{"n":{"gt":0.1}}}""")).ShouldBe(["precise"]);
+        (await MatchAsync("{\"metadata\":{\"n\":{\"lt\":" + Precise + "}}}")).ShouldBe(["tenth"]);
+    }
+
+    [Fact]
+    public async Task IdempotencyKeys_AreCaseSensitive()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        static IdempotencyWrite Write(string key, char hash) =>
+            new(key, new string(hash, 64), 201, messages => messages[0].Content, TimeSpan.FromMinutes(1));
+
+        await store.Messages.AppendAsync("ws", "s", [Msg("alice", "upper")], Write("Key", 'a'), Ct);
+        await store.Messages.AppendAsync("ws", "s", [Msg("alice", "lower")], Write("key", 'b'), Ct);
+
+        (await store.Idempotency.TryGetAsync("ws", "Key", Ct))!.RequestHash.ShouldBe(new string('a', 64));
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct))!.RequestHash.ShouldBe(new string('b', 64));
+        (await store.Idempotency.TryGetAsync("ws", "KEY", Ct)).ShouldBeNull();
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(2);
+        await Should.ThrowAsync<IdempotencyDuplicateException>(
+            () => store.Messages.AppendAsync("ws", "s", [Msg("alice", "again")], Write("key", 'c'), Ct));
     }
 }

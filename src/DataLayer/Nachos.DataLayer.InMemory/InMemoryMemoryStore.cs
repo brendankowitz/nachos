@@ -8,9 +8,21 @@ namespace Nachos.DataLayer.InMemory;
 /// A non-durable <see cref="IMemoryStore"/> that keeps everything in process memory, for development and tests.
 /// </summary>
 /// <remarks>
+/// <para>
 /// One instance, and each of its sub-stores, is safe for concurrent use. Instances share nothing: each starts empty.
 /// Every time value comes from the <see cref="TimeProvider"/> given at construction, except a message's caller-supplied
 /// <c>CreatedAt</c>.
+/// </para>
+/// <para>
+/// JSON is stored canonically (as if parsed from a request), so C#-built values such as a <see cref="Guid"/> are
+/// stored and returned as JSON strings; a value with no JSON form (NaN, Infinity) is rejected with
+/// <see cref="Abstractions.NachosValidationException"/>.
+/// </para>
+/// <para>
+/// An <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback must not call this store: it runs
+/// inside the append's critical section, and an append whose staged state it changed fails with
+/// <see cref="InvalidOperationException"/> without storing anything.
+/// </para>
 /// </remarks>
 public sealed partial class InMemoryMemoryStore : IMemoryStore
 {

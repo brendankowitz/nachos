@@ -15,8 +15,8 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
         StoreTask.Run(
             () =>
             {
-                var ownedMetadata = JsonCopy.Own(metadata);
-                var ownedConfiguration = JsonCopy.Own(configuration);
+                var ownedMetadata = JsonCopy.Own(metadata, "metadata");
+                var ownedConfiguration = JsonCopy.Own(configuration, "configuration");
                 lock (state.Gate)
                 {
                     if (!state.Workspaces.TryGetValue(name, out var entry))
@@ -48,8 +48,8 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
         StoreTask.Run(
             () =>
             {
-                var newMetadata = JsonCopy.OwnOptional(metadata);
-                var newConfiguration = JsonCopy.OwnOptional(configuration);
+                var newMetadata = JsonCopy.OwnOptional(metadata, "metadata");
+                var newConfiguration = JsonCopy.OwnOptional(configuration, "configuration");
                 lock (state.Gate)
                 {
                     var entry = state.Workspaces.GetValueOrDefault(name)
