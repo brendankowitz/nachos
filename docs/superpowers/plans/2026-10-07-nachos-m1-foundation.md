@@ -73,7 +73,7 @@ Parallel tracks after Task 2:
 **Three agents (Cortado, Cedar, Salsa).** Each agent owns exactly the files in its tasks' **Files** lists. Shared files are assigned as follows:
 - `Directory.Packages.props` and `Nachos.slnx`: owned by Cortado. Other agents request additions in a PR comment, and Cortado applies them within one heartbeat.
 - Abstractions: additions requested the same way.
-- **Fallback:** if Cortado's last heartbeat is more than 30 minutes old, the requester may append its own `PackageVersion` entry or project reference, announce it on the PR, and continue. Cortado reconciles later.
+- **No timeout takeover.** Another agent edits these shared files only after an **explicit, acknowledged, scoped handoff** from Cortado on the PR, naming the file and the change. If Cortado is unresponsive, the protocol's SYNC/escalation ladder (issue #2) applies. Heartbeat lapses never grant edit rights.
 - **Project-file ownership.** Task 1 creates every project. After that, each `.csproj`/`.sqlproj` belongs to the agent that owns the task building it, and that owner adds its own package references, project references, and build settings (for example the build-time OpenAPI settings in `Nachos.Api.csproj`):
   - **Cortado:** `Nachos.Abstractions`, `Nachos.ServiceDefaults`, `Nachos.DataLayer.SqlServer`, both `.sqlproj` projects, `Nachos.Cli`, `Nachos.AppHost`, `test/Nachos.Testing`, `Nachos.Abstractions.Tests`, `Nachos.Architecture.Tests`, `Nachos.DataLayer.SqlServer.Tests`, `Nachos.Cli.Tests`, `Nachos.AppHost.Tests`.
   - **Cedar:** `Nachos.Core`, `Nachos.Hosting`, `Nachos.Api`, `Nachos.Core.Tests`, `Nachos.Api.Tests`, `Nachos.LicenseCheck.Tests`, `eng/DocsGen`.
@@ -83,6 +83,10 @@ Parallel tracks after Task 2:
 **Validation:**
 - **Cedar** is the full-set validation owner.
 - **Cortado and Salsa** (both with Docker) each run the Docker-backed suites for their own tasks, and cross-run each other's at the final SHA.
+- **Host matrix (no test is waived or silently skipped):**
+  - **Portable suites** (no Docker) run on every agent's host: `Nachos.Architecture.Tests`, `Nachos.Abstractions.Tests`, `Nachos.Core.Tests`, `Nachos.DataLayer.InMemory.Tests`, `Nachos.Api.Tests`, `Nachos.Client.Tests`, `Nachos.Infra.Tests`, `Nachos.LicenseCheck.Tests`, the DocsGen tests, the docs validator, and in-memory conformance.
+  - **Docker-backed suites** run on Docker-capable hosts (Cortado; Salsa once it has proven Testcontainers/Ryuk works with a real run) and in CI: `Nachos.DataLayer.SqlServer.Tests`, `Nachos.Cli.Tests`, `Nachos.AppHost.Tests`, the SQL-mode API/idempotency runs (`NACHOS_TEST_PROVIDER=sql`), and the FTS image check.
+  - **Aggregation:** Cedar posts the **complete** same-SHA set: its own portable run, the Docker-backed results posted by Cortado/Salsa at that SHA, and the CI run IDs. A suite missing from every source blocks merge.
 
 **Merge gate:** every agent that owns files in the M1 PR posts LGTM at the same head SHA.
 
@@ -667,7 +671,7 @@ These are the input classes most likely to bite users. Each line names the test 
 The M1 PR merges when all of these hold:
 
 - [ ] All 18 tasks are committed, each with its tests.
-- [ ] `dotnet test` (all projects) is green locally for every agent at the final SHA. Cortado and Salsa post the Docker suite results with the SHA. Cedar posts the full validation set.
+- [ ] At the final SHA, every agent's **portable** suites are green on its own host. The **Docker-backed** suites are green on at least one Docker-capable agent host and in CI. Cedar posts the complete aggregated set (host matrix above), with run IDs.
 - [ ] CI jobs `build-test`, `sql-integration`, `schema`, `licenses`, `infra`, `docs-validate`, `docs-site` (build), and `conformance` are green at the final SHA.
 - [ ] `ConcurrentSameKey_OneInsert` and the store concurrency tests have been looped 20 times on SQL (Cortado or Salsa).
 - [ ] Cortado, Cedar, and Salsa each post LGTM at the same SHA.
