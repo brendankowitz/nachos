@@ -75,6 +75,7 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
 4. **Wire names** (route paths, JSON field names, JWT claim names, header names) are interface facts. Nachos matches them for compatibility.
 5. The upstream SDKs and MCP server are used **only as external test clients**. They are installed from npm or PyPI in the conformance pipeline and are never vendored.
 6. The research appendix cites Honcho source lines as **behavioral evidence** for the spec author. It is not implementation guidance.
+7. **Third-party dependencies** must have MIT-compatible permissive licenses: MIT, Apache-2.0, BSD, or MS-PL. No GPL, AGPL, or LGPL. Apache-2.0 packages (for example PdfPig) are listed in `THIRD-PARTY-NOTICES.md`, and CI checks licenses via NuGet/npm metadata.
 
 ---
 
@@ -98,7 +99,7 @@ Legend for the **M** column: milestone in §20. Δ marks an intentional deviatio
 | Session summaries (short and long) | Δ First-class `SessionSummaries` table (Honcho stores them in session internal metadata). Each row records coverage message ID and token count. | M3 |
 | Named scopes (`scope.<name>` hidden observer peers) | Δ First-class `Scopes` + `ScopeSessions`, with an internal observer peer kept for the shared observer/observed mechanics. Same wire contract. | M6 |
 | Session clone (optionally up to a message) | Transactional clone service. Copies messages, memberships, metadata, and config. Does **not** copy conclusions or summaries, matching upstream. | M6 |
-| File upload → messages (PDF/text/JSON, 5 MiB) | Multipart endpoint. PdfPig for PDF text. Token-bounded chunking. | M6 |
+| File upload → messages (PDF/text/JSON, 5 MiB) | Multipart endpoint. PdfPig (`UglyToad.PdfPig`, **Apache-2.0**) for PDF text. Token-bounded chunking. | M6 |
 | Deletion: session/workspace queued (202); conclusion tombstone (204) | Durable deletion jobs with explicit status (§13). | M3 |
 
 ### 4.2 Memory, reasoning, retrieval
@@ -847,7 +848,13 @@ Bicep in `infra/` (modules like Ignixa's `deploy/azure/modules`) provisions:
 
 Hooks:
 
-- `postprovision`: create the SQL contained user for the MI, run `nachos schema upgrade` (auto-safe only), and generate the bootstrap admin key into Key Vault.
+- `postprovision`:
+  - Create the SQL contained user for the MI **without a Microsoft Graph lookup**: `CREATE USER [<mi-name>] WITH SID = <clientId as binary>, TYPE = E`, then grant the least-privilege roles.
+    - This avoids the requirement for the SQL server identity to hold the Entra **Directory Readers** role, which `FROM EXTERNAL PROVIDER` needs.
+    - The hook runs as the Entra admin set by Bicep (the deploying principal).
+    - M1 verifies the syntax on a real Azure SQL database. The documented fallback is to assign Directory Readers to the server identity and use `FROM EXTERNAL PROVIDER`.
+  - Run `nachos schema upgrade` (auto-safe only).
+  - Generate the bootstrap admin key into Key Vault.
 - `postdeploy`: smoke `GET /health/ready`.
 
 **Scale-to-zero gate (opt-in, `workerMinReplicas = 0`).** Bicep rejects this setting unless **both** conditions hold:
