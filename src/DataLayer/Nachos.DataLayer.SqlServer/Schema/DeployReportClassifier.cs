@@ -11,7 +11,7 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// Fails closed. A report is <see cref="DeployClassification.AutoSafe"/> only when it has no <c>Alert</c> elements
 /// and every <c>Operation</c>/<c>Item</c> pair is on the allowlist below. The report format, as DacFx 170 writes it:
 /// <c>DeploymentReport/Alerts/Alert[@Name]</c> (<c>DataIssue</c>, <c>DataMotion</c>) and
-/// <c>DeploymentReport/Operations/Operation[@Name]/Item[@Value,@Type]</c>, with operation names
+/// <c>DeploymentReport/Operations/Operation[@Name]/Item[@Value,@Type]</c> (the <c>Operations</c> element is omitted when there is nothing to do), with operation names
 /// <c>Create</c>, <c>Alter</c>, <c>Drop</c> and <c>TableRebuild</c>.
 /// Adding a column to an existing table is reported as <c>Alter</c> of the <c>SqlTable</c>, which is
 /// indistinguishable from a column type or nullability change, so it is not auto-safe.
@@ -48,15 +48,14 @@ public static class DeployReportClassifier
 
         var root = document.Root;
         if (root is null || root.Name != Report + "DeploymentReport" ||
-            root.Element(Report + "Alerts") is not { } alerts ||
-            root.Element(Report + "Operations") is not { } operations)
+            root.Element(Report + "Alerts") is not { } alerts)
         {
             return DeployClassification.Unclassifiable;
         }
 
         var verdict = alerts.Elements(Report + "Alert").Any() ? DeployClassification.Unsafe : DeployClassification.AutoSafe;
 
-        foreach (var operation in operations.Elements(Report + "Operation"))
+        foreach (var operation in root.Elements(Report + "Operations").Elements(Report + "Operation"))
         {
             if (operation.Attribute("Name")?.Value is not { } name)
             {

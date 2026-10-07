@@ -17,7 +17,9 @@ CREATE TABLE [dbo].[Sessions]
     CONSTRAINT [UQ_Sessions_Workspace_Name] UNIQUE NONCLUSTERED ([WorkspaceId], [Name]),
     -- Alternate key: lets child tables use a composite FK that carries WorkspaceId.
     CONSTRAINT [UQ_Sessions_Workspace_Id] UNIQUE NONCLUSTERED ([WorkspaceId], [Id]),
-    CONSTRAINT [CK_Sessions_LifecycleState] CHECK ([LifecycleState] IN (0, 1, 2))
+    -- Written in the form SQL Server stores (sys.check_constraints.definition): an IN list is normalized to a reversed
+    -- OR chain, and DacFx would otherwise report a drop+create of this constraint on every deploy.
+    CONSTRAINT [CK_Sessions_LifecycleState] CHECK (([LifecycleState]=(2) OR [LifecycleState]=(1) OR [LifecycleState]=(0)))
 );
 GO
 

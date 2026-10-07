@@ -23,6 +23,13 @@ public sealed class DeployReportClassifierTests
     }
 
     [Fact]
+    public void NoChanges_ReportWithoutOperationsElement_IsAutoSafe()
+    {
+        // DacFx omits <Operations> entirely when the database already matches the model.
+        DeployReportClassifier.Classify(Fixture("report-no-changes.xml")).ShouldBe(DeployClassification.AutoSafe);
+    }
+
+    [Fact]
     public void NoOperationsNoAlerts_IsAutoSafe()
     {
         const string xml = """<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02"><Alerts /><Operations /></DeploymentReport>""";

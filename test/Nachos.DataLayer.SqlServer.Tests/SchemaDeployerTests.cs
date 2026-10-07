@@ -61,6 +61,20 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
     }
 
     [Fact]
+    public async Task RedeployCurrentModel_ReportHasNoOperations()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+
+        var report = await Deployer(connectionString).ReportAsync(default);
+
+        // Any operation here is drift: DacFx sees a difference between the model and what it just deployed
+        // (for example a constraint written in a form SQL Server normalizes differently).
+        System.Xml.Linq.XDocument.Parse(report.ReportXml).Descendants().Where(e => e.Name.LocalName == "Operation")
+            .Select(e => e.ToString()).ShouldBeEmpty();
+        report.Classification.ShouldBe(DeployClassification.AutoSafe);
+    }
+
+    [Fact]
     public async Task Deploy_SetsReadCommittedSnapshotOn()
     {
         var connectionString = await DeployedDatabaseAsync();

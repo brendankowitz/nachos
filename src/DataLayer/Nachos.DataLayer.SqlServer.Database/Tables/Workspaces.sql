@@ -12,5 +12,7 @@ CREATE TABLE [dbo].[Workspaces]
 
     CONSTRAINT [PK_Workspaces] PRIMARY KEY CLUSTERED ([Id]),
     CONSTRAINT [UQ_Workspaces_Name] UNIQUE NONCLUSTERED ([Name]),
-    CONSTRAINT [CK_Workspaces_LifecycleState] CHECK ([LifecycleState] IN (0, 1, 2))
+    -- Written in the form SQL Server stores (sys.check_constraints.definition): an IN list is normalized to a reversed
+    -- OR chain, and DacFx would otherwise report a drop+create of this constraint on every deploy.
+    CONSTRAINT [CK_Workspaces_LifecycleState] CHECK (([LifecycleState]=(2) OR [LifecycleState]=(1) OR [LifecycleState]=(0)))
 );
