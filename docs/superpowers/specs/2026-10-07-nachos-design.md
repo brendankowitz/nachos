@@ -256,9 +256,9 @@ All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped throu
 
 | Table | Key columns / notes |
 |---|---|
-| `Workspaces` | `Name` unique, `Metadata`, `InternalMetadata`, `Configuration`, `CreatedAt` |
+| `Workspaces` | `Name` unique, `LifecycleState`, `DeletionJobId NULL`, `Metadata`, `InternalMetadata`, `Configuration`, `CreatedAt` |
 | `Peers` | `(WorkspaceId, Name)` unique, `Metadata`, `InternalMetadata`, `Configuration`, `IsInternal` (scope observers) |
-| `Sessions` | `(WorkspaceId, Name)` unique, `IsActive`, `NextMessageSeq`, `Metadata`, `InternalMetadata`, `Configuration` |
+| `Sessions` | `(WorkspaceId, Name)` unique, `LifecycleState` (`Active`/`Inactive`/`Deleting`; wire `is_active` derived), `DeletionJobId NULL`, `NextMessageSeq`, `Metadata`, `InternalMetadata`, `Configuration` |
 | `SessionPeers` | `(WorkspaceId, SessionId, PeerId)`, `Configuration`, `JoinedAt`, `LeftAt` |
 | `Messages` | `PublicId` unique, `SessionId`, `PeerId`, `Seq` (unique per session), `Content nvarchar(max)`, `TokenCount`, `Metadata`, `InternalMetadata`, `CreatedAt`; full-text index on `Content` |
 | `MessageEmbeddings` | `MessageId`, `ChunkIndex`, `Content`, `Embedding VECTOR(@dims)`, `SyncState` (`Pending`/`Synced`/`Failed`), `Attempts` |
@@ -672,12 +672,47 @@ Prompts are Markdown templates with typed placeholders, stored as embedded resou
 
 | Operation | Behavior |
 |---|---|
-| `DELETE S` | Marks the session inactive and returns 202. A deletion job removes messages, embeddings, summaries, and session-attributed conclusions. Cross-session derived conclusions remain unless they become **unsupported** (all of their sources deleted). Then they are tombstoned, and a `card_refresh` dream is enqueued. |
-| `DELETE W` | Returns 409 while active sessions exist. Otherwise returns 202 and a job cascades the delete. |
+| `DELETE S` | Sets the session to `Deleting` (§13.1), so the wire shows `is_active = false`, and returns 202. A deletion job removes messages, embeddings, summaries, and session-attributed conclusions. Cross-session derived conclusions remain unless they become **unsupported** (all of their sources deleted). Then they are tombstoned, and a `card_refresh` dream is enqueued. |
+| `DELETE W` | Returns 409 while active sessions exist. Otherwise it sets the workspace to `Deleting` (§13.1), returns 202, and a job cascades the delete. |
 | `DELETE C/{id}` | Tombstones the conclusion immediately (hidden from all reads) and returns 204. The reconciler hard-deletes it later. |
 | Scope session removal | Tombstones the copied explicit facts and dependent derived conclusions, then enqueues a card rebuild and a reconsolidation dream. |
 
 Documentation states the guarantees plainly: a 202 means "accepted", and job status is available via `W/jobs`.
+
+### 13.1 Deletion write barrier (normative)
+
+`Workspaces` and `Sessions` carry `LifecycleState` (`Active`, `Inactive`, `Deleting`) and `DeletionJobId`. Honcho's wire `is_active` is derived from it: it is `true` only for `Active`.
+
+**Acceptance.** In one transaction:
+
+1. Read the target row `WITH (UPDLOCK, HOLDLOCK)`.
+2. For workspaces, verify there are no `Active` sessions.
+3. Set `LifecycleState = Deleting`.
+4. Enqueue the deletion job.
+
+A repeated `DELETE` on a `Deleting` resource is idempotent. It returns 202 with the existing job and enqueues nothing new.
+
+**Write admission.** Every API write reads its parent lifecycle rows `WITH (HOLDLOCK, READCOMMITTEDLOCK)` in its own transaction, so writers share locks with each other but conflict with acceptance. If any parent is `Deleting`, the write is rejected with `409 {"detail": "<resource> is being deleted"}`. This covers:
+
+- message append and upload;
+- session update, including reactivation;
+- membership changes;
+- conclusion create;
+- get-or-create of a session or peer whose parent workspace is `Deleting`;
+- get-or-create of the deleting session's own name.
+
+**Worker commits.** Every handler persistence transaction re-checks lifecycle state the same way, alongside its fencing-token check. A result for a `Deleting` resource is discarded, and its work item completes as `Succeeded` with reason `resource_deleted`, so late derivation cannot recreate erased conclusions.
+
+**The deletion job:**
+
+1. Deletes pending `WorkItems` for the resource.
+2. Bumps the `FencingToken` of any active lease on its work units, so in-flight handlers fail their fencing check.
+3. Cascades the deletes in bounded batches.
+4. Finally removes the row, after which the name can be reused.
+
+The job is idempotent and retried with backoff. A dead-lettered deletion leaves the resource in `Deleting`, so writes stay blocked, and is surfaced in `W/jobs` and metrics.
+
+**Required tests** (§17, item 2): race acceptance against message append and reactivation, workspace child creation, and late worker persistence; repeated `DELETE`; and job retry after a crash mid-cascade.
 
 ---
 
@@ -750,7 +785,7 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
 2. **Integration** (`Nachos.DataLayer.SqlServer.Tests`):
    - Testcontainers with a SQL Server 2025 image that includes full-text search.
    - Deploys the **Sql2025 dacpac** via `SchemaDeployer` (no `AllowIncompatiblePlatform`; §7.3).
-   - Covers queue claim, lease, and fencing under contention **with `READ_COMMITTED_SNAPSHOT ON`**, including expiry/reclaim races (never two owners; looped 20+ times under parallel load); seq allocation; `VECTOR_DISTANCE` queries; FTS and its fallback; the schema deployer's auto-safe classifier; and deletion cascades.
+   - Covers queue claim, lease, and fencing under contention **with `READ_COMMITTED_SNAPSHOT ON`**, including expiry/reclaim races (never two owners; looped 20+ times under parallel load); seq allocation; `VECTOR_DISTANCE` queries; FTS and its fallback; the schema deployer's auto-safe classifier; and deletion cascades, including the §13.1 write-barrier races.
    - Includes an **ordering/deadlock test** with parallel workers.
 3. **API and conformance:**
    - `WebApplicationFactory` golden HTTP fixtures, plus the OpenAPI diff check.
