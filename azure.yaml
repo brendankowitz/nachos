@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+# Deploying with this file is owner-gated (spec 18.3): agents and CI only validate it offline.
+name: nachos
+
+services:
+  api:
+    project: ./src/Nachos.Api
+    language: dotnet
+    host: containerapp
+
+hooks:
+  postprovision:
+    windows:
+      shell: pwsh
+      run: ./infra/hooks/postprovision.ps1
+      interactive: false
+      continueOnError: false
+    posix:
+      shell: sh
+      run: ./infra/hooks/postprovision.sh
+      interactive: false
+      continueOnError: false
+  postdeploy:
+    windows:
+      shell: pwsh
+      run: ./infra/hooks/postdeploy.ps1
+      interactive: false
+      continueOnError: false
+    posix:
+      shell: sh
+      run: ./infra/hooks/postdeploy.sh
+      interactive: false
+      continueOnError: false
