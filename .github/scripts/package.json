@@ -18,5 +18,13 @@
     "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
     "unified": "11.0.5"
+  },
+  "overrides": {
+    "mermaid@12.0.0": {
+      "katex": "0.18.2",
+      "chevrotain@11.1.2": {
+        "lodash-es": "4.18.1"
+      }
+    }
   }
 }

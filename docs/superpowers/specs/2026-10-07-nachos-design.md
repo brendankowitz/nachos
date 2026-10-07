@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Proposed (draft for review) |
 | **Date** | 2026-10-07 |
-| **Reference system** | [plastic-labs/honcho](https://github.com/plastic-labs/honcho) v3 API (server `3.2.2`, `main` @ `e8d8b4a`) |
+| **Reference system** | [plastic-labs/honcho](https://github.com/plastic-labs/honcho) v3 API. Research baseline: server `3.2.2`, `main` @ `e8d8b4a`. **Wire-conformance pin:** the public OpenAPI `3.3.0` (see R4). |
 | **Cross-check** | [`research/2026-10-07-honcho-feature-map-astra.md`](research/2026-10-07-honcho-feature-map-astra.md), an independent mapping by a GPT-6 Astra research agent |
 | **License** | MIT (clean-room; see §3) |
 
@@ -269,7 +269,7 @@ Providers register through `NachosBuilder.UseSqlServer(...)` and `UseInMemory()`
 
 ### 7.2 Schema (SQL Server; `Nachos.DataLayer.SqlServer.Database`)
 
-All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped through `WorkspaceId` and have a unique `(WorkspaceId, Name)` or public ID. Child tables carry composite FKs that include `WorkspaceId`, so cross-workspace references are structurally impossible (this keeps Honcho's guarantee). JSON columns use the native `json` type.
+All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped through `WorkspaceId` and have a unique `(WorkspaceId, Name)` or public ID. Child tables carry composite FKs that include `WorkspaceId`, so cross-workspace references are structurally impossible (this keeps Honcho's guarantee). JSON columns use the native `json` type. **Identifiers are case-sensitive:** every `Name`, `PublicId`, and key column uses `COLLATE Latin1_General_100_BIN2_UTF8`, so `alice` and `Alice` are different peers, matching Honcho's behavior.
 
 | Table | Key columns / notes |
 |---|---|
@@ -312,7 +312,7 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
   - **Empty DB:** deploy the dacpac and stamp `SchemaVersion`.
   - **Behind current version:** generate a DeployReport and classify it as `AutoSafe`, `Unsafe`, or `Unclassifiable`. Apply only `AutoSafe` changes, and only with `BlockOnPossibleDataLoss = true`. Everything else fails closed with a message pointing to `nachos schema upgrade`.
   - The check runs on first data access, not at startup.
-- **CI:** build **both** dacpacs and publish a `sqlpackage /Action:DeployReport` artifact for each. CI never runs `Publish` unattended.
+- **CI:** build **both** dacpacs and publish both as artifacts. CI publishes a `sqlpackage /Action:DeployReport` for the **Sql2025** dacpac against an empty SQL Server 2025 service container. An Azure dacpac DeployReport needs a real Azure SQL target, which is an owner-gated action (§18.3), and `AllowIncompatiblePlatform` is banned. So the Azure report is produced by `nachos schema report` during owner-approved runs. CI never runs `Publish` unattended.
 - **azd:** a `postprovision` hook runs `nachos schema upgrade --report-only` and then applies the change only if it is auto-safe. Otherwise the hook stops and prints the report.
 - Test containers (SQL Server 2025) deploy the **Sql2025 dacpac** through the same `SchemaDeployer` code path that self-hosted production uses. `AllowIncompatiblePlatform` is never set, in tests or production.
 
@@ -378,10 +378,10 @@ Key defaults (parity values):
     - the **canonical target**: the route template plus resolved route values, for example `POST /v3/workspaces/{w}/sessions/{s}/messages` with `w` and `s`;
     - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
     The same body sent to a different session or endpoint therefore never matches.
-  - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal 401/403, never the stored response.
+  - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal `401` (§9.2), never the stored response.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
-- OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. A snapshot test diffs it against the pinned Honcho `openapi.json` and checks the diff against an allowlist of known deviations.
+- OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.
 
 ### 9.2 Authentication and authorization
 
@@ -399,7 +399,7 @@ Key defaults (parity values):
   - `Nachos.Workspace` grants workspace access via `PrincipalGrants` rows (`ObjectId` → workspace(s)). These rows are managed by `nachos grants` and `POST /v3/admin/grants` (admin, Nachos extension).
 - Entra identities never map to peer or session scope implicitly.
 
-Both schemes produce a single `NachosPrincipal` (`IsAdmin`, `Workspace?`, `Peer?`, `Session?`). **One** `IAuthorizationHandler` evaluates route requirements, so policies are declared per route (`RequireWorkspace("workspace_id")`, `AllowMemberRead()`, and so on). `Auth:Enabled = false` is allowed only in Development.
+Both schemes produce a single `NachosPrincipal` (`IsAdmin`, `Workspaces`, `Peer?`, `Session?`). **One** `IAuthorizationHandler` evaluates route requirements, so policies are declared per route (`RequireWorkspace("workspace_id")`, `AllowMemberRead()`, and so on). `Auth:Enabled = false` is allowed only in Development. **Every authentication or authorization failure, including scope mismatch, returns `401 {"detail": …}`**, matching Honcho's documented behavior.
 
 ### 9.3 Routes
 
@@ -976,7 +976,7 @@ Until both hold, the worker stays at `minReplicas = 1`.
 | R1 | Exact vector search (the baseline on both platforms) may be slow for large workspace-wide message search. ANN has hard prerequisites: an `int` clustered PK, ≥ 100 rows, and no dacpac deployment. | Search is always pre-filtered (collection/session/time). Cap candidate rows. Benchmark exact search at 1M messages/workspace in M3. The ANN side-table design in §7.4 ships in M7 only if it meets the recall@k threshold. |
 | R2 | SQL Server Linux containers lack FTS by default. | Custom dev/test image with `mssql-server-fts` plus the `LIKE` fallback. Azure SQL has FTS. |
 | R3 | Clean-room prompts may underperform Honcho's tuned prompts. | Eval harness from M4. Prompt versions are tracked and iterated. |
-| R4 | Wire-compatibility drift as Honcho `main` evolves. | Pin to `v3.2.2`/`e8d8b4a` for conformance. A scheduled job diffs upstream OpenAPI and reports changes. |
+| R4 | Wire-compatibility drift as Honcho evolves. | Conformance pins the **public** OpenAPI document `https://docs.honcho.dev/v3/openapi.json` (version 3.3.0, raw-bytes SHA-256 `6aa5dd7f…2e3fe9`). Only a Nachos-generated manifest of interface facts, `test/contracts/honcho-v3-wire.json`, is committed; the raw document never is (§3). Re-pinning is a deliberate commit that regenerates the manifest. A scheduled job may report upstream drift, but it never re-pins automatically. |
 | R5 | Tokenizer differences (.NET vs tiktoken) affect budgets and batching. | Use `Microsoft.ML.Tokenizers` Tiktoken encodings (same BPE tables). Run a corpus comparison test in M2. |
 | R6 | Azure OpenAI model availability and quota differ by region. | Model/deployment names are Bicep parameters. Fallback profiles. Quota preflight in `azd` hook. |
 | R7 | The KEDA `mssql` scaler needs a database identity. Upstream KEDA documents workload identity for mssql from 2.20+, but that does not prove Azure Container Apps exposes this version or auth path. | **Deployment-verification gate in M2.** If ACA supports managed identity for the mssql scale rule, use it. Otherwise scale on CPU with `minReplicas = 1`. **No SQL-login fallback**: the database is Entra-only (§18.2). |
