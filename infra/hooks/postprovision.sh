@@ -107,6 +107,16 @@ if [[ ! "$mi_name" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
   exit 1
 fi
 
+# A user left over from an earlier identity with the same name keeps its old SID, so the new identity could not
+# sign in while the script below would skip it as "already there". Fail loudly instead of continuing.
+existing_sid="$(sqlcmd "${sqlcmd_args[@]}" -h -1 -W \
+  -Q "SET NOCOUNT ON; SELECT CONVERT(varchar(34), sid, 1) FROM sys.database_principals WHERE name = N'$mi_name'" |
+  tr -d '[:space:]')"
+if [[ -n "$existing_sid" && "$existing_sid" != "$sid" ]]; then
+  echo "postprovision: database user '$mi_name' exists with SID $existing_sid, not the expected $sid: the managed identity was recreated. An admin must drop the stale user ([$mi_name]) before re-running." >&2
+  exit 1
+fi
+
 user_script="$work_dir/create-user.sql"
 {
   echo "SET NOCOUNT ON;"
@@ -175,9 +185,9 @@ fi
 raw_admin_file="$work_dir/admin-key.raw"
 admin_file="$work_dir/admin-key"
 # --no-launch-profile: a launch profile makes the CLI host print a banner on stdout, which would be captured
-# along with the key.
+# along with the key. --kid 0: the key is signed with ring entry 0, i.e. nachos-signing-key-0.
 NACHOS_SIGNING_SECRET="$(<"$signing_file")" \
-  dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- keys create --admin --signing-secret-env NACHOS_SIGNING_SECRET >"$raw_admin_file"
+  dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- keys create --admin --kid 0 --signing-secret-env NACHOS_SIGNING_SECRET >"$raw_admin_file"
 minted="$(<"$raw_admin_file")"
 minted="${minted#"${minted%%[![:space:]]*}"}"
 minted="${minted%"${minted##*[![:space:]]}"}"

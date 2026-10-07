@@ -26,6 +26,15 @@ param apiExists bool
 @description('Azure OpenAI endpoint. Empty in M1 (no AI resources yet).')
 param openAiEndpoint string = ''
 
+// Image of the very first revision, until `azd deploy` replaces it. mendhak/http-https-echo (MIT) listens on 8080
+// and answers 200 on every path, so the always-on /health probes pass from revision 1 and azd copies them onto the
+// first real revision. It is third-party code running in an app that carries the managed identity (Key Vault and
+// SQL access) and echoes request headers to callers until the first deploy: hence the digest pin (a tag can be
+// re-pushed) and an owner-visible exposure window. Overridable (NACHOS_PLACEHOLDER_IMAGE) if GHCR is unreachable.
+// To replace it, keep a digest-only reference and re-run the Placeholder_Answers_ProbePaths test.
+@description('Digest-pinned placeholder image for the first revision (answers 200 on /health/live and /health/ready on 8080).')
+param placeholderImage string = 'ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4'
+
 var tags = { 'azd-env-name': environmentName }
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
 var sqlDatabaseName = 'nachos'
@@ -123,6 +132,7 @@ module apiApp 'modules/api-app.bicep' = {
     sqlDatabaseName: sql.outputs.databaseName
     openAiEndpoint: openAiEndpoint
     apiExists: apiExists
+    containerImage: placeholderImage
   }
 }
 

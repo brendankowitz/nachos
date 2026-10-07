@@ -35,6 +35,16 @@ resource server 'Microsoft.Sql/servers@2025-01-01' = {
   }
 }
 
+// The administrators block only applies Entra-only auth at creation; this child re-asserts it on every
+// provision, so a manual switch back to SQL auth is undone.
+resource entraOnly 'Microsoft.Sql/servers/azureADOnlyAuthentications@2025-01-01' = {
+  parent: server
+  name: 'Default'
+  properties: {
+    azureADOnlyAuthentication: true
+  }
+}
+
 // M1 trade-off: the server keeps a public endpoint (Entra-only auth, TLS 1.2) and this rule admits
 // Azure services, which is how Container Apps reaches it. Private networking is out of scope for M1.
 resource allowAzureServices 'Microsoft.Sql/servers/firewallRules@2025-01-01' = {

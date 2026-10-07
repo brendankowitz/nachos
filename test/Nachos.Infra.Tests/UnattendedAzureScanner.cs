@@ -7,8 +7,9 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 
 /// <summary>
 /// Spec §18.3: nothing that touches Azure may run unattended. Scans <c>.github/workflows/**</c>,
-/// <c>.github/actions/**</c> and <c>eng/**</c> under a root for azd/az commands other than the offline ones,
-/// Azure actions, registry logins, pushes and ACR references, and reusable workflows from other repositories.
+/// <c>.github/actions/**</c>, <c>.github/scripts/**</c> and <c>eng/**</c> under a root for azd/az commands other
+/// than the offline ones (<see cref="AzureCliInvocations"/>), Az PowerShell, raw ARM/Entra/storage endpoints, Azure
+/// actions, registry logins, pushes (any tool) and ACR references, and reusable workflows from other repositories.
 /// Patterns are matched per logical statement (shell and PowerShell line continuations joined, <c>#</c> comments
 /// stripped when quoting is unambiguous) and reported at the statement's first physical line.
 /// <para>
@@ -27,21 +28,30 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// </summary>
 internal sealed class UnattendedAzureScanner(string root)
 {
+    // az and azd invocations (any spelling, flags before the verb) are judged by AzureCliInvocations.
     private static readonly Regex[] Forbidden =
     [
-        // Any azd command (up, provision, deploy, down, hooks run, auth login, env new/refresh, init, pipeline
-        // config, ...) except the offline ones: `package` builds the image locally, `version`/`config` are local.
-        Pattern(@"\bazd\s+(?!(?:package|version|config)(?![\w-]))[a-z]"),
-        // Any az command (login, group, deployment, acr, containerapp, sql, keyvault, webapp, ...) except the
-        // offline `az bicep` subcommands that spec 18.3 allows; `az bicep publish`/`restore` reach a registry.
-        // A bare mention such as "`az bicep`" (no subcommand) runs nothing and is not flagged.
-        Pattern(@"\baz\s+(?!bicep(?:\s+(?:build|build-params|lint|format|decompile|version|install|upgrade)(?![\w-])|(?=[^\s\w-]|$)))[a-z]"),
         Pattern(@"sqlpackage.*Publish"),
-        Pattern(@"infra/hooks"),
-        // docker push, docker image/manifest/compose push, docker-compose push.
-        Pattern(@"\bdocker(?:\s+|-)(?:(?:image|manifest|compose)\s+)?push\b"),
+        // The azd hooks, by either slash direction.
+        Pattern(@"infra[\\/]+hooks"),
+        // Az PowerShell cmdlets that sign in or change Azure (Connect-AzAccount, New-AzResourceGroupDeployment, ...).
+        Pattern(@"\b(?:New|Set|Update|Remove|Publish|Start|Invoke|Connect|Add)-Az[a-z]+"),
+        // Raw ARM, Entra token and storage endpoints (an ARM template's $schema URL is not a call).
+        Pattern(@"(?<!schema\.)\bmanagement\.azure\.com\b"),
+        Pattern(@"\blogin\.microsoftonline\.com\b"),
+        Pattern(@"\bcore\.windows\.net\b"),
+        // Registry pushes: docker/podman/nerdctl/buildah [image|manifest|compose] push, docker-compose push.
+        Pattern(@"(?<![\w-])(?:docker|podman|nerdctl|buildah)(?:\s+|-)(?:(?:image|manifest|compose)\s+)?push\b"),
         // Copies a manifest list straight to the target registry.
         Pattern(@"\bdocker\s+buildx\s+imagetools\s+create\b"),
+        Pattern(@"\bskopeo\s+(?:copy|sync)\b"),
+        Pattern(@"\boras\s+(?:push|cp|copy|attach)\b"),
+        Pattern(@"\bcrane\s+(?:push|copy|cp)\b"),
+        Pattern(@"\bctr\b[^;&|]*?\bimages?\s+push\b"),
+        // .NET SDK container publishing (pushes when a registry is set) and Bicep module publishing.
+        Pattern(@"\bPublishContainer\b"),
+        Pattern(@"[-/]p(?:roperty)?:ContainerRegistry="),
+        Pattern(@"(?<![\w.$-])bicep(?:\.exe)?\s+(?:publish|restore)\b"),
         // Builds that push as part of the build, whichever tool or (continuation) line carries the flag.
         Pattern(@"(?<![\w-])--push(?![\w-])"),
         Pattern(@"\btype=registry\b"),
@@ -50,7 +60,7 @@ internal sealed class UnattendedAzureScanner(string root)
         Pattern(@"\buses\s*:\s*['""]?docker/login-action"),
         Pattern(@"\bazurecr\.io\b"),
         // Reusable workflows from another repository (a local ./.github/workflows/x.yml stays allowed).
-        Pattern(@"\buses\s*:\s*['""]?(?!\./)[^'""\s@]+/[^'""\s@]+/\.github/workflows/"),
+        Pattern(@"\buses\s*:\s*['""]?(?!\./)[^'""\s@]+/[^'""\s@]+[\\/]\.github[\\/]workflows[\\/]"),
         // Azure's own actions (login, arm-deploy, sql-action, container-apps-deploy-action, ...) and the
         // action that pushes images; either can reach Azure or a registry without a shell command.
         Pattern(@"\buses\s*:\s*['""]?azure/"),
@@ -92,6 +102,11 @@ internal sealed class UnattendedAzureScanner(string root)
                     {
                         hits.Add(new ScanHit(relative, statement.First + 1, pattern.ToString()));
                     }
+                }
+
+                foreach (var rule in AzureCliInvocations.Violations(statement.Text))
+                {
+                    hits.Add(new ScanHit(relative, statement.First + 1, rule));
                 }
             }
         }
@@ -183,14 +198,20 @@ internal sealed class UnattendedAzureScanner(string root)
 
     private IEnumerable<string> EnumerateFiles()
     {
-        foreach (var relative in new[] { ".github/workflows", ".github/actions", "eng" })
+        // .github/scripts: workflows run code from there (docs-validate.yml on push). Installed packages
+        // (node_modules) are third-party code, not this repository's automation, and are skipped.
+        foreach (var relative in new[] { ".github/workflows", ".github/actions", ".github/scripts", "eng" })
         {
             var directory = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
             if (Directory.Exists(directory))
             {
                 foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
                 {
-                    yield return file;
+                    var segments = Path.GetRelativePath(directory, file).Split(Path.DirectorySeparatorChar);
+                    if (!segments.Contains("node_modules", StringComparer.OrdinalIgnoreCase))
+                    {
+                        yield return file;
+                    }
                 }
             }
         }

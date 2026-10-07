@@ -74,6 +74,14 @@ try {
         throw 'postprovision: AZURE_MANAGED_IDENTITY_NAME has characters that are not allowed.'
     }
 
+    # A user left over from an earlier identity with the same name keeps its old SID, so the new identity could not
+    # sign in while the script below would skip it as "already there". Fail loudly instead of continuing.
+    $existingSidQuery = "SET NOCOUNT ON; SELECT CONVERT(varchar(34), sid, 1) FROM sys.database_principals WHERE name = N'$miName'"
+    $existingSid = ((sqlcmd @sqlcmdArgs -h -1 -W -Q $existingSidQuery) -join '').Trim()
+    if ($existingSid -and $existingSid -cne $sid) {
+        throw "postprovision: database user '$miName' exists with SID $existingSid, not the expected ${sid}: the managed identity was recreated. An admin must drop the stale user ([$miName]) before re-running."
+    }
+
     $sql = [System.Text.StringBuilder]::new()
     [void]$sql.AppendLine('SET NOCOUNT ON;')
     [void]$sql.AppendLine("IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$miName')")
@@ -142,8 +150,8 @@ try {
     $env:NACHOS_SIGNING_SECRET = Read-FileText $signingFile
     try {
         # --no-launch-profile: a launch profile makes the CLI host print a banner on stdout, which would be
-        # captured along with the key.
-        $minted = dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- keys create --admin --signing-secret-env NACHOS_SIGNING_SECRET
+        # captured along with the key. --kid 0: the key is signed with ring entry 0, i.e. nachos-signing-key-0.
+        $minted = dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- keys create --admin --kid 0 --signing-secret-env NACHOS_SIGNING_SECRET
     }
     finally {
         Remove-Item Env:NACHOS_SIGNING_SECRET -ErrorAction SilentlyContinue
