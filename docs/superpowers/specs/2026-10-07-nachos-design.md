@@ -274,6 +274,7 @@ All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped throu
 | `WebhookEndpoints` | `PublicId`, `WorkspaceId`, `Url`, `CreatedAt` |
 | `WebhookDeliveries` | `EndpointId`, `EventId`, `Payload`, `Status`, `Attempts`, `NextAttemptAt`, `LastStatusCode`, `LastError` |
 | `PrincipalGrants` | Entra `ObjectId`, `WorkspaceId NULL`, `Role` (§9.2) |
+| `IdempotencyRecords` | `(WorkspaceId, Key)` unique, `RequestHash`, `ResponseStatus`, `ResponseBody`, `ExpiresAt` (§9.1) |
 | `SchemaVersion` | Single row stamped by post-deploy script (Ignixa pattern) |
 
 Queue claim, sequence allocation, and status aggregation live in stored procedures (`AcquireWorkUnit`, `AllocateMessageSeq`, `GetQueueStatus`). Everything else is EF Core or parameterized SqlClient.
@@ -346,6 +347,10 @@ Key defaults (parity values):
 - Errors use `{"detail": "..."}` with Honcho-equivalent status codes. ASP.NET validation errors are mapped to the same shape. Responses also include RFC 9457 `type`/`title`/`status` (additive Δ).
 - **SSE**: `data: {"delta":{"content":"…"},"done":false}\n\n` …, then a terminal `data: {"done":true, "evidence":{…}?}\n\n`. Written directly to the response. `HttpContext.RequestAborted` is passed through to the model call.
 - **Rate limiting** (Δ, opt-in): ASP.NET Core rate limiter partitioned by workspace, returning `429` with `Retry-After`.
+- **Idempotency** (Δ extension): non-idempotent mutations (`POST M`, `M/upload`, `POST C`, `S/clone`) accept an optional `Idempotency-Key` header.
+  - Storage: `(WorkspaceId, Key)` is stored in `IdempotencyRecords` **in the same transaction** as the mutation, with a request hash, response status, response body, and 24 h expiry.
+  - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
+  - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. A snapshot test diffs it against the pinned Honcho `openapi.json` and checks the diff against an allowlist of known deviations.
 
 ### 9.2 Authentication and authorization
@@ -424,6 +429,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 6. Webhooks are retried with backoff (upstream sends once).
 7. Health endpoints are split into `/health/live` and `/health/ready`. `/health` is kept.
 8. The Entra auth scheme.
+9. The optional `Idempotency-Key` header on non-idempotent mutations (§9.1).
 
 ---
 
@@ -688,7 +694,11 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
 
 **`Nachos.Client`** (NuGet):
 
-- `NachosHttpClient : INachosClient`, built on `IHttpClientFactory` with standard resilience: retry on 429 and 5xx, honoring `Retry-After`.
+- `NachosHttpClient : INachosClient`, built on `IHttpClientFactory` with **operation-aware** resilience. Retries on 429/5xx/transport errors (honoring `Retry-After`) apply **only** to:
+  - reads: `GET`, plus the read-only `POST …/list`, `…/search`, `…/query`, and `…/representation`;
+  - idempotent writes: `PUT`, get-or-create `POST` keyed by `id`, and `DELETE`.
+  `GET H/test` and all chat calls are never auto-retried.
+  Non-idempotent mutations (message batch create, upload, conclusion create, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically.
 - Typed handles: `Workspace` → `Peer` / `Session`.
 - `GetOrCreateAsync`.
 - `IAsyncEnumerable<T>` auto-pagination.
@@ -724,6 +734,7 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
    - `WebApplicationFactory` golden HTTP fixtures, plus the OpenAPI diff check.
    - **Conformance CI job:** runs the upstream `honcho-ai` (PyPI) and `@honcho-ai/sdk` (npm) packages, as **installed black-box clients**, against an Aspire-launched Nachos. The curated scenarios cover CRUD, pagination, filters, scoping matrix, member-read, context, SSE framing (arbitrary chunk boundaries), structured chat, upload, deletion, scopes, and webhooks.
    - Includes an auth route-policy test: the member-read allowlist must contain no mutating routes.
+   - Includes a **retry-boundary regression**: commit a message batch, fail its response at the transport layer, and let `NachosHttpClient` retry. Assert exactly one batch exists. Then repeat without an `Idempotency-Key` and assert no automatic replay happens.
 4. **Memory-quality evaluations** (`test/evals`):
    - Fixed conversation corpora with question/answer pairs (LongMemEval-style subsets plus synthetic multi-peer cases).
    - Run against live Azure OpenAI on a schedule, not on PRs.
