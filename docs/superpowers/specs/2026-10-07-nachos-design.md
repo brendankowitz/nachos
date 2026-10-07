@@ -229,7 +229,7 @@ Dependency rule: `Abstractions` ← `Core` ← (`DataLayer.*`, `Hosting`) ← (`
 
 | Mode | Composition | Auth |
 |---|---|---|
-| **Hosted** | `Nachos.Api` (2+ replicas) and `Nachos.Worker` (0..N replicas, KEDA) as separate Container Apps that share Azure SQL. | NachosKey JWT + Entra |
+| **Hosted** | `Nachos.Api` (2+ replicas) and `Nachos.Worker` (1..N replicas, KEDA; scale-to-zero only behind the gate in §18.2) as separate Container Apps that share Azure SQL. | NachosKey JWT + Entra |
 | **In-process library** | `services.AddNachos(b => b.UseSqlServer(cs).UseChatClient(...).UseEmbeddingGenerator(...)).AddNachosWorker();` The worker loops run as `IHostedService` in the host app. | None (trusted caller). Workspace scoping still enforced. |
 | **Tests** | `AddNachos(b => b.UseInMemory().UseFakeAI())` | — |
 
@@ -756,7 +756,7 @@ Bicep in `infra/` (modules like Ignixa's `deploy/azure/modules`) provisions:
 | Azure Container Registry | Images built by `azd deploy` |
 | Container Apps environment | Workload profile: consumption |
 | `nachos-api` Container App | External ingress, min 1 / max N replicas, HTTP scaling |
-| `nachos-worker` Container App | No ingress. **KEDA `mssql` scaler** on the eligible-work-unit count (min 0 or 1, configurable). |
+| `nachos-worker` Container App | No ingress. **Default `minReplicas = 1`**, because the worker hosts timer-driven services (dream scheduler, reconciler, webhook retries) that have no other wake source. Scale-out uses the **KEDA `mssql` scaler** on `dbo.GetDueWorkCount` (see below), or CPU if that scaler is unavailable. |
 | Azure SQL logical server + database | **Entra-only auth**, MI as a contained user, serverless General Purpose by default (auto-pause off for the worker) |
 | Azure OpenAI / Foundry account | Chat and embedding deployments as parameters, with quota guidance |
 | Key Vault (RBAC) | JWT signing secrets, webhook secret |
@@ -766,6 +766,18 @@ Hooks:
 
 - `postprovision`: create the SQL contained user for the MI, run `nachos schema upgrade` (auto-safe only), and generate the bootstrap admin key into Key Vault.
 - `postdeploy`: smoke `GET /health/ready`.
+
+**Scale-to-zero gate (opt-in, `workerMinReplicas = 0`).** Bicep rejects this setting unless **both** conditions hold:
+
+1. **Every wake source is persisted and counted.** `dbo.GetDueWorkCount` counts each of these, with no in-memory timer acting as the sole trigger:
+   - eligible work units;
+   - dreams that are due, computed from the persisted per-pair dream state (last activity, new explicit count, last dream);
+   - `WebhookDeliveries` with `NextAttemptAt <= now`;
+   - `Pending` embeddings;
+   - tombstones past their purge time.
+2. **R7 is verified.** ACA's KEDA `mssql` rule authenticates with managed identity.
+
+Until both hold, the worker stays at `minReplicas = 1`.
 
 ---
 
@@ -808,7 +820,7 @@ Hooks:
 | R4 | Wire-compatibility drift as Honcho `main` evolves. | Pin to `v3.2.2`/`e8d8b4a` for conformance. A scheduled job diffs upstream OpenAPI and reports changes. |
 | R5 | Tokenizer differences (.NET vs tiktoken) affect budgets and batching. | Use `Microsoft.ML.Tokenizers` Tiktoken encodings (same BPE tables). Run a corpus comparison test in M2. |
 | R6 | Azure OpenAI model availability and quota differ by region. | Model/deployment names are Bicep parameters. Fallback profiles. Quota preflight in `azd` hook. |
-| R7 | KEDA `mssql` scaler needs a connection. Managed-identity support in KEDA's mssql scaler must be verified. | Verify in M2. Fallback: worker min 1 replica with CPU scaling, or a scaler query through a dedicated low-privilege SQL login stored in Key Vault. |
+| R7 | The KEDA `mssql` scaler needs a database identity. Upstream KEDA documents workload identity for mssql from 2.20+, but that does not prove Azure Container Apps exposes this version or auth path. | **Deployment-verification gate in M2.** If ACA supports managed identity for the mssql scale rule, use it. Otherwise scale on CPU with `minReplicas = 1`. **No SQL-login fallback**: the database is Entra-only (§18.2). |
 | R8 | Serverless Azure SQL auto-pause conflicts with a polling worker. | Auto-pause is disabled by default. Documented. |
 | R9 | **Open:** should the .NET in-process mode support SQL Server only, or also allow the in-memory provider for production "embedded" use? | Proposed: in-memory is test/dev only, and is documented as non-durable. |
 | R10 | **Open:** Honcho data import tool? | Proposed: a separate follow-up spec after M6. |
