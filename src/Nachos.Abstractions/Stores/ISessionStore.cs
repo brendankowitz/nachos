@@ -9,8 +9,8 @@ namespace Nachos.Abstractions.Stores;
 /// Session and membership storage. See <see cref="IMemoryStore"/> for the rules shared by all stores.
 /// </summary>
 /// <remarks>
-/// Every operation that takes a session name throws <see cref="NotFoundException"/> when the session (or its
-/// workspace) does not exist.
+/// Every operation except <see cref="GetAsync"/> (which returns null) and <see cref="GetOrCreateAsync"/> (which creates
+/// the session) throws <see cref="NotFoundException"/> when the workspace or session does not exist.
 /// </remarks>
 public interface ISessionStore
 {
@@ -40,6 +40,7 @@ public interface ISessionStore
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct);
 
     /// <summary>Lists the workspace's sessions in creation order (reversed when <see cref="PageRequest.Reverse"/>).</summary>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
     Task<Page<SessionRecord>> ListAsync(
         string workspaceName, FilterNode? filter, PageRequest page, CancellationToken ct);
 
@@ -89,7 +90,10 @@ public interface ISessionStore
     Task SetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, SessionPeerConfig config, CancellationToken ct);
 
-    /// <summary>True when the peer is currently an active member; false for non-members and former members.</summary>
+    /// <summary>
+    /// True when the peer is currently an active member; false for non-members, former members and peers that do not
+    /// exist.
+    /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     Task<bool> IsActiveMemberAsync(
         string workspaceName, string sessionName, string peerName, CancellationToken ct);

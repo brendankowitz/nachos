@@ -3,6 +3,7 @@ namespace Nachos.Abstractions.Domain;
 /// <summary>
 /// Describes the idempotency record <see cref="Stores.IMessageStore.AppendAsync"/> stores with the messages.
 /// </summary>
+/// <param name="RequestHash">Exactly 64 lowercase hex characters (a SHA-256 digest of the request).</param>
 /// <param name="SerializeResponse">
 /// Builds the response body from the inserted messages. The store calls it inside the transaction, before commit.
 /// </param>

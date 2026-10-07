@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Time.Testing;
@@ -69,8 +70,11 @@ public abstract class StoreContractTests : IAsyncLifetime
         string peer, string content, DateTimeOffset? createdAt = null, JsonObject? metadata = null) =>
         new(peer, content, Math.Max(1, content.Length / 4), metadata, createdAt);
 
-    private static IdempotencyWrite Write(string key, string hash = "hash", TimeSpan? ttl = null) =>
-        new(key, hash, 201, messages => string.Join(",", messages.Select(m => m.PublicId)), ttl ?? TimeSpan.FromMinutes(10));
+    private static IdempotencyWrite Write(string key, string label = "hash", TimeSpan? ttl = null) =>
+        new(key, Hash(label), 201, messages => string.Join(",", messages.Select(m => m.PublicId)), ttl ?? TimeSpan.FromMinutes(10));
+
+    /// <summary>Request hashes are 64 lowercase hex characters (SHA-256), which is what providers may store.</summary>
+    private static string Hash(string label) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(label)));
 
     private static async Task<string> NewWorkspaceAsync(IMemoryStore store)
     {
@@ -776,6 +780,55 @@ public abstract class StoreContractTests : IAsyncLifetime
         (await store.Peers.ListSessionsForPeerAsync(workspace, "bob", null, new PageRequest(), Ct)).Total.ShouldBe(4);
     }
 
+    [Fact]
+    public async Task List_MissingWorkspace_ThrowsNotFound()
+    {
+        var (store, _) = NewStore();
+        var missing = Unique("missing");
+
+        await Should.ThrowAsync<NotFoundException>(
+            () => store.Peers.ListAsync(missing, PeerKind.All, null, new PageRequest(), Ct));
+        await Should.ThrowAsync<NotFoundException>(() => store.Sessions.ListAsync(missing, null, new PageRequest(), Ct));
+    }
+
+    [Fact]
+    public async Task ListSessionsForPeer_UnknownPeer_ThrowsNotFound()
+    {
+        var (store, _) = NewStore();
+        var workspace = await NewWorkspaceAsync(store);
+
+        await Should.ThrowAsync<NotFoundException>(
+            () => store.Peers.ListSessionsForPeerAsync(workspace, Unique("unknown"), null, new PageRequest(), Ct));
+    }
+
+    [Fact]
+    public async Task IsActiveMember_MissingSession_ThrowsNotFound()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+
+        await Should.ThrowAsync<NotFoundException>(
+            () => store.Sessions.IsActiveMemberAsync(workspace, Unique("missing"), "alice", Ct));
+        // An unknown peer in an existing session is simply not a member.
+        (await store.Sessions.IsActiveMemberAsync(workspace, session, Unique("unknown"), Ct)).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task Append_FromLeftPeer_ReactivatesKeepingConfig()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Sessions.AddPeersAsync(workspace, session, Peer("a", true, false), Ct);
+        await store.Sessions.RemovePeersAsync(workspace, session, ["a"], Ct);
+        (await store.Sessions.IsActiveMemberAsync(workspace, session, "a", Ct)).ShouldBeFalse();
+
+        await store.Messages.AppendAsync(workspace, session, [Msg("a", "back")], null, Ct);
+
+        (await store.Sessions.IsActiveMemberAsync(workspace, session, "a", Ct)).ShouldBeTrue();
+        (await store.Sessions.GetPeerConfigAsync(workspace, session, "a", Ct)).ShouldBe(new SessionPeerConfig(true, false));
+        (await store.Sessions.ListPeersAsync(workspace, session, new PageRequest(), Ct)).Items.Count(p => p.Name == "a")
+            .ShouldBe(1);
+    }
     // ---------------------------------------------------------------- idempotency
 
     [Fact]
@@ -789,7 +842,7 @@ public abstract class StoreContractTests : IAsyncLifetime
             workspace, session, [Msg("alice", "one"), Msg("alice", "two")], Write(key, "h1", TimeSpan.FromMinutes(5)), Ct);
         var record = await store.Idempotency.TryGetAsync(workspace, key, Ct);
         record.ShouldNotBeNull();
-        record.RequestHash.ShouldBe("h1");
+        record.RequestHash.ShouldBe(Hash("h1"));
         record.ResponseStatus.ShouldBe(201);
         record.ResponseBody.ShouldBe(string.Join(",", stored.Select(m => m.PublicId)));
         record.ExpiresAt.ShouldBe(clock.GetUtcNow() + TimeSpan.FromMinutes(5));
@@ -797,7 +850,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         // A throwing serializer must roll back everything the attempt did.
         var faultyKey = Unique("key");
         var faulty = new IdempotencyWrite(
-            faultyKey, "h2", 201, _ => throw new InvalidOperationException("boom"), TimeSpan.FromMinutes(5));
+            faultyKey, Hash("h2"), 201, _ => throw new InvalidOperationException("boom"), TimeSpan.FromMinutes(5));
         await Should.ThrowAsync<InvalidOperationException>(
             () => store.Messages.AppendAsync(workspace, session, [Msg("bob", "three")], faulty, Ct));
 
@@ -824,7 +877,7 @@ public abstract class StoreContractTests : IAsyncLifetime
 
         duplicate.Key.ShouldBe(key);
         (await CountMessagesAsync(store, workspace, session)).ShouldBe(1);
-        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBe("h1");
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBe(Hash("h1"));
     }
 
     [Fact]
@@ -845,7 +898,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         reused.Count.ShouldBe(1);
         var record = await store.Idempotency.TryGetAsync(workspace, key, Ct);
         record.ShouldNotBeNull();
-        record.RequestHash.ShouldBe("new");
+        record.RequestHash.ShouldBe(Hash("new"));
         record.ExpiresAt.ShouldBe(clock.GetUtcNow() + TimeSpan.FromMinutes(1));
         (await CountMessagesAsync(store, workspace, session)).ShouldBe(2);
     }
@@ -866,7 +919,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         clock.Advance(TimeSpan.FromTicks(1));
         (await store.Idempotency.TryGetAsync(workspace, key, Ct)).ShouldBeNull();
         await store.Messages.AppendAsync(workspace, session, [Msg("alice", "two")], Write(key, "new", ttl), Ct);
-        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBe("new");
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBe(Hash("new"));
     }
 
     [Fact]
@@ -885,7 +938,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         outcomes.Where(e => e is not null).ShouldAllBe(e => e is IdempotencyDuplicateException);
         // The seed message plus exactly one winning batch of two.
         (await CountMessagesAsync(store, workspace, session)).ShouldBe(3);
-        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldStartWith("hash-");
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBeOneOf(RaceHashes);
     }
 
     [Fact]
@@ -903,8 +956,10 @@ public abstract class StoreContractTests : IAsyncLifetime
         var messages = (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Items;
         messages.Count.ShouldBe(2);
         messages.Select(m => m.Content.Split(' ')[1]).Distinct().Count().ShouldBe(1);
-        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldStartWith("hash-");
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct))!.RequestHash.ShouldBeOneOf(RaceHashes);
     }
+
+    private static readonly string[] RaceHashes = [.. Enumerable.Range(0, 8).Select(i => Hash($"hash-{i}"))];
 
     /// <summary>8 parallel two-message appends sharing one idempotency key; each result is null for a success, else the exception.</summary>
     private static Task<Exception?[]> RaceAppendsAsync(IMemoryStore store, string workspace, string session, string key) =>

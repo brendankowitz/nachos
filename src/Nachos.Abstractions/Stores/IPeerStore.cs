@@ -37,6 +37,7 @@ public interface IPeerStore
     /// Lists the workspace's peers selected by <paramref name="kind"/> in creation order (reversed when
     /// <see cref="PageRequest.Reverse"/>).
     /// </summary>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
     Task<Page<PeerRecord>> ListAsync(
         string workspaceName, PeerKind kind, FilterNode? filter, PageRequest page, CancellationToken ct);
 
@@ -44,6 +45,7 @@ public interface IPeerStore
     /// Lists the sessions the peer is currently an <b>active</b> member of (sessions it has left are excluded), in
     /// session creation order (reversed when <see cref="PageRequest.Reverse"/>).
     /// </summary>
+    /// <exception cref="NotFoundException">The workspace or the peer does not exist.</exception>
     Task<Page<SessionRecord>> ListSessionsForPeerAsync(
         string workspaceName, string peerName, FilterNode? filter, PageRequest page, CancellationToken ct);
 }

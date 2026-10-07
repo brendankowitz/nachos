@@ -13,7 +13,8 @@ public interface IMessageStore
 {
     /// <summary>
     /// Appends the messages in one transaction: upserts the sender peers and their memberships
-    /// (<c>JoinedAt = now</c> when not already active), allocates contiguous per-session <c>Seq</c> values,
+    /// (<c>JoinedAt = now</c> when not already active; a sender who previously left is reactivated in place with its
+    /// previous membership configuration kept, unlike <see cref="ISessionStore.AddPeersAsync"/> which sets config), allocates contiguous per-session <c>Seq</c> values,
     /// inserts the messages (null metadata becomes <c>{}</c>; a null <see cref="NewMessage.CreatedAt"/> becomes now),
     /// and, when <paramref name="idempotency"/> is given, inserts its record.
     /// </summary>

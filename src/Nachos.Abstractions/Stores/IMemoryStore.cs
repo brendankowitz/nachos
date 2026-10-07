@@ -32,15 +32,21 @@ namespace Nachos.Abstractions.Stores;
 /// </remarks>
 public interface IMemoryStore
 {
+    /// <summary>Workspace storage.</summary>
     IWorkspaceStore Workspaces { get; }
 
+    /// <summary>Peer storage.</summary>
     IPeerStore Peers { get; }
 
+    /// <summary>Session and membership storage.</summary>
     ISessionStore Sessions { get; }
 
+    /// <summary>Message storage, including atomic idempotency-record writes.</summary>
     IMessageStore Messages { get; }
 
+    /// <summary>Role grants that scope an object's access to workspaces.</summary>
     IGrantStore Grants { get; }
 
+    /// <summary>Read access to stored idempotency records.</summary>
     IIdempotencyStore Idempotency { get; }
 }
