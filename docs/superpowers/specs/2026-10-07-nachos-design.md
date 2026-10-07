@@ -85,6 +85,15 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
      - Nachos must comply with the Distributable Code conditions;
      - **any version change needs a fresh license-text review**;
      - no other Microsoft-proprietary package is covered by this exception.
+   - **Owner-approved container platform-layer carve-out (2026-10-07).** The base OS layer of a container image from an **approved base** is evaluated as unmodified third-party platform, not under this rule's package allowlist. Approved bases are:
+     - Microsoft .NET images on `mcr.microsoft.com` (for example `dotnet/aspnet`, `dotnet/runtime-deps`), used by Nachos images;
+     - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2).
+
+     Conditions:
+     - Base images are referenced **by digest** in release evidence, together with their OS package license inventory.
+     - Bases are **never modified**: Nachos adds layers but never patches base packages.
+     - **Everything Nachos adds** (NuGet assemblies, npm or docs assets, app files, and any extra OS packages installed on top) remains subject to this rule in full.
+     - Changing to a different base image family requires a fresh review.
    - Required license texts and notices go in `THIRD-PARTY-NOTICES.md` (for example PdfPig, Apache-2.0).
    - **CI enforcement:**
      - Check the locked direct and transitive dependencies **and the emitted artifacts**. `devDependencies` is not treated as a distribution boundary. Bundler module provenance for every docs-site chunk, plus package and image contents, must prove that excepted packages don't ship.
