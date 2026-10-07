@@ -645,6 +645,10 @@ public sealed class FilterParserTests
     }
 
     [Fact]
+    public void Parse_UndefinedResourceKind_ThrowsArgumentOutOfRange() =>
+        Should.Throw<ArgumentOutOfRangeException>(() => FilterParser.Parse("""{"name":"a"}""", (ResourceKind)99));
+
+    [Fact]
     public void ExcessiveNesting_Rejected422()
     {
         var json = string.Concat(Enumerable.Repeat("""{"AND":[""", 100)) + "{}" + string.Concat(Enumerable.Repeat("]}", 100));

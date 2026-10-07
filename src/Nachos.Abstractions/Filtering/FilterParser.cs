@@ -102,34 +102,32 @@ public static partial class FilterParser
             return null;
         }
 
+        JsonNode? root;
         try
         {
-            JsonNode? root;
-            try
-            {
-                root = JsonNode.Parse(json, documentOptions: StrictDocument);
-            }
-            catch (JsonException ex)
-            {
-                throw new NachosValidationException($"Filters are not valid JSON: {ex.Message}", ex);
-            }
+            root = JsonNode.Parse(json, documentOptions: StrictDocument);
 
             // JsonNode decodes strings lazily, so an invalid escape such as a lone surrogate (\uD800) only
             // surfaces when read. Decode everything up front so that it is rejected whichever field it sits in.
             DecodeAll(root);
-
-            return root switch
-            {
-                null => null,
-                JsonObject { Count: 0 } => null,
-                JsonObject obj => ParseObject(obj, ResourceFields.For(kind)),
-                _ => throw Invalid("Filters must be a JSON object."),
-            };
+        }
+        catch (JsonException ex)
+        {
+            throw new NachosValidationException($"Filters are not valid JSON: {ex.Message}", ex);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
         {
             throw new NachosValidationException($"Filters contain an invalid string: {ex.Message}", ex);
         }
+
+        var fields = ResourceFields.For(kind);
+        return root switch
+        {
+            null => null,
+            JsonObject { Count: 0 } => null,
+            JsonObject obj => ParseObject(obj, fields),
+            _ => throw Invalid("Filters must be a JSON object."),
+        };
     }
 
     private static void DecodeAll(JsonNode? node)
