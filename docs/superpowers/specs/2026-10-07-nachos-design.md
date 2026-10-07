@@ -273,9 +273,9 @@ All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped throu
 
 | Table | Key columns / notes |
 |---|---|
-| `Workspaces` | `Name` unique, `LifecycleState`, `DeletionJobId NULL`, `Metadata`, `InternalMetadata`, `Configuration`, `CreatedAt` |
+| `Workspaces` | `Name` unique, `LifecycleState`, `LifecycleVersion`, `DeletionJobId NULL`, `Metadata`, `InternalMetadata`, `Configuration`, `CreatedAt` |
 | `Peers` | `(WorkspaceId, Name)` unique, `Metadata`, `InternalMetadata`, `Configuration`, `IsInternal` (scope observers) |
-| `Sessions` | `(WorkspaceId, Name)` unique, `LifecycleState` (`Active`/`Inactive`/`Deleting`; wire `is_active` derived), `DeletionJobId NULL`, `NextMessageSeq`, `Metadata`, `InternalMetadata`, `Configuration` |
+| `Sessions` | `(WorkspaceId, Name)` unique, `LifecycleState` (`Active`/`Inactive`/`Deleting`; wire `is_active` derived), `LifecycleVersion`, `DeletionJobId NULL`, `NextMessageSeq`, `Metadata`, `InternalMetadata`, `Configuration` |
 | `SessionPeers` | `(WorkspaceId, SessionId, PeerId)`, `Configuration`, `JoinedAt`, `LeftAt` |
 | `Messages` | `PublicId` unique, `SessionId`, `PeerId`, `Seq` (unique per session), `Content nvarchar(max)`, `TokenCount`, `Metadata`, `InternalMetadata`, `CreatedAt`; full-text index on `Content` |
 | `MessageEmbeddings` | `MessageId`, `ChunkIndex`, `Content`, `Embedding VECTOR(@dims)`, `SyncState` (`Pending`/`Synced`/`Failed`), `Attempts` |
@@ -705,38 +705,71 @@ Documentation states the guarantees plainly: a 202 means "accepted", and job sta
 
 ### 13.1 Deletion write barrier (normative)
 
-`Workspaces` and `Sessions` carry `LifecycleState` (`Active`, `Inactive`, `Deleting`) and `DeletionJobId`. Honcho's wire `is_active` is derived from it: it is `true` only for `Active`.
+`Workspaces` and `Sessions` carry `LifecycleState` (`Active`, `Inactive`, `Deleting`) and `DeletionJobId`, which is the `WorkItems.Id` of the owning deletion item. Retries reuse the same item, so the id is stable. Honcho's wire `is_active` is derived from `LifecycleState`: it is `true` only for `Active`.
 
-**Acceptance.** In one transaction:
+**Lock order (every transaction, no exceptions):** workspace row → session row → child rows.
 
-1. Read the target row `WITH (UPDLOCK, HOLDLOCK)`.
-2. For workspaces, verify there are no `Active` sessions.
-3. Set `LifecycleState = Deleting`.
-4. Enqueue the deletion job.
+- *Parent checks* use `WITH (REPEATABLEREAD)`. This takes a shared (S) key lock held to the end of the transaction, even under RCSI. It is a single isolation-level hint, never combined with `HOLDLOCK` or `READCOMMITTEDLOCK`.
+- *Exclusive lifecycle barriers* are taken with an `UPDATE` of the target row. Its X lock is incompatible with S and is held to commit.
 
-A repeated `DELETE` on a `Deleting` resource is idempotent. It returns 202 with the existing job and enqueues nothing new.
+**Workspace deletion acceptance** (one transaction):
 
-**Write admission.** Every API write reads its parent lifecycle rows `WITH (HOLDLOCK, READCOMMITTEDLOCK)` in its own transaction, so writers share locks with each other but conflict with acceptance. If any parent is `Deleting`, the write is rejected with `409 {"detail": "<resource> is being deleted"}`. This covers:
+1. `UPDATE Workspaces SET LifecycleVersion += 1 OUTPUT inserted.LifecycleState, inserted.DeletionJobId WHERE Id = @w`. This takes **X first**, before any predicate is evaluated:
+   - It waits for every in-flight writer that holds S on the workspace.
+   - It blocks every new writer.
+   - If the workspace is already `Deleting`, return 202 with the existing `DeletionJobId` (idempotent).
+2. With X held, check `EXISTS (Active sessions in @w)`. No session can be created or reactivated concurrently, because those writers need S on the workspace row first. If an active session exists, roll back and return `409`.
+3. Set `LifecycleState = Deleting` and insert the deletion work item. Set `DeletionJobId` to its id. Commit and return 202.
+
+**Session deletion acceptance:** take S on the workspace (reject with 409 if it is `Deleting`), then run the `UPDATE` (X) on the session. If the session is already `Deleting`, return 202 with the existing job. Otherwise set `Deleting`, enqueue the job, and set `DeletionJobId`.
+
+**Write admission.** Every ordinary API write follows the lock order:
+
+1. Take S on the workspace row; reject if it is `Deleting`.
+2. Take S on the session row (or X, when updating the session itself); reject if it is `Deleting`.
+3. Perform the write.
+
+Rejection is `409 {"detail": "<resource> is being deleted"}`. Writes that change a session row (update and **reactivation**) use `UPDATE … WHERE LifecycleState <> 'Deleting'` and treat `@@ROWCOUNT = 0` as a 409. Covered writes:
 
 - message append and upload;
-- session update, including reactivation;
+- session update and reactivation;
 - membership changes;
 - conclusion create;
-- get-or-create of a session or peer whose parent workspace is `Deleting`;
+- get-or-create of a session or peer under a `Deleting` workspace;
 - get-or-create of the deleting session's own name.
 
-**Worker commits.** Every handler persistence transaction re-checks lifecycle state the same way, alongside its fencing-token check. A result for a `Deleting` resource is discarded, and its work item completes as `Succeeded` with reason `resource_deleted`, so late derivation cannot recreate erased conclusions.
+**Ordinary worker commits** (derivation, summary, dream, backfill, webhook fan-out) take the same S locks in the same order alongside their fencing-token check. A result for a `Deleting` resource is discarded, and the item completes as `Succeeded` with reason `resource_deleted`.
 
-**The deletion job:**
+**Deletion-maintenance path (the only exemption).** A `deletion` handler may write under a `Deleting` resource only when **all** of the following hold:
 
-1. Deletes pending `WorkItems` for the resource.
-2. Bumps the `FencingToken` of any active lease on its work units, so in-flight handlers fail their fencing check.
-3. Cascades the deletes in bounded batches.
-4. Finally removes the row, after which the name can be reused.
+- the resource's `DeletionJobId` equals the item's id;
+- the item's lease `FencingToken` is current;
+- the operation is one of:
+  - (a) a bounded purge batch (≤ `Deletion:BatchSize` rows, child-first);
+  - (b) a progress checkpoint (`InternalMetadata.deletion_progress`);
+  - (c) the final row removal.
 
-The job is idempotent and retried with backoff. A dead-lettered deletion leaves the resource in `Deleting`, so writes stay blocked, and is surfaced in `W/jobs` and metrics.
+Every other handler stays blocked.
 
-**Required tests** (§17, item 2): race acceptance against message append and reactivation, workspace child creation, and late worker persistence; repeated `DELETE`; and job retry after a crash mid-cascade.
+**The deletion job** (idempotent, resumable from its checkpoint):
+
+1. Cancel the resource's other work, **excluding its own work unit `deletion:{ws}:{kind}:{id}`**:
+   - delete pending non-deletion `WorkItems` for the resource;
+   - mark pending child-session deletion items as `Succeeded` with reason `superseded_by_workspace_deletion`;
+   - bump the `FencingToken` of every *other* active lease on the resource's work units, so in-flight ordinary handlers fail their fencing check.
+2. Cascade the deletes in bounded batches, checkpointing progress after each batch.
+3. Remove the row last. After that, the name can be reused.
+
+Failures retry with backoff on the same item. A dead-lettered deletion leaves the resource `Deleting`, so writes stay blocked, and is surfaced in `W/jobs` and metrics. An operator can re-enqueue it with `nachos` (M7 `inspect`).
+
+**Required tests** (§17, item 2). Each uses a deterministic pause hook between the predicate check and the state transition:
+
+- workspace acceptance vs. concurrent session create, in both orders (one must win, and the 409 rule must hold);
+- session acceptance vs. message append and reactivation;
+- late ordinary worker persistence after acceptance (discarded);
+- repeated `DELETE` (same job returned);
+- **crash after a partial purge**, with retries until the job completes and the row is removed, while ordinary writes stay rejected throughout;
+- the deletion job's own lease and work item survive step 1.
 
 ---
 
