@@ -373,6 +373,12 @@ Key defaults (parity values):
 - **Rate limiting** (Δ, opt-in): ASP.NET Core rate limiter partitioned by workspace, returning `429` with `Retry-After`.
 - **Idempotency** (Δ extension): non-idempotent mutations (`POST M`, `M/upload`, `POST C`, `S/clone`) accept an optional `Idempotency-Key` header.
   - Storage: `(WorkspaceId, Key)` is stored in `IdempotencyRecords` **in the same transaction** as the mutation, with a request hash, response status, response body, and 24 h expiry.
+  - `RequestHash` = SHA-256 over:
+    - the HTTP method;
+    - the **canonical target**: the route template plus resolved route values, for example `POST /v3/workspaces/{w}/sessions/{s}/messages` with `w` and `s`;
+    - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
+    The same body sent to a different session or endpoint therefore never matches.
+  - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal 401/403, never the stored response.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. A snapshot test diffs it against the pinned Honcho `openapi.json` and checks the diff against an allowlist of known deviations.
