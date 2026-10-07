@@ -16,7 +16,13 @@ public sealed class InfraTests
     /// mendhak/http-https-echo (MIT), OCI index of tag 42: answers 200 on every path on 8080. To replace it, change
     /// the default in main.bicep and main.parameters.json and re-run <see cref="Placeholder_Answers_ProbePaths"/>.
     /// </summary>
-    private const string PlaceholderStillServing =
+    /// <summary>postdeploy's polling budget (attempts, 6 s apart), the same in both scripts.</summary>
+    internal const int PostdeployAttempts = 10;
+
+    /// <summary>What the placeholder echo server answers on /health/ready (abridged).</summary>
+    internal const string EchoBody = "{\"path\":\"/health/ready\",\"headers\":{\"host\":\"nachos-api\"},\"method\":\"GET\"}";
+
+    internal const string PlaceholderStillServing =
         "The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.";
 
     private const string PlaceholderImage =
@@ -245,7 +251,7 @@ public sealed class InfraTests
         values.GetProperty("placeholderImage").GetProperty("value").GetString().ShouldBe("${NACHOS_PLACEHOLDER_IMAGE=" + PlaceholderImage + "}");
     }
 
-    [RequiresPosixToolFact("docker")]
+    [RequiresDockerDaemonFact]
     public async Task Placeholder_Answers_ProbePaths()
     {
         // Image, paths and port come from the compiled template, so this checks what would really be deployed.
@@ -322,14 +328,19 @@ public sealed class InfraTests
         baseEnv.Keys.Where(k => k.StartsWith("Nachos__Auth__NachosKey__Keys__", StringComparison.Ordinal))
             .ShouldBeEmpty("baseEnv must not set ring entries; they come from the running app or the seed");
 
+        // The WHOLE env expression is pinned: the ring F (existing entries with the prefix, in order, whole objects)
+        // must be both the emptiness test and the else branch, and the then branch exactly the Kid 0 seed. Pinning
+        // only substrings would let `empty(F) ? seed : seed` (ring reset on every provision) or
+        // `: concat(F, seed)` (a duplicate slot 0) through.
         var env = ApiContainer(template).GetProperty("env").GetString()!;
-        env.ShouldStartWith("[concat(variables('baseEnv'), if(empty(filter(");
-        env.ShouldEndWith(", variables('openAiEnv'))]");
-        // Existing ring entries are copied verbatim and in order (filter keeps order and whole objects)...
-        env.ShouldContain("lambda('e', startsWith(lambdaVariables('e').name, variables('ringPrefix')))");
-        env.ShouldContain(".outputs.env.value");
-        // ...and Keys__0__Kid=0 is seeded only when the namespace is empty.
-        env.ShouldContain("createArray(createObject('name', format('{0}0__Kid', variables('ringPrefix')), 'value', '0'))");
+        const string Head = "[concat(variables('baseEnv'), if(empty(";
+        env.ShouldStartWith(Head);
+        var ring = BalancedCall(env, Head.Length);
+        ring.ShouldStartWith("filter(if(parameters('apiExists'), reference(");
+        ring.ShouldEndWith(
+            ".outputs.env.value, createArray()), lambda('e', startsWith(lambdaVariables('e').name, variables('ringPrefix'))))");
+        const string Seed = "createArray(createObject('name', format('{0}0__Kid', variables('ringPrefix')), 'value', '0'))";
+        env.ShouldBe($"{Head}{ring}), {Seed}, {ring}), variables('openAiEnv'))]");
 
         var fetchOutputs = Descendants(template.RootElement)
             .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("outputs", out var o) && o.ValueKind == JsonValueKind.Object
@@ -681,30 +692,57 @@ public sealed class InfraTests
     }
 
     [RequiresPosixToolFact("bash")]
-    public void PostdeploySh_AcceptsOnlyTheRealApisHealthyBody()
+    public void PostdeploySh_AcceptsTheRealApisHealthyBody_AtOnce()
     {
         using var toolbox = new FakeToolbox();
 
-        var result = toolbox.RunPostdeploy(body: "Healthy\n");
+        var result = toolbox.RunPostdeploy(["Healthy\n"]);
 
         result.ExitCode.ShouldBe(0, result.StdErr);
-        toolbox.Calls.Where(c => c.StartsWith("curl", StringComparison.Ordinal)).ShouldAllBe(c => c.Contains("--max-time 30", StringComparison.Ordinal));
-        toolbox.Count("--retry 10").ShouldBe(1);
+        var gets = toolbox.Calls.Where(c => c.StartsWith("curl", StringComparison.Ordinal)).ToList();
+        gets.ShouldHaveSingleItem().ShouldContain("--max-time 30");
+        toolbox.Count("sleep").ShouldBe(0);
     }
 
     [RequiresPosixToolFact("bash")]
-    public void PostdeploySh_FailsWhileThePlaceholderOrAnUnhealthyApiIsServing()
+    public void PostdeploySh_KeepsPolling_WhileTrafficStillReachesThePlaceholder()
     {
-        const string Echo = "{\"path\":\"/health/ready\",\"headers\":{\"host\":\"nachos-api\"},\"method\":\"GET\"}";
-        foreach (var body in new[] { Echo, "Degraded", "Unhealthy", "" })
+        // azd waits for the ARM operation, not for the traffic switch: the first GET can still hit the placeholder.
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostdeploy([EchoBody, "Degraded", "Healthy"]);
+
+        result.ExitCode.ShouldBe(0, result.StdErr);
+        toolbox.Count("curl ").ShouldBe(3);
+        toolbox.Count("sleep 6").ShouldBe(2);
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_FailsAfterTheWholeBudget_WhenTheBodyIsNeverExactlyHealthy()
+    {
+        foreach (var body in new[] { EchoBody, "Degraded", "Unhealthy", "{\"status\":\"Healthy\"}", "Healthy, mostly", "" })
         {
             using var toolbox = new FakeToolbox();
 
-            var result = toolbox.RunPostdeploy(body: body);
+            var result = toolbox.RunPostdeploy([body]);
 
             result.ExitCode.ShouldNotBe(0, $"body '{body}' must be rejected");
             result.StdErr.ShouldContain(PlaceholderStillServing);
+            toolbox.Count("curl ").ShouldBe(PostdeployAttempts, $"body '{body}' is retried for the whole budget");
+            toolbox.Count("sleep 6").ShouldBe(PostdeployAttempts - 1);
         }
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_FailsAfterTheWholeBudget_WhenEveryRequestFails()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostdeploy(["Healthy"], curlFails: true);
+
+        result.ExitCode.ShouldNotBe(0, "a request that never succeeds must not pass");
+        result.StdErr.ShouldContain(PlaceholderStillServing);
+        toolbox.Count("curl ").ShouldBe(PostdeployAttempts);
     }
 
     [Fact]
@@ -721,9 +759,7 @@ public sealed class InfraTests
         }
 
         CodeOnly("infra/hooks/postdeploy.sh").ShouldContain("--max-time 30");
-        var ps1 = CodeOnly("infra/hooks/postdeploy.ps1");
-        Regex.IsMatch(ps1, @"\.Trim\(\) -cne 'Healthy'\)\s*\{").ShouldBeTrue("postdeploy.ps1 must require exactly 'Healthy'");
-        ps1.ShouldContain("-TimeoutSec 30");
+        CodeOnly("infra/hooks/postdeploy.ps1").ShouldContain("-TimeoutSec 30");
     }
 
     [Fact]
@@ -1163,7 +1199,7 @@ public sealed class InfraTests
 
     // ---- helpers -----------------------------------------------------------------------------------
 
-    private static string OnPush(string steps) => "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps;
+    private static string OnPush(string steps) => ScannerFixture.OnPush(steps);
 
     /// <summary>Hook text with comment-only lines removed.</summary>
     private static string CodeOnly(string relativePath) =>
@@ -1175,23 +1211,34 @@ public sealed class InfraTests
     private static string[] LogicalLines(string relativePath) =>
         Regex.Replace(ReadHook(relativePath), @"(\\|`)[ \t]*\r?\n[ \t]*", " ").Split('\n');
 
-    private static IReadOnlyList<ScanHit> PlantedWorkflowHits(string workflow) =>
-        PlantedFileHits(".github/workflows/x.yml", workflow);
+    private static IReadOnlyList<ScanHit> PlantedWorkflowHits(string workflow) => ScannerFixture.PlantedWorkflowHits(workflow);
 
-    private static IReadOnlyList<ScanHit> PlantedFileHits(string relativePath, string content)
+    private static IReadOnlyList<ScanHit> PlantedFileHits(string relativePath, string content) =>
+        ScannerFixture.PlantedFileHits(relativePath, content);
+
+    /// <summary>The ARM function call starting at <paramref name="start"/> (name through its matching parenthesis).</summary>
+    private static string BalancedCall(string expression, int start)
     {
-        var root = Directory.CreateTempSubdirectory("nachos-scan-").FullName;
-        try
+        var depth = 0;
+        var inString = false;
+        for (var i = start; i < expression.Length; i++)
         {
-            var path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.WriteAllText(path, content);
-            return new UnattendedAzureScanner(root).Scan();
+            var c = expression[i];
+            if (c == '\'')
+            {
+                inString = !inString; // ARM escapes a quote as '', which toggles twice
+            }
+            else if (!inString && c == '(')
+            {
+                depth++;
+            }
+            else if (!inString && c == ')' && --depth == 0)
+            {
+                return expression[start..(i + 1)];
+            }
         }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
+
+        throw new ShouldAssertException($"No complete call at {start} in {expression}");
     }
 
     private static bool IsDigestPinned(string reference) =>

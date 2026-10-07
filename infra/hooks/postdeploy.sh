@@ -9,15 +9,27 @@ set -euo pipefail
 
 : "${NACHOS_API_URI:?postdeploy: NACHOS_API_URI is not set}"
 
-# The new revision can take a moment to become ready, hence the retries; --max-time bounds each attempt.
-body="$(curl -fsS --max-time 30 --retry 10 --retry-delay 6 --retry-connrefused "${NACHOS_API_URI%/}/health/ready")" || body=""
-trimmed="${body#"${body%%[![:space:]]*}"}"
-trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-if [[ "$trimmed" != Healthy ]]; then
-  # Show at most 200 printable characters of what answered; never the raw body.
-  shown="$(printf '%s' "$body" | head -c 200 | tr -cd '[:print:]')"
-  echo "postdeploy: /health/ready answered '$shown'." >&2
-  echo 'postdeploy: The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.' >&2
-  exit 1
-fi
-echo "postdeploy: $NACHOS_API_URI is ready (the deployed API reports Healthy)."
+# Poll until the body is exactly "Healthy". azd waits for the ARM operation, not for the traffic switch, so the
+# first answers can still come from the placeholder revision (or a warming API: Degraded/Unhealthy) and are retried.
+# --max-time bounds each attempt; the budget is attempts x delay.
+readonly attempts=10
+readonly delay_seconds=6
+body=""
+for ((attempt = 1; attempt <= attempts; attempt++)); do
+  body="$(curl -fsS --max-time 30 "${NACHOS_API_URI%/}/health/ready")" || body=""
+  trimmed="${body#"${body%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  if [[ "$trimmed" == "Healthy" ]]; then
+    echo "postdeploy: $NACHOS_API_URI is ready (the deployed API reports Healthy)."
+    exit 0
+  fi
+  if ((attempt < attempts)); then
+    sleep "$delay_seconds"
+  fi
+done
+
+# Show at most 200 printable characters of the last answer; never the raw body.
+shown="$(printf '%s' "$body" | head -c 200 | tr -cd '[:print:]')"
+echo "postdeploy: after $attempts attempts /health/ready last answered '$shown'." >&2
+echo 'postdeploy: The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.' >&2
+exit 1

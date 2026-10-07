@@ -45,3 +45,38 @@ internal sealed class RequiresPosixToolFactAttribute : FactAttribute
         }
     }
 }
+
+/// <summary>
+/// For tests that run containers: skips (with a reason) when the docker CLI is missing or its daemon is not running,
+/// unless <c>NACHOS_REQUIRE_INFRA_TOOLS=1</c>, which makes either a failure. A daemon that runs but cannot pull is
+/// left to the test itself, which then fails.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+internal sealed class RequiresDockerDaemonFactAttribute : FactAttribute
+{
+    public RequiresDockerDaemonFactAttribute()
+    {
+        var docker = Tools.Find("docker");
+        var decision = ToolGate.DecideDocker(
+            OperatingSystem.IsWindows(),
+            Tools.ToolsAreRequired,
+            docker is not null,
+            docker is not null && DaemonAnswers(docker));
+        if (decision.Outcome == GateOutcome.Skip)
+        {
+            Skip = decision.Reason;
+        }
+    }
+
+    private static bool DaemonAnswers(string docker)
+    {
+        try
+        {
+            return Tools.Run(docker, ["info", "--format", "{{.ServerVersion}}"], timeout: TimeSpan.FromSeconds(15)).ExitCode == 0;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
+}

@@ -51,6 +51,16 @@ public sealed class HookSecretFlowTests
     [InlineData("infra/hooks/postprovision.ps1", "throw \"bad key: $adminKey\"")]
     [InlineData("infra/hooks/postprovision.ps1", "Get-Content $signingFile")]
     [InlineData("infra/hooks/postprovision.ps1", "Write-Verbose $env:NACHOS_SIGNING_SECRET")]
+    [InlineData("infra/hooks/postprovision.sh", ">&2 echo \"$minted\"")]
+    [InlineData("infra/hooks/postprovision.sh", "1>&2 echo \"$minted\"")]
+    [InlineData("infra/hooks/postprovision.sh", "local copy=\"$minted\"\necho \"$copy\"")]
+    [InlineData("infra/hooks/postprovision.sh", "export ADMIN=\"$minted\"\nprintf '%s' \"$ADMIN\"")]
+    [InlineData("infra/hooks/postprovision.sh", "declare -r kept=\"$minted\"\necho \"$kept\"")]
+    [InlineData("infra/hooks/postprovision.sh", "readonly kept=\"$minted\"\necho \"$kept\"")]
+    [InlineData("infra/hooks/postprovision.sh", "read -r line <\"$admin_file\"\necho \"$line\"")]
+    [InlineData("infra/hooks/postprovision.ps1", "[Console]::WriteLine($adminKey)")]
+    [InlineData("infra/hooks/postprovision.ps1", "[Console]::Error.WriteLine($minted)")]
+    [InlineData("infra/hooks/postprovision.ps1", "Write-Host (\"{0}\" -f $adminKey)")]
     public void PlantedPrints_AreFound(string hook, string planted)
     {
         var text = Read(hook).TrimEnd() + "\n" + planted + "\n";
@@ -64,6 +74,8 @@ public sealed class HookSecretFlowTests
     [InlineData("infra/hooks/postprovision.sh", "echo \"stored '$vault'\"")]
     [InlineData("infra/hooks/postprovision.ps1", "Write-Output \"postprovision: stored secret 'nachos-bootstrap-admin-key'.\"")]
     [InlineData("infra/hooks/postprovision.ps1", "if ($adminKey -cnotmatch 'x') { throw 'no key' }")]
+    [InlineData("infra/hooks/postprovision.ps1", "$minted | Out-Null")]
+    [InlineData("infra/hooks/postprovision.sh", "local status=$?\necho \"exit $status\"")]
     public void WritesToFilesAndNamesOnly_AreNotLeaks(string hook, string planted)
     {
         var text = Read(hook).TrimEnd() + "\n" + planted + "\n";
