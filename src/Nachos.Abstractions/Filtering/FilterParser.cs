@@ -47,6 +47,11 @@ namespace Nachos.Abstractions.Filtering;
 public static partial class FilterParser
 {
     /// <summary>The most elements an <c>in</c> list, bare list or containment list may hold.</summary>
+    /// <remarks>
+    /// The cap is <b>per list</b>, and a filter may hold many lists. A SQL provider must therefore pass each list as
+    /// one JSON or table-valued parameter rather than one parameter per element, or it can exceed SQL Server's
+    /// 2,100-parameter limit.
+    /// </remarks>
     public const int MaxListItems = 1000;
 
     private const string Wildcard = "*";
@@ -77,7 +82,7 @@ public static partial class FilterParser
         {
             json = filters.ToJsonString();
         }
-        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or JsonException)
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or ArgumentException or JsonException)
         {
             throw new NachosValidationException($"Filters cannot be represented as JSON: {ex.Message}", ex);
         }
@@ -97,23 +102,58 @@ public static partial class FilterParser
             return null;
         }
 
-        JsonNode? root;
         try
         {
-            root = JsonNode.Parse(json, documentOptions: StrictDocument);
-        }
-        catch (JsonException ex)
-        {
-            throw new NachosValidationException($"Filters are not valid JSON: {ex.Message}", ex);
-        }
+            JsonNode? root;
+            try
+            {
+                root = JsonNode.Parse(json, documentOptions: StrictDocument);
+            }
+            catch (JsonException ex)
+            {
+                throw new NachosValidationException($"Filters are not valid JSON: {ex.Message}", ex);
+            }
 
-        return root switch
+            // JsonNode decodes strings lazily, so an invalid escape such as a lone surrogate (\uD800) only
+            // surfaces when read. Decode everything up front so that it is rejected whichever field it sits in.
+            DecodeAll(root);
+
+            return root switch
+            {
+                null => null,
+                JsonObject { Count: 0 } => null,
+                JsonObject obj => ParseObject(obj, ResourceFields.For(kind)),
+                _ => throw Invalid("Filters must be a JSON object."),
+            };
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
         {
-            null => null,
-            JsonObject { Count: 0 } => null,
-            JsonObject obj => ParseObject(obj, ResourceFields.For(kind)),
-            _ => throw Invalid("Filters must be a JSON object."),
-        };
+            throw new NachosValidationException($"Filters contain an invalid string: {ex.Message}", ex);
+        }
+    }
+
+    private static void DecodeAll(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (_, value) in obj)
+                {
+                    DecodeAll(value);
+                }
+
+                break;
+            case JsonArray array:
+                foreach (var element in array)
+                {
+                    DecodeAll(element);
+                }
+
+                break;
+            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
+                _ = value.GetValue<string>();
+                break;
+        }
     }
 
     private static FilterNode ParseObject(JsonObject obj, IReadOnlyDictionary<string, FieldDefinition> fields)

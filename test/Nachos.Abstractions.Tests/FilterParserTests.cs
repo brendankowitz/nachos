@@ -615,6 +615,35 @@ public sealed class FilterParserTests
         FilterParser.Parse("""{"name":"a"}""", ResourceKind.Workspace)
             .ShouldBe(FilterParser.Parse(JsonNode.Parse("""{"name":"a"}"""), ResourceKind.Workspace));
 
+    [Theory]
+    [InlineData("""{"\uD800":1}""")]
+    [InlineData("""{"name":"\uD800"}""")]
+    [InlineData("""{"metadata":{"\uDC00":1}}""")]
+    [InlineData("""{"name":["a","\uDC00"]}""")]
+    [InlineData("""{"name":{"in":["\uD800"]}}""")]
+    [InlineData("""{"metadata":{"k":"\uD800"}}""")]
+    public void Parse_LoneSurrogate_Rejected422(string json)
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(json, ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(json, ResourceKind.Message));
+    }
+
+    [Fact]
+    public void Parse_ValidSurrogatePair_Accepted() =>
+        ParseRequired("""{"name":"\uD83D\uDE00"}""")
+            .ShouldBe(new FilterNode.Field(FilterColumns.Name, FilterOp.Eq, JsonValue.Create("\U0001F600")));
+
+    [Fact]
+    public void CSharpBuiltFilter_NaN_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["k"] = JsonValue.Create(double.NaN) } }, ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["token_count"] = JsonValue.Create(double.PositiveInfinity) }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["k"] = JsonValue.Create(double.NegativeInfinity) } }, ResourceKind.Workspace));
+    }
+
     [Fact]
     public void ExcessiveNesting_Rejected422()
     {

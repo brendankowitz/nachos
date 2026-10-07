@@ -26,6 +26,9 @@ namespace Nachos.Abstractions.Filtering;
 /// <b>Text</b> is compared ordinally and case-sensitively by <see cref="Eq"/>, <see cref="Ne"/>, <see cref="In"/>,
 /// the ordering operators and <see cref="Contains"/>, for column text and metadata strings alike. Whitespace is
 /// significant (<c>"ok "</c> is not <c>"ok"</c>). A provider must not rely on a case-insensitive default collation.
+/// <b>Provider note:</b> SQL Server's <c>=</c>, <c>&lt;&gt;</c> and <c>IN</c> ignore trailing spaces even under a
+/// <c>BIN2</c> collation, so a SQL provider must add a length or <c>DATALENGTH</c> check (or an equivalent) to honor
+/// the trailing-space rule.
 /// </para>
 /// <para>
 /// <b>Case folding.</b> <see cref="IContains"/> is case-insensitive by invariant simple uppercasing per character:
