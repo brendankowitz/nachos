@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace Nachos.Abstractions.Filtering;
@@ -31,6 +32,8 @@ public abstract record FilterNode
     {
         public bool Equals(And? other) => other is not null && SameChildren(Children, other.Children);
 
+        protected override bool PrintMembers(StringBuilder builder) => PrintChildren(builder, Children);
+
         public override int GetHashCode() => HashChildren(Children);
     }
 
@@ -39,6 +42,8 @@ public abstract record FilterNode
     public sealed record Or(IReadOnlyList<FilterNode> Children) : FilterNode
     {
         public bool Equals(Or? other) => other is not null && SameChildren(Children, other.Children);
+
+        protected override bool PrintMembers(StringBuilder builder) => PrintChildren(builder, Children);
 
         public override int GetHashCode() => HashChildren(Children);
     }
@@ -51,6 +56,8 @@ public abstract record FilterNode
     public sealed record Not(IReadOnlyList<FilterNode> Children) : FilterNode
     {
         public bool Equals(Not? other) => other is not null && SameChildren(Children, other.Children);
+
+        protected override bool PrintMembers(StringBuilder builder) => PrintChildren(builder, Children);
 
         public override int GetHashCode() => HashChildren(Children);
     }
@@ -66,11 +73,11 @@ public abstract record FilterNode
     /// <param name="Op">The comparison.</param>
     /// <param name="Value">
     /// The operand, already validated and normalized for the column's type: a string for text, a
-    /// <see cref="long"/> for <see cref="FilterColumns.TokenCount"/>, a <see cref="bool"/> for
+    /// <see cref="decimal"/> with an integral value for <see cref="FilterColumns.TokenCount"/>, a <see cref="bool"/> for
     /// <see cref="FilterColumns.IsActive"/>, and a <see cref="DateTimeOffset"/> at UTC for
     /// <see cref="FilterColumns.CreatedAt"/> (read it with <c>Value.GetValue&lt;DateTimeOffset&gt;()</c>; a date-only
     /// input is UTC midnight). For <see cref="FilterOp.In"/> it is a non-empty <see cref="JsonArray"/> of such
-    /// values. It is null for <see cref="FilterOp.IsNull"/> and <see cref="FilterOp.NotNull"/>.
+    /// values (at most <see cref="FilterParser.MaxListItems"/>). It is null for <see cref="FilterOp.IsNull"/> and <see cref="FilterOp.NotNull"/>.
     /// </param>
     public sealed record Field(string Column, FilterOp Op, JsonNode? Value) : FilterNode
     {
@@ -93,11 +100,11 @@ public abstract record FilterNode
     /// </param>
     /// <param name="Value">
     /// The operand as JSON. <see cref="FilterOp.Eq"/> and <see cref="FilterOp.Ne"/> take a string, number or
-    /// boolean; the ordering operators a number or a string (numbers compare with numbers and strings with
-    /// strings; anything else does not match); <see cref="FilterOp.Contains"/> and <see cref="FilterOp.IContains"/>
-    /// a string, and they match only when the value at the path is itself a string that contains it (a
-    /// case-sensitive or case-insensitive substring match); <see cref="FilterOp.JsonContains"/> a non-empty array.
-    /// Null for <see cref="FilterOp.IsNull"/> and <see cref="FilterOp.NotNull"/>.
+    /// boolean; the ordering operators a number or a string; <see cref="FilterOp.Contains"/> and
+    /// <see cref="FilterOp.IContains"/> a string; <see cref="FilterOp.JsonContains"/> a non-empty array of at most
+    /// <see cref="FilterParser.MaxListItems"/> strings, numbers or booleans. Null for <see cref="FilterOp.IsNull"/>
+    /// and <see cref="FilterOp.NotNull"/>. Values compare only within one JSON kind (string, number, boolean); see
+    /// <see cref="FilterOp"/> for the exact rules, which every provider must follow.
     /// </param>
     public sealed record MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value) : FilterNode
     {
@@ -106,6 +113,12 @@ public abstract record FilterNode
             && Op == other.Op
             && Path.SequenceEqual(other.Path, StringComparer.Ordinal)
             && JsonNode.DeepEquals(Value, other.Value);
+
+        protected override bool PrintMembers(StringBuilder builder)
+        {
+            builder.Append("Path = [").AppendJoin(", ", Path).Append("], Op = ").Append(Op).Append(", Value = ").Append(Value?.ToJsonString());
+            return true;
+        }
 
         public override int GetHashCode()
         {
@@ -118,6 +131,12 @@ public abstract record FilterNode
 
             return hash.ToHashCode();
         }
+    }
+
+    private static bool PrintChildren(StringBuilder builder, IReadOnlyList<FilterNode> children)
+    {
+        builder.Append("Children = [").AppendJoin(", ", children).Append(']');
+        return true;
     }
 
     private static bool SameChildren(IReadOnlyList<FilterNode> left, IReadOnlyList<FilterNode> right) =>

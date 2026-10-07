@@ -43,8 +43,14 @@ public static class FilterCaseLibrary
     {
         using var stream = typeof(FilterCaseLibrary).Assembly.GetManifestResourceStream(ResourceName)
             ?? throw new InvalidOperationException($"Embedded resource {ResourceName} is missing.");
-        return JsonSerializer.Deserialize<CaseFile>(stream, Options)
+        var file = JsonSerializer.Deserialize<CaseFile>(stream, Options)
             ?? throw new InvalidOperationException("filter-cases.json is empty.");
+
+        var invalid = file.Cases.FirstOrDefault(c => (c.Expect is null) != c.Error);
+        return invalid is null
+            ? file
+            : throw new InvalidOperationException(
+                $"Filter case '{invalid.Name}' must have exactly one of 'expect' (a list of ids) or 'error': true.");
     }
 
     private sealed record CaseFile(FilterDataset Dataset, IReadOnlyList<FilterCase> Cases);

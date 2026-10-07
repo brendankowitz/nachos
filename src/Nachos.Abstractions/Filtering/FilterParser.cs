@@ -10,6 +10,10 @@ namespace Nachos.Abstractions.Filtering;
 /// against the resource's field types. This is the only place filter JSON is interpreted.
 /// </summary>
 /// <remarks>
+/// <para><b>Input.</b> The <see cref="JsonNode"/> overload first round-trips the filter through JSON text, so filters
+/// built in C# (<c>int</c>, <see cref="DateTimeOffset"/>, <see cref="Guid"/> values and so on) behave exactly like
+/// the same filter received over HTTP, and the tree the parser walks is a private copy. Duplicate property names,
+/// nesting deeper than 64 levels and malformed JSON are rejected with a <see cref="NachosValidationException"/>.</para>
 /// <para><b>Top level.</b> An object whose keys are AND-ed together. <c>AND</c>, <c>OR</c> and <c>NOT</c> (upper case)
 /// each take an array of filter objects; <c>NOT [c1…cn]</c> is <c>NOT (c1 OR … OR cn)</c>. Keys that are not a field
 /// of the resource are ignored (they match everything).</para>
@@ -18,25 +22,45 @@ namespace Nachos.Abstractions.Filtering;
 /// matches everything, and a <c>null</c> element also admits unset values), and an object holds operators from
 /// <c>gt gte lt lte ne in contains icontains</c> that are AND-ed. <c>{"ne": null}</c> is
 /// <see cref="FilterOp.NotNull"/>. <c>null</c> is only accepted as a plain value, as the operand of <c>ne</c>, and as
-/// an <c>in</c> element; the other operators reject it.</para>
-/// <para><b>Types.</b> Text takes strings. <c>token_count</c> takes JSON integers or integer strings.
+/// an <c>in</c> element; the other operators reject it. The operand of <c>ne</c> is a literal even when it is
+/// <c>"*"</c>. Lists (<c>in</c>, bare lists, metadata containment lists) hold at most <see cref="MaxListItems"/>
+/// elements.</para>
+/// <para><b>Types.</b> Text takes strings. <c>token_count</c> takes any JSON number with an integral value
+/// (<c>5</c>, <c>5.0</c>, <c>1e2</c>, integers of any size) or an integer string, and is normalized to a
+/// <see cref="decimal"/>; a non-integral number is rejected. A number beyond the <see cref="decimal"/> range can never
+/// equal a stored count, so <c>eq</c> matches nothing, <c>ne</c> everything, and <c>gt</c>/<c>gte</c>/<c>lt</c>/<c>lte</c>
+/// resolve to match-all or match-none by its sign; the parser folds that in, so the tree never holds such a value.
 /// <c>created_at</c> takes ISO-8601 dates or date-times and is normalized to a UTC <see cref="DateTimeOffset"/>; a
 /// date-only value is UTC midnight and a value without an offset is taken as UTC. <c>is_active</c> takes real JSON
 /// booleans only. Text allows <c>eq ne in contains icontains</c>, numbers and timestamps <c>eq ne in gt gte lt lte</c>,
 /// booleans <c>eq ne</c>; every type allows null checks. Anything else is rejected.</para>
 /// <para><b>Metadata.</b> A nested object is containment per key, recursing into nested objects. A scalar at a path
-/// is equality, <c>null</c> means unset, <c>"*"</c> means the key exists, and a bare array is
-/// <see cref="FilterOp.JsonContains"/> (not <c>in</c>; use <c>{"in": [...]}</c> for alternatives). An object whose
-/// keys are all operators applies them to that path. <c>{"metadata": {"contains": {...}}}</c> equals the bare object.
-/// Any other operator on the whole metadata object is rejected. A metadata key named like an operator
-/// (<c>gt gte lt lte ne in contains icontains</c>) is read as the operator, so such keys cannot be filtered.</para>
+/// is equality, <c>null</c> means unset, <c>"*"</c> means the key exists with any non-null value (including an object
+/// or array), and a bare array is <see cref="FilterOp.JsonContains"/> (not <c>in</c>; use <c>{"in": [...]}</c> for
+/// alternatives) whose elements must all be scalars. An object whose keys are all operators applies them to that
+/// path; an empty object is rejected. <c>{"metadata": {"contains": {...}}}</c> equals the bare object. Any other
+/// operator on the whole metadata object is rejected, and so is a non-object <c>metadata</c> value, except that
+/// <c>"*"</c> matches everything and <c>null</c> matches nothing (the column is never unset). A metadata key named
+/// like an operator (<c>gt gte lt lte ne in contains icontains</c>) is read as the operator, so such keys cannot be
+/// filtered. Keys otherwise match literally, including keys that contain dots, quotes or brackets.</para>
 /// </remarks>
 public static partial class FilterParser
 {
+    /// <summary>The most elements an <c>in</c> list, bare list or containment list may hold.</summary>
+    public const int MaxListItems = 1000;
+
     private const string Wildcard = "*";
+
+    private static readonly JsonDocumentOptions StrictDocument = new() { AllowDuplicateProperties = false };
 
     private static readonly HashSet<string> OperatorKeys =
         ["gt", "gte", "lt", "lte", "ne", "in", "contains", "icontains"];
+
+    /// <summary>
+    /// A normalized operand: <see cref="Value"/>, or a non-zero <see cref="Overflow"/> sign for an integer beyond the
+    /// <see cref="decimal"/> range.
+    /// </summary>
+    private readonly record struct Operand(JsonValue? Value, int Overflow = 0);
 
     /// <summary>Parses <paramref name="filters"/> for <paramref name="kind"/>.</summary>
     /// <returns>The filter, or null when <paramref name="filters"/> is null or an empty object.</returns>
@@ -48,12 +72,48 @@ public static partial class FilterParser
             return null;
         }
 
-        if (filters is not JsonObject obj)
+        string json;
+        try
         {
-            throw Invalid("Filters must be a JSON object.");
+            json = filters.ToJsonString();
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or JsonException)
+        {
+            throw new NachosValidationException($"Filters cannot be represented as JSON: {ex.Message}", ex);
         }
 
-        return obj.Count == 0 ? null : ParseObject(obj, ResourceFields.For(kind));
+        return Parse(json, kind);
+    }
+
+    /// <summary>Parses the filter JSON text <paramref name="json"/> for <paramref name="kind"/>.</summary>
+    /// <returns>The filter, or null when <paramref name="json"/> is null, blank, <c>null</c> or an empty object.</returns>
+    /// <exception cref="NachosValidationException">
+    /// The text is not valid JSON, repeats a property name, or the filter is malformed or holds an invalid value.
+    /// </exception>
+    public static FilterNode? Parse(string? json, ResourceKind kind)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(json, documentOptions: StrictDocument);
+        }
+        catch (JsonException ex)
+        {
+            throw new NachosValidationException($"Filters are not valid JSON: {ex.Message}", ex);
+        }
+
+        return root switch
+        {
+            null => null,
+            JsonObject { Count: 0 } => null,
+            JsonObject obj => ParseObject(obj, ResourceFields.For(kind)),
+            _ => throw Invalid("Filters must be a JSON object."),
+        };
     }
 
     private static FilterNode ParseObject(JsonObject obj, IReadOnlyDictionary<string, FieldDefinition> fields)
@@ -136,7 +196,7 @@ public static partial class FilterParser
             JsonArray array => ParseIn(wireName, field, array),
             JsonObject operators => ParseOperators(wireName, field, operators),
             _ when IsWildcard(value) => new FilterNode.MatchAll(),
-            _ => new FilterNode.Field(field.Column, FilterOp.Eq, Normalize(wireName, field, value)),
+            _ => Compare(field, FilterOp.Eq, Normalize(wireName, field, value)),
         };
     }
 
@@ -171,12 +231,32 @@ public static partial class FilterParser
                         throw Invalid($"Operator '{key}' for field '{wireName}' does not accept null.");
                     }
 
-                    children.Add(new FilterNode.Field(field.Column, op, Normalize(wireName, field, operand)));
+                    children.Add(Compare(field, op, Normalize(wireName, field, operand)));
                     break;
             }
         }
 
         return Conjunction(children);
+    }
+
+    /// <summary>Builds the comparison node, folding in operands beyond the <see cref="decimal"/> range.</summary>
+    private static FilterNode Compare(FieldDefinition field, FilterOp op, Operand operand)
+    {
+        if (operand.Overflow == 0)
+        {
+            return new FilterNode.Field(field.Column, op, operand.Value);
+        }
+
+        // A stored count is a finite decimal, so it is below every huge positive operand and above every huge negative one.
+        var storedIsBelow = operand.Overflow > 0;
+        var matches = op switch
+        {
+            FilterOp.Ne => true,
+            FilterOp.Lt or FilterOp.Lte => storedIsBelow,
+            FilterOp.Gt or FilterOp.Gte => !storedIsBelow,
+            _ => false,
+        };
+        return matches ? new FilterNode.MatchAll() : new FilterNode.MatchNone();
     }
 
     private static FilterNode ParseIn(string wireName, FieldDefinition field, JsonArray array)
@@ -185,6 +265,8 @@ public static partial class FilterParser
         {
             throw Invalid($"A list is not allowed for field '{wireName}'.");
         }
+
+        RequireListSize($"Field '{wireName}'", array);
 
         if (array.Any(IsWildcard))
         {
@@ -203,21 +285,32 @@ public static partial class FilterParser
             if (element is null)
             {
                 includesNull = true;
+                continue;
             }
-            else
+
+            var operand = Normalize(wireName, field, element);
+            if (operand.Overflow == 0)
             {
-                values.Add(Normalize(wireName, field, element));
+                values.Add(operand.Value);
             }
         }
 
         var isNull = new FilterNode.Field(field.Column, FilterOp.IsNull, null);
         if (values.Count == 0)
         {
-            return isNull;
+            return includesNull ? isNull : new FilterNode.MatchNone();
         }
 
         var inList = new FilterNode.Field(field.Column, FilterOp.In, values);
-        return includesNull ? new FilterNode.Or([inList, isNull]) : (FilterNode)inList;
+        return includesNull ? new FilterNode.Or([inList, isNull]) : inList;
+    }
+
+    private static void RequireListSize(string where, JsonArray array)
+    {
+        if (array.Count > MaxListItems)
+        {
+            throw Invalid($"{where} has a list of {array.Count} items; the limit is {MaxListItems}.");
+        }
     }
 
     private static FilterOp? ToOperator(string key) => key switch
@@ -243,26 +336,27 @@ public static partial class FilterParser
     };
 
     /// <summary>Validates <paramref name="value"/> against the field's type and returns it in normalized form.</summary>
-    private static JsonValue Normalize(string wireName, FieldDefinition field, JsonNode value)
+    private static Operand Normalize(string wireName, FieldDefinition field, JsonNode value)
     {
         var kind = value is JsonValue ? value.GetValueKind() : (JsonValueKind?)null;
         switch (field.Type)
         {
             case FieldType.Text when kind == JsonValueKind.String:
-                return JsonValue.Create(value.GetValue<string>());
+                return new Operand(JsonValue.Create(value.GetValue<string>()));
 
-            case FieldType.Number when kind == JsonValueKind.Number && value.AsValue().TryGetValue(out long number):
-                return JsonValue.Create(number);
+            case FieldType.Number when kind == JsonValueKind.Number && TryNormalizeCount(value.ToJsonString(), out var number):
+                return number;
 
             case FieldType.Number when kind == JsonValueKind.String
-                && long.TryParse(value.GetValue<string>(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsed):
-                return JsonValue.Create(parsed);
+                && IntegerString().IsMatch(value.GetValue<string>())
+                && TryNormalizeCount(value.GetValue<string>(), out var parsed):
+                return parsed;
 
             case FieldType.Timestamp when kind == JsonValueKind.String && TryParseTimestamp(value.GetValue<string>(), out var instant):
-                return JsonValue.Create(instant);
+                return new Operand(JsonValue.Create(instant));
 
             case FieldType.Boolean when kind is JsonValueKind.True or JsonValueKind.False:
-                return JsonValue.Create(kind == JsonValueKind.True);
+                return new Operand(JsonValue.Create(kind == JsonValueKind.True));
 
             default:
                 throw Invalid($"Field '{wireName}' expects {Describe(field.Type)}.");
@@ -272,14 +366,70 @@ public static partial class FilterParser
     private static string Describe(FieldType type) => type switch
     {
         FieldType.Text => "a string",
-        FieldType.Number => "an integer or an integer string",
+        FieldType.Number => "an integral number or an integer string",
         FieldType.Timestamp => "an ISO-8601 date or date-time string",
         FieldType.Boolean => "a boolean (true or false)",
         _ => "a different value",
     };
 
-    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,7})?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$")]
+    [GeneratedRegex(@"\A[+-]?[0-9]+\z")]
+    private static partial Regex IntegerString();
+
+    [GeneratedRegex(@"\A(?<sign>[+-]?)(?<int>[0-9]+)(?:\.(?<frac>[0-9]+))?(?:[eE](?<exp>[+-]?[0-9]+))?\z")]
+    private static partial Regex NumberText();
+
+    [GeneratedRegex(@"\A[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,7})?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?\z")]
     private static partial Regex Iso8601();
+
+    /// <summary>
+    /// Normalizes JSON number text with an integral value to a <see cref="decimal"/>, or to an overflow sign when it
+    /// is outside the <see cref="decimal"/> range. Returns false for a non-integral value.
+    /// </summary>
+    private static bool TryNormalizeCount(string text, out Operand operand)
+    {
+        operand = default;
+        var match = NumberText().Match(text);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        // Decide integrality on the digits, so it never depends on floating-point or decimal rounding.
+        var digits = match.Groups["int"].Value + match.Groups["frac"].Value;
+        var pointPosition = match.Groups["int"].Length + ParseExponent(match.Groups["exp"]);
+        var lastNonZero = digits.AsSpan().LastIndexOfAnyExcept('0');
+
+        if (lastNonZero < 0)
+        {
+            operand = new Operand(JsonValue.Create(0m));
+            return true;
+        }
+
+        if (lastNonZero >= pointPosition)
+        {
+            return false;
+        }
+
+        operand = decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            // Truncate drops the scale of a value such as 5.0, so equal counts serialize identically.
+            ? new Operand(JsonValue.Create(decimal.Truncate(value)))
+            : new Operand(null, match.Groups["sign"].Value == "-" ? -1 : 1);
+        return true;
+    }
+
+    /// <summary>The exponent, clamped far beyond any digit string a request can carry.</summary>
+    private static long ParseExponent(Group exponent)
+    {
+        if (!exponent.Success)
+        {
+            return 0;
+        }
+
+        const long Clamp = int.MaxValue;
+        return int.TryParse(exponent.Value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : exponent.Value[0] == '-' ? -Clamp : Clamp;
+    }
 
     private static bool TryParseTimestamp(string text, out DateTimeOffset utc)
     {
@@ -304,6 +454,10 @@ public static partial class FilterParser
     {
         switch (value)
         {
+            case null:
+                // The metadata column is never unset, so "is null" matches nothing.
+                return new FilterNode.MatchNone();
+
             case JsonObject root:
                 var children = new List<FilterNode>(root.Count);
                 foreach (var (key, operand) in root)
@@ -327,7 +481,7 @@ public static partial class FilterParser
 
                 return Conjunction(children);
 
-            case not null when IsWildcard(value):
+            case JsonValue when IsWildcard(value):
                 return new FilterNode.MatchAll();
 
             default:
@@ -348,15 +502,30 @@ public static partial class FilterParser
 
     private static FilterNode ParseMetadataKey(IReadOnlyList<string> path, JsonNode? value)
     {
+        var where = $"Metadata key '{string.Join('.', path)}'";
         switch (value)
         {
             case null:
                 return new FilterNode.MetadataPath(path, FilterOp.IsNull, null);
             case JsonArray array:
-                return array.Count == 0
-                    ? throw Invalid($"Metadata key '{string.Join('.', path)}' needs a non-empty list.")
-                    : new FilterNode.MetadataPath(path, FilterOp.JsonContains, array.DeepClone());
+                if (array.Count == 0)
+                {
+                    throw Invalid($"{where} needs a non-empty list.");
+                }
+
+                RequireListSize(where, array);
+                foreach (var element in array)
+                {
+                    RequireScalar($"{where} containment list", element);
+                }
+
+                return new FilterNode.MetadataPath(path, FilterOp.JsonContains, array.DeepClone());
             case JsonObject obj:
+                if (obj.Count == 0)
+                {
+                    throw Invalid($"{where} has an empty object.");
+                }
+
                 var operatorCount = obj.Count(pair => OperatorKeys.Contains(pair.Key));
                 if (operatorCount == 0)
                 {
@@ -365,7 +534,7 @@ public static partial class FilterParser
 
                 return operatorCount == obj.Count
                     ? ParseMetadataOperators(path, obj)
-                    : throw Invalid($"Metadata key '{string.Join('.', path)}' mixes operators and nested keys.");
+                    : throw Invalid($"{where} mixes operators and nested keys.");
             case JsonValue when IsWildcard(value):
                 return new FilterNode.MetadataPath(path, FilterOp.NotNull, null);
             default:
@@ -411,6 +580,8 @@ public static partial class FilterParser
         {
             throw Invalid($"{where} requires an array.");
         }
+
+        RequireListSize(where, array);
 
         if (array.Any(IsWildcard))
         {

@@ -1,3 +1,5 @@
+using System.Collections.Frozen;
+
 namespace Nachos.Abstractions.Filtering;
 
 /// <summary>
@@ -70,7 +72,7 @@ public static class ResourceFields
             ["name"] = NameText,
             ["metadata"] = Metadata,
             ["created_at"] = CreatedAt,
-        };
+        }.ToFrozenDictionary(StringComparer.Ordinal);
 
     private static readonly IReadOnlyDictionary<string, FieldDefinition> Peer =
         new Dictionary<string, FieldDefinition>(StringComparer.Ordinal)
@@ -79,7 +81,7 @@ public static class ResourceFields
             ["peer_id"] = NameText,
             ["metadata"] = Metadata,
             ["created_at"] = CreatedAt,
-        };
+        }.ToFrozenDictionary(StringComparer.Ordinal);
 
     private static readonly IReadOnlyDictionary<string, FieldDefinition> Session =
         new Dictionary<string, FieldDefinition>(StringComparer.Ordinal)
@@ -90,7 +92,7 @@ public static class ResourceFields
             ["peer_id"] = new(FilterColumns.PeerId, FieldType.Text),
             ["metadata"] = Metadata,
             ["created_at"] = CreatedAt,
-        };
+        }.ToFrozenDictionary(StringComparer.Ordinal);
 
     private static readonly IReadOnlyDictionary<string, FieldDefinition> Message =
         new Dictionary<string, FieldDefinition>(StringComparer.Ordinal)
@@ -102,7 +104,7 @@ public static class ResourceFields
             ["token_count"] = new(FilterColumns.TokenCount, FieldType.Number),
             ["created_at"] = CreatedAt,
             ["metadata"] = Metadata,
-        };
+        }.ToFrozenDictionary(StringComparer.Ordinal);
 
     /// <summary>The fields a filter on <paramref name="kind"/> may name. Other top-level keys are ignored.</summary>
     public static IReadOnlyDictionary<string, FieldDefinition> For(ResourceKind kind) => kind switch

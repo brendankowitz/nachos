@@ -214,16 +214,78 @@ public sealed class FilterParserTests
             .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.In, Value("[1,2]")));
 
         var field = ParseRequired("""{"token_count":"5"}""", ResourceKind.Message).ShouldBeOfType<FilterNode.Field>();
-        field.Value!.GetValue<long>().ShouldBe(5);
+        field.Value!.GetValue<decimal>().ShouldBe(5m);
     }
+
+    [Fact]
+    public void TokenCount_FloatIntegral_Accepted()
+    {
+        foreach (var json in new[] { "5.0", "5.00", "5e0", "0.5e1", "50e-1" })
+        {
+            ParseRequired($$$"""{"token_count":{{{json}}}}""", ResourceKind.Message)
+                .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("5")), json);
+        }
+
+        ParseRequired("""{"token_count":1e2}""", ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("100")));
+        ParseRequired("""{"token_count":"-0"}""", ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("0")));
+        ParseRequired("""{"token_count":0e-999}""", ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("0")));
+    }
+
+    [Fact]
+    public void TokenCount_HugeInteger_Accepted()
+    {
+        // Beyond long but inside decimal: kept exactly.
+        ParseRequired("""{"token_count":12345678901234567890123}""", ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("12345678901234567890123")));
+        ParseRequired("""{"token_count":"9223372036854775808"}""", ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("9223372036854775808")));
+
+        // Beyond decimal: no stored count can equal it, so the parser folds the comparison.
+        string[] beyond = ["1e40", "123456789012345678901234567890123456789", "1e999999999999", "99999999999999999999999999999"];
+        foreach (var huge in beyond)
+        {
+            Folded($$$"""{"token_count":{{{huge}}}}""").ShouldBeOfType<FilterNode.MatchNone>(huge);
+            Folded($$$"""{"token_count":{"ne":{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchAll>(huge);
+            Folded($$$"""{"token_count":{"gt":{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchNone>(huge);
+            Folded($$$"""{"token_count":{"gte":{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchNone>(huge);
+            Folded($$$"""{"token_count":{"lt":{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchAll>(huge);
+            Folded($$$"""{"token_count":{"lte":{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchAll>(huge);
+            Folded($$$"""{"token_count":{"gt":-{{{huge}}}}}""").ShouldBeOfType<FilterNode.MatchAll>(huge);
+            if (huge.All(char.IsAsciiDigit))
+            {
+                Folded($$$"""{"token_count":{"lt":"-{{{huge}}}"}}""").ShouldBeOfType<FilterNode.MatchNone>(huge);
+            }
+        }
+
+        Folded("""{"token_count":{"lte":-1e40}}""").ShouldBeOfType<FilterNode.MatchNone>();
+
+        // In lists drop out-of-range elements and keep the rest.
+        Folded("""{"token_count":[1e40]}""").ShouldBeOfType<FilterNode.MatchNone>();
+        Folded("""{"token_count":[1e40,7]}""")
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.In, Value("[7]")));
+
+        static FilterNode Folded(string json) => ParseRequired(json, ResourceKind.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"token_count":5.5}""")]
+    [InlineData("""{"token_count":1e-1}""")]
+    [InlineData("""{"token_count":0.0000000000000000000000000000001}""")]
+    [InlineData("""{"token_count":100000000000000000000000000000000000000.5}""")]
+    [InlineData("""{"token_count":"5.0"}""")]
+    [InlineData("""{"token_count":"1e2"}""")]
+    [InlineData("""{"token_count":{"gt":2.5}}""")]
+    public void TokenCount_NonIntegral_Rejected(string json) =>
+        Should.Throw<NachosValidationException>(() => Parse(json, ResourceKind.Message));
 
     [Theory]
     [InlineData("""{"token_count":"abc"}""")]
     [InlineData("""{"token_count":"5.5"}""")]
-    [InlineData("""{"token_count":5.5}""")]
     [InlineData("""{"token_count":" 5"}""")]
     [InlineData("""{"token_count":true}""")]
-    [InlineData("""{"token_count":{"gt":"9223372036854775808"}}""")]
     [InlineData("""{"token_count":[1,"x"]}""")]
     public void BadTokenCount_Rejected(string json) =>
         Should.Throw<NachosValidationException>(() => Parse(json, ResourceKind.Message));
@@ -421,10 +483,47 @@ public sealed class FilterParserTests
     [Theory]
     [InlineData("""{"metadata":"x"}""")]
     [InlineData("""{"metadata":5}""")]
-    [InlineData("""{"metadata":null}""")]
     [InlineData("""{"metadata":["a"]}""")]
+    [InlineData("""{"metadata":true}""")]
     public void MetadataNotAnObject_Rejected(string json) =>
         Should.Throw<NachosValidationException>(() => Parse(json));
+
+    [Fact]
+    public void MetadataNull_IsMatchNone()
+    {
+        ParseRequired("""{"metadata":null}""").ShouldBeOfType<FilterNode.MatchNone>();
+        ParseRequired("""{"metadata":null}""", ResourceKind.Message).ShouldBeOfType<FilterNode.MatchNone>();
+    }
+
+    [Fact]
+    public void MetadataKeyEmptyObject_Rejected()
+    {
+        Should.Throw<NachosValidationException>(() => Parse("""{"metadata":{"k":{}}}"""));
+        Should.Throw<NachosValidationException>(() => Parse("""{"metadata":{"a":{"b":{}}}}"""));
+    }
+
+    [Theory]
+    [InlineData("""{"metadata":{"k":[null]}}""")]
+    [InlineData("""{"metadata":{"k":[{"a":1}]}}""")]
+    [InlineData("""{"metadata":{"k":[[1]]}}""")]
+    [InlineData("""{"metadata":{"k":["a",null]}}""")]
+    [InlineData("""{"metadata":{"k":{"in":[[1]]}}}""")]
+    public void MetadataListElementsMustBeScalars_Rejected(string json) =>
+        Should.Throw<NachosValidationException>(() => Parse(json));
+
+    [Fact]
+    public void MetadataListElementsKeepTheirKind() =>
+        ParseRequired("""{"metadata":{"k":[1,"1",true,"true",1.0]}}""")
+            .ShouldBe(new FilterNode.MetadataPath(["k"], FilterOp.JsonContains, Value("""[1,"1",true,"true",1.0]""")));
+
+    [Fact]
+    public void MetadataKeysAreLiteral() =>
+        ParseRequired("""{"metadata":{"a.b":1,"q\"uote":2,"k[0]":"*"}}""").ShouldBe(new FilterNode.And(
+        [
+            new FilterNode.MetadataPath(["a.b"], FilterOp.Eq, Value("1")),
+            new FilterNode.MetadataPath(["q\"uote"], FilterOp.Eq, Value("2")),
+            new FilterNode.MetadataPath(["k[0]"], FilterOp.NotNull, null),
+        ]));
 
     [Theory]
     [InlineData("""{"metadata":{"k":{"gte":1,"bogus":2}}}""")]
@@ -436,6 +535,141 @@ public sealed class FilterParserTests
     [InlineData("""{"metadata":{"k":{"contains":1}}}""")]
     public void MalformedMetadataOperators_Rejected(string json) =>
         Should.Throw<NachosValidationException>(() => Parse(json));
+
+    // ------------------------------------------------------------------ input normalization
+
+    [Fact]
+    public void CSharpBuiltFilter_IntTokenCount_Accepted()
+    {
+        var filter = new JsonObject { ["token_count"] = 5 };
+
+        FilterParser.Parse(filter, ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TokenCount, FilterOp.Eq, Value("5")));
+    }
+
+    [Fact]
+    public void CSharpBuiltFilter_DateTimeOffsetValue_Accepted()
+    {
+        var filter = new JsonObject
+        {
+            ["created_at"] = new JsonObject { ["gte"] = JsonValue.Create(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.FromHours(2))) },
+        };
+
+        var field = FilterParser.Parse(filter, ResourceKind.Workspace).ShouldBeOfType<FilterNode.Field>();
+
+        field.Value!.GetValue<DateTimeOffset>().ShouldBe(new DateTimeOffset(2026, 1, 2, 1, 4, 5, TimeSpan.Zero));
+    }
+
+    [Fact]
+    public void CSharpBuiltFilter_GuidValue_TreatedAsString()
+    {
+        var id = Guid.NewGuid();
+
+        FilterParser.Parse(new JsonObject { ["name"] = JsonValue.Create(id) }, ResourceKind.Workspace)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Name, FilterOp.Eq, Value($"\"{id}\"")));
+        FilterParser.Parse(new JsonObject { ["content"] = JsonValue.Create('x') }, ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Content, FilterOp.Eq, Value("\"x\"")));
+    }
+
+    [Fact]
+    public void CSharpBuiltFilter_DoesNotMutateOrShareTheInput()
+    {
+        var filter = JsonNode.Parse("""{"metadata":{"tags":["a"]}}""")!;
+        var before = filter.ToJsonString();
+
+        var parsed = FilterParser.Parse(filter, ResourceKind.Workspace).ShouldBeOfType<FilterNode.MetadataPath>();
+        parsed.Value!.AsArray()[0] = "changed";
+
+        filter.ToJsonString().ShouldBe(before);
+    }
+
+    [Fact]
+    public void DuplicateKeys_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse("""{"name":"a","name":"b"}""", ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse("""{"metadata":{"k":1,"k":2}}""", ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse("""{"AND":[{"name":"a","name":"a"}]}""", ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse("""{"unknown":{"x":1,"x":2}}""", ResourceKind.Workspace));
+    }
+
+    [Theory]
+    [InlineData("{")]
+    [InlineData("""{"name":}""")]
+    [InlineData("not json")]
+    [InlineData("[1]")]
+    [InlineData("\"x\"")]
+    public void MalformedJsonText_Rejected422(string json) =>
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(json, ResourceKind.Workspace));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    public void StringOverload_BlankNullOrEmpty_ReturnsNull(string? json) =>
+        FilterParser.Parse(json, ResourceKind.Workspace).ShouldBeNull();
+
+    [Fact]
+    public void StringOverload_ParsesLikeTheNodeOverload() =>
+        FilterParser.Parse("""{"name":"a"}""", ResourceKind.Workspace)
+            .ShouldBe(FilterParser.Parse(JsonNode.Parse("""{"name":"a"}"""), ResourceKind.Workspace));
+
+    [Fact]
+    public void ExcessiveNesting_Rejected422()
+    {
+        var json = string.Concat(Enumerable.Repeat("""{"AND":[""", 100)) + "{}" + string.Concat(Enumerable.Repeat("]}", 100));
+
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(json, ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void InListOver1000_Rejected()
+    {
+        var items = string.Join(",", Enumerable.Range(0, FilterParser.MaxListItems + 1).Select(i => $"\"v{i}\""));
+        var ok = string.Join(",", Enumerable.Range(0, FilterParser.MaxListItems).Select(i => $"\"v{i}\""));
+
+        Should.Throw<NachosValidationException>(() => Parse($$$"""{"name":[{{{items}}}]}"""));
+        Should.Throw<NachosValidationException>(() => Parse($$$"""{"name":{"in":[{{{items}}}]}}"""));
+        Should.Throw<NachosValidationException>(() => Parse($$$$"""{"metadata":{"k":{"in":[{{{{items}}}}]}}}"""));
+        Should.Throw<NachosValidationException>(() => Parse($$$"""{"metadata":{"k":[{{{items}}}]}}"""));
+        Should.NotThrow(() => Parse($$$"""{"name":[{{{ok}}}]}"""));
+        Should.NotThrow(() => Parse($$$$"""{"metadata":{"k":{"in":[{{{{ok}}}}]}}}"""));
+        // The wildcard does not exempt an oversized list.
+        Should.Throw<NachosValidationException>(() => Parse($$$"""{"name":["*",{{{items}}}]}"""));
+    }
+
+    [Theory]
+    [InlineData("2026-01-01\n")]
+    [InlineData("2026-01-01T00:00:00Z\n")]
+    [InlineData(" 2026-01-01")]
+    public void Timestamp_WithTrailingOrLeadingWhitespace_Rejected(string text)
+    {
+        var filter = new JsonObject { ["created_at"] = text };
+
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(filter, ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void ToString_ShowsChildren()
+    {
+        var node = ParseRequired("""{"OR":[{"name":"a"},{"metadata":{"a":{"b":1}}}]}""");
+
+        var text = node.ToString();
+
+        text.ShouldContain("Children = [");
+        text.ShouldContain("Field { Column = Name");
+        text.ShouldContain("Path = [a, b]");
+    }
+
+    [Fact]
+    public void NeWildcard_IsLiteral()
+    {
+        ParseRequired("""{"name":{"ne":"*"}}""")
+            .ShouldBe(new FilterNode.Field(FilterColumns.Name, FilterOp.Ne, Value("\"*\"")));
+        ParseRequired("""{"metadata":{"k":{"ne":"*"}}}""")
+            .ShouldBe(new FilterNode.MetadataPath(["k"], FilterOp.Ne, Value("\"*\"")));
+    }
 
     // ------------------------------------------------------------------ AST value semantics
 
