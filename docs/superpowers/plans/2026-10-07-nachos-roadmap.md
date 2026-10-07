@@ -20,7 +20,7 @@ These apply to every milestone. Values are copied from the spec.
 - **Azure consent (spec §18.3):** no agent or CI runs `azd up`/`provision`/`deploy`/`down`, `az deployment …`, `what-if`, `sqlpackage Publish` to Azure, or any registry push used by Azure, without a per-run **untagged** owner approval. CI workflows that touch Azure are `workflow_dispatch`-only and run in the `azure-live` environment.
 - **SDK:** `global.json` pins `10.0.100` with `rollForward: latestFeature`. Central package management lives in `Directory.Packages.props`. `Nullable` and `TreatWarningsAsErrors` are enabled in `Directory.Build.props`.
 - **Docs (spec §22):** every milestone updates the README feature list, adds concept/guide pages, and keeps generated reference current. The docs site builds with zero broken links.
-- **Commits:** one task per commit (or a small series), each with its tests. Messages end with an `Agent: <Name>` trailer and the `Co-authored-by: Copilot App` trailer.
+- **Commits:** one task per commit (or a small series), each with its tests. Messages end with an `Agent: <Name>` trailer **and the agent's own co-author trailer**: each agent uses the attribution its host provides (for example, Cortado and Cedar use `Co-authored-by: Copilot App`; Salsa uses its Claude session trailers). `git log --grep='^Agent: <Name>$'` identifies each agent's commits.
 
 ## Ownership model
 

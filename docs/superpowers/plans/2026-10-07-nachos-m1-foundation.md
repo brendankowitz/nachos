@@ -60,8 +60,8 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 | 12 .NET client | Salsa | 9, 10, 11 |
 | 13 Bootstrap CLI | Cortado | 6, 7, 10 (`IKeyIssuer`) |
 | 14 Aspire AppHost + FTS image recipe | Cortado | 7, 9 |
-| 15 Bicep + azd (offline) | Salsa | 9 |
-| 16 Upstream-SDK conformance | Salsa | 10, 11, 14 |
+| 15 Bicep + azd (offline) | Salsa | 1 (Bicep, `azure.yaml`, `InfraTests`); 13 (hook CLI verbs; until 13 lands, hooks are written against the documented verbs and only syntax-checked) |
+| 16 Upstream-SDK conformance | Salsa | 10, 11, 13 |
 | 17 CI build/test/schema/license workflow | Cedar | 1 (extend as tasks land) |
 | 18 README, logo, docs site, DocsGen, Pages workflow | Cedar | 9, 13 |
 
@@ -123,6 +123,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - `Core_DoesNotReference_SqlOrAspNet`: assert `typeof(Nachos.Core.AssemblyMarker).Assembly.GetReferencedAssemblies()` contains none of `Microsoft.Data.SqlClient`, `Microsoft.EntityFrameworkCore*`, `Microsoft.AspNetCore*`;
   - `Abstractions_ReferencesOnlyBcl`: allowed prefixes are `System`, `Microsoft.Extensions.*.Abstractions`, and `netstandard`;
   - `Client_DoesNotReference_Core`.
+  - `Hosting_DoesNotReference_DataLayer`. Allowed direction: `DataLayer.* → Hosting → Core → Abstractions`. `Hosting` never references a provider, and `Core` never references `Hosting` or any provider.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Architecture.Tests`. Expected: build fails because the projects don't exist yet.
 - [ ] **Step 3:** Create the solution:
   - `global.json`: `{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}`.
@@ -135,7 +136,7 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 4:** Write `Export-WireManifest.ps1 -Url <url> -ExpectedSha256 <hex> -Out <path>`:
   - Download the raw bytes, verify the hash (exit 1 on mismatch), project only the fields listed above, and write sorted, stable JSON.
   - Run it with the URL and hash from "Spec clarifications" item 1, and commit the manifest.
-- [ ] **Step 5:** Run `dotnet build Nachos.slnx -warnaserror` then `dotnet test test/Nachos.Architecture.Tests`. Expected: PASS (3 tests).
+- [ ] **Step 5:** Run `dotnet build Nachos.slnx -warnaserror` then `dotnet test test/Nachos.Architecture.Tests`. Expected: PASS (4 tests).
 - [ ] **Step 6:** Commit `chore: solution skeleton, service defaults, Honcho v3 wire manifest`.
 
 ### Task 2: Abstractions: contracts, records, store interfaces, store contract tests (Cortado)
@@ -146,7 +147,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - `src/Nachos.Abstractions/Domain/*.cs`: records and `LifecycleState`;
   - `src/Nachos.Abstractions/Stores/*.cs`;
   - `src/Nachos.Abstractions/INachosClient.cs`, `PublicId.cs`, `Exceptions.cs`, `PageRequest.cs`;
-  - `test/Nachos.Testing/StoreContractTests.cs` (an abstract base class library, not a test project);
+  - `test/Nachos.Testing/StoreContractTests.cs` (an abstract base class library, not a test project; Task 9 adds `NachosApiFactory` to the same library);
   - `test/Nachos.Abstractions.Tests/ContractShapeTests.cs`.
 
 **Interfaces (Produces; every later task relies on these exact names):**
@@ -380,7 +381,7 @@ These are the input classes most likely to bite users. Each line names the test 
 ### Task 9: API: routes, JSON, errors, pagination, health, 501s (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Api/Program.cs`, `Endpoints/{Workspace,Peer,Session,Message,NotImplemented}Endpoints.cs`, `Errors/NachosExceptionHandler.cs`, `Json/NachosJsonContext.cs`, `Paging/PagingParameters.cs`, `Health/StoreReadinessCheck.cs`; `test/Nachos.Api.Tests/{NachosApiFactory,WorkspaceEndpointsTests,PeerEndpointsTests,SessionEndpointsTests,MessageEndpointsTests,PaginationTests,ErrorShapeTests,WireCoverageTests}.cs`.
+- Create: `src/Nachos.Api/Program.cs` (ends with `public partial class Program;`, so `WebApplicationFactory<Program>` works from other assemblies), `test/Nachos.Testing/NachosApiFactory.cs`, `Endpoints/{Workspace,Peer,Session,Message,NotImplemented}Endpoints.cs`, `Errors/NachosExceptionHandler.cs`, `Json/NachosJsonContext.cs`, `Paging/PagingParameters.cs`, `Health/StoreReadinessCheck.cs`; `test/Nachos.Api.Tests/{NachosApiFactory,WorkspaceEndpointsTests,PeerEndpointsTests,SessionEndpointsTests,MessageEndpointsTests,PaginationTests,ErrorShapeTests,WireCoverageTests}.cs`.
 
 **Interfaces:**
 - Consumes: `INachosClient` (Task 4) and `UseInMemory` (Task 8).
@@ -388,7 +389,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - Every M1 route in spec §9.3 (M1 rows), with paths, query parameters, and statuses exactly as in `honcho-v3-wire.json`.
   - JSON uses `JsonSerializerOptions` with `PropertyNamingPolicy = SnakeCaseLower`, null values written, and the source-generated `NachosJsonContext`.
   - `NotImplementedEndpoints` maps every manifest route that M1 doesn't implement to `501 {"detail":"Not implemented in this Nachos version"}`.
-  - `NachosApiFactory : WebApplicationFactory<Program>` uses the in-memory provider and auth disabled, running in the `Development` environment. Task 10 adds an auth-enabled variant.
+  - `NachosApiFactory : WebApplicationFactory<Program>` lives in `test/Nachos.Testing` (shared with `Nachos.Client.Tests` and conformance), and uses the in-memory provider with auth disabled, running in the `Development` environment. Task 10 adds an auth-enabled variant, `NachosApiFactory.WithAuth(SigningKeyOptions)`.
 
 - [ ] **Step 1:** Write the tests:
   - `WireCoverageTests.EveryManifestRoute_IsMapped`: a route is mapped when it is implemented, or when it returns 501 and is listed in `NotImplementedEndpoints`.
@@ -485,7 +486,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - Retries cover 429 / 5xx / transport errors and honor `Retry-After`: up to 3 attempts with exponential jitter.
 
 - [ ] **Step 1:** Write the tests:
-  - `RoundTripTests`: every `INachosClient` method against `NachosApiFactory`, with results equal to the in-process `NachosService` results for the same calls.
+  - `RoundTripTests`: every `INachosClient` method against `NachosApiFactory`, with results equal to the in-process `NachosService` results for the same calls, after normalizing server-generated `Id` (messages) and `CreatedAt`. Shape and every deterministic field must match.
   - `RetryBoundaryTests.CommittedThenTransportFailure_RetriesWithKey_ExactlyOneBatch`: a `DelegatingHandler` lets the first response commit, then throws `HttpRequestException`.
   - `RetryBoundaryTests.WithoutKey_NoReplay`: a raw call with the key header stripped asserts a single attempt.
   - `RetryBoundaryTests.Honors_RetryAfter`.
@@ -553,7 +554,8 @@ These are the input classes most likely to bite users. Each line names the test 
   - `Bicep_Builds`: shells out to `az bicep build --file infra/main.bicep --stdout` and asserts exit code 0. It is skipped with an explicit reason if `az` is missing locally; in CI it is required.
   - `AzureYaml_ServicesPointAtExistingProjects`.
   - `Sql_IsEntraOnly`: the compiled ARM JSON contains `azureADOnlyAuthentication: true`.
-  - `Hooks_ContainNoAzureCommandsOutsideAzdHookContext`: the hooks are invoked only by azd, and no other script runs them.
+  - `Repo_HasNoUnattendedAzurePath`: scan `.github/workflows/**` and `eng/**` for `azd (up|provision|deploy|down)`, `az deployment`, `az group`, `sqlpackage …Publish`, `infra/hooks`, `docker push`, and `az acr`. Fail on any hit, except inside a workflow that is `workflow_dispatch`-only **and** declares `environment: azure-live`.
+  - `Repo_HasNoUnattendedAzurePath_DetectsPlantedAzdUp`: a mutation check where a temp workflow containing `azd up` on `push` makes the scanner fail.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Infra.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement. **Do not run `azd up`/`provision`/`deploy` or `what-if`. These are owner-gated.**
 - [ ] **Step 4:** Run the tests again, plus `az bicep lint --file infra/main.bicep`. Expected: PASS, with no lint errors.
@@ -562,13 +564,13 @@ These are the input classes most likely to bite users. Each line names the test 
 ### Task 16: Upstream-SDK conformance (Salsa)
 
 **Files:**
-- Create: `eng/conformance/Start-NachosForConformance.ps1`; `test/conformance/python/{pyproject.toml,conftest.py,test_crud.py,test_auth.py}`; `test/conformance/typescript/{package.json,package-lock.json,crud.test.mjs}`; `.github/workflows/conformance.yml`.
+- Create: `eng/conformance/Start-NachosForConformance.ps1`; `test/conformance/python/{pyproject.toml,requirements.lock,conftest.py,test_crud.py,test_auth.py}`; `test/conformance/typescript/{package.json,package-lock.json,crud.test.mjs}`; `.github/workflows/conformance.yml`.
 
 **Interfaces:**
 - Consumes:
   - the running API (in-memory, or SQL via `-Provider Sql -ConnectionString`);
   - `nachos keys create` (Task 13) for an admin key and scoped keys;
-  - the SDKs **only through their public documented API**: `honcho-ai` (PyPI) and `@honcho-ai/sdk` (npm), pinned to their latest versions on the day of this task. Never read their source.
+  - the SDKs **only through their public documented API**: `honcho-ai` (PyPI) and `@honcho-ai/sdk` (npm), pinned exactly to their latest versions on the day of this task. Python uses `==` pins plus a hash-locked `requirements.lock` (`pip install --require-hashes`); TypeScript uses `package-lock.json`. The resolved SDK versions and the wire pin (3.3.0) are recorded in the M1 PR body, and any later SDK bump is its own reviewed change. Never read the SDK source.
 - Produces: `.github/workflows/conformance.yml` (on PR and push; in-memory provider; no secrets; `contents: read`).
 
 - [ ] **Step 1:** Write the scenarios in both languages:
