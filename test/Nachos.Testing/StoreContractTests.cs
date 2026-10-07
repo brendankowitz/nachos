@@ -33,8 +33,9 @@ public abstract class StoreContractTests : IAsyncLifetime
     /// <summary>Creates a store whose time-based values (including idempotency expiry) come from <paramref name="clock"/>.</summary>
     protected abstract IMemoryStore CreateStore(TimeProvider clock);
 
-    /// <summary>Builds the filter equivalent to <c>{"metadata":{key:value}}</c>. Replaced by the parser once it exists.</summary>
-    protected abstract FilterNode MetadataEquals(string key, string value);
+    /// <summary>Builds the filter for <c>{"metadata":{key:value}}</c> through the shared parser.</summary>
+    private static FilterNode MetadataEquals(ResourceKind kind, string key, string value) =>
+        FilterParser.Parse(new JsonObject { ["metadata"] = new JsonObject { [key] = value } }, kind)!;
 
     public Task InitializeAsync() => Task.CompletedTask;
 
@@ -202,7 +203,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         workspaces.Select(w => w.CreatedAt).Distinct().Count().ShouldBe(1);
         (await store.Workspaces.GetAsync(workspace, Ct))!.Metadata.ToJsonString()
             .ShouldBe(workspaces[0].Metadata.ToJsonString());
-        (await store.Workspaces.ListAsync(MetadataEquals("tag", tag), new PageRequest(), Ct)).Total.ShouldBe(1);
+        (await store.Workspaces.ListAsync(MetadataEquals(ResourceKind.Workspace, "tag", tag), new PageRequest(), Ct)).Total.ShouldBe(1);
 
         var peers = await RunConcurrentlyAsync(
             32, i => store.Peers.GetOrCreateAsync(workspace, "alice", CallerMetadata(i), null, Ct));
@@ -210,7 +211,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         peers.Select(p => p.CreatedAt).Distinct().Count().ShouldBe(1);
         (await store.Peers.GetAsync(workspace, "alice", Ct))!.Metadata.ToJsonString()
             .ShouldBe(peers[0].Metadata.ToJsonString());
-        (await store.Peers.ListAsync(workspace, PeerKind.All, MetadataEquals("tag", tag), new PageRequest(), Ct))
+        (await store.Peers.ListAsync(workspace, PeerKind.All, MetadataEquals(ResourceKind.Peer, "tag", tag), new PageRequest(), Ct))
             .Total.ShouldBe(1);
 
         var sessions = await RunConcurrentlyAsync(
@@ -219,7 +220,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         sessions.Select(s => s.CreatedAt).Distinct().Count().ShouldBe(1);
         (await store.Sessions.GetAsync(workspace, "s", Ct))!.Metadata.ToJsonString()
             .ShouldBe(sessions[0].Metadata.ToJsonString());
-        (await store.Sessions.ListAsync(workspace, MetadataEquals("tag", tag), new PageRequest(), Ct)).Total.ShouldBe(1);
+        (await store.Sessions.ListAsync(workspace, MetadataEquals(ResourceKind.Session, "tag", tag), new PageRequest(), Ct)).Total.ShouldBe(1);
     }
 
     [Fact]
@@ -389,7 +390,9 @@ public abstract class StoreContractTests : IAsyncLifetime
 
         // Five rows created one second apart; rows 0, 2 and 4 carry k = value.
         var value = Unique("v");
-        var filter = MetadataEquals("k", value);
+        var workspaceFilter = MetadataEquals(ResourceKind.Workspace, "k", value);
+        var peerFilter = MetadataEquals(ResourceKind.Peer, "k", value);
+        var sessionFilter = MetadataEquals(ResourceKind.Session, "k", value);
         for (var i = 0; i < 5; i++)
         {
             clock.Advance(TimeSpan.FromSeconds(1));
@@ -400,13 +403,13 @@ public abstract class StoreContractTests : IAsyncLifetime
         }
 
         await AssertFilteredPagesAsync(
-            async page => Names(await store.Workspaces.ListAsync(filter, page, Ct), w => w.Name),
+            async page => Names(await store.Workspaces.ListAsync(workspaceFilter, page, Ct), w => w.Name),
             [$"{workspace}-0", $"{workspace}-2", $"{workspace}-4"]);
         await AssertFilteredPagesAsync(
-            async page => Names(await store.Peers.ListAsync(workspace, PeerKind.Regular, filter, page, Ct), p => p.Name),
+            async page => Names(await store.Peers.ListAsync(workspace, PeerKind.Regular, peerFilter, page, Ct), p => p.Name),
             ["p0", "p2", "p4"]);
         await AssertFilteredPagesAsync(
-            async page => Names(await store.Sessions.ListAsync(workspace, filter, page, Ct), s => s.Name),
+            async page => Names(await store.Sessions.ListAsync(workspace, sessionFilter, page, Ct), s => s.Name),
             ["s0", "s2", "s4"]);
     }
 
@@ -440,7 +443,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         var (store, _) = NewStore();
         var workspace = Unique("ws");
         var tag = Unique("tag");
-        var filter = MetadataEquals("tag", tag);
+        var filter = MetadataEquals(ResourceKind.Workspace, "tag", tag);
 
         // The clock never moves, so every row has the same CreatedAt and only insertion order can break the tie.
         await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);

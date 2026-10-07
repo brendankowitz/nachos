@@ -13,4 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nachos.Abstractions\Nachos.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Filtering\filter-cases.json" LogicalName="Nachos.Testing.Filtering.filter-cases.json" />
+  </ItemGroup>
 </Project>
