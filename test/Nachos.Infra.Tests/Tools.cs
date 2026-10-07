@@ -53,7 +53,8 @@ internal static class Tools
         string fileName,
         IEnumerable<string> arguments,
         string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        TimeSpan? timeout = null)
     {
         var startInfo = new ProcessStartInfo(fileName)
         {
@@ -82,10 +83,11 @@ internal static class Tools
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
 
-        if (!process.WaitForExit(TimeSpan.FromMinutes(2)))
+        var limit = timeout ?? TimeSpan.FromMinutes(2);
+        if (!process.WaitForExit(limit))
         {
             process.Kill(entireProcessTree: true);
-            throw new TimeoutException($"'{fileName}' did not finish within 2 minutes.");
+            throw new TimeoutException($"'{fileName}' did not finish within {limit}.");
         }
 
         return new ProcessResult(process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());

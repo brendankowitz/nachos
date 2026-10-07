@@ -31,6 +31,26 @@ public sealed class ToolGateTests
         (decision.Reason is null).ShouldBe(expected != GateOutcome.Skip);
     }
 
+    [Theory]
+    // isWindows, requireTools, cliPresent, daemonRunning, expected
+    [InlineData(false, false, true, true, GateOutcome.Run)]
+    [InlineData(false, false, true, false, GateOutcome.Skip)]
+    [InlineData(false, false, false, false, GateOutcome.Skip)]
+    [InlineData(false, true, true, false, GateOutcome.Fail)]
+    [InlineData(false, true, false, false, GateOutcome.Fail)]
+    [InlineData(false, true, true, true, GateOutcome.Run)]
+    [InlineData(true, true, true, true, GateOutcome.Skip)]
+    public void DecideDocker_NeedsARunningDaemon(bool isWindows, bool requireTools, bool cliPresent, bool daemonRunning, GateOutcome expected)
+    {
+        var decision = ToolGate.DecideDocker(isWindows, requireTools, cliPresent, daemonRunning);
+
+        decision.Outcome.ShouldBe(expected);
+        if (expected == GateOutcome.Skip && !isWindows)
+        {
+            decision.Reason.ShouldNotBeNull().ShouldContain("Docker daemon");
+        }
+    }
+
     [Fact]
     public void Decide_ExplainsWhyAPosixOnlyTestWasSkippedOnWindows()
     {

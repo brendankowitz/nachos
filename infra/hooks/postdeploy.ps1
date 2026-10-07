@@ -13,25 +13,28 @@ if ([string]::IsNullOrWhiteSpace($env:NACHOS_API_URI)) {
 $uri = $env:NACHOS_API_URI.TrimEnd('/') + '/health/ready'
 $placeholderStillServing = 'The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.'
 
-# The new revision can take a moment to become ready, hence the retries (same budget as postdeploy.sh).
+# Poll until the body is exactly "Healthy" (same budget as postdeploy.sh). azd waits for the ARM operation, not for
+# the traffic switch, so the first answers can still come from the placeholder revision (or a warming API:
+# Degraded/Unhealthy) and are retried. -TimeoutSec bounds each attempt.
 $attempts = 10
-$body = $null
+$delaySeconds = 6
+$body = ''
 for ($attempt = 1; $attempt -le $attempts; $attempt++) {
     try {
         $body = [string](Invoke-WebRequest -Uri $uri -Method Get -TimeoutSec 30).Content
-        break
     }
     catch {
-        if ($attempt -eq $attempts) {
-            throw "postdeploy: $uri did not answer after $attempts attempts. $placeholderStillServing"
-        }
-        Start-Sleep -Seconds 6
+        $body = ''
+    }
+    if ($body.Trim() -ceq 'Healthy') {
+        Write-Output "postdeploy: $env:NACHOS_API_URI is ready (the deployed API reports Healthy)."
+        return
+    }
+    if ($attempt -lt $attempts) {
+        Start-Sleep -Seconds $delaySeconds
     }
 }
 
-if ($body.Trim() -cne 'Healthy') {
-    # Show at most 200 printable characters of what answered; never the raw body.
-    $shown = ($body.Substring(0, [Math]::Min(200, $body.Length)) -replace '[^\x20-\x7E]', '')
-    throw "postdeploy: /health/ready answered '$shown'. $placeholderStillServing"
-}
-Write-Output "postdeploy: $env:NACHOS_API_URI is ready (the deployed API reports Healthy)."
+# Show at most 200 printable characters of the last answer; never the raw body.
+$shown = ($body.Substring(0, [Math]::Min(200, $body.Length)) -replace '[^\x20-\x7E]', '')
+throw "postdeploy: after $attempts attempts /health/ready last answered '$shown'. $placeholderStillServing"

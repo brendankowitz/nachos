@@ -7,11 +7,20 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 
 /// <summary>
 /// Spec §18.3: nothing that touches Azure may run unattended. Scans <c>.github/workflows/**</c>,
-/// <c>.github/actions/**</c>, <c>.github/scripts/**</c> and <c>eng/**</c> under a root for azd/az commands other
-/// than the offline ones (<see cref="AzureCliInvocations"/>), Az PowerShell, raw ARM/Entra/storage endpoints, Azure
-/// actions, registry logins, pushes (any tool) and ACR references, and reusable workflows from other repositories.
-/// Patterns are matched per logical statement (shell and PowerShell line continuations joined, <c>#</c> comments
-/// stripped when quoting is unambiguous) and reported at the statement's first physical line.
+/// <c>.github/actions/**</c>, <c>.github/scripts/**</c> and <c>eng/**</c> under a root for az/azd/docker/bicep
+/// commands that are not offline (<see cref="CliInvocations"/>), Az PowerShell, Azure endpoints (ARM, Entra, storage,
+/// Key Vault, SQL, App Service, sovereign clouds), Azure actions, registry logins, pushes (any tool) and ACR
+/// references, and reusable workflows from other repositories. Patterns are matched per logical statement (shell and
+/// PowerShell line continuations and YAML folded <c>run: &gt;</c> blocks joined, <c>#</c> comments stripped when
+/// quoting is unambiguous) and reported at the statement's first physical line.
+/// <para>
+/// <c>.github/scripts</c> also holds JavaScript, docs and test fixtures, where words like <c>az</c> are ordinary
+/// identifiers or prose. There, <c>node_modules/</c> (created by <c>npm ci</c>), <c>fixtures/</c> and <c>*.md</c>
+/// are skipped, and <c>*.js|mjs|cjs|ts|json</c> are checked only for unambiguous commands (<c>azd</c> with a
+/// deploying verb, <c>docker push</c>, ACR and ARM endpoints, Az cmdlets). Limit: JavaScript that shells out to
+/// <c>az</c> through a string is detected only when the string holds such an unambiguous command. Every other
+/// file there, and every file under the other roots (including any tracked <c>node_modules</c>), gets all rules.
+/// </para>
 /// <para>
 /// The only exemption is, inside a workflow whose triggers are exactly <c>workflow_dispatch</c>, a line within a
 /// job that itself declares <c>environment: azure-live</c> exactly once (whose required reviewer is the owner).
@@ -28,30 +37,38 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// </summary>
 internal sealed class UnattendedAzureScanner(string root)
 {
-    // az and azd invocations (any spelling, flags before the verb) are judged by AzureCliInvocations.
+    // az/azd/docker/bicep invocations (any spelling, flags before the verb) are judged by CliInvocations.
     private static readonly Regex[] Forbidden =
     [
         Pattern(@"sqlpackage.*Publish"),
         // The azd hooks, by either slash direction.
         Pattern(@"infra[\\/]+hooks"),
-        // Az PowerShell cmdlets that sign in or change Azure (Connect-AzAccount, New-AzResourceGroupDeployment, ...).
-        Pattern(@"\b(?:New|Set|Update|Remove|Publish|Start|Invoke|Connect|Add)-Az[a-z]+"),
-        // Raw ARM, Entra token and storage endpoints (an ARM template's $schema URL is not a call).
+        // The Azure CLI started as a Python module.
+        Pattern(@"(?<![\w-])-m\s+azure\.cli\b"),
+        // Any Az PowerShell cmdlet or alias (Connect-AzAccount, Login-AzAccount, Get-AzAccessToken, ...) and AzureRM.
+        // Case-sensitive so `Import-Module Az` and ordinary words stay clean.
+        Pattern(@"\b[A-Za-z]+-(?-i:Az[A-Z][A-Za-z]*|AzureRm[A-Z][A-Za-z]*)\b"),
+        // Azure endpoints: ARM (not an ARM template's $schema URL), Entra tokens, storage, Key Vault, SQL, App Service
+        // (incl. scm/Kudu), and the US Government and China clouds.
         Pattern(@"(?<!schema\.)\bmanagement\.azure\.com\b"),
         Pattern(@"\blogin\.microsoftonline\.com\b"),
         Pattern(@"\bcore\.windows\.net\b"),
-        // Registry pushes: docker/podman/nerdctl/buildah [image|manifest|compose] push, docker-compose push.
-        Pattern(@"(?<![\w-])(?:docker|podman|nerdctl|buildah)(?:\s+|-)(?:(?:image|manifest|compose)\s+)?push\b"),
-        // Copies a manifest list straight to the target registry.
-        Pattern(@"\bdocker\s+buildx\s+imagetools\s+create\b"),
+        Pattern(@"\bvault\.azure\.net\b"),
+        Pattern(@"\bdatabase\.windows\.net\b"),
+        Pattern(@"\bazurewebsites\.net\b"),
+        Pattern(@"\busgovcloudapi\.net\b"),
+        Pattern(@"\bchinacloudapi\.cn\b"),
+        // Registry pushes by other container tools (docker itself is tokenised): podman/nerdctl/buildah
+        // [image|manifest] push, docker-compose push.
+        Pattern(@"(?<![\w-])(?:podman|nerdctl|buildah)\s+(?:(?:image|manifest)\s+)?push\b"),
+        Pattern(@"\bdocker-compose\s+push\b"),
         Pattern(@"\bskopeo\s+(?:copy|sync)\b"),
         Pattern(@"\boras\s+(?:push|cp|copy|attach)\b"),
         Pattern(@"\bcrane\s+(?:push|copy|cp)\b"),
         Pattern(@"\bctr\b[^;&|]*?\bimages?\s+push\b"),
-        // .NET SDK container publishing (pushes when a registry is set) and Bicep module publishing.
+        // .NET SDK container publishing (pushes when a registry is set).
         Pattern(@"\bPublishContainer\b"),
         Pattern(@"[-/]p(?:roperty)?:ContainerRegistry="),
-        Pattern(@"(?<![\w.$-])bicep(?:\.exe)?\s+(?:publish|restore)\b"),
         // Builds that push as part of the build, whichever tool or (continuation) line carries the flag.
         Pattern(@"(?<![\w-])--push(?![\w-])"),
         Pattern(@"\btype=registry\b"),
@@ -65,6 +82,16 @@ internal sealed class UnattendedAzureScanner(string root)
         // action that pushes images; either can reach Azure or a registry without a shell command.
         Pattern(@"\buses\s*:\s*['""]?azure/"),
         Pattern(@"\buses\s*:\s*['""]?docker/build-push-action"),
+    ];
+
+    // For JavaScript/JSON under .github/scripts: commands that are unambiguous even inside a string.
+    private static readonly Regex[] Unambiguous =
+    [
+        Pattern(@"\bazd(?:\.exe)?\s+(?:up|provision|deploy|down|hooks|auth|init|pipeline|env)\b"),
+        Pattern(@"\bdocker\s+(?:(?:image|manifest)\s+)?push\b"),
+        Pattern(@"\bazurecr\.io\b"),
+        Pattern(@"(?<!schema\.)\bmanagement\.azure\.com\b"),
+        Pattern(@"\b[A-Za-z]+-(?-i:Az[A-Z][A-Za-z]*|AzureRm[A-Z][A-Za-z]*)\b"),
     ];
 
     private static readonly Regex KeyLine = new(
@@ -85,7 +112,23 @@ internal sealed class UnattendedAzureScanner(string root)
         foreach (var file in EnumerateFiles())
         {
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            var rules = RulesFor(relative);
+            if (rules == FileRules.Skip)
+            {
+                continue;
+            }
+
             var lines = File.ReadAllText(file).Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n');
+            if (rules == FileRules.Unambiguous)
+            {
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    hits.AddRange(Unambiguous.Where(p => p.IsMatch(lines[i])).Select(p => new ScanHit(relative, i + 1, p.ToString())));
+                }
+
+                continue;
+            }
+
             var exempt = IsWorkflow(relative) ? ExemptLines(lines) : [];
 
             foreach (var statement in Statements(lines, IsYaml(relative)))
@@ -104,7 +147,7 @@ internal sealed class UnattendedAzureScanner(string root)
                     }
                 }
 
-                foreach (var rule in AzureCliInvocations.Violations(statement.Text))
+                foreach (var rule in CliInvocations.Violations(statement.Text))
                 {
                     hits.Add(new ScanHit(relative, statement.First + 1, rule));
                 }
@@ -120,20 +163,23 @@ internal sealed class UnattendedAzureScanner(string root)
     /// are stripped so a mention in prose is not a hit, unless some line of the file leaves a quote open: a
     /// multi-line string makes it impossible to tell a comment from string content, so nothing is stripped.
     /// In YAML a trailing backtick continues only inside <c>run:</c> content: elsewhere (a step <c>name:</c> such
-    /// as <c>Install `azd`</c>) it is Markdown, and joining it to the next key would invent a command.
+    /// as <c>Install `azd`</c>) it is Markdown, and joining it to the next key would invent a command. The lines
+    /// of a folded <c>run: &gt;</c> block are one shell line once YAML folds them, so they form one statement; a
+    /// literal <c>|</c> block keeps one command per line.
     /// </summary>
     private static IEnumerable<Statement> Statements(string[] lines, bool isYaml)
     {
         var stripComments = !lines.Any(l => ScanLine(l).UnterminatedQuote);
-        var backtickContinues = isYaml ? RunContent(lines) : null;
+        var run = isYaml ? RunLines(lines) : null;
         var text = new System.Text.StringBuilder();
         var first = 0;
         for (var i = 0; i < lines.Length; i++)
         {
             var code = (stripComments ? ScanLine(lines[i]).Code : lines[i]).TrimEnd();
-            var continues = i + 1 < lines.Length
-                && (code.EndsWith('\\') || (code.EndsWith('`') && (backtickContinues?[i] ?? true)));
-            text.Append(continues ? code[..^1] + " " : code);
+            var folded = run is not null && run.FoldedBlock[i] >= 0 && i + 1 < lines.Length && run.FoldedBlock[i + 1] == run.FoldedBlock[i];
+            var lineContinues = code.EndsWith('\\') || (code.EndsWith('`') && (run?.Content[i] ?? true));
+            var continues = i + 1 < lines.Length && (folded || lineContinues);
+            text.Append(lineContinues && continues ? code[..^1] + " " : folded ? code + " " : code);
             if (continues)
             {
                 continue;
@@ -149,13 +195,18 @@ internal sealed class UnattendedAzureScanner(string root)
     private sealed record Statement(int First, int Last, string Text);
 
     /// <summary>
-    /// Marks the lines of a YAML file that hold script code: a <c>run:</c> line itself and, when its value is a
-    /// block scalar (<c>|</c>, <c>&gt;-</c>, ...), every following line indented deeper than the <c>run</c> key.
+    /// The lines of a YAML file that hold script code: a <c>run:</c> line itself and, when its value is a block
+    /// scalar (<c>|</c>, <c>&gt;-</c>, ...), every following line indented deeper than the <c>run</c> key. Lines of a
+    /// FOLDED (<c>&gt;</c>) block carry the index of their <c>run:</c> line in <see cref="RunLineInfo.FoldedBlock"/>
+    /// (-1 otherwise).
     /// </summary>
-    private static bool[] RunContent(string[] lines)
+    private static RunLineInfo RunLines(string[] lines)
     {
         var content = new bool[lines.Length];
+        var folded = Enumerable.Repeat(-1, lines.Length).ToArray();
         int? blockKeyIndent = null;
+        var blockStart = -1;
+        var blockFolds = false;
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
@@ -164,6 +215,7 @@ internal sealed class UnattendedAzureScanner(string root)
                 if (line.Trim().Length == 0 || IndentOf(line) > keyIndent)
                 {
                     content[i] = true;
+                    folded[i] = blockFolds ? blockStart : -1;
                     continue;
                 }
 
@@ -177,14 +229,19 @@ internal sealed class UnattendedAzureScanner(string root)
             }
 
             content[i] = true;
-            if (BlockScalarIndicator.IsMatch(StripComment(run.Groups["value"].Value).Trim()))
+            var indicator = StripComment(run.Groups["value"].Value).Trim();
+            if (BlockScalarIndicator.IsMatch(indicator))
             {
                 blockKeyIndent = run.Groups["lead"].Length;
+                blockStart = i;
+                blockFolds = indicator.StartsWith('>');
             }
         }
 
-        return content;
+        return new RunLineInfo(content, folded);
     }
+
+    private sealed record RunLineInfo(bool[] Content, int[] FoldedBlock);
 
     private static Regex Pattern(string expression) =>
         new(expression, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -196,10 +253,9 @@ internal sealed class UnattendedAzureScanner(string root)
         relative.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
         || relative.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase);
 
+    // .github/scripts is scanned because workflows run code from there (docs-validate.yml on push).
     private IEnumerable<string> EnumerateFiles()
     {
-        // .github/scripts: workflows run code from there (docs-validate.yml on push). Installed packages
-        // (node_modules) are third-party code, not this repository's automation, and are skipped.
         foreach (var relative in new[] { ".github/workflows", ".github/actions", ".github/scripts", "eng" })
         {
             var directory = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
@@ -207,14 +263,39 @@ internal sealed class UnattendedAzureScanner(string root)
             {
                 foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
                 {
-                    var segments = Path.GetRelativePath(directory, file).Split(Path.DirectorySeparatorChar);
-                    if (!segments.Contains("node_modules", StringComparer.OrdinalIgnoreCase))
-                    {
-                        yield return file;
-                    }
+                    yield return file;
                 }
             }
         }
+    }
+
+    /// <summary>Which rules apply to a file; only <c>.github/scripts</c> narrows them (see the class comment).</summary>
+    private static FileRules RulesFor(string relative)
+    {
+        if (!relative.StartsWith(".github/scripts/", StringComparison.OrdinalIgnoreCase))
+        {
+            return FileRules.All;
+        }
+
+        var directories = relative.Split('/')[..^1];
+        if (directories.Contains("node_modules", StringComparer.OrdinalIgnoreCase) || directories.Contains("fixtures", StringComparer.OrdinalIgnoreCase))
+        {
+            return FileRules.Skip;
+        }
+
+        return Path.GetExtension(relative).ToLowerInvariant() switch
+        {
+            ".md" => FileRules.Skip,
+            ".js" or ".mjs" or ".cjs" or ".ts" or ".json" => FileRules.Unambiguous,
+            _ => FileRules.All,
+        };
+    }
+
+    private enum FileRules
+    {
+        All,
+        Unambiguous,
+        Skip,
     }
 
     /// <summary>

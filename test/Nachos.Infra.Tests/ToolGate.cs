@@ -45,4 +45,20 @@ internal static class ToolGate
                 GateOutcome.Skip,
                 $"Requires {toolDescription} on PATH (set NACHOS_REQUIRE_INFRA_TOOLS=1 to make this a failure).");
     }
+
+    /// <summary>
+    /// Like <see cref="Decide"/> for a test that needs a RUNNING Docker daemon (the CLI alone is not enough): a missing
+    /// CLI or a stopped daemon skips, or fails under <paramref name="requireTools"/>. POSIX-only.
+    /// </summary>
+    public static GateDecision DecideDocker(bool isWindows, bool requireTools, bool cliPresent, bool daemonRunning)
+    {
+        var decision = Decide(isWindows, requireTools, cliPresent && daemonRunning, posixOnly: true, "docker");
+        return decision.Outcome == GateOutcome.Skip && decision.Reason != PosixOnlyReason
+            ? decision with
+            {
+                Reason = "Requires a running Docker daemon (the docker CLI on PATH and a successful `docker info`); "
+                    + "set NACHOS_REQUIRE_INFRA_TOOLS=1 to make this a failure.",
+            }
+            : decision;
+    }
 }
