@@ -438,7 +438,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
 2. Extension routes: `W/jobs` and `/v3/admin/grants`.
-3. `X-Nachos-Signature` header, sent in addition to `X-Honcho-Signature`.
+3. `X-Nachos-Signature` and `X-Nachos-Delivery-Id` headers, sent in addition to `X-Honcho-Signature`.
 4. Hard token budget in session context (§11.6). It can return less content than Honcho in overflow edge cases.
 5. `times_derived` does not inflate on worker retries.
 6. Webhooks are retried with backoff (upstream sends once).
@@ -668,11 +668,18 @@ Prompts are Markdown templates with typed placeholders, stored as embedded resou
 
 ## 12. Webhooks
 
-- Endpoints are workspace-scoped and use get-or-create by URL.
-- Events: `queue.empty` (`queue_type`), `test.event`, and Δ `work.dead_lettered`.
-- Payload: `{ type, data, workspace_id, timestamp, id }`.
-- Signature: HMAC-SHA256 of the raw body using `Webhooks:Secret` (Key Vault). Sent as both `X-Honcho-Signature` and `X-Nachos-Signature`.
-- Delivery: `IHttpClientFactory` with a timeout. Each endpoint has its own `WebhookDeliveries` row. Delivery is retried with exponential backoff (up to 8 attempts over about 24 h), then dead-lettered. Delivery status is visible in `W/jobs`.
+- Endpoints are workspace-scoped and use get-or-create by URL (`201` when created, `200` when the URL already exists).
+  - Admin or workspace keys only.
+  - At most `Webhooks:MaxEndpointsPerWorkspace` endpoints (default 10); the next one returns `409`.
+  - URLs must be absolute `http`/`https`. IP literals in private, loopback, link-local, reserved, multicast, or unspecified ranges return `422`.
+  - Δ Hostnames are resolved and checked against the same ranges **at delivery time**, and the request goes to the checked address, so DNS rebinding cannot bypass the check.
+- Events:
+  - `queue.empty`: `data = { workspace_id, queue_type: "representation"|"summary", session_id, observer, observed }`. Fired once per drained work unit, not per workspace. Optional values are explicit `null`.
+  - `test.event`: `data = { workspace_id }`.
+  - Δ `work.dead_lettered`: `data = { workspace_id, task_type, work_unit_key, error }`.
+- Payload envelope (wire-compatible): `{ "type", "data", "timestamp" }`. There is **no** top-level `id` or `workspace_id`. The delivery ID is sent only in a Δ `X-Nachos-Delivery-Id` header.
+- Signature: hex HMAC-SHA256 of the **exact raw body bytes**, keyed with `Webhooks:Secret` (Key Vault). The body is serialized **compactly with sorted keys**. The signature is sent as both `X-Honcho-Signature` and `X-Nachos-Signature`. Startup fails if webhooks are enabled with no secret (Δ; upstream silently drops events).
+- Delivery: `IHttpClientFactory` with a 30 s timeout. Each endpoint has its own `WebhookDeliveries` row. Δ Delivery is retried with exponential backoff (up to 8 attempts over about 24 h), then dead-lettered (upstream does not retry). Status is visible in `W/jobs`.
 
 ---
 
