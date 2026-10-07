@@ -2,5 +2,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.InMemory\Nachos.DataLayer.InMemory.csproj" />
+    <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
   </ItemGroup>
 </Project>

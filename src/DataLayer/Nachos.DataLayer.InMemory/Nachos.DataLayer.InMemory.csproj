@@ -5,4 +5,8 @@
     <ProjectReference Include="..\..\Nachos.Core\Nachos.Core.csproj" />
     <ProjectReference Include="..\..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nachos.DataLayer.InMemory.Tests" />
+  </ItemGroup>
 </Project>
