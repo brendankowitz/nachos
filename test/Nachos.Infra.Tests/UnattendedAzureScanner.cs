@@ -34,13 +34,18 @@ internal sealed class UnattendedAzureScanner(string root)
         Pattern(@"\bazd\s+(?!(?:package|version|config)(?![\w-]))[a-z]"),
         // Any az command (login, group, deployment, acr, containerapp, sql, keyvault, webapp, ...) except the
         // offline `az bicep` subcommands that spec 18.3 allows; `az bicep publish`/`restore` reach a registry.
-        Pattern(@"\baz\s+(?!bicep\s+(?:build|build-params|lint|format|decompile|version|install|upgrade)(?![\w-]))[a-z]"),
+        // A bare mention such as "`az bicep`" (no subcommand) runs nothing and is not flagged.
+        Pattern(@"\baz\s+(?!bicep(?:\s+(?:build|build-params|lint|format|decompile|version|install|upgrade)(?![\w-])|(?=[^\s\w-]|$)))[a-z]"),
         Pattern(@"sqlpackage.*Publish"),
         Pattern(@"infra/hooks"),
-        Pattern(@"\bdocker\s+(image\s+)?push\b"),
+        // docker push, docker image/manifest/compose push, docker-compose push.
+        Pattern(@"\bdocker(?:\s+|-)(?:(?:image|manifest|compose)\s+)?push\b"),
+        // Copies a manifest list straight to the target registry.
+        Pattern(@"\bdocker\s+buildx\s+imagetools\s+create\b"),
         // Builds that push as part of the build, whichever tool or (continuation) line carries the flag.
         Pattern(@"(?<![\w-])--push(?![\w-])"),
         Pattern(@"\btype=registry\b"),
+        Pattern(@"(?<![\w-])push=true\b"),
         // Registry access without a push command: logging in to any registry, or referencing an ACR.
         Pattern(@"\buses\s*:\s*['""]?docker/login-action"),
         Pattern(@"\bazurecr\.io\b"),
@@ -56,6 +61,10 @@ internal sealed class UnattendedAzureScanner(string root)
         @"^\s*(?:-\s*)?(?:""(?<key>[^""]+)""|'(?<key>[^']+)'|(?<key>[\w.-]+))\s*:(?<rest>.*)$",
         RegexOptions.CultureInvariant);
 
+    private static readonly Regex RunKey = new(@"^(?<lead>\s*(?:-\s+)?)run\s*:(?<value>.*)$", RegexOptions.CultureInvariant);
+
+    private static readonly Regex BlockScalarIndicator = new(@"^[|>][-+0-9]*$", RegexOptions.CultureInvariant);
+
     private static readonly Regex ListEntry = new(
         @"^\s*-\s*(?:""(?<key>[^""]+)""|'(?<key>[^']+)'|(?<key>[\w.-]+))\s*$",
         RegexOptions.CultureInvariant);
@@ -69,7 +78,7 @@ internal sealed class UnattendedAzureScanner(string root)
             var lines = File.ReadAllText(file).Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n');
             var exempt = IsWorkflow(relative) ? ExemptLines(lines) : [];
 
-            foreach (var statement in Statements(lines))
+            foreach (var statement in Statements(lines, IsYaml(relative)))
             {
                 // A statement is exempt only if every physical line of it is.
                 if (Enumerable.Range(statement.First, statement.Last - statement.First + 1).All(exempt.Contains))
@@ -95,16 +104,20 @@ internal sealed class UnattendedAzureScanner(string root)
     /// continuations, so <c>docker buildx build \</c> / <c>--push</c> is matched as one command. <c>#</c> comments
     /// are stripped so a mention in prose is not a hit, unless some line of the file leaves a quote open: a
     /// multi-line string makes it impossible to tell a comment from string content, so nothing is stripped.
+    /// In YAML a trailing backtick continues only inside <c>run:</c> content: elsewhere (a step <c>name:</c> such
+    /// as <c>Install `azd`</c>) it is Markdown, and joining it to the next key would invent a command.
     /// </summary>
-    private static IEnumerable<Statement> Statements(string[] lines)
+    private static IEnumerable<Statement> Statements(string[] lines, bool isYaml)
     {
         var stripComments = !lines.Any(l => ScanLine(l).UnterminatedQuote);
+        var backtickContinues = isYaml ? RunContent(lines) : null;
         var text = new System.Text.StringBuilder();
         var first = 0;
         for (var i = 0; i < lines.Length; i++)
         {
             var code = (stripComments ? ScanLine(lines[i]).Code : lines[i]).TrimEnd();
-            var continues = i + 1 < lines.Length && (code.EndsWith('\\') || code.EndsWith('`'));
+            var continues = i + 1 < lines.Length
+                && (code.EndsWith('\\') || (code.EndsWith('`') && (backtickContinues?[i] ?? true)));
             text.Append(continues ? code[..^1] + " " : code);
             if (continues)
             {
@@ -120,13 +133,53 @@ internal sealed class UnattendedAzureScanner(string root)
     /// <summary>Physical lines [<paramref name="First"/>, <paramref name="Last"/>] joined into one statement.</summary>
     private sealed record Statement(int First, int Last, string Text);
 
+    /// <summary>
+    /// Marks the lines of a YAML file that hold script code: a <c>run:</c> line itself and, when its value is a
+    /// block scalar (<c>|</c>, <c>&gt;-</c>, ...), every following line indented deeper than the <c>run</c> key.
+    /// </summary>
+    private static bool[] RunContent(string[] lines)
+    {
+        var content = new bool[lines.Length];
+        int? blockKeyIndent = null;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (blockKeyIndent is int keyIndent)
+            {
+                if (line.Trim().Length == 0 || IndentOf(line) > keyIndent)
+                {
+                    content[i] = true;
+                    continue;
+                }
+
+                blockKeyIndent = null;
+            }
+
+            var run = RunKey.Match(line);
+            if (!run.Success)
+            {
+                continue;
+            }
+
+            content[i] = true;
+            if (BlockScalarIndicator.IsMatch(StripComment(run.Groups["value"].Value).Trim()))
+            {
+                blockKeyIndent = run.Groups["lead"].Length;
+            }
+        }
+
+        return content;
+    }
+
     private static Regex Pattern(string expression) =>
         new(expression, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static bool IsWorkflow(string relative) =>
-        relative.StartsWith(".github/workflows/", StringComparison.OrdinalIgnoreCase)
-        && (relative.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
-            || relative.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase));
+        relative.StartsWith(".github/workflows/", StringComparison.OrdinalIgnoreCase) && IsYaml(relative);
+
+    private static bool IsYaml(string relative) =>
+        relative.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
+        || relative.EndsWith(".yaml", StringComparison.OrdinalIgnoreCase);
 
     private IEnumerable<string> EnumerateFiles()
     {

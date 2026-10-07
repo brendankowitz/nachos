@@ -648,6 +648,14 @@ public sealed class InfraTests
     [InlineData("      - run: |\n          docker buildx build \\\n            --output type=registry,ref=ghcr.io/x/api:1 .\n")]
     // PowerShell backtick continuation.
     [InlineData("      - shell: pwsh\n        run: |\n          docker buildx build `\n            --push `\n            -t ghcr.io/x/api:1 .\n")]
+    // Backtick continuations that ONLY joining can see (no single physical line matches any pattern).
+    [InlineData("      - shell: pwsh\n        run: |\n          docker `\n            push ghcr.io/x/api:1\n")]
+    [InlineData("      - shell: pwsh\n        run: |\n          az `\n            login --identity\n")]
+    // More registry-push forms.
+    [InlineData("      - run: docker buildx build -o type=image,name=ghcr.io/x/api:1,push=true .\n")]
+    [InlineData("      - run: docker manifest push ghcr.io/x/api:1\n")]
+    [InlineData("      - run: docker compose push\n")]
+    [InlineData("      - run: docker buildx imagetools create -t ghcr.io/x/api:latest ghcr.io/x/api:1\n")]
     // A push split right after `docker`: only joining the continuation can see it.
     [InlineData("      - run: |\n          docker \\\n            push ghcr.io/x/api:1\n")]
     [InlineData("      - uses: docker/login-action@v3\n        with:\n          registry: ghcr.io\n")]
@@ -664,6 +672,12 @@ public sealed class InfraTests
     [InlineData("      # push the image in the release workflow\n      - run: docker build -t x .\n")]
     [InlineData("      - run: docker build -t x . # docker buildx build --push later\n")]
     [InlineData("      - run: git push --push-option=ci.skip origin HEAD\n")]
+    [InlineData("      - run: docker compose up -d\n")]
+    [InlineData("      - run: git push origin main\n")]
+    [InlineData("      - run: npm publish\n")]
+    // A trailing backtick in a step name is Markdown, not a PowerShell continuation into the next key.
+    [InlineData("      - name: Install `azd`\n        run: curl -fsSL https://aka.ms/install-azd.sh | bash\n")]
+    [InlineData("      - name: Lint with `az bicep`\n        run: bicep lint infra/main.bicep\n")]
     public void Scanner_DoesNotFlag_LocalBuildsOrPushInComments(string step)
     {
         PlantedWorkflowHits(OnPush(step)).ShouldBeEmpty(step);
@@ -741,11 +755,33 @@ public sealed class InfraTests
     // Duplicate environment keys: parsers disagree on which wins (or reject the file).
     [InlineData("    environment: azure-live\n    environment: production\n")]
     [InlineData("    environment: azure-live\n    \"environment\": production\n")]
+    // azure-live LAST, so only the duplicate-key rule (not "the last one wins") keeps these non-exempt.
+    [InlineData("    environment: production\n    environment: azure-live\n")]
+    [InlineData("    \"environment\": production\n    environment:\n      name: azure-live\n")]
     public void Scanner_FailsClosed_OnAmbiguousJobEnvironment(string jobKeys)
     {
         var workflow = "on: workflow_dispatch\njobs:\n  j:\n    runs-on: ubuntu-latest\n" + jobKeys + "    steps:\n      - run: azd up\n";
 
         PlantedWorkflowHits(workflow).ShouldNotBeEmpty(jobKeys);
+    }
+
+    [Fact]
+    public void Scanner_JoinedStatement_IsExemptOnlyIfEveryPhysicalLineIs()
+    {
+        // `azd \` in a job without azure-live continues into the key line of the azure-live job; only the joined
+        // statement matches, and it straddles an exempt and a non-exempt line, so it must be reported.
+        const string Workflow =
+            "on: workflow_dispatch\njobs:\n" +
+            "  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: azd \\\n" +
+            "  up:\n    runs-on: ubuntu-latest\n    environment: azure-live\n    steps:\n      - run: echo deploy\n";
+
+        PlantedWorkflowHits(Workflow).ShouldHaveSingleItem().Line.ShouldBe(6);
+    }
+
+    [Fact]
+    public void Scanner_JoinsBacktickContinuations_InScriptsOutsideYaml()
+    {
+        PlantedFileHits("eng/deploy.ps1", "docker `\n  push ghcr.io/x/api:1\n").ShouldHaveSingleItem().Line.ShouldBe(1);
     }
 
     // ---- helpers -----------------------------------------------------------------------------------
