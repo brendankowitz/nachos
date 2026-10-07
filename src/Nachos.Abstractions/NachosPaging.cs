@@ -11,7 +11,7 @@ public static class NachosPaging
     /// (or an empty page) is reached.
     /// </summary>
     public static async IAsyncEnumerable<T> EnumerateAsync<T>(
-        Func<PageRequest, CancellationToken, Task<Page<T>>> fetch,
+        this Func<PageRequest, CancellationToken, Task<Page<T>>> fetch,
         int pageSize = 50,
         [EnumeratorCancellation] CancellationToken ct = default)
     {

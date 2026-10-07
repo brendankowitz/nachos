@@ -47,6 +47,8 @@ public sealed class ContractShapeTests
         { "ValidationError", new ValidationError(["body", 0, "id"], "bad", "value_error"), false },
         // Nachos adds the RFC 9457 type/title/status members next to the manifest's detail.
         { "ErrorResponse", new ErrorResponse("nope", "about:blank", "Not Found", 404), false },
+        // Same, for the HTTPValidationError body.
+        { "HTTPValidationError", new ValidationErrorResponse([new ValidationError(["body"], "bad", "value_error")], "about:blank", "Unprocessable Entity", 422), false },
     };
 
     [Theory]

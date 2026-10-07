@@ -8,6 +8,9 @@ namespace Nachos.Abstractions.Stores;
 /// </summary>
 public interface IIdempotencyStore
 {
-    /// <summary>Returns the record for the key, or null if absent or expired.</summary>
+    /// <summary>
+    /// Returns the record for the key, or null if it is absent or expired. A record is expired when
+    /// <c>ExpiresAt &lt;= now</c> on the store's clock, so it expires exactly at its TTL.
+    /// </summary>
     Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct);
 }
