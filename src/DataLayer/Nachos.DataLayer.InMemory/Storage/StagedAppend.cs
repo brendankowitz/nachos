@@ -79,9 +79,9 @@ internal sealed class StagedAppend
     public IReadOnlyList<MessageRecord> Messages => _messages;
 
     /// <summary>
-    /// True when everything staging read is unchanged: no message was appended to the session, no staged peer was
-    /// created, no sender's membership row was replaced, and the idempotency key's record is the one seen. Rows are
-    /// immutable records replaced on every change, so reference equality detects any change.
+    /// True when nothing the append depends on has changed. Fails if any state the staging relied on, or any
+    /// membership/idempotency record, was replaced. Rows are immutable records replaced on every change, so reference
+    /// equality detects any change; the session's <c>LastSeq</c> and the staged peers are checked directly.
     /// </summary>
     public bool IsCurrent() =>
         _session.LastSeq == _baseSeq

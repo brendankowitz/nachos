@@ -15,8 +15,8 @@ namespace Nachos.DataLayer.InMemory;
 /// </para>
 /// <para>
 /// JSON is stored canonically (as if parsed from a request), so C#-built values such as a <see cref="Guid"/> are
-/// stored and returned as JSON strings; a value with no JSON form (NaN, Infinity) is rejected with
-/// <see cref="Abstractions.NachosValidationException"/>.
+/// stored and returned as JSON strings; a value with no JSON form (NaN, Infinity), a repeated property name, or more
+/// than 64 levels of nesting is rejected with <see cref="Abstractions.NachosValidationException"/>.
 /// </para>
 /// <para>
 /// An <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback must not call this store: it runs

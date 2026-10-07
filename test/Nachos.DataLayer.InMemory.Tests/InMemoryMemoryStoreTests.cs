@@ -222,6 +222,65 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Messages.AppendAsync("ws", "s", [Msg("next", "after")], null, Ct))[0].Seq.ShouldBe(stored.Count + 1);
     }
 
+    [Fact]
+    public async Task Append_SerializerThatAppendsElsewhereWithTheSameKey_IsRejectedAndKeepsTheInnerRecord()
+    {
+        // alice is already an active member of both sessions, so nothing but the idempotency record differs afterwards.
+        var (store, _) = await NewSessionStoreAsync();
+        await store.Sessions.GetOrCreateAsync("ws", "other", null, null, null, Ct);
+        await store.Sessions.AddPeersAsync("ws", "s", Members("alice"), Ct);
+        await store.Sessions.AddPeersAsync("ws", "other", Members("alice"), Ct);
+        var inner = new IdempotencyWrite("key", new string('b', 64), 201, _ => "inner-body", TimeSpan.FromMinutes(1));
+        var outer = new IdempotencyWrite(
+            "key",
+            new string('a', 64),
+            201,
+            _ =>
+            {
+                store.Messages.AppendAsync("ws", "other", [Msg("alice", "inner-message")], inner, Ct).GetAwaiter().GetResult();
+                return "outer-body";
+            },
+            TimeSpan.FromMinutes(1));
+
+        var thrown = await Should.ThrowAsync<InvalidOperationException>(
+            () => store.Messages.AppendAsync("ws", "s", [Msg("alice", "outer-message")], outer, Ct));
+
+        thrown.Message.ShouldBe(SerializerModifiedStore);
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        var record = (await store.Idempotency.TryGetAsync("ws", "key", Ct))!;
+        record.RequestHash.ShouldBe(new string('b', 64));
+        record.ResponseBody.ShouldBe("inner-body");
+        (await store.Messages.ListAsync("ws", "other", null, new PageRequest(), Ct)).Items.Select(m => m.Content)
+            .ShouldBe(["inner-message"]);
+    }
+
+    [Fact]
+    public async Task Append_SerializerThatRemovesAnActiveSender_IsRejectedBeforeAnythingCommits()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        await store.Sessions.AddPeersAsync("ws", "s", Members("alice"), Ct);
+        var removing = new IdempotencyWrite(
+            "key",
+            new string('a', 64),
+            201,
+            _ =>
+            {
+                store.Sessions.RemovePeersAsync("ws", "s", ["alice"], Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(1));
+
+        var thrown = await Should.ThrowAsync<InvalidOperationException>(
+            () => store.Messages.AppendAsync("ws", "s", [Msg("alice", "outer-message")], removing, Ct));
+
+        thrown.Message.ShouldBe(SerializerModifiedStore);
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct)).ShouldBeNull();
+        // The removal the serializer made stands; the append did not silently reactivate the sender.
+        (await store.Sessions.IsActiveMemberAsync("ws", "s", "alice", Ct)).ShouldBeFalse();
+        (await store.Messages.AppendAsync("ws", "s", [Msg("alice", "after")], null, Ct))[0].Seq.ShouldBe(1);
+    }
+
     /// <summary>Called from inside a serializer, where blocking is unavoidable; the store completes synchronously.</summary>
     private static void Interfere(InMemoryMemoryStore store, string interference)
     {

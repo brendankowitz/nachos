@@ -171,7 +171,95 @@ public sealed class InMemoryJsonTests
     private static async Task ShouldRejectAsync(string field, Func<Task> write)
     {
         var rejected = await Should.ThrowAsync<NachosValidationException>(write);
-        rejected.Detail.ShouldBe($"{field} contains a value that is not valid JSON.");
+        rejected.Detail.ShouldBe($"{field} contains a value that is not valid JSON or is nested too deeply.");
+    }
+
+    /// <summary>
+    /// Parsed lazily, so the duplicate property name survives until the store re-serializes the value.
+    /// </summary>
+    private static JsonObject DuplicateKeys() => (JsonObject)JsonNode.Parse("""{"k":"a","k":"b"}""")!;
+
+    [Fact]
+    public async Task DuplicatePropertyNames_AreRejectedOnEveryWrite_AndListsStillWork()
+    {
+        var store = new InMemoryMemoryStore(TimeProvider.System);
+        await store.Workspaces.GetOrCreateAsync("ws", new JsonObject { ["k"] = "a" }, null, Ct);
+        await store.Peers.GetOrCreateAsync("ws", "p", new JsonObject { ["k"] = "a" }, null, Ct);
+        await store.Sessions.GetOrCreateAsync("ws", "s", new JsonObject { ["k"] = "a" }, null, null, Ct);
+        var message = (await store.Messages.AppendAsync(
+            "ws", "s", [new("p", "ok", 1, new JsonObject { ["k"] = "a" }, null)], null, Ct))[0];
+
+        await ShouldRejectAsync("metadata", () => store.Workspaces.GetOrCreateAsync("bad", DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Workspaces.GetOrCreateAsync("bad", null, DuplicateKeys(), Ct));
+        await ShouldRejectAsync("metadata", () => store.Workspaces.UpdateAsync("ws", DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Workspaces.UpdateAsync("ws", null, DuplicateKeys(), Ct));
+
+        await ShouldRejectAsync("metadata", () => store.Peers.GetOrCreateAsync("ws", "bad", DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Peers.GetOrCreateAsync("ws", "bad", null, DuplicateKeys(), Ct));
+        await ShouldRejectAsync("metadata", () => store.Peers.UpdateAsync("ws", "p", DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Peers.UpdateAsync("ws", "p", null, DuplicateKeys(), Ct));
+
+        await ShouldRejectAsync("metadata", () => store.Sessions.GetOrCreateAsync("ws", "bad", DuplicateKeys(), null, null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Sessions.GetOrCreateAsync("ws", "bad", null, DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("metadata", () => store.Sessions.UpdateAsync("ws", "s", DuplicateKeys(), null, Ct));
+        await ShouldRejectAsync("configuration", () => store.Sessions.UpdateAsync("ws", "s", null, DuplicateKeys(), Ct));
+
+        await ShouldRejectAsync(
+            "metadata", () => store.Messages.AppendAsync("ws", "s", [new("p", "bad", 1, DuplicateKeys(), null)], null, Ct));
+        await ShouldRejectAsync("metadata", () => store.Messages.UpdateMetadataAsync("ws", "s", message.PublicId, DuplicateKeys(), Ct));
+
+        // Nothing was stored, so a metadata-filtered list still works for every kind.
+        (await store.Workspaces.GetAsync("bad", Ct)).ShouldBeNull();
+        (await store.Peers.GetAsync("ws", "bad", Ct)).ShouldBeNull();
+        (await store.Sessions.GetAsync("ws", "bad", Ct)).ShouldBeNull();
+        var page = new PageRequest();
+        const string Filter = """{"metadata":{"k":"a"}}""";
+        (await store.Workspaces.ListAsync(FilterParser.Parse(Filter, ResourceKind.Workspace), page, Ct)).Total.ShouldBe(1);
+        (await store.Peers.ListAsync("ws", PeerKind.All, FilterParser.Parse(Filter, ResourceKind.Peer), page, Ct)).Total.ShouldBe(1);
+        (await store.Sessions.ListAsync("ws", FilterParser.Parse(Filter, ResourceKind.Session), page, Ct)).Total.ShouldBe(1);
+        (await store.Messages.ListAsync("ws", "s", FilterParser.Parse(Filter, ResourceKind.Message), page, Ct)).Total.ShouldBe(1);
+        (await store.Messages.ListAsync("ws", "s", null, page, Ct)).Total.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task NestedTooDeeply_IsRejected_WithoutEchoingTheValue()
+    {
+        var store = new InMemoryMemoryStore(TimeProvider.System);
+        JsonNode deep = new JsonObject { ["secret-leaf"] = 1 };
+        for (var i = 0; i < 100; i++)
+        {
+            deep = new JsonObject { ["n"] = deep };
+        }
+
+        var rejected = await Should.ThrowAsync<NachosValidationException>(
+            () => store.Workspaces.GetOrCreateAsync("ws", (JsonObject)deep, null, Ct));
+
+        rejected.Detail.ShouldBe("metadata contains a value that is not valid JSON or is nested too deeply.");
+        (await store.Workspaces.GetAsync("ws", Ct)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task WorkspaceUpdate_StoresCSharpBuiltValuesCanonically()
+    {
+        var store = new InMemoryMemoryStore(TimeProvider.System);
+        await store.Workspaces.GetOrCreateAsync("ws", null, null, Ct);
+        var expectedJson = JsonNode.Parse(CSharpBuiltMetadata().ToJsonString())!.ToJsonString();
+
+        var updated = await store.Workspaces.UpdateAsync("ws", CSharpBuiltMetadata(), CSharpBuiltMetadata(), Ct);
+        var reread = (await store.Workspaces.GetAsync("ws", Ct))!;
+
+        foreach (var record in new[] { updated, reread })
+        {
+            record.Metadata.ToJsonString().ShouldBe(expectedJson);
+            record.Configuration.ToJsonString().ShouldBe(expectedJson);
+            record.Metadata["guid"]!.GetValue<string>().ShouldBe("11111111-2222-3333-4444-555555555555");
+            record.Metadata["dateTime"]!.GetValueKind().ShouldBe(JsonValueKind.String);
+        }
+
+        // Filters see the JSON string, not the CLR value.
+        var match = FilterParser.Parse(
+            "{\"metadata\":{\"guid\":" + Quote("11111111-2222-3333-4444-555555555555") + "}}", ResourceKind.Workspace);
+        (await store.Workspaces.ListAsync(match, new PageRequest(), Ct)).Total.ShouldBe(1);
     }
 
     [Fact]
