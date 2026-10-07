@@ -100,6 +100,23 @@ These are recorded in the spec by Cortado in the same PR, and need agreement fro
 4. **Auth status codes:** every auth failure is 401, matching Honcho's public docs.
 5. **Case-sensitive IDs** (binary collation), matching Honcho's behavior on Postgres.
 
+## Interface amendments during implementation
+
+These were made while executing Tasks 2 and 3, and the review rounds requested them. The interface blocks below already reflect them. Rationale is in #6 comments 6046778985 and 6046944483.
+
+- **Grants:** `GetWorkspacesAsync → GetWorkspaceGrantsAsync`, returning `WorkspaceGrants`. A null-workspace grant would otherwise silently grant nothing, because the old return type couldn't express "all workspaces".
+- **`IPeerStore.ListAsync` parameter order** changed to `(ws, kind, filter, …)` to match `INachosClient.ListPeersAsync`. `isInternal` was added so the `PeerKind` filters are testable.
+- **`NachosPaging.EnumerateAsync`** takes a cancellation-aware fetch delegate.
+- **`PageRequest`** validates in its init accessors and throws `RequestValidationException`. The resulting 422 uses the array-`detail` shape, and the check can't be bypassed through `with`.
+- **`INachosClient.AddGrantAsync`** was added for the M1 route `POST /v3/admin/grants`.
+- **Store semantics are pinned by `StoreContractTests`** (see the store interface XML docs):
+  - missing parents throw `NotFoundException`;
+  - updates replace;
+  - lists use creation order;
+  - JSON is deep-cloned on input and output;
+  - stores are safe for concurrent use;
+  - all times come from the app clock.
+- **`FilterNode` subtypes are nested** (`FilterNode.And`, and so on). Field values are normalized: `created_at` → UTC `DateTimeOffset`, `token_count` → `long`, `is_active` → `bool`.
 ## Review Focus
 
 These are the input classes most likely to bite users. Each line names the test that pins it.
@@ -190,7 +207,7 @@ These are the input classes most likely to bite users. Each line names the test 
     - `GetAsync(name, ct) → Task<WorkspaceRecord?>`
     - `UpdateAsync(name, JsonObject? metadata, JsonObject? configuration, ct) → Task<WorkspaceRecord>`; a null argument leaves that field unchanged; throws `NotFoundException`
     - `ListAsync(FilterNode? filter, PageRequest page, ct) → Task<Page<WorkspaceRecord>>`
-  - `IPeerStore`: `GetOrCreateAsync(ws, name, metadata, configuration, ct)`, `GetAsync`, `UpdateAsync`, `ListAsync(ws, FilterNode?, PeerKind, PageRequest, ct)`, and `ListSessionsForPeerAsync(ws, peer, FilterNode?, PageRequest, ct) → Page<SessionRecord>`.
+  - `IPeerStore`: `GetOrCreateAsync(ws, name, metadata, configuration, ct, bool isInternal = false)` (`isInternal` applies only on create; scopes use it in M6), `GetAsync`, `UpdateAsync`, `ListAsync(ws, PeerKind kind, FilterNode? filter, PageRequest page, ct)` (`kind`: Regular means `IsInternal = false`, Scope means `true`, All means both), and `ListSessionsForPeerAsync(ws, peer, FilterNode?, PageRequest, ct) → Page<SessionRecord>` (active memberships only).
   - `ISessionStore`:
     - `GetOrCreateAsync(ws, name, metadata, configuration, IReadOnlyDictionary<string, SessionPeerConfig>? peers, ct)`, `GetAsync`
     - `UpdateAsync(ws, name, metadata, configuration, ct)`, `ListAsync(ws, FilterNode?, PageRequest, ct)`
@@ -206,10 +223,10 @@ These are the input classes most likely to bite users. Each line names the test 
     - `UpdateMetadataAsync(ws, session, publicId, JsonObject metadata, ct)`
     - `ListAsync(ws, session, FilterNode?, PageRequest, ct)`
   - `IIdempotencyStore`: `TryGetAsync(ws, key, ct) → Task<IdempotencyRecord?>` (ignores expired records). **Expired keys are reclaimed atomically inside `AppendAsync`:** in the same transaction, delete the expired row for `(workspace, key)` under an update/range lock, then insert. A key whose record has expired is therefore immediately reusable for a fresh operation, without relying on a cleanup worker.
-  - `IGrantStore`: `AddAsync(GrantRecord, ct)`, `RemoveAsync(GrantRecord, ct)`, `ListAsync(string? objectId, ct)`, `GetWorkspacesAsync(string objectId, ct) → Task<IReadOnlySet<string>>`.
+  - `IGrantStore`: `AddAsync(GrantRecord, ct)` (an unknown workspace throws `NotFoundException`; a duplicate is a no-op), `RemoveAsync(GrantRecord, ct)` (a missing grant is a no-op), `ListAsync(string? objectId, ct)`, and `GetWorkspaceGrantsAsync(string objectId, ct) → Task<WorkspaceGrants>`, where `WorkspaceGrants(bool AllWorkspaces, IReadOnlySet<string> Workspaces)`. Only grants with `Role == GrantRoles.Workspace` (`"Nachos.Workspace"`) count, and a null workspace sets `AllWorkspaces`. **`AllWorkspaces` is workspace-wide access, never admin authority.**
 - **Exceptions:** `NachosException` (base) → `NotFoundException`, `ConflictException`, `NachosValidationException(string Detail)`, `RequestValidationException(IReadOnlyList<ValidationError>)`, `AuthException`, `IdempotencyKeyReusedException` (→ 422), and `IdempotencyDuplicateException(string Key)`. Stores throw the last one when an `IdempotencyWrite` key already exists. It is never surfaced over HTTP.
 - **`PublicId.New() → string`:** 21 characters, alphabet `A-Za-z0-9_-`, from `RandomNumberGenerator`.
-- **`INachosClient`:** one async method per M1 route, with names matching the routes. For example: `GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default) → Task<Workspace>`, `ListWorkspacesAsync(JsonObject? filters, PageRequest page, ct) → Task<Page<Workspace>>`, and `CreateMessagesAsync(string workspaceId, string sessionId, IReadOnlyList<MessageCreate> messages, string? idempotencyKey = null, ct) → Task<IReadOnlyList<Message>>`. Also provide the extension `NachosPaging.EnumerateAsync<T>(Func<PageRequest, Task<Page<T>>>) → IAsyncEnumerable<T>`.
+- **`INachosClient`:** one async method per M1 route, with names matching the routes. For example: `GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default) → Task<Workspace>`, `ListWorkspacesAsync(JsonObject? filters, PageRequest page, ct) → Task<Page<Workspace>>`, and `CreateMessagesAsync(string workspaceId, string sessionId, IReadOnlyList<MessageCreate> messages, string? idempotencyKey = null, ct) → Task<IReadOnlyList<Message>>`. Also provide the extension `NachosPaging.EnumerateAsync<T>(this Func<PageRequest, CancellationToken, Task<Page<T>>> fetch, int pageSize = 50, CancellationToken ct = default) → IAsyncEnumerable<T>`, and `AddGrantAsync(string objectId, string? workspaceId, string role, ct)` for `POST /v3/admin/grants`.
 - **`abstract class StoreContractTests`** with `protected abstract IMemoryStore CreateStore(TimeProvider clock)`. Its tests are named in the steps below and use `FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`).
 - **Clock rule (both providers):** stores take `TimeProvider` from DI. Every time-based value is computed from the **app clock** and passed to SQL as a parameter (`@now`), never from the database clock (`SYSDATETIMEOFFSET()`/`SYSUTCDATETIME()`) in a query. That covers `CreatedAt` defaults, `JoinedAt`/`LeftAt`, `IdempotencyRecord.ExpiresAt = clock.GetUtcNow() + Ttl`, and expiry comparisons. The same `FakeTimeProvider`-driven contract test therefore behaves identically on SQL and in memory. The post-deploy `SchemaVersion.AppliedAt` is the only exception.
 
@@ -245,7 +262,7 @@ These are the input classes most likely to bite users. Each line names the test 
 
 **Interfaces:**
 - Produces:
-  - `abstract record FilterNode` with the subtypes `And(IReadOnlyList<FilterNode>)`, `Or(...)`, `Not(IReadOnlyList<FilterNode>)` (meaning NOT any), `MatchAll`, `MatchNone`, `Field(string Column, FilterOp Op, JsonNode? Value)`, and `MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value)`.
+  - `abstract record FilterNode` with **nested** sealed subtypes (call sites write `new FilterNode.And(...)`): `And(IReadOnlyList<FilterNode>)`, `Or(...)`, `Not(IReadOnlyList<FilterNode>)` (meaning NOT any), `MatchAll`, `MatchNone`, `Field(string Column, FilterOp Op, JsonNode? Value)`, and `MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value)`.
   - `enum FilterOp { Eq, Ne, Gt, Gte, Lt, Lte, In, Contains, IContains, IsNull, NotNull, JsonContains }`.
   - `enum ResourceKind { Workspace, Peer, Session, Message }`.
   - `FilterParser.Parse(JsonNode? filters, ResourceKind kind) → FilterNode?`; throws `NachosValidationException` on value errors.
@@ -446,7 +463,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - `SigningKeyOptions { IReadOnlyList<SigningKey> Keys }`, where `SigningKey(string Kid, string Secret)`. `Keys[0]` signs; all keys validate. A missing `kid` validates against `Keys[0]`.
   - `NachosPrincipal(bool IsAdmin, IReadOnlySet<string> Workspaces, string? Peer, string? Session)`.
   - Auth options bound from `Nachos:Auth`: `{ bool Enabled = true; SigningKeyOptions NachosKey; MicrosoftIdentityOptions? Entra }`. `Enabled = false` outside Development throws at startup.
-  - Entra mapping: app role `Nachos.Admin` → admin. App role `Nachos.Workspace` → the workspaces from `IGrantStore.GetWorkspacesAsync(oid)`. Entra never maps to a peer or session.
+  - Entra mapping: app role `Nachos.Admin` → admin. App role `Nachos.Workspace` → `IGrantStore.GetWorkspaceGrantsAsync(oid)`. `WorkspaceGrants.AllWorkspaces` gives access to every workspace and is carried separately from `IsAdmin`; it never grants admin-only routes such as `POST /v3/keys`, `/v3/workspaces/list`, or `/v3/admin/grants`. Add `NachosPrincipal.AllWorkspaces` (bool), alongside `Workspaces`. Entra never maps to a peer or session.
   - Route requirements, one per route:
 
 | Route(s) | Allowed |
