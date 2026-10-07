@@ -75,7 +75,15 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
 4. **Wire names** (route paths, JSON field names, JWT claim names, header names) are interface facts. Nachos matches them for compatibility.
 5. The upstream SDKs and MCP server are used **only as external test clients**. They are installed from npm or PyPI in the conformance pipeline and are never vendored.
 6. The research appendix cites Honcho source lines as **behavioral evidence** for the spec author. It is not implementation guidance.
-7. **Third-party dependencies** must have MIT-compatible permissive licenses: MIT, Apache-2.0, BSD, or MS-PL. No GPL, AGPL, or LGPL. Apache-2.0 packages (for example PdfPig) are listed in `THIRD-PARTY-NOTICES.md`, and CI checks licenses via NuGet/npm metadata.
+7. **Third-party licenses use artifact-based tiers** (engineering policy, not legal advice; Principal-tier decision on PR #1).
+   - **Distributed artifacts** (NuGet packages, container images, CLI tools, the published docs site's assets, and any embedded third-party code) may use only: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, MS-PL, Unlicense, CC0-1.0, BlueOak-1.0.0, Zlib, PSF-2.0, or Python-2.0.
+   - **Unmodified, non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0, through an explicitly reviewed, version-scoped exception recorded in `eng/license-exceptions.json` (package, version, license, purpose, reviewer). Example: `elkjs` used only by the docs Mermaid validator.
+   - GPL, AGPL, LGPL, and SSPL are never allowed in either tier.
+   - Required license texts and notices go in `THIRD-PARTY-NOTICES.md` (for example PdfPig, Apache-2.0).
+   - **CI enforcement:**
+     - Check the locked direct and transitive dependencies **and the emitted artifacts**. `devDependencies` is not treated as a distribution boundary. Bundler module provenance for every docs-site chunk, plus package and image contents, must prove that excepted packages don't ship.
+     - Resolve licenses from license files, not only metadata. For SPDX `OR`, record the selected license. For `AND`, every component must qualify.
+     - Unknown licenses or an unproven tier assignment fail closed.
 
 ---
 
