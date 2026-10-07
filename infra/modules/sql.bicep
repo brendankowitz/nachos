@@ -26,6 +26,8 @@ resource server 'Microsoft.Sql/servers@2025-01-01' = {
       administratorType: 'ActiveDirectory'
       azureADOnlyAuthentication: true
       login: adminLogin
+      // For adminPrincipalType 'Application' the SID Azure SQL expects may be the app (client) id rather than
+      // the object id; that is unverified offline, so the object id is passed as-is for every type.
       sid: adminPrincipalId
       tenantId: tenant().tenantId
       principalType: adminPrincipalType

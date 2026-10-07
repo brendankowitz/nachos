@@ -18,6 +18,11 @@ param principalLogin string
 @allowed(['User', 'Group', 'Application'])
 param principalType string = 'User'
 
+// azd-templates convention: a bool parameter fed by "${SERVICE_API_RESOURCE_EXISTS=false}" in
+// main.parameters.json (azd converts the substituted text to the declared type). Not provable offline.
+@description('Whether the API container app has already been deployed (azd: SERVICE_API_RESOURCE_EXISTS).')
+param apiExists bool
+
 @description('Azure OpenAI endpoint. Empty in M1 (no AI resources yet).')
 param openAiEndpoint string = ''
 
@@ -117,6 +122,7 @@ module apiApp 'modules/api-app.bicep' = {
     sqlServerFqdn: sql.outputs.serverFqdn
     sqlDatabaseName: sql.outputs.databaseName
     openAiEndpoint: openAiEndpoint
+    apiExists: apiExists
   }
 }
 

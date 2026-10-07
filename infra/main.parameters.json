@@ -6,6 +6,8 @@
     "location": { "value": "${AZURE_LOCATION}" },
     "principalId": { "value": "${AZURE_PRINCIPAL_ID}" },
     "principalLogin": { "value": "${AZURE_PRINCIPAL_LOGIN}" },
-    "openAiEndpoint": { "value": "${AZURE_OPENAI_ENDPOINT=}" }
+    "principalType": { "value": "${AZURE_PRINCIPAL_TYPE=User}" },
+    "openAiEndpoint": { "value": "${AZURE_OPENAI_ENDPOINT=}" },
+    "apiExists": { "value": "${SERVICE_API_RESOURCE_EXISTS=false}" }
   }
 }

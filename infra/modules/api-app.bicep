@@ -18,10 +18,22 @@ param sqlDatabaseName string
 @description('Azure OpenAI endpoint; empty in M1, in which case the variable is not set.')
 param openAiEndpoint string = ''
 
-// Placeholder only: `azd deploy` replaces the image with the one built from src/Nachos.Api.
-param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+@description('True once `azd deploy` has created the app (azd sets SERVICE_API_RESOURCE_EXISTS). Then the deployed image is kept and the HTTP probes apply.')
+param apiExists bool
+
+// Placeholder for the very first provision only. It listens on 8080 like the real API (the older
+// containerapps-helloworld image listens on 80, so its revision could never become ready).
+param containerImage string = 'mcr.microsoft.com/dotnet/samples:aspnetapp'
 
 var targetPort = 8080
+
+// Without this, every later `azd provision` would put the placeholder back over the deployed image.
+module existingImage 'fetch-container-image.bicep' = if (apiExists) {
+  name: '${name}-image'
+  params: {
+    name: name
+  }
+}
 
 // Passwordless: the managed identity authenticates to SQL (its contained user is created by the
 // postprovision hook), so this connection string holds no secret.
@@ -75,13 +87,17 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
       containers: [
         {
           name: 'api'
-          image: containerImage
+          image: apiExists ? existingImage!.outputs.image : containerImage
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
           }
           env: concat(baseEnv, openAiEnv)
-          probes: [
+          // The first revision runs the placeholder, which has no /health routes, so explicit HTTP probes
+          // would keep it from ever becoming ready (ACA's default TCP probes on the target port apply instead).
+          // They switch on from the next provision, once the real image is deployed; the postdeploy hook
+          // smoke-tests /health/ready right after that first deploy.
+          probes: apiExists ? [
             {
               type: 'Liveness'
               httpGet: {
@@ -100,7 +116,7 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               initialDelaySeconds: 5
               periodSeconds: 10
             }
-          ]
+          ] : []
         }
       ]
       scale: {
