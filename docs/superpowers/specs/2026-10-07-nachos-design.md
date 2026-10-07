@@ -35,7 +35,7 @@
 
 ### 1.3 Success criteria
 
-1. `azd up` from a clean clone provisions a working deployment in a fresh subscription in about 20 minutes or less, using managed identity end to end and no secrets in config.
+1. `azd up` from a clean clone provisions a working deployment in a fresh subscription in about 20 minutes or less, using managed identity end to end and no secrets in config. It is only ever run with the owner's consent (§18.3).
 2. The upstream Honcho Python and TypeScript SDKs pass a curated conformance suite against Nachos (§17, item 3).
 3. A .NET app can call `services.AddNachos(...)` and get the same memory behavior in-process, with no HTTP server.
 4. Memory quality on the Nachos evaluation set is at least as good as a pinned Honcho baseline (§17, item 4).
@@ -810,10 +810,10 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
    - Includes a **retry-boundary regression**: commit a message batch, fail its response at the transport layer, and let `NachosHttpClient` retry. Assert exactly one batch exists. Then repeat without an `Idempotency-Key` and assert no automatic replay happens.
 4. **Memory-quality evaluations** (`test/evals`):
    - Fixed conversation corpora with question/answer pairs (LongMemEval-style subsets plus synthetic multi-peer cases).
-   - Run against live Azure OpenAI on a schedule, not on PRs.
+   - Run against live Azure OpenAI only through the owner-gated `azure-live` environment (§18.3), never on PRs or on a schedule.
    - Track answer accuracy, conclusion precision, dedup rate, and token cost per prompt version.
    - Compare against a pinned Honcho baseline run.
-5. **Infra:** `az bicep build` and `what-if` on PRs, plus a nightly `azd up` / `azd down` smoke test in a sandbox subscription.
+5. **Infra:** offline `az bicep build` and `bicep lint` on PRs. `what-if` and `azd up` / `azd down` smoke tests run **only** through the owner-gated `azure-live` environment (§18.3), never on a schedule.
 
 ---
 
@@ -869,6 +869,28 @@ Hooks:
 
 Until both hold, the worker stays at `minReplicas = 1`.
 
+### 18.3 Azure deployment consent (owner rule, normative)
+
+**Nothing is deployed or provisioned to Azure without explicit, per-occasion consent from the owner (@brendankowitz).** This applies equally to agents, CI, and scripts.
+
+- **Agents never run** any of the following against any subscription unless the owner has approved that specific run in a comment on the issue or PR:
+  - `azd up` / `provision` / `deploy` / `down`;
+  - `az deployment …`;
+  - `az group create|delete`, or any other `az` / ARM / Bicep command that creates, changes, or deletes Azure resources;
+  - `sqlpackage /Action:Publish` against an Azure database;
+  - pushing images to a registry that an Azure resource pulls from.
+  This rule also covers read-only ARM calls that authenticate as the owner (`what-if`, `azd provision --preview`).
+- **Approval mechanics:**
+  - An approval is an **untagged** owner comment that names the action and the target (environment or resource group).
+  - An approval covers one run. A changed action or target needs a new approval.
+  - Tagged agent comments can never approve.
+- **CI never deploys automatically.** No workflow that touches Azure runs on `push`, `pull_request`, or `schedule`. Any such workflow:
+  - is `workflow_dispatch` only;
+  - runs in a GitHub Environment named `azure-live` whose **required reviewer is the owner**;
+  - authenticates with OIDC federated credentials that the owner configures. Agents never create, store, or rotate Azure credentials or repository secrets.
+- **What agents and CI may do without consent:** offline checks only. These include `az bicep build`, `bicep lint`, `azd package`, Bicep parameter and schema validation, local Aspire runs, and Docker/Testcontainers. Live LLM calls for evaluations (§17, item 4) use the same `azure-live` gate.
+- **Milestone exits that need Azure** (for example M1 `azd up`, M2 "end to end on Azure") are satisfied by an **owner-approved** run. The agents prepare a deployment checklist and the exact commands, then wait.
+
 ---
 
 ## 19. Observability
@@ -890,8 +912,8 @@ Until both hold, the worker stays at `minReplicas = 1`.
 
 | M | Deliverable | Exit criteria |
 |---|---|---|
-| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source), **README + Starlight docs scaffold + Pages workflow (§22.3)** | CRUD conformance scenarios pass with upstream SDKs. `azd up` from a clean clone works with no M2+ artifacts. Docs site builds with zero broken links. |
-| **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status, **`VisibilityPolicy` + negative tests for these consumers (§11.8)** | Deriver produces conclusions end to end on Azure. Integration tests are green. No M2 read path bypasses `VisibilityPolicy`. |
+| **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source), **README + Starlight docs scaffold + Pages workflow (§22.3)** | CRUD conformance scenarios pass with upstream SDKs. Bicep builds and lints offline. An **owner-approved** `azd up` from a clean clone (§18.3) works with no M2+ artifacts. Docs site builds with zero broken links. |
+| **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status, **`VisibilityPolicy` + negative tests for these consumers (§11.8)** | Deriver produces conclusions end to end locally (Aspire), and on Azure via an owner-approved run (§18.3). Integration tests are green. No M2 read path bypasses `VisibilityPolicy`. |
 | **M3 — Recall** | Summarizer, hybrid search (all scopes), session context (hard budget), summaries route, deletion jobs + `W/jobs`, visibility rules extended to search/context/summaries | Context and search conformance pass. Budget property tests pass. Visibility negative tests are green. |
 | **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence; all inputs go through the existing `VisibilityPolicy` | SSE/structured conformance pass. First eval baseline is recorded. |
 | **M5 — Dreaming** | Dream scheduler, omni (deduction → induction), card_refresh, reasoning chain, `schedule_dream` | Eval shows an improvement over M4 on cross-session questions. |
