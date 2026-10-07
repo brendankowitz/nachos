@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts>
+    <Alert Name="DataIssue">
+      <Issue Value="The type for column ResponseStatus in table [dbo].[IdempotencyRecords] is currently  BIGINT NOT NULL but is being changed to  INT NOT NULL. Data loss could occur and deployment may fail if the column contains data that is incompatible with type  INT NOT NULL." Id="1" />
+    </Alert>
+  </Alerts>
+  <Operations>
+    <Operation Name="Alter">
+      <Item Value="[dbo].[IdempotencyRecords]" Type="SqlTable">
+        <Issue Id="1" />
+      </Item>
+    </Operation>
+  </Operations>
+</DeploymentReport>

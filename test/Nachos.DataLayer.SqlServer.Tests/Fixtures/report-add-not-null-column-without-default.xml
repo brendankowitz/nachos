@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts>
+    <Alert Name="DataIssue">
+      <Issue Value="The column [dbo].[IdempotencyRecords].[ExpiresAt] on table [dbo].[IdempotencyRecords] must be added, but the column has no default value and does not allow NULL values. If the table contains data, the ALTER script will not work. To avoid this issue you must either: add a default value to the column, mark it as allowing NULL values, or enable the generation of smart-defaults as a deployment option." Id="1" />
+    </Alert>
+  </Alerts>
+  <Operations>
+    <Operation Name="Alter">
+      <Item Value="[dbo].[IdempotencyRecords]" Type="SqlTable">
+        <Issue Id="1" />
+      </Item>
+    </Operation>
+    <Operation Name="Create">
+      <Item Value="[dbo].[IdempotencyRecords].[IX_IdempotencyRecords_ExpiresAt]" Type="SqlIndex" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

@@ -10,6 +10,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Fixtures\*.xml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fixtures\*.xml;Fixtures\*.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
