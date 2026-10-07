@@ -610,7 +610,18 @@ At `minimal`, only `search_conclusions` and `search_messages` are available.
 
 ### 11.8 Visibility policy (Δ centralized)
 
-`VisibilityPolicy` is computed once per request from scope, session allowlist, and auth. **Every** prompt input passes through it: prefetch, every tool, cards, summaries, and representation. Peer cards are cross-session aggregates, so they are **omitted** whenever an allowlist or scope is active and the card cannot be attributed (this fixes an upstream inconsistency). An empty scope fails closed.
+`VisibilityPolicy` is computed once per request from scope, session allowlist, and auth. **Every** read path that returns or assembles memory passes through it:
+
+- non-LLM reads: representation, peer card, peer context, session context, summaries, search, and conclusion list/query;
+- LLM inputs: prefetch, every tool, cards, summaries, and representation.
+
+Peer cards are cross-session aggregates, so they are **omitted** whenever an allowlist or scope is active and the card cannot be attributed (this fixes an upstream inconsistency). An empty scope fails closed.
+
+**Delivery order:**
+
+- **M2** delivers the policy, the session-allowlist and card-omission rules, and negative tests for its first consumers: representation, card, peer context, and conclusions.
+- **M3** extends it to search, session context, and summaries.
+- **M4** (chat) and **M6** (scopes, workspace chat) consume it and add rules. They never introduce a parallel check.
 
 ### 11.9 Workspace chat
 
@@ -823,9 +834,9 @@ Until both hold, the worker stays at `minReplicas = 1`.
 | M | Deliverable | Exit criteria |
 |---|---|---|
 | **M1 — Foundation** | Solution skeleton, CPM, ServiceDefaults, Aspire, sqlproj/dacpac + SchemaDeployer, in-memory provider, Workspaces/Peers/Sessions/Membership/Messages CRUD, filter compiler, pagination, error shape, NachosKey + Entra auth, keys route, health, `Nachos.Client` CRUD, **bootstrap CLI (`schema`, `keys`, `grants`; §16)**, Bicep + `azd up` (api only + SQL + KV + MI, hooks run the CLI from source) | CRUD conformance scenarios pass with upstream SDKs. `azd up` from a clean clone works with no M2+ artifacts. |
-| **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status | Deriver produces conclusions end to end on Azure. Integration tests are green. |
-| **M3 — Recall** | Summarizer, hybrid search (all scopes), session context (hard budget), summaries route, deletion jobs + `W/jobs` | Context and search conformance pass. Budget property tests pass. |
-| **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence, visibility policy | SSE/structured conformance pass. First eval baseline is recorded. |
+| **M2 — Memory formation** | Queue/leases/worker host, transactional enqueue, embeddings + reconciler, LLM layer (profiles, fallback, accounting), Deriver, dedup/corroboration, conclusions routes, representation, peer card get/put, peer context, queue status, **`VisibilityPolicy` + negative tests for these consumers (§11.8)** | Deriver produces conclusions end to end on Azure. Integration tests are green. No M2 read path bypasses `VisibilityPolicy`. |
+| **M3 — Recall** | Summarizer, hybrid search (all scopes), session context (hard budget), summaries route, deletion jobs + `W/jobs`, visibility rules extended to search/context/summaries | Context and search conformance pass. Budget property tests pass. Visibility negative tests are green. |
+| **M4 — Dialectic** | Peer chat: levels, tools, prefetch, streaming SSE, structured output, evidence; all inputs go through the existing `VisibilityPolicy` | SSE/structured conformance pass. First eval baseline is recorded. |
 | **M5 — Dreaming** | Dream scheduler, omni (deduction → induction), card_refresh, reasoning chain, `schedule_dream` | Eval shows an improvement over M4 on cross-session questions. |
 | **M6 — Parity completion** | Scopes (+ backfill/removal), workspace chat, webhooks (durable), upload, session clone | Full curated conformance suite is green. |
 | **M7 — Ecosystem & hardening** | Native MCP server, CLI `inspect`/`mcp` + tool packaging, rate limiting, optional distributed cache, DiskANN opt-in, surprisal prioritizer (flagged), docs site, NuGet packaging | Upstream MCP tool scenarios also pass against native `/mcp`. Release checklist complete. |
