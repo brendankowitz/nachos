@@ -7,22 +7,38 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 
 /// <summary>
 /// Spec §18.3: nothing that touches Azure may run unattended. Scans <c>.github/workflows/**</c>,
-/// <c>.github/actions/**</c> and <c>eng/**</c> under a root for provisioning/deployment commands and
-/// Azure/registry-pushing actions. The only exemption is, inside a workflow whose triggers are exactly
-/// <c>workflow_dispatch</c>, a line within a job that itself declares <c>environment: azure-live</c> (whose
-/// required reviewer is the owner). Anything the parser cannot read is NOT exempt: the scanner fails closed.
+/// <c>.github/actions/**</c> and <c>eng/**</c> under a root for provisioning/deployment commands, any
+/// <c>az</c> command other than offline <c>az bicep</c>, Azure/registry-pushing actions and builds, and
+/// reusable workflows from other repositories.
+/// <para>
+/// The only exemption is, inside a workflow whose triggers are exactly <c>workflow_dispatch</c>, a line within a
+/// job that itself declares <c>environment: azure-live</c> (whose required reviewer is the owner). The exemption
+/// is granted only when the workflow can be read unambiguously: unreadable triggers, a duplicate <c>on:</c> key,
+/// an unparseable <c>jobs:</c> section, any complex (<c>? </c>) key, or any line with an unterminated quote
+/// (a possible multi-line scalar hiding structure) means NO line of that workflow is exempt. This is a
+/// line-oriented reader, not a YAML parser, so it errs on the side of reporting.
+/// </para>
+/// <para>
+/// Known limit: a script run from a path the scanner does not read (for example <c>run: ./scripts/deploy.sh</c>)
+/// cannot be detected statically; review such scripts by hand.
+/// </para>
 /// </summary>
 internal sealed class UnattendedAzureScanner(string root)
 {
     private static readonly Regex[] Forbidden =
     [
         Pattern(@"\bazd\s+(up|provision|deploy|down)\b"),
-        Pattern(@"\baz\s+deployment\b"),
-        Pattern(@"\baz\s+group\b"),
+        // Any az command (login, group, deployment, acr, containerapp, sql, keyvault, webapp, ...) except the
+        // offline `az bicep` checks that spec 18.3 allows.
+        Pattern(@"\baz\s+(?!bicep\b)[a-z]"),
         Pattern(@"sqlpackage.*Publish"),
         Pattern(@"infra/hooks"),
         Pattern(@"\bdocker\s+(image\s+)?push\b"),
-        Pattern(@"\baz\s+acr\b"),
+        // Builds that push as part of the build.
+        Pattern(@"\bdocker\b.*\s--push\b"),
+        Pattern(@"\bdocker\b.*\btype=registry\b"),
+        // Reusable workflows from another repository (a local ./.github/workflows/x.yml stays allowed).
+        Pattern(@"\buses\s*:\s*['""]?(?!\./)[^'""\s@]+/[^'""\s@]+/\.github/workflows/"),
         // Azure's own actions (login, arm-deploy, sql-action, container-apps-deploy-action, ...) and the
         // action that pushes images; either can reach Azure or a registry without a shell command.
         Pattern(@"\buses\s*:\s*['""]?azure/"),
@@ -96,6 +112,11 @@ internal sealed class UnattendedAzureScanner(string root)
     private static HashSet<int> ExemptLines(string[] lines)
     {
         var exempt = new HashSet<int>();
+        if (lines.Any(IsUnsafeToInterpret))
+        {
+            return exempt;
+        }
+
         var triggers = ReadTriggers(lines);
         if (triggers is null || triggers.Count != 1 || !triggers.Contains("workflow_dispatch"))
         {
@@ -122,10 +143,11 @@ internal sealed class UnattendedAzureScanner(string root)
     /// </summary>
     private static HashSet<string>? ReadTriggers(string[] lines)
     {
-        var onLine = Array.FindIndex(lines, l => Regex.IsMatch(l, @"^(on|""on""|'on')\s*:"));
-        if (onLine < 0)
+        var onKey = new Regex(@"^(on|""on""|'on')\s*:", RegexOptions.CultureInvariant);
+        var onLine = Array.FindIndex(lines, onKey.IsMatch);
+        if (onLine < 0 || lines.Count(onKey.IsMatch) > 1)
         {
-            return null;
+            return null; // missing, or duplicated (parsers disagree on which one wins)
         }
 
         var triggers = new HashSet<string>(StringComparer.Ordinal);
@@ -348,11 +370,50 @@ internal sealed class UnattendedAzureScanner(string root)
         return false;
     }
 
+    /// <summary>
+    /// A line that could be part of a multi-line quoted scalar (unterminated quote) or a YAML complex key; either
+    /// can hide structure from this line-oriented reader.
+    /// </summary>
+    private static bool IsUnsafeToInterpret(string line)
+    {
+        var code = StripComment(line, out var unterminated).Trim();
+        return unterminated || code == "?" || code.StartsWith("? ", StringComparison.Ordinal);
+    }
+
     private static int IndentOf(string line) => line.Length - line.TrimStart().Length;
 
-    private static string StripComment(string line)
+    private static string StripComment(string line) => StripComment(line, out _);
+
+    /// <summary>Removes a trailing <c>#</c> comment (outside quotes) and reports a quote left open at line end.</summary>
+    private static string StripComment(string line, out bool unterminatedQuote)
     {
-        var index = line.IndexOf('#', StringComparison.Ordinal);
-        return index < 0 ? line : line[..index];
+        char? quote = null;
+        for (var i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (quote is null)
+            {
+                if (c is '"' or '\'')
+                {
+                    quote = c;
+                }
+                else if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                {
+                    unterminatedQuote = false;
+                    return line[..i];
+                }
+            }
+            else if (quote == '"' && c == '\\')
+            {
+                i++; // escaped character inside a double-quoted scalar
+            }
+            else if (c == quote)
+            {
+                quote = null;
+            }
+        }
+
+        unterminatedQuote = quote is not null;
+        return line;
     }
 }

@@ -158,12 +158,17 @@ public sealed class InfraTests
         scale.GetProperty("minReplicas").GetInt32().ShouldBe(1);
         scale.GetProperty("maxReplicas").GetInt32().ShouldBe(10);
 
-        // The probes are an ARM expression: present only once the real image is deployed (apiExists), because
-        // the first revision runs a placeholder with no /health routes. Both paths and the false branch matter.
-        var probes = containerTemplate.GetProperty("containers").EnumerateArray().Single().GetProperty("probes");
-        probes.ValueKind.ShouldBe(JsonValueKind.String, "probes must be conditional on apiExists");
+        // The probes are an ARM expression keyed on the image actually in use, NOT on apiExists: azd sets
+        // apiExists as soon as the app exists, which can be before any real image was deployed (a failed
+        // postprovision, or a second `azd provision`). The placeholder has no /health routes.
+        var container = containerTemplate.GetProperty("containers").EnumerateArray().Single();
+        var probes = container.GetProperty("probes");
+        probes.ValueKind.ShouldBe(JsonValueKind.String, "probes must be conditional on the image in use");
         var expression = probes.GetString()!;
-        expression.ShouldStartWith("[if(parameters('apiExists'),");
+        // Probes apply when the image in use (the container's own image expression) differs from the placeholder.
+        var imageExpression = container.GetProperty("image").GetString()!;
+        imageExpression.ShouldStartWith("[");
+        expression.ShouldStartWith($"[if(not(equals({imageExpression[1..^1]}, parameters('containerImage'))), ");
         expression.ShouldEndWith(", createArray())]");
         expression.ShouldContain("'/health/live'");
         expression.ShouldContain("'/health/ready'");
@@ -321,18 +326,18 @@ public sealed class InfraTests
     }
 
     [Fact]
-    public void Hooks_ValidateAdminKeyShape_BeforeStoringIt()
+    public void Hooks_ValidateAdminKeyShape_AndAbortBeforeStoringIt()
     {
-        const string JwtShape = @"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+";
-        foreach (var hook in PostprovisionHooks)
-        {
-            var text = ReadHook(hook);
-            var shape = text.IndexOf(JwtShape, StringComparison.Ordinal);
-            shape.ShouldBeGreaterThanOrEqualTo(0, $"{hook} must validate the minted key shape");
-            shape.ShouldBeLessThan(
-                text.LastIndexOf("--name nachos-bootstrap-admin-key", StringComparison.Ordinal),
-                $"{hook} must validate before it stores the admin key");
-        }
+        // Comment lines are stripped so prose cannot satisfy the checks.
+        var sh = CodeOnly("infra/hooks/postprovision.sh");
+        var mismatch = Regex.Match(sh, @"=~ \$jwt_shape \]\]; then(?:(?!\bfi\b).)*?exit 1", RegexOptions.Singleline);
+        mismatch.Success.ShouldBeTrue("postprovision.sh must exit when the key shape does not match");
+        mismatch.Index.ShouldBeLessThan(sh.LastIndexOf("--name nachos-bootstrap-admin-key", StringComparison.Ordinal));
+
+        var ps1 = CodeOnly("infra/hooks/postprovision.ps1");
+        var throws = Regex.Match(ps1, @"-cnotmatch '\^\[A-Za-z0-9_-\]\+\\\.\[A-Za-z0-9_-\]\+\\\.\[A-Za-z0-9_-\]\+\$'\)\s*\{\s*throw");
+        throws.Success.ShouldBeTrue("postprovision.ps1 must throw when the key shape does not match");
+        throws.Index.ShouldBeLessThan(ps1.LastIndexOf("--name nachos-bootstrap-admin-key", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -352,16 +357,85 @@ public sealed class InfraTests
     }
 
     [Fact]
-    public void Hooks_RetryKeyVaultListing_OnlyOnAuthorizationErrors()
+    public void Hooks_RetryKeyVaultListing_IsBoundedRetriesOnlyAuthErrors_AndAbortsWhenExhausted()
     {
-        // The role assignment made in the same provision needs time to propagate.
-        foreach (var hook in PostprovisionHooks)
+        // The role assignment made in the same provision needs time to propagate. Code only, no comments.
+        var sh = CodeOnly("infra/hooks/postprovision.sh");
+        sh.ShouldContain("seq 1 30");
+        sh.ShouldContain("grep -qiE 'Forbidden|AuthorizationFailed");
+        Regex.IsMatch(sh, @"\$listed"" != true \]\]; then(?:(?!\bfi\b).)*?exit 1", RegexOptions.Singleline)
+            .ShouldBeTrue("postprovision.sh must abort once the retries are exhausted");
+
+        var ps1 = CodeOnly("infra/hooks/postprovision.ps1");
+        ps1.ShouldContain("$attempt -le 30");
+        Regex.IsMatch(ps1, @"notmatch 'Forbidden\|AuthorizationFailed[^']*'\)\s*\{\s*throw").ShouldBeTrue("non-auth failures must abort");
+        Regex.IsMatch(ps1, @"\$attempt -eq 30\)\s*\{\s*throw").ShouldBeTrue("exhausted retries must abort");
+    }
+
+    [RequiresToolFact("bash")]
+    public void PostprovisionSh_RetriesAuthorizationErrors_ThenSucceeds()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(forbiddenListings: 2, listNames: "nachos-bootstrap-admin-key");
+
+        result.ExitCode.ShouldBe(0, result.StdErr);
+        toolbox.Count("keyvault secret list").ShouldBe(3);
+        toolbox.Count("firewall-rule delete").ShouldBe(1, "the temporary firewall rule is always removed");
+    }
+
+    [RequiresToolFact("bash")]
+    public void PostprovisionSh_GivesUpAfterThirtyAuthorizationErrors()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(forbiddenListings: 40);
+
+        result.ExitCode.ShouldNotBe(0);
+        toolbox.Count("keyvault secret list").ShouldBe(30);
+        toolbox.Count("secret set").ShouldBe(0);
+        toolbox.Count("firewall-rule delete").ShouldBe(1);
+    }
+
+    [RequiresToolFact("bash")]
+    public void PostprovisionSh_DoesNotRetryOtherListFailures()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(listError: "other");
+
+        result.ExitCode.ShouldNotBe(0);
+        toolbox.Count("keyvault secret list").ShouldBe(1);
+        toolbox.Count("secret set").ShouldBe(0, "a failed listing must never be read as 'secret absent'");
+    }
+
+    [RequiresToolFact("bash")]
+    public void PostprovisionSh_StoresAWellFormedAdminKey_WithoutEchoingIt()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostprovision(keyOutput: "aaa.bbb.ccc\n", listNames: "nachos-signing-key-0");
+
+        result.ExitCode.ShouldBe(0, result.StdErr);
+        toolbox.Count("secret set").ShouldBe(1);
+        toolbox.Count("--name nachos-bootstrap-admin-key").ShouldBe(1);
+        (result.StdOut + result.StdErr).ShouldNotContain("aaa.bbb.ccc");
+        toolbox.Calls.Where(c => c.StartsWith("dotnet run", StringComparison.Ordinal))
+            .ShouldAllBe(c => c.Contains("--no-launch-profile", StringComparison.Ordinal));
+    }
+
+    [RequiresToolFact("bash")]
+    public void PostprovisionSh_RejectsMalformedAdminKeys_WithoutStoringAnything()
+    {
+        foreach (var output in new[] { "", "Using launch settings from x.json...\naaa.bbb.ccc\n", "not a jwt\n", "aaa.bbb\n" })
         {
-            var text = ReadHook(hook);
-            text.ShouldContain("Forbidden", customMessage: hook);
-            text.ShouldContain("AuthorizationFailed", customMessage: hook);
-            Regex.IsMatch(text, @"\b30\b").ShouldBeTrue($"{hook}: expected a bounded 30 x 10 s retry");
-            Regex.IsMatch(text, @"(sleep 10|Start-Sleep -Seconds 10)").ShouldBeTrue(hook);
+            using var toolbox = new FakeToolbox();
+
+            var result = toolbox.RunPostprovision(keyOutput: output, listNames: "nachos-signing-key-0");
+
+            result.ExitCode.ShouldNotBe(0, $"output '{output}' must be rejected");
+            toolbox.Count("--name nachos-bootstrap-admin-key").ShouldBe(0, $"output '{output}' must not be stored");
+            toolbox.Count("firewall-rule delete").ShouldBe(1);
         }
     }
 
@@ -483,7 +557,75 @@ public sealed class InfraTests
         PlantedFileHits(".github/actions/deploy/script.sh", "az group create -n x -l y\n").ShouldNotBeEmpty();
     }
 
+    [Theory]
+    [InlineData("      - run: az login --service-principal -u x -p y --tenant z\n")]
+    [InlineData("      - run: az containerapp update -n api --image example.azurecr.io/x:1\n")]
+    [InlineData("      - run: az sql server list\n")]
+    [InlineData("      - run: az keyvault secret show --name x\n")]
+    [InlineData("      - run: az webapp deploy --name x\n")]
+    [InlineData("      - run: az group create -n x -l y\n")]
+    [InlineData("      - run: docker buildx build --push -t example.azurecr.io/x:1 .\n")]
+    [InlineData("      - run: docker build --push -t example.azurecr.io/x:1 .\n")]
+    [InlineData("      - run: docker buildx build --output type=registry,ref=example.azurecr.io/x:1 .\n")]
+    public void Scanner_FlagsAzCommandsAndPushingBuilds(string step)
+    {
+        PlantedWorkflowHits("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + step).ShouldNotBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("org/repo/.github/workflows/deploy.yml@main")]
+    [InlineData("'Org/Repo/.github/workflows/deploy.yml@v1'")]
+    public void Scanner_FlagsReusableWorkflowsFromOtherRepositories(string uses)
+    {
+        PlantedWorkflowHits($"on: push\njobs:\n  j:\n    uses: {uses}\n    secrets: inherit\n").ShouldNotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("      - run: az bicep build --file infra/main.bicep --stdout\n")]
+    [InlineData("      - run: az bicep lint --file infra/main.bicep\n")]
+    [InlineData("      - run: docker build -t example:ci .\n")]
+    [InlineData("      - run: azd package\n")]
+    public void Scanner_AllowsOfflineChecks(string step)
+    {
+        // Spec 18.3: offline `az bicep` checks, local image builds, and `azd package` need no consent.
+        PlantedWorkflowHits("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + step).ShouldBeEmpty(step);
+    }
+
+    [Fact]
+    public void Scanner_AllowsLocalReusableWorkflows()
+    {
+        PlantedWorkflowHits("on: push\njobs:\n  j:\n    uses: ./.github/workflows/build.yml\n").ShouldBeEmpty();
+    }
+
+    [Theory]
+    // The azure-live line sits inside a multi-line quoted scalar.
+    [InlineData("on: workflow_dispatch\njobs:\n  j:\n    name: \"Deploy\n    environment: azure-live\n    \"\n    steps:\n      - run: azd up\n")]
+    // A multi-line quoted scalar hides a complex key that redefines the trigger.
+    [InlineData("name: \"x\non: workflow_dispatch\n\"\n? on\n: push\njobs:\n  j:\n    environment: azure-live\n    steps:\n      - run: azd up\n")]
+    // Complex key on its own.
+    [InlineData("on: workflow_dispatch\n? on\n: push\njobs:\n  j:\n    environment: azure-live\n    steps:\n      - run: azd up\n")]
+    // Duplicate top-level on: key (YAML parsers differ on which wins).
+    [InlineData("on: workflow_dispatch\non: push\njobs:\n  j:\n    environment: azure-live\n    steps:\n      - run: azd up\n")]
+    public void Scanner_FailsClosed_OnYamlThatCannotBeReadSafely(string workflow)
+    {
+        PlantedWorkflowHits(workflow).ShouldNotBeEmpty();
+    }
+
+    [Fact]
+    public void Scanner_StillExempts_BalancedQuotesAndApostropheInsideQuotes()
+    {
+        const string Workflow =
+            "on: workflow_dispatch\njobs:\n  j:\n    environment: azure-live\n    steps:\n" +
+            "      - run: echo \"it's fine\"\n      - run: azd up\n";
+
+        PlantedWorkflowHits(Workflow).ShouldBeEmpty();
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------
+
+    /// <summary>Hook text with comment-only lines removed.</summary>
+    private static string CodeOnly(string relativePath) =>
+        string.Join('\n', ReadHook(relativePath).Split('\n').Where(l => !l.TrimStart().StartsWith('#')));
 
     private static string ReadHook(string relativePath) => File.ReadAllText(RepoPaths.Combine(relativePath));
 

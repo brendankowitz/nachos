@@ -18,7 +18,7 @@ param sqlDatabaseName string
 @description('Azure OpenAI endpoint; empty in M1, in which case the variable is not set.')
 param openAiEndpoint string = ''
 
-@description('True once `azd deploy` has created the app (azd sets SERVICE_API_RESOURCE_EXISTS). Then the deployed image is kept and the HTTP probes apply.')
+@description('True once the app exists (azd sets SERVICE_API_RESOURCE_EXISTS). Then the image currently on the app is kept.')
 param apiExists bool
 
 // Placeholder for the very first provision only. It listens on 8080 like the real API (the older
@@ -34,6 +34,9 @@ module existingImage 'fetch-container-image.bicep' = if (apiExists) {
     name: name
   }
 }
+
+// The image this revision runs: the one already on the app, else the placeholder.
+var image = apiExists ? existingImage!.outputs.image : containerImage
 
 // Passwordless: the managed identity authenticates to SQL (its contained user is created by the
 // postprovision hook), so this connection string holds no secret.
@@ -87,17 +90,18 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
       containers: [
         {
           name: 'api'
-          image: apiExists ? existingImage!.outputs.image : containerImage
+          image: image
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
           }
           env: concat(baseEnv, openAiEnv)
-          // The first revision runs the placeholder, which has no /health routes, so explicit HTTP probes
-          // would keep it from ever becoming ready (ACA's default TCP probes on the target port apply instead).
-          // They switch on from the next provision, once the real image is deployed; the postdeploy hook
-          // smoke-tests /health/ready right after that first deploy.
-          probes: apiExists ? [
+          // Probes follow the image in use, not apiExists: azd sets apiExists as soon as the app exists, which can
+          // be before any real image was deployed (a failed postprovision, or a second `azd provision`). While the
+          // placeholder runs there are no /health routes, so explicit HTTP probes would keep the revision from ever
+          // becoming ready (ACA's default TCP probes on the target port apply instead). They switch on at the first
+          // provision after `azd deploy` replaced the image; the postdeploy hook smoke-tests /health/ready.
+          probes: image != containerImage ? [
             {
               type: 'Liveness'
               httpGet: {
