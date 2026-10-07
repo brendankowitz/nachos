@@ -1,11 +1,14 @@
+#Requires -Version 7.4
 # azd postprovision hook (Windows). Same logic as postprovision.sh; see that file for the rationale.
 # Never run by agents or CI: it needs an owner-approved `azd provision` (spec 18.3) and an `az login`
 # as the principal that is the SQL Entra admin set by Bicep.
+# 7.4+ is required: `$PSNativeCommandUseErrorActionPreference` does not exist before it, and a failed
+# `secret list` would then read as "absent" and overwrite the signing key.
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true   # a failing native command (az, sqlcmd, dotnet) throws
 
 $required = @(
-    'AZURE_RESOURCE_GROUP', 'AZURE_KEY_VAULT_NAME', 'AZURE_SQL_SERVER_NAME', 'AZURE_SQL_SERVER_FQDN',
+    'AZURE_SUBSCRIPTION_ID', 'AZURE_RESOURCE_GROUP', 'AZURE_KEY_VAULT_NAME', 'AZURE_SQL_SERVER_NAME', 'AZURE_SQL_SERVER_FQDN',
     'AZURE_SQL_DATABASE_NAME', 'AZURE_MANAGED_IDENTITY_NAME', 'AZURE_MANAGED_IDENTITY_CLIENT_ID'
 )
 $missing = $required | Where-Object { [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($_)) }
@@ -31,6 +34,7 @@ try {
     }
     $firewallRule = "nachos-hook-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
     az sql server firewall-rule create `
+        --subscription $env:AZURE_SUBSCRIPTION_ID `
         --resource-group $env:AZURE_RESOURCE_GROUP --server $env:AZURE_SQL_SERVER_NAME `
         --name $firewallRule --start-ip-address $publicIp --end-ip-address $publicIp --output none
     Write-Output "postprovision: added temporary firewall rule '$firewallRule'."
@@ -88,15 +92,33 @@ try {
 
     # --- 3. Schema -----------------------------------------------------------------------------------
     $connection = "Server=tcp:$($env:AZURE_SQL_SERVER_FQDN),1433;Database=$($env:AZURE_SQL_DATABASE_NAME);Authentication=Active Directory Default;Encrypt=True"
-    # Build once, quietly, so later `dotnet run` output can be captured without build chatter.
+    # Build once, quietly, so the later runs (--no-build) print nothing but the CLI output.
     dotnet build src/Nachos.Cli --nologo --verbosity quiet
-    dotnet run --no-build --project src/Nachos.Cli -- schema upgrade --connection $connection
+    dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- schema upgrade --connection $connection
 
     # --- 4. Bootstrap signing secret + admin key -----------------------------------------------------
     $vault = $env:AZURE_KEY_VAULT_NAME
     # Listing (rather than `show`) fails loudly on auth errors, so an outage can never look like "absent"
     # and trigger an overwrite of an existing signing key.
-    $existingNames = @(az keyvault secret list --vault-name $vault --query '[].name' --output tsv)
+    # The Secrets Officer role is assigned in this same provision and can take minutes to propagate, so retry
+    # (up to 30 x 10 s) ONLY on authorization failures; any other failure aborts immediately.
+    $listError = Join-Path $workDir 'keyvault-list.err'
+    $existingNames = $null
+    for ($attempt = 1; $attempt -le 30 -and $null -eq $existingNames; $attempt++) {
+        try {
+            $existingNames = @(az keyvault secret list --subscription $env:AZURE_SUBSCRIPTION_ID --vault-name $vault --query '[].name' --output tsv 2> $listError)
+        }
+        catch {
+            $listFailure = Read-FileText $listError
+            if ($listFailure -notmatch 'Forbidden|AuthorizationFailed|AuthorizationPermissionMismatch') {
+                throw "postprovision: listing Key Vault secrets failed. $listFailure"
+            }
+            if ($attempt -eq 30) {
+                throw "postprovision: still not authorized to list Key Vault secrets after 5 minutes; role assignment may not have propagated. $listFailure"
+            }
+            Start-Sleep -Seconds 10
+        }
+    }
 
     if ($existingNames -contains 'nachos-bootstrap-admin-key') {
         Write-Output "postprovision: secret 'nachos-bootstrap-admin-key' already exists; nothing to bootstrap."
@@ -105,27 +127,34 @@ try {
 
     $signingFile = Join-Path $workDir 'signing-key'
     if ($existingNames -contains 'nachos-signing-key-0') {
-        az keyvault secret download --vault-name $vault --name nachos-signing-key-0 --file $signingFile --output none
+        az keyvault secret download --subscription $env:AZURE_SUBSCRIPTION_ID --vault-name $vault --name nachos-signing-key-0 --file $signingFile --output none
         Write-Output "postprovision: reusing secret 'nachos-signing-key-0'."
     }
     else {
         $bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(48)
         $encoded = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
         [System.IO.File]::WriteAllText($signingFile, $encoded)
-        az keyvault secret set --vault-name $vault --name nachos-signing-key-0 --file $signingFile --output none
+        az keyvault secret set --subscription $env:AZURE_SUBSCRIPTION_ID --vault-name $vault --name nachos-signing-key-0 --file $signingFile --output none
         Write-Output "postprovision: stored secret 'nachos-signing-key-0'."
     }
 
     $adminFile = Join-Path $workDir 'admin-key'
     $env:NACHOS_SIGNING_SECRET = Read-FileText $signingFile
     try {
-        $minted = dotnet run --no-build --project src/Nachos.Cli -- keys create --admin --signing-secret-env NACHOS_SIGNING_SECRET
+        # --no-launch-profile: a launch profile makes the CLI host print a banner on stdout, which would be
+        # captured along with the key.
+        $minted = dotnet run --no-build --no-launch-profile --project src/Nachos.Cli -- keys create --admin --signing-secret-env NACHOS_SIGNING_SECRET
     }
     finally {
         Remove-Item Env:NACHOS_SIGNING_SECRET -ErrorAction SilentlyContinue
     }
-    [System.IO.File]::WriteAllText($adminFile, (($minted -join '') -replace '[\r\n]', ''))
-    az keyvault secret set --vault-name $vault --name nachos-bootstrap-admin-key --file $adminFile --output none
+    # Store only something shaped like a JWT (three base64url segments); never echo what was returned.
+    $adminKey = (($minted | ForEach-Object { "$_" }) -join "`n").Trim()
+    if ($adminKey -cnotmatch '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$') {
+        throw 'postprovision: the CLI did not return a well-formed admin key; nothing was stored.'
+    }
+    [System.IO.File]::WriteAllText($adminFile, $adminKey)
+    az keyvault secret set --subscription $env:AZURE_SUBSCRIPTION_ID --vault-name $vault --name nachos-bootstrap-admin-key --file $adminFile --output none
     Write-Output "postprovision: stored secret 'nachos-bootstrap-admin-key'."
 }
 finally {
@@ -134,6 +163,7 @@ finally {
     if ($firewallRule) {
         try {
             az sql server firewall-rule delete `
+                --subscription $env:AZURE_SUBSCRIPTION_ID `
                 --resource-group $env:AZURE_RESOURCE_GROUP --server $env:AZURE_SQL_SERVER_NAME `
                 --name $firewallRule --output none
         }

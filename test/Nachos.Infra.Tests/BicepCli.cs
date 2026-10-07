@@ -6,20 +6,23 @@ namespace Nachos.Infra.Tests;
 /// </summary>
 internal static class BicepCli
 {
+    // `az` otherwise checks for (and prints) new Bicep releases, which is noise and a network call.
+    private static readonly Dictionary<string, string> Environment = new() { ["AZURE_BICEP_CHECK_VERSION"] = "false" };
+
     public static ProcessResult Build(string bicepFile)
     {
         var (exe, prefix) = Resolve();
         return prefix.Length > 0
-            ? Tools.Run(exe, [.. prefix, "build", "--file", bicepFile, "--stdout"])
-            : Tools.Run(exe, ["build", bicepFile, "--stdout"]);
+            ? Tools.Run(exe, [.. prefix, "build", "--file", bicepFile, "--stdout"], environment: Environment)
+            : Tools.Run(exe, ["build", bicepFile, "--stdout"], environment: Environment);
     }
 
     public static ProcessResult BuildParams(string bicepparamFile)
     {
         var (exe, prefix) = Resolve();
         return prefix.Length > 0
-            ? Tools.Run(exe, [.. prefix, "build-params", "--file", bicepparamFile, "--stdout"])
-            : Tools.Run(exe, ["build-params", bicepparamFile, "--stdout"]);
+            ? Tools.Run(exe, [.. prefix, "build-params", "--file", bicepparamFile, "--stdout"], environment: Environment)
+            : Tools.Run(exe, ["build-params", bicepparamFile, "--stdout"], environment: Environment);
     }
 
     private static (string Exe, string[] Prefix) Resolve()
