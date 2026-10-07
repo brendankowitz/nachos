@@ -645,6 +645,73 @@ public sealed class FilterParserTests
     }
 
     [Fact]
+    public void ConstructedFilter_LoneHighSurrogateValue_Rejected422() =>
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["content"] = "a\uD800b" }, ResourceKind.Message));
+
+    [Fact]
+    public void ConstructedFilter_LoneLowSurrogateValue_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["content"] = "\uDC00" }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["content"] = "\uDE00\uD83D" }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["content"] = "x\uD83D" }, ResourceKind.Message));
+    }
+
+    [Fact]
+    public void ConstructedFilter_LoneSurrogateMetadataKey_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["\uD800"] = 1 } }, ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["unknown\uDC00"] = 1 }, ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void ConstructedFilter_LoneSurrogateInNestedArray_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["AND"] = new JsonArray(new JsonObject { ["name"] = new JsonArray("a", "\uD800") }) },
+            ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["tags"] = new JsonArray("ok", "\uDC00") } },
+            ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void ConstructedFilter_LoneSurrogateCharValue_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = JsonValue.Create('\uD800') }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = JsonValue.Create('\uDC00') }, ResourceKind.Message));
+    }
+
+    [Fact]
+    public void ConstructedFilter_ValidSurrogatePair_Accepted() =>
+        FilterParser.Parse(new JsonObject { ["content"] = "\uD83D\uDE00" }, ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Content, FilterOp.Eq, JsonValue.Create("\U0001F600")));
+
+    [Fact]
+    public void ConstructedFilter_GenuineReplacementChar_Accepted() =>
+        FilterParser.Parse(new JsonObject { ["content"] = "\uFFFD" }, ResourceKind.Message)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Content, FilterOp.Eq, JsonValue.Create("\uFFFD")));
+
+    [Fact]
+    public void ConstructedFilter_DepthOver64_Rejected422()
+    {
+        JsonNode node = new JsonObject();
+        for (var i = 0; i < 100; i++)
+        {
+            node = new JsonObject { ["AND"] = new JsonArray(node) };
+        }
+
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(node, ResourceKind.Workspace));
+    }
+
+    [Fact]
     public void Parse_UndefinedResourceKind_ThrowsArgumentOutOfRange() =>
         Should.Throw<ArgumentOutOfRangeException>(() => FilterParser.Parse("""{"name":"a"}""", (ResourceKind)99));
 

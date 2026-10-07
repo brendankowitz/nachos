@@ -54,6 +54,8 @@ public static partial class FilterParser
     /// </remarks>
     public const int MaxListItems = 1000;
 
+    private const int MaxDepth = 64;
+
     private const string Wildcard = "*";
 
     private static readonly JsonDocumentOptions StrictDocument = new() { AllowDuplicateProperties = false };
@@ -76,6 +78,9 @@ public static partial class FilterParser
         {
             return null;
         }
+
+        // Serialization silently replaces an unpaired surrogate with U+FFFD, so check the caller's strings first.
+        RejectUnpairedSurrogates(filters, 1);
 
         string json;
         try
@@ -128,6 +133,67 @@ public static partial class FilterParser
             JsonObject obj => ParseObject(obj, fields),
             _ => throw Invalid("Filters must be a JSON object."),
         };
+    }
+
+    private static void RejectUnpairedSurrogates(JsonNode? node, int depth)
+    {
+        if (depth > MaxDepth)
+        {
+            throw Invalid($"Filters are nested more than {MaxDepth} levels deep.");
+        }
+
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (key, value) in obj)
+                {
+                    RequireWellFormed(key);
+                    RejectUnpairedSurrogates(value, depth + 1);
+                }
+
+                break;
+            case JsonArray array:
+                foreach (var element in array)
+                {
+                    RejectUnpairedSurrogates(element, depth + 1);
+                }
+
+                break;
+            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
+                try
+                {
+                    if (value.TryGetValue(out string? text))
+                    {
+                        RequireWellFormed(text);
+                    }
+                    else if (value.TryGetValue(out char character))
+                    {
+                        RequireWellFormed(character.ToString());
+                    }
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // A string backed by JSON text that holds an invalid escape.
+                    throw new NachosValidationException($"Filters contain an invalid string: {ex.Message}", ex);
+                }
+
+                break;
+        }
+    }
+
+    private static void RequireWellFormed(string text)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+            {
+                i++;
+            }
+            else if (char.IsSurrogate(text[i]))
+            {
+                throw Invalid("Filters contain a string with an unpaired surrogate.");
+            }
+        }
     }
 
     private static void DecodeAll(JsonNode? node)
