@@ -13,7 +13,9 @@ namespace Nachos.Abstractions.Filtering;
 /// <para><b>Input.</b> The <see cref="JsonNode"/> overload first round-trips the filter through JSON text, so filters
 /// built in C# (<c>int</c>, <see cref="DateTimeOffset"/>, <see cref="Guid"/> values and so on) behave exactly like
 /// the same filter received over HTTP, and the tree the parser walks is a private copy. Duplicate property names,
-/// nesting deeper than 64 levels and malformed JSON are rejected with a <see cref="NachosValidationException"/>.</para>
+/// strings that are not well-formed UTF-16 (including inside typed arrays and dictionaries), objects and arrays nested
+/// more than 64 deep (scalars add no level, in either overload) and malformed JSON are rejected with a
+/// <see cref="NachosValidationException"/>.</para>
 /// <para><b>Top level.</b> An object whose keys are AND-ed together. <c>AND</c>, <c>OR</c> and <c>NOT</c> (upper case)
 /// each take an array of filter objects; <c>NOT [c1…cn]</c> is <c>NOT (c1 OR … OR cn)</c>. Keys that are not a field
 /// of the resource are ignored (they match everything).</para>
@@ -79,12 +81,13 @@ public static partial class FilterParser
             return null;
         }
 
-        // Serialization silently replaces an unpaired surrogate with U+FFFD, so check the caller's strings first.
-        RejectUnpairedSurrogates(filters, 1);
-
+        // Every failure here comes from the input, so all of it sits inside one boundary; programming errors such as an
+        // undefined ResourceKind surface later, from the text overload, outside any translation.
         string json;
         try
         {
+            // Serialization silently replaces an unpaired surrogate with U+FFFD, so check the caller's strings first.
+            RequireRepresentable(filters);
             json = filters.ToJsonString();
         }
         catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or ArgumentException or JsonException)
@@ -133,52 +136,6 @@ public static partial class FilterParser
             JsonObject obj => ParseObject(obj, fields),
             _ => throw Invalid("Filters must be a JSON object."),
         };
-    }
-
-    private static void RejectUnpairedSurrogates(JsonNode? node, int depth)
-    {
-        if (depth > MaxDepth)
-        {
-            throw Invalid($"Filters are nested more than {MaxDepth} levels deep.");
-        }
-
-        switch (node)
-        {
-            case JsonObject obj:
-                foreach (var (key, value) in obj)
-                {
-                    RequireWellFormed(key);
-                    RejectUnpairedSurrogates(value, depth + 1);
-                }
-
-                break;
-            case JsonArray array:
-                foreach (var element in array)
-                {
-                    RejectUnpairedSurrogates(element, depth + 1);
-                }
-
-                break;
-            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
-                try
-                {
-                    if (value.TryGetValue(out string? text))
-                    {
-                        RequireWellFormed(text);
-                    }
-                    else if (value.TryGetValue(out char character))
-                    {
-                        RequireWellFormed(character.ToString());
-                    }
-                }
-                catch (InvalidOperationException ex)
-                {
-                    // A string backed by JSON text that holds an invalid escape.
-                    throw new NachosValidationException($"Filters contain an invalid string: {ex.Message}", ex);
-                }
-
-                break;
-        }
     }
 
     private static void RequireWellFormed(string text)

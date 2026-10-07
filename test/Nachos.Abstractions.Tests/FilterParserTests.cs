@@ -711,6 +711,213 @@ public sealed class FilterParserTests
         Should.Throw<NachosValidationException>(() => FilterParser.Parse(node, ResourceKind.Workspace));
     }
 
+    // JsonNode.Parse (without AllowDuplicateProperties = false) accepts duplicate keys and escaped lone surrogates in
+    // keys; they only surface when the object is enumerated or serialized, which must still be a 422.
+
+    [Fact]
+    public void NodeOverload_DuplicateKeysRoot_Rejected422() =>
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"content":"a","content":"b"}"""), ResourceKind.Message));
+
+    [Fact]
+    public void NodeOverload_DuplicateKeysNested_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"metadata":{"k":1,"k":2}}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"AND":[{"name":"a","name":"b"}]}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"name":{"in":["a"],"in":["b"]}}"""), ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void NodeOverload_DuplicateKeysInsideUnknownField_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"unknown":{"x":1,"x":2}}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"unknown":[{"x":{"y":1,"y":2}}]}"""), ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void NodeOverload_JsonBackedEscapedSurrogateKey_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"\uD800":1}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"metadata":{"\uDC00":1}}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"unknown":{"\uD800":1}}"""), ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonNode.Parse("""{"content":"\uD800"}"""), ResourceKind.Message));
+    }
+
+    // JsonDocumentOptions.MaxDepth = 64 counts objects and arrays only: 64 nested containers are accepted, 65 are not,
+    // and a scalar or null leaf adds no level. Both overloads must agree.
+    public static TheoryData<int, bool, bool> DepthCases()
+    {
+        var data = new TheoryData<int, bool, bool>();
+        for (var depth = 63; depth <= 65; depth++)
+        {
+            data.Add(depth, false, false);
+            data.Add(depth, false, true);
+            data.Add(depth, true, false);
+            data.Add(depth, true, true);
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(DepthCases))]
+    public void DepthParity_63_64_65_BothOverloads(int containers, bool nodeOverload, bool nullLeaf)
+    {
+        // The root object plus (containers - 1) nested metadata objects.
+        Func<FilterNode?> parse;
+        if (nodeOverload)
+        {
+            JsonNode? node = nullLeaf ? null : JsonValue.Create("ok");
+            for (var i = 0; i < containers - 1; i++)
+            {
+                node = new JsonObject { ["k"] = node };
+            }
+
+            var filter = new JsonObject { ["metadata"] = node };
+            parse = () => FilterParser.Parse(filter, ResourceKind.Workspace);
+        }
+        else
+        {
+            var json = """{"metadata":""" + string.Concat(Enumerable.Repeat("""{"k":""", containers - 1))
+                + (nullLeaf ? "null" : "\"ok\"") + new string('}', containers - 1) + "}";
+            parse = () => FilterParser.Parse(json, ResourceKind.Workspace);
+        }
+
+        if (containers <= 64)
+        {
+            parse().ShouldNotBeNull();
+        }
+        else
+        {
+            Should.Throw<NachosValidationException>(parse);
+        }
+    }
+
+    [Theory]
+    [InlineData(63)]
+    [InlineData(64)]
+    [InlineData(65)]
+    public void DepthParity_TypedArrayAsInnermostContainer(int containers)
+    {
+        // The typed array is the innermost container, so the root and (containers - 2) objects enclose it.
+        string[] tags = ["ok"];
+        JsonNode node = JsonValue.Create(tags)!;
+        for (var i = 0; i < containers - 2; i++)
+        {
+            node = new JsonObject { ["k"] = node };
+        }
+
+        var filter = new JsonObject { ["metadata"] = node };
+        var json = """{"metadata":""" + string.Concat(Enumerable.Repeat("""{"k":""", containers - 2))
+            + """["ok"]""" + new string('}', containers - 2) + "}";
+
+        if (containers <= 64)
+        {
+            FilterParser.Parse(filter, ResourceKind.Workspace).ShouldBe(FilterParser.Parse(json, ResourceKind.Workspace));
+        }
+        else
+        {
+            Should.Throw<NachosValidationException>(() => FilterParser.Parse(json, ResourceKind.Workspace));
+            Should.Throw<NachosValidationException>(() => FilterParser.Parse(filter, ResourceKind.Workspace));
+        }
+    }
+
+    [Fact]
+    public void TypedArrayValue_WithLoneSurrogate_Rejected422()
+    {
+        string[] lone = ["ok", "\uD800"];
+        string[] loneLow = ["\uDC00"];
+
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = JsonValue.Create(lone) }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["tags"] = JsonValue.Create(loneLow) } },
+            ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = new JsonObject { ["in"] = JsonValue.Create(new List<object> { "ok", '\uD800' }) } },
+            ResourceKind.Message));
+    }
+
+    [Fact]
+    public void TypedCompositeValue_HoldingNodeWithLoneSurrogate_Rejected422() =>
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = JsonValue.Create(new List<JsonNode> { "ok", "\uD800" }) },
+            ResourceKind.Message));
+
+    [Fact]
+    public void TypedCompositeValue_CycleThroughNode_Rejected422()
+    {
+        // A typed list holding the array that holds it: validation must stop at the depth limit, not overflow the stack.
+        var list = new List<JsonNode>();
+        var array = new JsonArray(JsonValue.Create(list));
+        list.Add(array);
+
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["unknown"] = array }, ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void TypedDictionaryMetadata_BadKey_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, string> { ["\uD800"] = "v" }) },
+            ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject
+            {
+                ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["ok"] = new Dictionary<string, int> { ["\uDC00"] = 1 } }),
+            },
+            ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void TypedDictionaryMetadata_BadValue_Rejected422()
+    {
+        string[] lone = ["x\uD800"];
+
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, string> { ["k"] = "\uDC00" }) },
+            ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["k"] = lone }) },
+            ResourceKind.Workspace));
+    }
+
+    [Fact]
+    public void TypedArrayValue_Valid_Accepted()
+    {
+        string[] texts = ["a", "\U0001F600", "\uFFFD"];
+        int[] counts = [1, 2];
+
+        FilterParser.Parse(new JsonObject { ["content"] = JsonValue.Create(texts) }, ResourceKind.Message)
+            .ShouldBe(FilterParser.Parse("""{"content":["a","\uD83D\uDE00","\uFFFD"]}""", ResourceKind.Message));
+        FilterParser.Parse(new JsonObject { ["token_count"] = JsonValue.Create(counts) }, ResourceKind.Message)
+            .ShouldBe(FilterParser.Parse("""{"token_count":[1,2]}""", ResourceKind.Message));
+    }
+
+    [Fact]
+    public void TypedDictionaryMetadata_Valid_Accepted()
+    {
+        string[] tags = ["a"];
+
+        FilterParser.Parse(
+                new JsonObject
+                {
+                    ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["k"] = "v", ["\U0001F600"] = tags }),
+                },
+                ResourceKind.Workspace)
+            .ShouldBe(FilterParser.Parse("""{"metadata":{"k":"v","\uD83D\uDE00":["a"]}}""", ResourceKind.Workspace));
+    }
+
     [Fact]
     public void Parse_UndefinedResourceKind_ThrowsArgumentOutOfRange() =>
         Should.Throw<ArgumentOutOfRangeException>(() => FilterParser.Parse("""{"name":"a"}""", (ResourceKind)99));
