@@ -53,6 +53,23 @@ CI runs both the tests and the real validator for pushes and pull requests
 affecting docs, scripts, or the workflow. It uses read-only repository access,
 does not persist checkout credentials, and requires no secrets.
 
+## Security overrides
+
+`package.json` scopes two out-of-range overrides to Mermaid **12.0.0**:
+
+- Mermaid's KaTeX range `^0.16.47` is overridden to **0.18.2** for
+  `GHSA-238p-pmpm-9mq7`.
+- Its Chevrotain **11.1.2** dependency subtree pins lodash-es to `4.17.23`;
+  that pin is overridden to **4.18.1** for `GHSA-r5fr-rjxr-66jc` and
+  `GHSA-f23m-r3pf-42rh`. The first patched release, 4.18.0, is deprecated
+  by its publisher as a bad release.
+
+These overrides are confined to this private documentation validator. They do
+not expand the existing shipping or license exception below: `elkjs` remains
+**0.9.3**, restricted to unmodified, non-distributed developer/CI tooling.
+Browser rendering remains outside this syntax-only tool's validation; dependency
+compatibility smoke checks are not a tested guarantee of browser rendering.
+
 ## Dependency license exception
 
 [`eng/license-exceptions.json`](../../eng/license-exceptions.json) records the
