@@ -206,12 +206,14 @@ These are the input classes most likely to bite users. Each line names the test 
 - **Exceptions:** `NachosException` (base) → `NotFoundException`, `ConflictException`, `NachosValidationException(string Detail)`, `RequestValidationException(IReadOnlyList<ValidationError>)`, `AuthException`, `IdempotencyKeyReusedException` (→ 422), and `IdempotencyDuplicateException(string Key)`. Stores throw the last one when an `IdempotencyWrite` key already exists. It is never surfaced over HTTP.
 - **`PublicId.New() → string`:** 21 characters, alphabet `A-Za-z0-9_-`, from `RandomNumberGenerator`.
 - **`INachosClient`:** one async method per M1 route, with names matching the routes. For example: `GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default) → Task<Workspace>`, `ListWorkspacesAsync(JsonObject? filters, PageRequest page, ct) → Task<Page<Workspace>>`, and `CreateMessagesAsync(string workspaceId, string sessionId, IReadOnlyList<MessageCreate> messages, string? idempotencyKey = null, ct) → Task<IReadOnlyList<Message>>`. Also provide the extension `NachosPaging.EnumerateAsync<T>(Func<PageRequest, Task<Page<T>>>) → IAsyncEnumerable<T>`.
-- **`abstract class StoreContractTests`** with `protected abstract IMemoryStore CreateStore()`. Its tests are named in the steps below.
+- **`abstract class StoreContractTests`** with `protected abstract IMemoryStore CreateStore(TimeProvider clock)`. Its tests are named in the steps below and use `FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`).
+- **Clock rule (both providers):** stores take `TimeProvider` from DI. Every time-based value is computed from the **app clock** and passed to SQL as a parameter (`@now`), never from the database clock (`SYSDATETIMEOFFSET()`/`SYSUTCDATETIME()`) in a query. That covers `CreatedAt` defaults, `JoinedAt`/`LeftAt`, `IdempotencyRecord.ExpiresAt = clock.GetUtcNow() + Ttl`, and expiry comparisons. The same `FakeTimeProvider`-driven contract test therefore behaves identically on SQL and in memory. The post-deploy `SchemaVersion.AppliedAt` is the only exception.
 
 - [ ] **Step 1:** Write `ContractShapeTests`. For each wire DTO, serialize a sample and assert that the JSON property set equals the manifest schema's property set, and that required fields are non-null. For example, `Message_SerializesExactlyManifestFields`.
 - [ ] **Step 2:** Write `StoreContractTests` (in `Nachos.Testing`):
   - `GetOrCreate_ReturnsSameRecordOnSecondCall`
   - `GetOrCreate_IdsAreCaseSensitive`: `alice` and `Alice` are two peers
+  - `Message_GetByCaseFoldedPublicId_NotFound`
   - `GetOrCreate_IsIdempotentUnderConcurrency`: 32 parallel calls → 1 row, all results equal
   - `Update_NullLeavesFieldUnchanged`
   - `Update_Missing_ThrowsNotFound`
@@ -298,12 +300,12 @@ These are the input classes most likely to bite users. Each line names the test 
   - `src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj` (`DSP = Sql170DatabaseSchemaProvider`, `<Build Include="../Nachos.DataLayer.SqlServer.Database/Tables/**/*.sql" />`, and a `PostDeploy` item linking the same script).
 
 **Interfaces:**
-- Produces the tables below, matching spec §7.2 for these columns. Every `Name` column is `nvarchar(512) COLLATE Latin1_General_100_BIN2_UTF8`. Every `UNIQUE` constraint is explicitly `NONCLUSTERED`. Clustered keys are `bigint` surrogates only. Every index key must fit SQL limits (900 bytes clustered, 1,700 nonclustered), enforced by `SchemaDeployerTests.AllIndexKeys_WithinSqlLimits` (Task 6). For example, `(WorkspaceId, Name)` = 8 + 1,024 bytes. JSON columns use `json NOT NULL DEFAULT '{}'`. Timestamps are `datetimeoffset(7)`.
+- Produces the tables below, matching spec §7.2 for these columns. Every `Name` column is `nvarchar(512) COLLATE Latin1_General_100_BIN2_UTF8`, and `Messages.PublicId` is `nvarchar(32) COLLATE Latin1_General_100_BIN2_UTF8`. Every `UNIQUE` constraint is explicitly `NONCLUSTERED`. Clustered keys are `bigint` surrogates only. Every index key must fit SQL limits (900 bytes clustered, 1,700 nonclustered), enforced by `SchemaDeployerTests.AllIndexKeys_WithinSqlLimits` (Task 6). For example, `(WorkspaceId, Name)` = 8 + 1,024 bytes. JSON columns use `json NOT NULL DEFAULT '{}'`. Timestamps are `datetimeoffset(7)`.
   - `Workspaces(Id bigint IDENTITY PK, Name unique, LifecycleState tinyint, LifecycleVersion int, DeletionJobId bigint NULL, Metadata, InternalMetadata, Configuration, CreatedAt)`
   - `Peers(Id, WorkspaceId FK, Name, IsInternal bit, Metadata, InternalMetadata, Configuration, CreatedAt, UNIQUE(WorkspaceId, Name))`
   - `Sessions(Id, WorkspaceId FK, Name, LifecycleState, LifecycleVersion, DeletionJobId NULL, NextMessageSeq bigint DEFAULT 1, Metadata, InternalMetadata, Configuration, CreatedAt, UNIQUE(WorkspaceId, Name))`
   - `SessionPeers(WorkspaceId, SessionId, PeerId, Configuration json, JoinedAt, LeftAt NULL, PK(WorkspaceId, SessionId, PeerId))`, with composite FKs that include `WorkspaceId`
-  - `Messages(Id, WorkspaceId, SessionId, PeerId, PublicId nvarchar(32) unique, Seq bigint, Content nvarchar(max), TokenCount int, Metadata, InternalMetadata, CreatedAt, UNIQUE(SessionId, Seq))`
+  - `Messages(Id, WorkspaceId, SessionId, PeerId, PublicId nvarchar(32) COLLATE Latin1_General_100_BIN2_UTF8 unique, Seq bigint, Content nvarchar(max), TokenCount int, Metadata, InternalMetadata, CreatedAt, UNIQUE(SessionId, Seq))`
   - `PrincipalGrants(ObjectId nvarchar(64), WorkspaceId bigint NULL, Role nvarchar(32), UNIQUE)`
   - `IdempotencyRecords(Id bigint IDENTITY PRIMARY KEY CLUSTERED, WorkspaceId bigint, KeyHash binary(32), [Key] nvarchar(255), RequestHash char(64), ResponseStatus int, ResponseBody nvarchar(max), ExpiresAt, CONSTRAINT UQ_Idem UNIQUE NONCLUSTERED (WorkspaceId, KeyHash))`. `KeyHash` is the SHA-256 of the key. HTTP keys must match `^[\x21-\x7E]{1,255}$`; anything else returns 422.
   - `SchemaVersion(Id tinyint PK CHECK (Id = 1), Version int, AppliedAt)`
