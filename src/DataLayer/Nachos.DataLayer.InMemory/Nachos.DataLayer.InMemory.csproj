@@ -1,8 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <!-- Supplies Microsoft.Extensions.DependencyInjection.Abstractions for AddInMemoryMemoryStore without a NuGet package. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Nachos.Hosting\Nachos.Hosting.csproj" />
     <ProjectReference Include="..\..\Nachos.Core\Nachos.Core.csproj" />
     <ProjectReference Include="..\..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nachos.DataLayer.InMemory.Tests" />
   </ItemGroup>
 </Project>
