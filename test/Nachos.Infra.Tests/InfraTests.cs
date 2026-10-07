@@ -372,7 +372,7 @@ public sealed class InfraTests
         Regex.IsMatch(ps1, @"\$attempt -eq 30\)\s*\{\s*throw").ShouldBeTrue("exhausted retries must abort");
     }
 
-    [RequiresToolFact("bash")]
+    [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_RetriesAuthorizationErrors_ThenSucceeds()
     {
         using var toolbox = new FakeToolbox();
@@ -384,7 +384,7 @@ public sealed class InfraTests
         toolbox.Count("firewall-rule delete").ShouldBe(1, "the temporary firewall rule is always removed");
     }
 
-    [RequiresToolFact("bash")]
+    [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_GivesUpAfterThirtyAuthorizationErrors()
     {
         using var toolbox = new FakeToolbox();
@@ -397,7 +397,7 @@ public sealed class InfraTests
         toolbox.Count("firewall-rule delete").ShouldBe(1);
     }
 
-    [RequiresToolFact("bash")]
+    [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_DoesNotRetryOtherListFailures()
     {
         using var toolbox = new FakeToolbox();
@@ -409,7 +409,7 @@ public sealed class InfraTests
         toolbox.Count("secret set").ShouldBe(0, "a failed listing must never be read as 'secret absent'");
     }
 
-    [RequiresToolFact("bash")]
+    [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_StoresAWellFormedAdminKey_WithoutEchoingIt()
     {
         using var toolbox = new FakeToolbox();
@@ -424,7 +424,7 @@ public sealed class InfraTests
             .ShouldAllBe(c => c.Contains("--no-launch-profile", StringComparison.Ordinal));
     }
 
-    [RequiresToolFact("bash")]
+    [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_RejectsMalformedAdminKeys_WithoutStoringAnything()
     {
         foreach (var output in new[] { "", "Using launch settings from x.json...\naaa.bbb.ccc\n", "not a jwt\n", "aaa.bbb\n" })
