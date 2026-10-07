@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.SqlServer\Nachos.DataLayer.SqlServer.csproj" />
+  </ItemGroup>
+</Project>

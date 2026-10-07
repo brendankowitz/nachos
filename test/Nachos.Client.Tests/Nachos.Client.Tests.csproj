@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nachos.Client\Nachos.Client.csproj" />
+  </ItemGroup>
+</Project>
