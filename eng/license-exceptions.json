@@ -1,0 +1,13 @@
+[
+  {
+    "ecosystem": "npm",
+    "package": "elkjs",
+    "version": "0.9.3",
+    "license": "EPL-2.0",
+    "purpose": "Mermaid syntax validation in .github/scripts only.",
+    "reviewers": ["Cortado", "Cedar"],
+    "review": "https://github.com/brendankowitz/nachos/pull/1",
+    "licenseEvidence": ".github/scripts/node_modules/elkjs/LICENSE.md",
+    "restriction": "Unmodified, non-distributed developer/CI tool only; never included in NuGet, CLI, or container outputs, or published docs-site assets."
+  }
+]

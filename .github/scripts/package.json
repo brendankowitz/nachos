@@ -1,0 +1,22 @@
+{
+  "name": "nachos-docs-validation",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "test": "node --test validate-docs.test.mjs",
+    "validate": "node validate-docs.mjs",
+    "check": "npm test && npm run validate"
+  },
+  "dependencies": {
+    "github-slugger": "2.0.0",
+    "jsdom": "30.1.1",
+    "mdast-util-to-string": "4.0.0",
+    "mermaid": "12.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5"
+  }
+}
