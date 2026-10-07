@@ -27,7 +27,7 @@
 ### 1.2 Assumptions (correct these in review)
 
 - Target **.NET 10 (LTS)** and C# 14, with central package management (`Directory.Packages.props`) and `global.json` pinned like Ignixa.
-- The primary production database is **Azure SQL Database**. **SQL Server 2025** is supported for self-hosting and for local and dev containers.
+- The primary production database is **Azure SQL Database**. **SQL Server 2025** is supported for self-hosting in production (its own dacpac target; §7.3) and for local and dev containers.
 - The default LLM and embedding provider is **Azure OpenAI / Microsoft Foundry** with managed identity. Other `IChatClient` providers (OpenAI, Anthropic, Ollama) are configuration, not code.
 - "Mostly compatible" means the **upstream Python/TS SDKs should work against Nachos for every route Nachos implements**. Each intentional deviation is listed in §9.4.
 - The product is single-deployment and multi-workspace. Hosted-Honcho organization provisioning and billing are out of scope.
@@ -205,7 +205,8 @@ src/
   Nachos.Hosting/                 # AddNachos(), AddNachosWorker(); hosted services for in-process mode
   DataLayer/
     Nachos.DataLayer.SqlServer/           # EF Core (query mapping only) + SqlClient (vector/FTS/queue) + DacFx SchemaDeployer
-    Nachos.DataLayer.SqlServer.Database/  # Microsoft.Build.Sql .sqlproj → embedded dacpac
+    Nachos.DataLayer.SqlServer.Database/  # Microsoft.Build.Sql .sqlproj (SqlAzureV12, owns all DDL) → embedded dacpac
+    Nachos.DataLayer.SqlServer.Database.Sql2025/  # DDL-less .sqlproj globbing the same files (Sql170) → embedded dacpac
     Nachos.DataLayer.InMemory/            # test provider (brute-force cosine, naive lexical)
   Nachos.Api/                     # ASP.NET Core minimal APIs, auth, SSE, MCP endpoint
   Nachos.Worker/                  # Worker Service host
@@ -282,15 +283,21 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
 ### 7.3 Schema lifecycle (Ignixa pattern)
 
 - `Nachos.DataLayer.SqlServer.Database.sqlproj` uses `Microsoft.Build.Sql` with `DSP = SqlAzureV12DatabaseSchemaProvider`. It is the **single source of truth for DDL**. EF Core is used for **query mapping only** and never for migrations.
-- The build produces a `.dacpac` that is **embedded** in `Nachos.DataLayer.SqlServer`.
+- **Dual-target build (no platform override anywhere).** A second project, `Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj`, contains **no DDL of its own**. It globs the same `*.sql` files from the primary project and sets `DSP = Sql170DatabaseSchemaProvider` (SQL Server 2025).
+  - Both builds validate the same DDL against their platform. Schema may use only features available on **both** (for example `VECTOR`, native `json`, full-text).
+  - M1 verifies that the pinned `Microsoft.Build.Sql`/DacFx versions support `Sql170`. If they do not, the fallback is to target the highest box provider that supports `VECTOR`/`json` and record the deviation.
+- Both `.dacpac` files are **embedded** in `Nachos.DataLayer.SqlServer`. `SchemaDeployer` selects one from `SERVERPROPERTY('EngineEdition')`:
+  - `5` (Azure SQL Database) uses the Azure dacpac.
+  - Box editions with `ProductMajorVersion >= 17` use the Sql2025 dacpac.
+  - Anything else, including Managed Instance for now, is refused with a clear error.
 - `SchemaDeployer` uses `Microsoft.SqlServer.DacFx`:
   - `Nachos:SqlServer:AutomaticSchemaDeploymentEnabled`, default `false`.
   - **Empty DB:** deploy the dacpac and stamp `SchemaVersion`.
   - **Behind current version:** generate a DeployReport and classify it as `AutoSafe`, `Unsafe`, or `Unclassifiable`. Apply only `AutoSafe` changes, and only with `BlockOnPossibleDataLoss = true`. Everything else fails closed with a message pointing to `nachos schema upgrade`.
   - The check runs on first data access, not at startup.
-- **CI:** build the dacpac and publish a `sqlpackage /Action:DeployReport` artifact. CI never runs `Publish` unattended.
+- **CI:** build **both** dacpacs and publish a `sqlpackage /Action:DeployReport` artifact for each. CI never runs `Publish` unattended.
 - **azd:** a `postprovision` hook runs `nachos schema upgrade --report-only` and then applies the change only if it is auto-safe. Otherwise the hook stops and prints the report.
-- The test container path sets `AllowIncompatiblePlatform = true`, because the box engine is not the Azure V12 platform. Production never sets it.
+- Test containers (SQL Server 2025) deploy the **Sql2025 dacpac** through the same `SchemaDeployer` code path that self-hosted production uses. `AllowIncompatiblePlatform` is never set, in tests or production.
 
 ### 7.4 Postgres-feature equivalents
 
@@ -731,7 +738,7 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
    - Covers the config resolver, filter compiler, RRF, context budget (property tests), dedup, visibility policy, the auth policy matrix, and agent tool validation.
 2. **Integration** (`Nachos.DataLayer.SqlServer.Tests`):
    - Testcontainers with a SQL Server 2025 image that includes full-text search.
-   - Deploys the dacpac with `AllowIncompatiblePlatform`.
+   - Deploys the **Sql2025 dacpac** via `SchemaDeployer` (no `AllowIncompatiblePlatform`; §7.3).
    - Covers queue claim, lease, and fencing under contention **with `READ_COMMITTED_SNAPSHOT ON`**, including expiry/reclaim races (never two owners; looped 20+ times under parallel load); seq allocation; `VECTOR_DISTANCE` queries; FTS and its fallback; the schema deployer's auto-safe classifier; and deletion cascades.
    - Includes an **ordering/deadlock test** with parallel workers.
 3. **API and conformance:**
@@ -755,7 +762,7 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
 `Nachos.AppHost` wires up:
 
 - the SQL Server 2025 container (custom Dockerfile adding `mssql-server-fts`, persistent volume),
-- a dacpac deploy on start (Development only),
+- a Sql2025 dacpac deploy on start (Development only),
 - `Nachos.Api` and `Nachos.Worker`,
 - either an Azure OpenAI connection (from user secrets or `azd env`) or a **mock AI** resource (`FakeChatClient` and a deterministic embedding generator) for offline development,
 - the Aspire dashboard.
