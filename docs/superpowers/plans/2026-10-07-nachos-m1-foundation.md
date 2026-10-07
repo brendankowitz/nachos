@@ -116,7 +116,7 @@ These were made while executing Tasks 2 and 3, and the review rounds requested t
   - JSON is deep-cloned on input and output;
   - stores are safe for concurrent use;
   - all times come from the app clock.
-- **`FilterNode` subtypes are nested** (`FilterNode.And`, and so on). Field values are normalized: `created_at` → UTC `DateTimeOffset`, `token_count` → `long`, `is_active` → `bool`.
+- **`FilterNode` subtypes are nested** (`FilterNode.And`, and so on). Field values are normalized: `created_at` → UTC `DateTimeOffset`, `token_count` → integral `decimal` (accepts `5`, `5.0`, `1e2`, and integers beyond `long`; out-of-range values are folded by the parser), `is_active` → `bool`.
 ## Review Focus
 
 These are the input classes most likely to bite users. Each line names the test that pins it.
