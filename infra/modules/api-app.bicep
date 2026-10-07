@@ -23,6 +23,7 @@ param apiExists bool
 
 // Placeholder for the very first provision only. It listens on 8080 like the real API (the older
 // containerapps-helloworld image listens on 80, so its revision could never become ready).
+// Changing this default needs an explicit migration: probes switch on when the image in use differs from it, so an app still on the OLD placeholder would get /health probes on the next provision and fail.
 param containerImage string = 'mcr.microsoft.com/dotnet/samples:aspnetapp'
 
 var targetPort = 8080

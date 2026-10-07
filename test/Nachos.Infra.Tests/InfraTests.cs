@@ -412,14 +412,19 @@ public sealed class InfraTests
     [RequiresPosixToolFact("bash")]
     public void PostprovisionSh_StoresAWellFormedAdminKey_WithoutEchoingIt()
     {
+        const string Key = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.c2lnbmF0dXJl";
         using var toolbox = new FakeToolbox();
 
-        var result = toolbox.RunPostprovision(keyOutput: "aaa.bbb.ccc\n", listNames: "nachos-signing-key-0");
+        var result = toolbox.RunPostprovision(keyOutput: Key + "\n", listNames: "nachos-signing-key-0");
 
         result.ExitCode.ShouldBe(0, result.StdErr);
         toolbox.Count("secret set").ShouldBe(1);
         toolbox.Count("--name nachos-bootstrap-admin-key").ShouldBe(1);
-        (result.StdOut + result.StdErr).ShouldNotContain("aaa.bbb.ccc");
+        // Exactly what the CLI minted (surrounding whitespace trimmed) reaches Key Vault, and nothing else.
+        toolbox.StoredSecret("nachos-bootstrap-admin-key").ShouldBe(Key);
+        var output = result.StdOut + result.StdErr;
+        output.ShouldNotContain(Key);
+        output.ShouldNotContain(FakeToolbox.SigningMaterial);
         toolbox.Calls.Where(c => c.StartsWith("dotnet run", StringComparison.Ordinal))
             .ShouldAllBe(c => c.Contains("--no-launch-profile", StringComparison.Ordinal));
     }
@@ -621,7 +626,131 @@ public sealed class InfraTests
         PlantedWorkflowHits(Workflow).ShouldBeEmpty();
     }
 
+    [Fact]
+    public void Scanner_FlagsAMultiLineBuildxPush_AtItsFirstPhysicalLine()
+    {
+        // The registry is not ACR on purpose, so only the joined `docker buildx build \ --push` statement can hit
+        // line 7; the standalone --push flag would only hit line 8.
+        const string Workflow =
+            "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n" +
+            "          docker buildx build \\\n            --push \\\n            -t ghcr.io/x/api:${{ github.sha }} .\n";
+
+        PlantedWorkflowHits(Workflow).ShouldContain(h => h.Line == 7);
+    }
+
+    [Theory]
+    // The reviewer's ACR example: login action, ACR reference and a multi-line buildx --push.
+    [InlineData(
+        "      - uses: docker/login-action@v3\n" +
+        "        with: { registry: nachos.azurecr.io, username: ${{ secrets.ACR_USER }}, password: ${{ secrets.ACR_PASS }} }\n" +
+        "      - run: |\n          docker buildx build \\\n            --push \\\n            -t nachos.azurecr.io/api:${{ github.sha }} .\n")]
+    // type=registry on a backslash continuation line.
+    [InlineData("      - run: |\n          docker buildx build \\\n            --output type=registry,ref=ghcr.io/x/api:1 .\n")]
+    // PowerShell backtick continuation.
+    [InlineData("      - shell: pwsh\n        run: |\n          docker buildx build `\n            --push `\n            -t ghcr.io/x/api:1 .\n")]
+    // A push split right after `docker`: only joining the continuation can see it.
+    [InlineData("      - run: |\n          docker \\\n            push ghcr.io/x/api:1\n")]
+    [InlineData("      - uses: docker/login-action@v3\n        with:\n          registry: ghcr.io\n")]
+    [InlineData("      - uses: 'docker/login-action@v3'\n")]
+    [InlineData("      - run: docker pull nachos.azurecr.io/api:1\n")]
+    [InlineData("      - uses: docker://nachos.AzureCR.io/build-tool:1\n")]
+    public void Scanner_FlagsRegistryPushes_LoginsAndAcrReferences(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldNotBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: docker build -t x .\n")]
+    [InlineData("      # push the image in the release workflow\n      - run: docker build -t x .\n")]
+    [InlineData("      - run: docker build -t x . # docker buildx build --push later\n")]
+    [InlineData("      - run: git push --push-option=ci.skip origin HEAD\n")]
+    public void Scanner_DoesNotFlag_LocalBuildsOrPushInComments(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: az bicep publish --file x.bicep --target br:registry.example.com/bicep/x:v1\n")]
+    [InlineData("      - run: az bicep restore --file infra/main.bicep\n")]
+    [InlineData("      - run: AZ BICEP PUBLISH --file x.bicep --target br:registry.example.com/x:v1\n")]
+    [InlineData("      - run: az bicep build-foo --file x.bicep\n")]
+    public void Scanner_FlagsAzBicepSubcommandsThatReachARegistry(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldNotBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: az bicep build-params --file infra/main.bicepparam\n")]
+    [InlineData("      - run: az bicep format --file infra/main.bicep\n")]
+    [InlineData("      - run: az bicep decompile --file main.json\n")]
+    [InlineData("      - run: az bicep version\n")]
+    [InlineData("      - run: az bicep install\n")]
+    [InlineData("      - run: az bicep upgrade\n")]
+    [InlineData("      - run: AZ BICEP BUILD --file infra/main.bicep\n")]
+    public void Scanner_AllowsOfflineAzBicepSubcommands(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: azd hooks run postprovision\n")]
+    [InlineData("      - run: azd auth login --client-id x\n")]
+    [InlineData("      - run: azd env refresh\n")]
+    [InlineData("      - run: azd env new dev\n")]
+    [InlineData("      - run: azd init -t x\n")]
+    [InlineData("      - run: azd pipeline config\n")]
+    [InlineData("      - run: AZD UP\n")]
+    public void Scanner_FlagsAzdCommandsThatTouchAzure(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldNotBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: azd version\n")]
+    [InlineData("      - run: azd config show\n")]
+    [InlineData("      - run: azd package api --output-path out/api.tar\n")]
+    public void Scanner_AllowsOfflineAzdCommands(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: echo hi # az login later\n")]
+    [InlineData("      - name: build # az group\n        run: echo hi\n")]
+    [InlineData("      # azd up is run by hand from deploy.yml\n      - run: echo hi\n")]
+    public void Scanner_IgnoresCommentOnlyMentions(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldBeEmpty(step);
+    }
+
+    [Theory]
+    [InlineData("      - run: az login --identity # sign in first\n")]
+    [InlineData("      - run: echo \"#\" ; az group list\n")]
+    // A multi-line shell string: bash closes it on the second line and then runs `az login`, so this file's
+    // comments cannot be stripped safely.
+    [InlineData("      - run: |\n          echo \"x\n          # \" ; az login\n")]
+    public void Scanner_StillFlagsCommands_WithTrailingCommentsOrQuotedHashes(string step)
+    {
+        PlantedWorkflowHits(OnPush(step)).ShouldNotBeEmpty(step);
+    }
+
+    [Theory]
+    // Multi-line flow collections: YAML reads environment as part of labels/tags, so the job has none.
+    [InlineData("    labels: { a: 1,\n    environment: azure-live\n    }\n")]
+    [InlineData("    tags: [a,\n    environment: azure-live\n    ]\n")]
+    // Duplicate environment keys: parsers disagree on which wins (or reject the file).
+    [InlineData("    environment: azure-live\n    environment: production\n")]
+    [InlineData("    environment: azure-live\n    \"environment\": production\n")]
+    public void Scanner_FailsClosed_OnAmbiguousJobEnvironment(string jobKeys)
+    {
+        var workflow = "on: workflow_dispatch\njobs:\n  j:\n    runs-on: ubuntu-latest\n" + jobKeys + "    steps:\n      - run: azd up\n";
+
+        PlantedWorkflowHits(workflow).ShouldNotBeEmpty(jobKeys);
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------
+
+    private static string OnPush(string steps) => "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps;
 
     /// <summary>Hook text with comment-only lines removed.</summary>
     private static string CodeOnly(string relativePath) =>

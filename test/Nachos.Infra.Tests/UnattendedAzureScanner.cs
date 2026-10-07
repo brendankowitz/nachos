@@ -7,16 +7,18 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 
 /// <summary>
 /// Spec §18.3: nothing that touches Azure may run unattended. Scans <c>.github/workflows/**</c>,
-/// <c>.github/actions/**</c> and <c>eng/**</c> under a root for provisioning/deployment commands, any
-/// <c>az</c> command other than offline <c>az bicep</c>, Azure/registry-pushing actions and builds, and
-/// reusable workflows from other repositories.
+/// <c>.github/actions/**</c> and <c>eng/**</c> under a root for azd/az commands other than the offline ones,
+/// Azure actions, registry logins, pushes and ACR references, and reusable workflows from other repositories.
+/// Patterns are matched per logical statement (shell and PowerShell line continuations joined, <c>#</c> comments
+/// stripped when quoting is unambiguous) and reported at the statement's first physical line.
 /// <para>
 /// The only exemption is, inside a workflow whose triggers are exactly <c>workflow_dispatch</c>, a line within a
-/// job that itself declares <c>environment: azure-live</c> (whose required reviewer is the owner). The exemption
-/// is granted only when the workflow can be read unambiguously: unreadable triggers, a duplicate <c>on:</c> key,
-/// an unparseable <c>jobs:</c> section, any complex (<c>? </c>) key, or any line with an unterminated quote
-/// (a possible multi-line scalar hiding structure) means NO line of that workflow is exempt. This is a
-/// line-oriented reader, not a YAML parser, so it errs on the side of reporting.
+/// job that itself declares <c>environment: azure-live</c> exactly once (whose required reviewer is the owner).
+/// The exemption is granted only when the workflow can be read unambiguously: unreadable triggers, a duplicate
+/// <c>on:</c> key, an unparseable <c>jobs:</c> section, any complex (<c>? </c>) key, or any line with an
+/// unterminated quote or unbalanced <c>[</c>/<c>{</c> (a possible multi-line scalar or flow collection hiding
+/// structure) means NO line of that workflow is exempt. This is a line-oriented reader, not a YAML parser, so it
+/// errs on the side of reporting.
 /// </para>
 /// <para>
 /// Known limit: a script run from a path the scanner does not read (for example <c>run: ./scripts/deploy.sh</c>)
@@ -27,16 +29,21 @@ internal sealed class UnattendedAzureScanner(string root)
 {
     private static readonly Regex[] Forbidden =
     [
-        Pattern(@"\bazd\s+(up|provision|deploy|down)\b"),
+        // Any azd command (up, provision, deploy, down, hooks run, auth login, env new/refresh, init, pipeline
+        // config, ...) except the offline ones: `package` builds the image locally, `version`/`config` are local.
+        Pattern(@"\bazd\s+(?!(?:package|version|config)(?![\w-]))[a-z]"),
         // Any az command (login, group, deployment, acr, containerapp, sql, keyvault, webapp, ...) except the
-        // offline `az bicep` checks that spec 18.3 allows.
-        Pattern(@"\baz\s+(?!bicep\b)[a-z]"),
+        // offline `az bicep` subcommands that spec 18.3 allows; `az bicep publish`/`restore` reach a registry.
+        Pattern(@"\baz\s+(?!bicep\s+(?:build|build-params|lint|format|decompile|version|install|upgrade)(?![\w-]))[a-z]"),
         Pattern(@"sqlpackage.*Publish"),
         Pattern(@"infra/hooks"),
         Pattern(@"\bdocker\s+(image\s+)?push\b"),
-        // Builds that push as part of the build.
-        Pattern(@"\bdocker\b.*\s--push\b"),
-        Pattern(@"\bdocker\b.*\btype=registry\b"),
+        // Builds that push as part of the build, whichever tool or (continuation) line carries the flag.
+        Pattern(@"(?<![\w-])--push(?![\w-])"),
+        Pattern(@"\btype=registry\b"),
+        // Registry access without a push command: logging in to any registry, or referencing an ACR.
+        Pattern(@"\buses\s*:\s*['""]?docker/login-action"),
+        Pattern(@"\bazurecr\.io\b"),
         // Reusable workflows from another repository (a local ./.github/workflows/x.yml stays allowed).
         Pattern(@"\buses\s*:\s*['""]?(?!\./)[^'""\s@]+/[^'""\s@]+/\.github/workflows/"),
         // Azure's own actions (login, arm-deploy, sql-action, container-apps-deploy-action, ...) and the
@@ -62,18 +69,19 @@ internal sealed class UnattendedAzureScanner(string root)
             var lines = File.ReadAllText(file).Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n');
             var exempt = IsWorkflow(relative) ? ExemptLines(lines) : [];
 
-            for (var i = 0; i < lines.Length; i++)
+            foreach (var statement in Statements(lines))
             {
-                if (exempt.Contains(i))
+                // A statement is exempt only if every physical line of it is.
+                if (Enumerable.Range(statement.First, statement.Last - statement.First + 1).All(exempt.Contains))
                 {
                     continue;
                 }
 
                 foreach (var pattern in Forbidden)
                 {
-                    if (pattern.IsMatch(lines[i]))
+                    if (pattern.IsMatch(statement.Text))
                     {
-                        hits.Add(new ScanHit(relative, i + 1, pattern.ToString()));
+                        hits.Add(new ScanHit(relative, statement.First + 1, pattern.ToString()));
                     }
                 }
             }
@@ -81,6 +89,36 @@ internal sealed class UnattendedAzureScanner(string root)
 
         return hits;
     }
+
+    /// <summary>
+    /// Logical statements: physical lines joined across shell (<c>\</c>) and PowerShell (<c>`</c>) line
+    /// continuations, so <c>docker buildx build \</c> / <c>--push</c> is matched as one command. <c>#</c> comments
+    /// are stripped so a mention in prose is not a hit, unless some line of the file leaves a quote open: a
+    /// multi-line string makes it impossible to tell a comment from string content, so nothing is stripped.
+    /// </summary>
+    private static IEnumerable<Statement> Statements(string[] lines)
+    {
+        var stripComments = !lines.Any(l => ScanLine(l).UnterminatedQuote);
+        var text = new System.Text.StringBuilder();
+        var first = 0;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var code = (stripComments ? ScanLine(lines[i]).Code : lines[i]).TrimEnd();
+            var continues = i + 1 < lines.Length && (code.EndsWith('\\') || code.EndsWith('`'));
+            text.Append(continues ? code[..^1] + " " : code);
+            if (continues)
+            {
+                continue;
+            }
+
+            yield return new Statement(first, i, text.ToString());
+            text.Clear();
+            first = i + 1;
+        }
+    }
+
+    /// <summary>Physical lines [<paramref name="First"/>, <paramref name="Last"/>] joined into one statement.</summary>
+    private sealed record Statement(int First, int Last, string Text);
 
     private static Regex Pattern(string expression) =>
         new(expression, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -312,11 +350,14 @@ internal sealed class UnattendedAzureScanner(string root)
 
     /// <summary>
     /// True when the job's own (direct child) <c>environment</c> key is azure-live, either inline or as
-    /// <c>name:</c> of a mapping. A step input that happens to be called environment does not count.
+    /// <c>name:</c> of a mapping. A step input that happens to be called environment does not count, and a job
+    /// with more than one <c>environment</c> key (quoted or not) is never exempt: parsers disagree on which wins.
     /// </summary>
     private static bool DeclaresAzureLive(string[] lines, int start, int end)
     {
         int? childIndent = null;
+        var environments = 0;
+        var azureLive = false;
         for (var i = start + 1; i < end; i++)
         {
             var line = StripComment(lines[i]);
@@ -326,44 +367,44 @@ internal sealed class UnattendedAzureScanner(string root)
             }
 
             childIndent ??= IndentOf(line);
-            if (IndentOf(line) != childIndent)
+            if (IndentOf(line) != childIndent || line.TrimStart().StartsWith('-'))
             {
                 continue;
             }
 
-            var match = Regex.Match(line, @"^\s*environment\s*:\s*(.*)$");
-            if (!match.Success)
+            var key = KeyLine.Match(line);
+            if (!key.Success || key.Groups["key"].Value != "environment")
             {
                 continue;
             }
 
-            var value = match.Groups[1].Value.Trim().Trim('"', '\'');
-            if (value == "azure-live")
+            environments++;
+            var value = key.Groups["rest"].Value.Trim().Trim('"', '\'');
+            azureLive = value == "azure-live" || (value.Length == 0 && MappingNamesAzureLive(lines, i, end, childIndent.Value));
+        }
+
+        return environments == 1 && azureLive;
+    }
+
+    /// <summary>True when the block mapping under the <c>environment:</c> key at <paramref name="keyLine"/> has <c>name: azure-live</c>.</summary>
+    private static bool MappingNamesAzureLive(string[] lines, int keyLine, int end, int keyIndent)
+    {
+        for (var j = keyLine + 1; j < end; j++)
+        {
+            var next = StripComment(lines[j]);
+            if (next.Trim().Length == 0)
+            {
+                continue;
+            }
+
+            if (IndentOf(next) <= keyIndent)
+            {
+                return false;
+            }
+
+            if (Regex.IsMatch(next, @"^\s*name\s*:\s*['""]?azure-live['""]?\s*$"))
             {
                 return true;
-            }
-
-            if (value.Length == 0)
-            {
-                for (var j = i + 1; j < end; j++)
-                {
-                    var next = StripComment(lines[j]);
-                    if (next.Trim().Length == 0)
-                    {
-                        continue;
-                    }
-
-                    if (IndentOf(next) <= childIndent)
-                    {
-                        break;
-                    }
-
-                    var name = Regex.Match(next, @"^\s*name\s*:\s*['""]?azure-live['""]?\s*$");
-                    if (name.Success)
-                    {
-                        return true;
-                    }
-                }
             }
         }
 
@@ -371,23 +412,33 @@ internal sealed class UnattendedAzureScanner(string root)
     }
 
     /// <summary>
-    /// A line that could be part of a multi-line quoted scalar (unterminated quote) or a YAML complex key; either
-    /// can hide structure from this line-oriented reader.
+    /// A line that could be part of a multi-line quoted scalar (unterminated quote), a multi-line flow collection
+    /// (unbalanced <c>[</c>/<c>{</c>), or a YAML complex key; each can hide structure from this line-oriented reader.
     /// </summary>
     private static bool IsUnsafeToInterpret(string line)
     {
-        var code = StripComment(line, out var unterminated).Trim();
-        return unterminated || code == "?" || code.StartsWith("? ", StringComparison.Ordinal);
+        var scan = ScanLine(line);
+        var code = scan.Code.Trim();
+        return scan.UnterminatedQuote
+            || scan.UnbalancedBrackets
+            || code == "?"
+            || code.StartsWith("? ", StringComparison.Ordinal);
     }
 
     private static int IndentOf(string line) => line.Length - line.TrimStart().Length;
 
-    private static string StripComment(string line) => StripComment(line, out _);
+    private static string StripComment(string line) => ScanLine(line).Code;
 
-    /// <summary>Removes a trailing <c>#</c> comment (outside quotes) and reports a quote left open at line end.</summary>
-    private static string StripComment(string line, out bool unterminatedQuote)
+    /// <summary>
+    /// Reads one line quote-aware: the code before a trailing <c>#</c> comment, whether a quote is left open at
+    /// line end, and whether <c>[</c>/<c>{</c> and <c>]</c>/<c>}</c> outside quotes fail to balance.
+    /// </summary>
+    private static LineScan ScanLine(string line)
     {
         char? quote = null;
+        var depth = 0;
+        var underflow = false;
+        var end = line.Length;
         for (var i = 0; i < line.Length; i++)
         {
             var c = line[i];
@@ -397,10 +448,18 @@ internal sealed class UnattendedAzureScanner(string root)
                 {
                     quote = c;
                 }
+                else if (c is '[' or '{')
+                {
+                    depth++;
+                }
+                else if (c is ']' or '}')
+                {
+                    underflow |= --depth < 0;
+                }
                 else if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
                 {
-                    unterminatedQuote = false;
-                    return line[..i];
+                    end = i;
+                    break;
                 }
             }
             else if (quote == '"' && c == '\\')
@@ -413,7 +472,8 @@ internal sealed class UnattendedAzureScanner(string root)
             }
         }
 
-        unterminatedQuote = quote is not null;
-        return line;
+        return new LineScan(line[..end], quote is not null, underflow || depth != 0);
     }
+
+    private readonly record struct LineScan(string Code, bool UnterminatedQuote, bool UnbalancedBrackets);
 }

@@ -8,6 +8,9 @@ namespace Nachos.Infra.Tests;
 /// </summary>
 internal sealed class FakeToolbox : IDisposable
 {
+    /// <summary>What the fake <c>az keyvault secret download</c> writes as the existing signing secret.</summary>
+    public const string SigningMaterial = "fake-signing-material";
+
     private readonly string directory = Directory.CreateTempSubdirectory("nachos-fakes-").FullName;
 
     public FakeToolbox()
@@ -15,7 +18,7 @@ internal sealed class FakeToolbox : IDisposable
         Log = Path.Combine(directory, "calls.log");
         File.WriteAllText(Log, string.Empty);
 
-        Install("az", """
+        Install("az", $$"""
             echo "az $*" >> "$FAKE_LOG"
             case "$*" in
               *"keyvault secret list"*)
@@ -25,7 +28,16 @@ internal sealed class FakeToolbox : IDisposable
                 for name in ${FAKE_LIST_NAMES:-}; do echo "$name"; done
                 ;;
               *"keyvault secret download"*)
-                while (( $# )); do if [[ "$1" == --file ]]; then echo "fake-signing-material" > "$2"; fi; shift; done
+                while (( $# )); do if [[ "$1" == --file ]]; then echo "{{SigningMaterial}}" > "$2"; fi; shift; done
+                ;;
+              *"keyvault secret set"*)
+                # Keep exactly what would be stored, so tests can assert on the secret's content.
+                name=""; file=""
+                while (( $# )); do
+                  case "$1" in --name) name="$2"; shift ;; --file) file="$2"; shift ;; esac
+                  shift
+                done
+                cp "$file" "$FAKE_DIR/secret-$name"
                 ;;
             esac
             exit 0
@@ -50,12 +62,20 @@ internal sealed class FakeToolbox : IDisposable
 
     public int Count(string fragment) => Calls.Count(line => line.Contains(fragment, StringComparison.Ordinal));
 
+    /// <summary>The contents of the <c>--file</c> the hook last stored under <paramref name="name"/>, or null if it stored none.</summary>
+    public string? StoredSecret(string name)
+    {
+        var path = Path.Combine(directory, "secret-" + name);
+        return File.Exists(path) ? File.ReadAllText(path) : null;
+    }
+
     public ProcessResult RunPostprovision(string? keyOutput = null, int forbiddenListings = 0, string? listError = null, string listNames = "")
     {
         var environment = new Dictionary<string, string>
         {
             ["PATH"] = directory + Path.PathSeparator + "/usr/bin" + Path.PathSeparator + "/bin",
             ["FAKE_LOG"] = Log,
+            ["FAKE_DIR"] = directory,
             ["FAKE_LIST_FORBIDDEN"] = forbiddenListings.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["FAKE_LIST_ERROR"] = listError ?? string.Empty,
             ["FAKE_LIST_NAMES"] = listNames,
