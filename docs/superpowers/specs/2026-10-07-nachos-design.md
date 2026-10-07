@@ -378,7 +378,7 @@ Key defaults (parity values):
     - the **canonical target**: the route template plus resolved route values, for example `POST /v3/workspaces/{w}/sessions/{s}/messages` with `w` and `s`;
     - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
     The same body sent to a different session or endpoint therefore never matches.
-  - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal 401/403, never the stored response.
+  - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal `401` (§9.2), never the stored response.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.

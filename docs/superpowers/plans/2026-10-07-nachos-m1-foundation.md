@@ -52,8 +52,8 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 | 4 Core: services, validation, tokens, config resolver, hosting | Cedar | 2, 3 |
 | 5 Database projects (Azure + Sql2025) | Cortado | 1 |
 | 6 SchemaDeployer | Cortado | 5 |
-| 7 SQL Server provider | Cortado | 2, 3, 6 |
-| 8 In-memory provider | Salsa | 2, 3 |
+| 7 SQL Server provider | Cortado | 2, 3, 4 (`NachosBuilder`), 6 |
+| 8 In-memory provider | Salsa | 2, 3, 4 (`NachosBuilder`) |
 | 9 API: routes, JSON, errors, pagination, health, 501s | Cedar | 4, 8 |
 | 10 Auth: NachosKey + Entra, keys and grants routes | Cedar | 9 |
 | 11 Idempotency-Key on message create | Cedar | 9; 7 for SQL |
@@ -63,16 +63,22 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 | 15 Bicep + azd (offline) | Salsa | 1 (Bicep, `azure.yaml`, `InfraTests`); 13 (hook CLI verbs; until 13 lands, hooks are written against the documented verbs and only syntax-checked) |
 | 16 Upstream-SDK conformance | Salsa | 10, 11, 13 |
 | 17 CI build/test/schema/license workflow | Cedar | 1 (extend as tasks land) |
-| 18 README, logo, docs site, DocsGen, Pages workflow | Cedar | 9, 13 |
+| 18 README, logo, docs site, DocsGen, Pages workflow | Cedar | 1 (site scaffold, logo, Pages workflow, README skeleton); 9 + 13 (DocsGen reference, README feature list, getting-started commands) |
 
 Parallel tracks after Task 2:
 - **Cortado:** 3 → 5 → 6 → 7 → 13 → 14.
 - **Cedar:** 17 and the 18 scaffold can start right after Task 1. Then 4 → 9 → 10 → 11 → 18 content.
-- **Salsa:** 15 can start right after Task 1. Then 8 → 12 → 16.
+- **Salsa:** 15 can start right after Task 1. Then 8 (after Task 4) → 12 → 16.
 
 **Three agents (Cortado, Cedar, Salsa).** Each agent owns exactly the files in its tasks' **Files** lists. Shared files are assigned as follows:
 - `Directory.Packages.props` and `Nachos.slnx`: owned by Cortado. Other agents request additions in a PR comment, and Cortado applies them within one heartbeat.
 - Abstractions: additions requested the same way.
+- **Fallback:** if Cortado's last heartbeat is more than 30 minutes old, the requester may append its own `PackageVersion` entry or project reference, announce it on the PR, and continue. Cortado reconciles later.
+- **Project-file ownership.** Task 1 creates every project. After that, each `.csproj`/`.sqlproj` belongs to the agent that owns the task building it, and that owner adds its own package references, project references, and build settings (for example the build-time OpenAPI settings in `Nachos.Api.csproj`):
+  - **Cortado:** `Nachos.Abstractions`, `Nachos.ServiceDefaults`, `Nachos.DataLayer.SqlServer`, both `.sqlproj` projects, `Nachos.Cli`, `Nachos.AppHost`, `test/Nachos.Testing`, `Nachos.Abstractions.Tests`, `Nachos.Architecture.Tests`, `Nachos.DataLayer.SqlServer.Tests`, `Nachos.Cli.Tests`, `Nachos.AppHost.Tests`.
+  - **Cedar:** `Nachos.Core`, `Nachos.Hosting`, `Nachos.Api`, `Nachos.Core.Tests`, `Nachos.Api.Tests`, `Nachos.LicenseCheck.Tests`, `eng/DocsGen`.
+  - **Salsa:** `Nachos.DataLayer.InMemory`, `Nachos.Client`, `Nachos.DataLayer.InMemory.Tests`, `Nachos.Client.Tests`, `Nachos.Infra.Tests`.
+  - Files that tasks add inside `test/Nachos.Testing` (for example `NachosApiFactory.cs` from Task 9) belong to that task's owner. The project file itself stays Cortado's.
 
 **Validation:**
 - **Cedar** is the full-set validation owner.
@@ -158,7 +164,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - `Message(string Id, string Content, string PeerId, string SessionId, JsonObject Metadata, DateTimeOffset CreatedAt, string WorkspaceId, int TokenCount)`
   - `MessageCreate(string Content, string PeerId, JsonObject? Metadata, MessageConfiguration? Configuration, DateTimeOffset? CreatedAt)`
   - `SessionPeerConfig(bool? ObserveMe, bool? ObserveOthers)`
-  - `Page<T>(IReadOnlyList<T> Items, long Total, int Page, int Size, int Pages)`
+  - `Page<T>(IReadOnlyList<T> Items, long Total, [property: JsonPropertyName("page")] int PageNumber, int Size, int Pages)`. The CLR member can't be named `Page`, because a record member may not share its enclosing type's name (CS0542). The wire field is still `page`. `ContractShapeTests.Page_SerializesPageField` asserts it.
   - `KeyResponse(string Key)`
   - `WorkspaceConfiguration`, `SessionConfiguration` (same shape), `MessageConfiguration`, `ReasoningConfiguration`, `PeerCardConfiguration`, `SummaryConfiguration`, `DreamConfiguration`, `DialecticConfiguration`, with the fields in the manifest.
 - **Domain:**
@@ -195,7 +201,7 @@ These are the input classes most likely to bite users. Each line names the test 
     - `GetAsync(ws, session, publicId, ct)`
     - `UpdateMetadataAsync(ws, session, publicId, JsonObject metadata, ct)`
     - `ListAsync(ws, session, FilterNode?, PageRequest, ct)`
-  - `IIdempotencyStore`: `TryGetAsync(ws, key, ct) → Task<IdempotencyRecord?>` (ignores expired records).
+  - `IIdempotencyStore`: `TryGetAsync(ws, key, ct) → Task<IdempotencyRecord?>` (ignores expired records). **Expired keys are reclaimed atomically inside `AppendAsync`:** in the same transaction, delete the expired row for `(workspace, key)` under an update/range lock, then insert. A key whose record has expired is therefore immediately reusable for a fresh operation, without relying on a cleanup worker.
   - `IGrantStore`: `AddAsync(GrantRecord, ct)`, `RemoveAsync(GrantRecord, ct)`, `ListAsync(string? objectId, ct)`, `GetWorkspacesAsync(string objectId, ct) → Task<IReadOnlySet<string>>`.
 - **Exceptions:** `NachosException` (base) → `NotFoundException`, `ConflictException`, `NachosValidationException(string Detail)`, `RequestValidationException(IReadOnlyList<ValidationError>)`, `AuthException`, `IdempotencyKeyReusedException` (→ 422), and `IdempotencyDuplicateException(string Key)`. Stores throw the last one when an `IdempotencyWrite` key already exists. It is never surfaced over HTTP.
 - **`PublicId.New() → string`:** 21 characters, alphabet `A-Za-z0-9_-`, from `RandomNumberGenerator`.
@@ -217,6 +223,9 @@ These are the input classes most likely to bite users. Each line names the test 
   - `RemovePeers_ExcludesFromListPeers`
   - `Append_WithIdempotency_StoresRecordAtomically`: a fault injected after the insert leaves neither the messages nor the record
   - `Append_SameIdempotencyKeyTwice_SecondThrowsDuplicate`
+  - `Append_ExpiredIdempotencyKey_IsReclaimedAndSucceeds`: the record expires, then a fresh append with the same key succeeds, and exactly one record exists, holding the new hash
+  - `Append_ConcurrentReuseOfExpiredKey_OneWinner`: 8 parallel appends reuse one expired key; exactly one inserts, and the others throw `IdempotencyDuplicateException`
+  - `Append_MaxLengthIdempotencyKey_Accepted`: a 255-character key
   - `Grants_AddListRemove`
 - [ ] **Step 3:** Run `dotnet test test/Nachos.Abstractions.Tests`. Expected: FAIL (types missing).
 - [ ] **Step 4:** Implement the types listed under Interfaces.
@@ -273,7 +282,7 @@ These are the input classes most likely to bite users. Each line names the test 
   - `IdValidatorTests.Rejects` (`""`, 513 characters, `"a b"`, `"é"`) and `.Accepts` (`"a-Z_9"`);
   - `TokenCounterTests.KnownStrings` (`"hello world"` → 2; `""` → 0);
   - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`, `.SummaryMinimumsEnforced` (short 9 → `NachosValidationException`);
-  - `NachosServiceTests` (in-memory provider through the `NachosBuilder.UseInMemory()` from Task 8, or an NSubstitute store before Task 8 lands): `CreateMessages_101_Throws422`, `CreateMessages_ComputesTokenCount`, `GetOrCreateSession_WithPeers_EnsuresMembership`, `ListPeers_DefaultKindExcludesInternal`.
+  - `NachosServiceTests`, which use an NSubstitute `IMemoryStore` so that Task 4 never depends on Task 8: `CreateMessages_101_Throws422`, `CreateMessages_ComputesTokenCount`, `GetOrCreateSession_WithPeers_EnsuresMembership`, `ListPeers_DefaultKindExcludesInternal`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `NachosService` maps records to wire DTOs: `Session.IsActive = State == Active`, and `Message.Id = PublicId`. Filter JSON goes through `FilterParser.Parse`.
 - [ ] **Step 4:** Run `dotnet test test/Nachos.Core.Tests`. Expected: PASS.
@@ -289,14 +298,14 @@ These are the input classes most likely to bite users. Each line names the test 
   - `src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj` (`DSP = Sql170DatabaseSchemaProvider`, `<Build Include="../Nachos.DataLayer.SqlServer.Database/Tables/**/*.sql" />`, and a `PostDeploy` item linking the same script).
 
 **Interfaces:**
-- Produces the tables below, matching spec §7.2 for these columns. Every `Name`/`PublicId`/`Key` column is `nvarchar(512) COLLATE Latin1_General_100_BIN2_UTF8`. JSON columns use `json NOT NULL DEFAULT '{}'`. Timestamps are `datetimeoffset(7)`.
+- Produces the tables below, matching spec §7.2 for these columns. Every `Name` column is `nvarchar(512) COLLATE Latin1_General_100_BIN2_UTF8`. Every `UNIQUE` constraint is explicitly `NONCLUSTERED`. Clustered keys are `bigint` surrogates only. Every index key must fit SQL limits (900 bytes clustered, 1,700 nonclustered), enforced by `SchemaDeployerTests.AllIndexKeys_WithinSqlLimits` (Task 6). For example, `(WorkspaceId, Name)` = 8 + 1,024 bytes. JSON columns use `json NOT NULL DEFAULT '{}'`. Timestamps are `datetimeoffset(7)`.
   - `Workspaces(Id bigint IDENTITY PK, Name unique, LifecycleState tinyint, LifecycleVersion int, DeletionJobId bigint NULL, Metadata, InternalMetadata, Configuration, CreatedAt)`
   - `Peers(Id, WorkspaceId FK, Name, IsInternal bit, Metadata, InternalMetadata, Configuration, CreatedAt, UNIQUE(WorkspaceId, Name))`
   - `Sessions(Id, WorkspaceId FK, Name, LifecycleState, LifecycleVersion, DeletionJobId NULL, NextMessageSeq bigint DEFAULT 1, Metadata, InternalMetadata, Configuration, CreatedAt, UNIQUE(WorkspaceId, Name))`
   - `SessionPeers(WorkspaceId, SessionId, PeerId, Configuration json, JoinedAt, LeftAt NULL, PK(WorkspaceId, SessionId, PeerId))`, with composite FKs that include `WorkspaceId`
-  - `Messages(Id, WorkspaceId, SessionId, PeerId, PublicId unique, Seq bigint, Content nvarchar(max), TokenCount int, Metadata, InternalMetadata, CreatedAt, UNIQUE(SessionId, Seq))`
+  - `Messages(Id, WorkspaceId, SessionId, PeerId, PublicId nvarchar(32) unique, Seq bigint, Content nvarchar(max), TokenCount int, Metadata, InternalMetadata, CreatedAt, UNIQUE(SessionId, Seq))`
   - `PrincipalGrants(ObjectId nvarchar(64), WorkspaceId bigint NULL, Role nvarchar(32), UNIQUE)`
-  - `IdempotencyRecords(WorkspaceId, [Key], RequestHash char(64), ResponseStatus int, ResponseBody nvarchar(max), ExpiresAt, PK(WorkspaceId, [Key]))`
+  - `IdempotencyRecords(Id bigint IDENTITY PRIMARY KEY CLUSTERED, WorkspaceId bigint, KeyHash binary(32), [Key] nvarchar(255), RequestHash char(64), ResponseStatus int, ResponseBody nvarchar(max), ExpiresAt, CONSTRAINT UQ_Idem UNIQUE NONCLUSTERED (WorkspaceId, KeyHash))`. `KeyHash` is the SHA-256 of the key. HTTP keys must match `^[\x21-\x7E]{1,255}$`; anything else returns 422.
   - `SchemaVersion(Id tinyint PK CHECK (Id = 1), Version int, AppliedAt)`
 - The post-deploy script MERGEs `SchemaVersion(1, 1, SYSUTCDATETIME())`. The constant `SchemaInfo.CurrentVersion = 1` lives in Task 6.
 
@@ -315,22 +324,31 @@ These are the input classes most likely to bite users. Each line names the test 
 - Produces:
   - `SqlServerOptions { string ConnectionString; bool AutomaticSchemaDeploymentEnabled = false; }`, bound from `Nachos:SqlServer`.
   - `ISchemaManager` (defined in Abstractions by this task as an additive change):
-    - `GetStatusAsync(ct) → SchemaStatus(string Platform, int? Deployed, int Current, SchemaState State)`, where `SchemaState ∈ {Uninitialized, Current, Behind, Ahead}`
+    - `GetStatusAsync(ct) → SchemaStatus(string Platform, int? Deployed, int Current, SchemaState State)`, where `SchemaState ∈ {Empty, Unstamped, Current, Behind, Ahead}`. `Empty` means no user objects at all (`sys.objects` with `is_ms_shipped = 0` is empty). `Unstamped` means user objects exist but there is no `SchemaVersion` row.
     - `ReportAsync(ct) → SchemaReport(DeployClassification Classification, string ReportXml)`
     - `DeployAsync(bool allowDataLoss, ct) → SchemaReport`
   - `enum DeployClassification { AutoSafe, Unsafe, Unclassifiable }`.
-  - `SchemaGate.EnsureAsync(ct)`: runs once per process before first store use. It deploys only if `AutomaticSchemaDeploymentEnabled` is set and the classification is `AutoSafe` (or the database is uninitialized). Otherwise it throws `InvalidOperationException` with remedy text that names `nachos schema upgrade`.
+  - `SchemaGate.EnsureAsync(ct)`: runs once per process before first store use. Behavior by state:
+    - `Current`: no-op.
+    - `Empty`: bootstraps from the dacpac only if `AutomaticSchemaDeploymentEnabled` is set.
+    - `Behind`: deploys only if that setting is on **and** the classification is `AutoSafe`.
+    - `Unstamped` and `Ahead`: **never** changed automatically. An `Ahead` database is never downgraded.
+    - Every refusal throws `InvalidOperationException` whose remedy text names `nachos schema upgrade`.
+  - `DeployReportClassifier` returns `AutoSafe` only when the report has **no alerts and every operation is on the explicit allowlist**: `Create` of a table, nullable column, column with a default, index, constraint, procedure, function, or view; `Alter`/`Create` of a procedure, function, or view. Anything else is `Unsafe`, including drops, column type or nullability changes, and table rebuilds. A well-formed report containing an unrecognized operation is `Unclassifiable`. Both refuse.
   - Platform selection: `SERVERPROPERTY('EngineEdition') = 5` → Azure dacpac; box editions with `ProductMajorVersion >= 17` → Sql2025 dacpac; anything else → `NotSupportedException`. Deploy options: `BlockOnPossibleDataLoss = !allowDataLoss`, `ScriptDatabaseOptions = true`.
   - `SqlServerFixture` (Testcontainers `mcr.microsoft.com/mssql/server:2025-latest`), with `CreateDatabaseAsync() → string connectionString` giving each test class a unique database.
 
 - [ ] **Step 1:** Write the tests:
-  - `DeployReportClassifierTests` (pure XML fixtures): `NoAlerts_IsAutoSafe`, `DataIssueAlert_IsUnsafe`, `MalformedXml_IsUnclassifiable`.
+  - `DeployReportClassifierTests` (pure XML fixtures): `AllowlistedCreatesNoAlerts_IsAutoSafe`, `DataIssueAlert_IsUnsafe`, `DropOrRebuildWithoutAlerts_IsUnsafe`, `UnknownOperationWithoutAlerts_IsUnclassifiable`, `MalformedXml_IsUnclassifiable`.
   - `SchemaDeployerTests` (Docker):
     - `EmptyDatabase_DeploysAndStampsVersion`
     - `Deploy_SetsReadCommittedSnapshotOn` (`sys.databases.is_read_committed_snapshot_on = 1`)
     - `CurrentDatabase_IsNoOp`
     - `GateDisabled_Uninitialized_ThrowsWithRemedy` (the message contains `nachos schema upgrade`)
     - `UnsafeDiff_Refused`: deploy, add a column outside the model, redeploy → `Unsafe`, nothing applied
+    - `NonEmptyUnstampedDatabase_NeverAutoDeployed`: create a user table only, enable automatic deployment → refused, nothing applied
+    - `AheadDatabase_NeverDowngraded`: stamp version `Current + 1` → refused
+    - `AllIndexKeys_WithinSqlLimits`: after deploy, sum the key column `max_length` per index from `sys.index_columns`: ≤ 900 clustered, ≤ 1,700 nonclustered
     - `PostDeployVersion_MatchesSchemaInfo`: the post-deploy script text contains `SchemaInfo.CurrentVersion`
 - [ ] **Step 2:** Run `dotnet test test/Nachos.DataLayer.SqlServer.Tests --filter Schema`. Expected: FAIL.
 - [ ] **Step 3:** Implement with `Microsoft.SqlServer.Dac` (`DacServices`, `DacPackage.Load(stream)`, `GenerateDeployReport`, `Deploy(..., upgradeExisting: true, options)`).
@@ -381,7 +399,7 @@ These are the input classes most likely to bite users. Each line names the test 
 ### Task 9: API: routes, JSON, errors, pagination, health, 501s (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Api/Program.cs` (ends with `public partial class Program;`, so `WebApplicationFactory<Program>` works from other assemblies), `test/Nachos.Testing/NachosApiFactory.cs`, `Endpoints/{Workspace,Peer,Session,Message,NotImplemented}Endpoints.cs`, `Errors/NachosExceptionHandler.cs`, `Json/NachosJsonContext.cs`, `Paging/PagingParameters.cs`, `Health/StoreReadinessCheck.cs`; `test/Nachos.Api.Tests/{NachosApiFactory,WorkspaceEndpointsTests,PeerEndpointsTests,SessionEndpointsTests,MessageEndpointsTests,PaginationTests,ErrorShapeTests,WireCoverageTests}.cs`.
+- Create: `src/Nachos.Api/Program.cs` (ends with `public partial class Program;`, so `WebApplicationFactory<Program>` works from other assemblies), `test/Nachos.Testing/NachosApiFactory.cs`, `Endpoints/{Workspace,Peer,Session,Message,NotImplemented}Endpoints.cs`, `Errors/NachosExceptionHandler.cs`, `Json/NachosJsonContext.cs`, `Paging/PagingParameters.cs`, `Health/StoreReadinessCheck.cs`; `test/Nachos.Api.Tests/{WorkspaceEndpointsTests,PeerEndpointsTests,SessionEndpointsTests,MessageEndpointsTests,PaginationTests,ErrorShapeTests,WireCoverageTests}.cs`.
 
 **Interfaces:**
 - Consumes: `INachosClient` (Task 4) and `UseInMemory` (Task 8).
@@ -466,7 +484,8 @@ These are the input classes most likely to bite users. Each line names the test 
   - `SameKeyDifferentBody_422`
   - `SameKeyDifferentSession_422`: same body, different route value
   - `Replay_UnauthorizedCaller_Gets401NotStoredBody`
-  - `Expired_RecordIgnored`
+  - `Expired_KeyReusable_FreshOperationCommits`: after the TTL passes (using a fake `TimeProvider`), the same key with a different body returns 201 and a new batch, not 422
+  - `KeyOver255OrNonAscii_Returns422`
   - `ConcurrentSameKey_OneInsert`: 8 parallel requests
 - [ ] **Step 2:** Run them. Expected: FAIL.
 - [ ] **Step 3:** Implement. On `IdempotencyDuplicateException` from the store, re-read the record and replay it when the hash matches. Otherwise return 422.
@@ -593,11 +612,15 @@ These are the input classes most likely to bite users. Each line names the test 
   - **build-test:** `dotnet build Nachos.slnx -c Release -warnaserror` and `dotnet test` for all projects except Docker ones.
   - **sql-integration** (`ubuntu-latest`, Docker available): `dotnet test` for the SqlServer, Cli, and AppHost test projects.
   - **schema:** builds both dacpacs. Starts an `mssql/server:2025-latest` service container and runs `sqlpackage /Action:DeployReport` with the Sql2025 dacpac against an empty database. Uploads both dacpacs and the report as artifacts.
-  - **licenses:** `Check-Licenses.ps1` resolves every locked NuGet package (`dotnet list package --include-transitive --format json`) and every npm lockfile entry to an SPDX expression from its license file or metadata. It applies the spec §3 rule 7 tiers, using `eng/license-exceptions.json` for non-distributed tooling only. Unknown licenses fail.
+  - **licenses:** `Check-Licenses.ps1` enforces spec §3 rule 7 and fails closed.
+    - **Inputs, every ecosystem in use:** NuGet (`dotnet list package --include-transitive --format json`, with license evidence from each `.nupkg`); npm (each `package-lock.json`, with license evidence from `node_modules/<pkg>` license files); Python (`test/conformance/python/requirements.lock`, with evidence from each downloaded wheel or sdist: `License-Expression` metadata and its license file).
+    - **Evidence rule:** a package passes only when its license **text** identifies the license. Metadata alone is not enough. If the metadata and the text disagree, or the text is unavailable (for example `licenseUrl` only), the check fails unless a reviewed entry in `eng/license-overrides.json` records the package, version, license, and evidence URL. SPDX `OR` requires a recorded choice. For `AND`, every component must pass.
+    - **Tier = artifact, never a dev flag.** Shipped tier: every package appearing in an emitted artifact, namely the `deps.json` of `dotnet publish` output for `Nachos.Api` and `Nachos.Cli`, plus the docs-site bundle module manifest emitted by Task 18 (`docs/site/dist/.nachos/bundle-modules.json`). Everything else is the tooling tier.
+    - A package in `eng/license-exceptions.json` that appears in any emitted artifact fails.
   - **infra:** `az bicep build` and `az bicep lint` (no login).
 - Extend: if `docs-validate` still walks `docs/` only, add `README.md` in Task 18.
 
-- [ ] **Step 1:** Write `LicenseCheckTests`: `GplPackage_Fails`, `UnknownLicense_FailsClosed`, `EplInTooling_WithException_Passes`, `EplInShippedProject_Fails`, `OrExpression_RecordsSelectedLicense`.
+- [ ] **Step 1:** Write `LicenseCheckTests`: `GplPackage_Fails`, `UnknownLicense_FailsClosed`, `EplInTooling_WithException_Passes`, `EplInShippedProject_Fails`, `OrExpression_RecordsSelectedLicense`, `DisallowedPythonDependency_Fails`, `MetadataTextDisagreement_Fails`, `LicenseTextUnavailable_FailsWithoutOverride`, `ExceptedToolingPackageInDepsJson_Fails`, `ExceptedToolingPackageInDocsBundle_Fails`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.LicenseCheck.Tests`. Expected: FAIL, then PASS after implementation.
 - [ ] **Step 3:** Push and confirm every job is green on GitHub, citing the run IDs.
 - [ ] **Step 4:** Commit `ci: build, SQL integration, schema report, license tiers, offline infra checks`.
@@ -627,7 +650,7 @@ These are the input classes most likely to bite users. Each line names the test 
     - on push to `main` and on dispatch: build plus `actions/deploy-pages`, with `pages: write` / `id-token: write` permissions and the `pages` concurrency group;
     - the deploy job is skipped unless Pages is enabled;
     - no Azure.
-  - Docs-site npm dependencies are checked by Task 17's license tiers against the **emitted bundle**. The Rollup module manifest proves no excepted package ships.
+  - Docs-site npm dependencies are checked by Task 17's license tiers against the **emitted bundle**. A small Astro/Vite integration writes `docs/site/dist/.nachos/bundle-modules.json`, the sorted list of `{package, version}` for every module that Rollup emitted into any client chunk or copied asset. Task 17 consumes it to prove that no excepted package ships. `DocsGenTests.BundleManifest_ListsEmittedPackages` covers it.
 
 - [ ] **Step 1:** Write `DocsGenTests.GeneratesAllReferenceFiles` and a validator regression fixture, `readme-link-missing` → fails.
 - [ ] **Step 2:** Run them. Expected: FAIL.
