@@ -2,5 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nachos.Api\Nachos.Api.csproj" />
+    <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\contracts\honcho-v3-wire.json" Link="honcho-v3-wire.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

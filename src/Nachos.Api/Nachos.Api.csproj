@@ -5,6 +5,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Nachos.Hosting\Nachos.Hosting.csproj" />
     <ProjectReference Include="..\Nachos.Core\Nachos.Core.csproj" />
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
