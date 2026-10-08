@@ -297,6 +297,14 @@ must have locked identities and metadata/documents matching the verified
 archives. Changed, missing or additional nested documents fail. Linked
 metadata/documents and escaping or broken store dependency links fail; ordinary
 contained dependency links are not mistaken for separate physical packages.
+Store directories must bind to a locked snapshot, using pnpm 12's exact
+scoped/nested-peer encoding and SHA-256-shortened names where applicable.
+Physical slot names and metadata must match that context's own package.
+Every dependency or shared-hoist link must resolve to an indexed physical
+package with the declared name and exact snapshot binding, not merely an
+existing directory within the store. Shared `node_modules` aliases are checked;
+unbound physical packages there are not skipped. Every indexed package still
+requires its archive metadata and documentary comparison before an audit passes.
 
 Docs distribution classification still comes from the actual bundle manifest.
 Archive availability, graph reconciliation and absence from that manifest do

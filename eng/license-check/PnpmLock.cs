@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Nachos.LicenseCheck;
 
@@ -212,6 +214,35 @@ internal sealed class PnpmLock
             if (locked.Keys.Concat(lockedOptional.Keys).Any(name => !expected.Contains(name)))
                 throw new InvalidDataException($"pnpm snapshot has undeclared dependency: {context}");
         }
+    }
+
+    internal (PnpmPackage Package, string Key) StoreContext(string folder)
+    {
+        var matches = Packages.SelectMany(package => package.Snapshots.Keys
+            .Where(key => MatchesStoreFolder(key, folder)).Select(key => (Package: package, Key: key))).ToArray();
+        if (matches.Length == 0)
+            throw new InvalidDataException($"Unbound pnpm store context: {folder}");
+        var first = matches[0];
+        if (matches.Any(match => match.Key != first.Key
+            || !JsonElement.DeepEquals(match.Package.Snapshots[match.Key], first.Package.Snapshots[first.Key])))
+            throw new InvalidDataException($"Ambiguous pnpm store context: {folder}");
+        return first;
+    }
+
+    private static bool MatchesStoreFolder(string key, string folder)
+    {
+        // pnpm 12 flattens nested peers before SHA256-shortening the store name.
+        var filename = key.Replace('/', '+');
+        if (filename.EndsWith(')')) filename = filename[..^1];
+        filename = filename.Replace(")(", "_", StringComparison.Ordinal).Replace('(', '_').Replace(')', '_');
+        var uppercase = filename.Any(char.IsAsciiLetterUpper);
+        if (!uppercase && folder == filename) return true;
+        var prefixLength = folder.Length - 33;
+        if (prefixLength < 0 || prefixLength > filename.Length || !uppercase && filename.Length <= folder.Length
+            || !folder.StartsWith(filename[..prefixLength] + "_", StringComparison.Ordinal))
+            return false;
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(filename)))[..32].ToLowerInvariant();
+        return folder.EndsWith(digest, StringComparison.Ordinal);
     }
 
     private string Effective(PnpmPackage package, string name, string request)

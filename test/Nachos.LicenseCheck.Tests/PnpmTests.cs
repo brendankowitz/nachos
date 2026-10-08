@@ -370,7 +370,7 @@ public sealed class PnpmTests
             fixture.Audit.Write(peer + "/package.json", new { name = "peer", version = "2.0.0", license = "MIT" });
             fixture.Audit.WriteText(peer + "/LICENSE", AuditFixture.Mit);
         }
-        var consumer = fixture.Audit.Full("web/node_modules/.pnpm/consumer-context/node_modules");
+        var consumer = fixture.Audit.Full("web/node_modules/.pnpm/consumer@1.0.0_peer@2.0.0/node_modules");
         Directory.CreateDirectory(consumer);
         Directory.CreateSymbolicLink(Path.Combine(consumer, "peer"), fixture.Audit.Full(peer));
         var report = fixture.Audit.Check();
