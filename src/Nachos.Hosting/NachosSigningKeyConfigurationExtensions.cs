@@ -12,11 +12,13 @@ public static class NachosSigningKeyConfigurationExtensions
     /// Malformed shapes fail with value-free configuration errors; entries are never discarded.
     /// A Keys section without children binds an empty ring when its value is null or empty.
     /// In the JSON provider, [] aliases "" and null aliases {} at this flattened boundary.
-    /// Upper-provider null/{} values do not clear lower-provider key children; []/"" with lower
-    /// children is a rejected scalar/list hybrid. A standalone explicit empty binding replaces
-    /// any prior programmatic ring with empty options, so the issuer cannot issue.
-    /// Provider order is retained without imposing an index-name policy. This does not enable
-    /// reload or eager startup validation.
+    /// Upper-provider null/{} values do not clear lower-provider key children. An empty scalar
+    /// with children is a rejected hybrid regardless of which provider supplies the children.
+    /// Configure actions run in registration order: this binding replaces the ring, and later
+    /// actions can change it again. An absent section or standalone empty binding replaces a
+    /// prior programmatic ring with empty options, so the issuer cannot issue.
+    /// Keys follow IConfiguration's child-key ordering without an added index-name policy;
+    /// the first resulting key signs. This does not enable reload or eager startup validation.
     /// </summary>
     public static NachosBuilder BindSigningKeys(this NachosBuilder builder, IConfigurationSection section)
     {
