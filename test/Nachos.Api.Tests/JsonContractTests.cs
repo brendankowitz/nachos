@@ -37,7 +37,7 @@ public sealed class JsonContractTests : ApiTest
             }
             var operation = openApi.GetProperty("paths").GetProperty(path).GetProperty(method);
             var responses = operation.GetProperty("responses");
-            if (responses.TryGetProperty("501", out _))
+            if (responses.TryGetProperty("501", out _) && !responses.TryGetProperty("200", out _))
             {
                 continue;
             }

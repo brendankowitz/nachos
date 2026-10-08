@@ -14,12 +14,17 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
     options.SerializerOptions.DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never;
+    options.SerializerOptions.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.Strict;
     options.SerializerOptions.MaxDepth = int.MaxValue;
     options.SerializerOptions.TypeInfoResolver = NachosJsonContext.Default;
 });
 builder.Services.AddExceptionHandler<NachosExceptionHandler>();
 builder.Services.AddHealthChecks().AddCheck<StoreReadinessCheck>("store");
-builder.Services.AddOpenApi(options => options.AddOperationTransformer(NachosOpenApi.DescribeErrorsAsync));
+builder.Services.AddOpenApi(options =>
+{
+    options.AddSchemaTransformer(NachosOpenApi.DescribeSchemasAsync);
+    options.AddOperationTransformer(NachosOpenApi.DescribeErrorsAsync);
+});
 
 var app = builder.Build();
 var authEnabled = app.Configuration.GetValue("Nachos:Auth:Enabled", true);

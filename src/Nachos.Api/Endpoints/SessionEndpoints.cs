@@ -25,7 +25,9 @@ internal static class SessionEndpoints
             return TypedResults.Ok(await client.GetOrCreateSessionAsync(workspace_id, body.RequiredId(),
                 body.Object("metadata"), body.Optional("configuration", NachosJsonContext.Default.SessionConfiguration, strict: true),
                 body.Peers("peers"), http.RequestAborted));
-        }).Accepts<SessionCreate>("application/json").Produces<Session>();
+        }).Accepts<SessionCreate>("application/json").Produces<Session>().Produces<ErrorResponse>(501)
+            .WithDescription("M1 staging deferral pending agreement: nonempty scopes return 501 before any mutation. " +
+                "Omitted, null or empty scopes are accepted; named-scope creation remains M6.");
         group.MapPost("/list", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);

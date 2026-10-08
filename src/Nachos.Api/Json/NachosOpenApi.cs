@@ -6,11 +6,49 @@ namespace Nachos.Api.Json;
 
 internal static class NachosOpenApi
 {
+    public static Task DescribeSchemasAsync(OpenApiSchema schema, OpenApiSchemaTransformerContext context,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var type = context.JsonTypeInfo.Type;
+        var property = context.JsonPropertyInfo;
+        var declaringType = property?.DeclaringType;
+        if (declaringType == typeof(SummaryConfiguration))
+        {
+            schema.Minimum = property!.Name switch
+            {
+                "messages_per_short_summary" => "10",
+                "messages_per_long_summary" => "20",
+                _ => schema.Minimum,
+            };
+        }
+        else if (declaringType == typeof(MessageCreate) && property!.Name == "content")
+        {
+            schema.MinLength = 0;
+            schema.MaxLength = 25_000;
+        }
+        else if (declaringType is { IsGenericType: true } && declaringType.GetGenericTypeDefinition() == typeof(Page<>))
+        {
+            schema.Minimum = property!.Name switch
+            {
+                "page" or "size" => "1",
+                "total" or "pages" => "0",
+                _ => schema.Minimum,
+            };
+        }
+        if (type == typeof(Workspace) || type == typeof(Peer) || type == typeof(Session) || type == typeof(Message))
+        {
+            schema.Required?.Remove("metadata");
+            schema.Required?.Remove("configuration");
+        }
+        return Task.CompletedTask;
+    }
+
     public static async Task DescribeErrorsAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context,
         CancellationToken cancellationToken)
     {
         operation.Responses ??= new OpenApiResponses();
-        if (operation.Responses.ContainsKey("501"))
+        if (operation.Responses.Count == 1 && operation.Responses.ContainsKey("501"))
         {
             return;
         }
