@@ -5,6 +5,12 @@ namespace Nachos.Core.Validation;
 
 internal static class MessageJsonErrorLocation
 {
+    /// <summary>
+    /// Recovers a structured location without changing admission or the original cause.
+    /// For caller-parsed documents retaining comments, a rejected comment immediately after
+    /// a field value can be attributed to that field rather than its containing object.
+    /// This issue-8 limitation does not relax normal strict-JSON schema-location requirements.
+    /// </summary>
     public static List<object> Find(JsonElement messages, JsonException error)
     {
         var location = new List<object> { "body", "messages" };
