@@ -29,7 +29,8 @@ namespace Nachos.Abstractions.Json;
 /// nested inside a typed value, and so on) is rejected. A value is classified by its backing runtime value, never by
 /// the type it was declared as: an interface or base-type projection of a non-allowlisted runtime type is rejected,
 /// and one of an allowlisted type (for example an <see cref="int"/> declared as <see cref="IComparable"/>) is
-/// accepted. The accepted types are read from the backing value as they are: no getter, converter or <c>ToString</c> of a caller type ever runs, and any
+/// accepted. The accepted types are read from the backing value as they are: no getter, converter or
+/// <c>ToString</c> of a caller type ever runs, and any
 /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo"/> or converter attached to a
 /// <see cref="JsonValue"/> is ignored.
 /// </para>
@@ -71,6 +72,8 @@ public static class StrictJsonData
     /// <summary>The largest <c>maxDepth</c> accepted, the <see cref="Utf8JsonWriter"/> default. It bounds the recursion.</summary>
     public const int MaxAllowedDepth = 1000;
 
+    private const string NotValid = "JSON data is not valid.";
+
     /// <summary>
     /// Returns a fresh tree holding the strict JSON data of <paramref name="value"/>. See the type remarks for the
     /// accepted values, the canonical form and the depth rule.
@@ -98,7 +101,7 @@ public static class StrictJsonData
         {
             // Decoding a JSON-backed object or string throws these for an invalid escape or a repeated property name.
             // The detail stays in the inner exception: the message never echoes a key or value.
-            throw new NachosValidationException("JSON data is not valid.", ex);
+            throw new NachosValidationException(NotValid, ex);
         }
     }
 
@@ -272,7 +275,8 @@ public static class StrictJsonData
                         RequireWellFormed(name);
                         if (result.ContainsKey(name))
                         {
-                            throw new NachosValidationException("JSON data repeats a property name.");
+                            // The same text as a repeated name in a parsed object, which surfaces as an ArgumentException from the node.
+                            throw new NachosValidationException(NotValid, new ArgumentException("A property name is repeated."));
                         }
 
                         result.Add(name, FromElement(property.Value, depth + 1, maxDepth));

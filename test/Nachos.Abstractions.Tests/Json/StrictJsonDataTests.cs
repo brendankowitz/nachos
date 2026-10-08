@@ -295,7 +295,7 @@ public sealed class StrictJsonDataTests
         Rejected(ElementValue("""{"a":"\uD800"}""", converter));
         Rejected(ElementValue("""[["x","\uDC00"]]""", converter));
         Rejected(ElementValue("""{"\uD800":1}""", converter));
-        Rejected(ElementValue("""{"a":1,"a":2}""", converter));
+        Rejected(ElementValue("""{"a":1,"a":2}""", converter)).Message.ShouldBe("JSON data is not valid.");
         Rejected(ElementValue("""{"a":[{"b":1,"b":2}]}""", converter));
         Rejected(ElementValue("""{"a":1,"\u0061":2}""", converter));
         converter.Calls.ShouldBe(0);
@@ -305,7 +305,7 @@ public sealed class StrictJsonDataTests
     public void ElementObjectOrArray_CountsTowardTheSameDepthLimit()
     {
         var converter = new CountingMarkerConverter<JsonElement>();
-        string Chain(int n) => string.Concat(Enumerable.Repeat("[", n)) + string.Concat(Enumerable.Repeat("]", n));
+        static string Chain(int n) => string.Concat(Enumerable.Repeat("[", n)) + string.Concat(Enumerable.Repeat("]", n));
 
         // One object holds the element: 1 + 63 = 64 is accepted, 1 + 64 = 65 is not.
         StrictJsonData.ToCanonical(new JsonObject { ["k"] = ElementValue(Chain(63), converter) }).ShouldNotBeNull();
@@ -360,6 +360,7 @@ public sealed class StrictJsonDataTests
         Rejected(JsonValue.Create<IComparable>(new Version(1, 0)));
         Rejected(JsonValue.Create<object>(DayOfWeek.Monday));
     }
+
     // A chain of nested containers: the root plus (containers - 1) objects, ending in a scalar or null.
     private static JsonNode Nest(int containers, bool nullLeaf)
     {

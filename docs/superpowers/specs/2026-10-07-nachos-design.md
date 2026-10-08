@@ -471,7 +471,6 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 - **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. A value is classified by its backing runtime value, so any other CLR value (collections, POCOs, enums, `TimeSpan` and so on), including an interface or base-type projection of a non-allowlisted runtime type, is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well formed: `SerializeToNode` has already turned a lone surrogate into U+FFFD, so callers who need that guarantee must build `JsonObject`/`JsonArray` with literal strings. Every provider and in-process client **must** pass constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and store or parse only its result (see the strict-data cases in the shared store contract tests). The HTTP path is unchanged.
 
-
 ### 9.4 Intentional deviations (Δ summary)
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
