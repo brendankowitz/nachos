@@ -6,6 +6,10 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// Checks, once per process and before the first store use, that the database matches this build, and
 /// applies the schema only where that is provably safe and the operator has enabled it.
 /// </summary>
+/// <remarks>
+/// An automatic deploy takes a cross-process lock, which on box SQL Server lives in <c>master</c>: the login needs to be able to connect
+/// there (via <c>guest</c>, enabled by default; contained-database users cannot). Without that the gate refuses, with the reason, and changes nothing.
+/// </remarks>
 public sealed class SchemaGate(ISchemaManager schema, SqlServerOptions options)
 {
     private const string Remedy = "Run 'nachos schema upgrade' (add --report-only to inspect the changes first).";

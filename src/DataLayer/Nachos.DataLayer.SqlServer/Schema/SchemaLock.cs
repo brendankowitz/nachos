@@ -11,6 +11,7 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// On SQL Server the lock is taken in <c>master</c>, not in the database being changed: changing a database option such as
 /// READ_COMMITTED_SNAPSHOT disconnects every session in that database, which would kill the holder and every waiter.
 /// Azure SQL Database cannot reach another database, so there the lock lives in the target (and its option is already on).
+/// Connecting to <c>master</c> works for any login through the <c>guest</c> user, which is enabled by default; a contained-database user, or a server where <c>guest</c> is disabled in <c>master</c>, is refused with an <see cref="InvalidOperationException"/> and nothing is changed.
 /// </remarks>
 internal sealed class SchemaLock : IAsyncDisposable
 {
@@ -26,7 +27,7 @@ internal sealed class SchemaLock : IAsyncDisposable
     }
 
     /// <param name="connectionString">The connection string of the database being changed.</param>
-    /// <param name="database">The database being changed; part of the lock's name, so databases do not block each other.</param>
+    /// <param name="database">The database being changed, as the server names it (<c>DB_NAME()</c>), not as the connection string spells it. Part of the lock's name, so databases do not block each other and <c>Nachos</c> and <c>nachos</c> are one lock.</param>
     /// <param name="inMaster">True to hold the lock in <c>master</c> (SQL Server), false to hold it in the target database (Azure SQL Database).</param>
     /// <param name="timeout">How long to wait for another holder.</param>
     /// <exception cref="TimeoutException">Another process held the lock for the whole <paramref name="timeout"/>.</exception>
@@ -43,7 +44,18 @@ internal sealed class SchemaLock : IAsyncDisposable
         var connection = new SqlConnection(builder.ConnectionString);
         try
         {
-            await connection.OpenAsync(ct);
+            try
+            {
+                await connection.OpenAsync(ct);
+            }
+            catch (SqlException failure) when (inMaster)
+            {
+                throw new InvalidOperationException(
+                    "The schema lock is taken in master, and the login could not connect there (" + failure.Message + ") " +
+                    "Contained-database users and servers with guest disabled in master cannot; run the upgrade with a login that can connect to master. Nothing has been changed.",
+                    failure);
+            }
+
             await using var command = new SqlCommand("sp_getapplock", connection)
             {
                 CommandType = CommandType.StoredProcedure,

@@ -60,6 +60,48 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
     private static Task SetVersionAsync(string connectionString, int version) =>
         ExecuteAsync(connectionString, $"UPDATE dbo.SchemaVersion SET [Version] = {version}");
 
+    /// <summary>Every database option Nachos declares (or could clobber), as SQL Server reports it.</summary>
+    private static async Task<SortedDictionary<string, string>> DatabaseOptionsAsync(string connectionString)
+    {
+        var options = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        foreach (var sql in new[]
+                 {
+                     """
+                     SELECT page_verify_option_desc, target_recovery_time_in_seconds, is_broker_enabled, is_ansi_null_default_on, is_ansi_nulls_on,
+                            is_ansi_padding_on, is_ansi_warnings_on, is_arithabort_on, is_concat_null_yields_null_on, is_quoted_identifier_on,
+                            is_numeric_roundabort_on, is_local_cursor_default, is_cursor_close_on_commit_on, is_recursive_triggers_on,
+                            is_auto_close_on, is_auto_shrink_on, is_auto_create_stats_on, is_auto_update_stats_on, is_trustworthy_on,
+                            is_db_chaining_on, is_parameterization_forced, snapshot_isolation_state_desc, recovery_model_desc,
+                            compatibility_level, delayed_durability_desc, is_read_committed_snapshot_on
+                     FROM sys.databases WHERE database_id = DB_ID()
+                     """,
+                     """
+                     SELECT desired_state_desc, query_capture_mode_desc, stale_query_threshold_days, max_storage_size_mb, flush_interval_seconds,
+                            interval_length_minutes, max_plans_per_query, size_based_cleanup_mode_desc
+                     FROM sys.database_query_store_options
+                     """,
+                 })
+        {
+            await using var command = new SqlCommand(sql, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            await reader.ReadAsync();
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                options[reader.GetName(i)] = Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture)!;
+            }
+        }
+
+        return options;
+    }
+
+    private static async Task SetDatabaseOptionAsync(string connectionString, string option)
+    {
+        await ExecuteAsync(connectionString, $"ALTER DATABASE CURRENT SET {option} WITH ROLLBACK IMMEDIATE");
+        SqlConnection.ClearAllPools();
+    }
+
     private static int OperationCount(SchemaReport report) =>
         XDocument.Parse(report.ReportXml).Descendants().Count(e => e.Name.LocalName == "Operation");
 
@@ -88,6 +130,38 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
 
         (await ScalarAsync<bool>(connectionString, "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()"))
             .ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Bootstrap_KeepsSafeDatabaseOptions_AndChangesOnlyReadCommittedSnapshot()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+        var before = await DatabaseOptionsAsync(connectionString);
+
+        await AutoSafeDeployAsync(connectionString);
+        var after = await DatabaseOptionsAsync(connectionString);
+
+        after["page_verify_option_desc"].ShouldBe("CHECKSUM");
+        after["target_recovery_time_in_seconds"].ShouldBe("60");
+        after["is_broker_enabled"].ShouldBe("True");
+        after["desired_state_desc"].ShouldBe("READ_WRITE");
+        after["query_capture_mode_desc"].ShouldBe("AUTO");
+        // A new database's own options are what the dacpac declares, so the only thing a bootstrap changes is the one Nachos needs.
+        after.Where(option => before[option.Key] != option.Value).Select(option => option.Key)
+            .ShouldBe(["is_read_committed_snapshot_on"]);
+    }
+
+    [Fact]
+    public async Task ConnectionStringCaseDiffers_DeploysUnderTheServersName()
+    {
+        var connectionString = await fixture.CreateDatabaseAsync();
+        var shouted = new SqlConnectionStringBuilder(connectionString);
+        shouted.InitialCatalog = shouted.InitialCatalog.ToUpperInvariant();
+
+        var report = await AutoSafeDeployAsync(shouted.ConnectionString);
+
+        report.Applied.ShouldBeTrue();
+        (await Deployer(connectionString).GetStatusAsync(default)).State.ShouldBe(SchemaState.Current);
     }
 
     [Fact]
@@ -123,6 +197,7 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         // (for example a constraint written in a form SQL Server normalizes differently).
         OperationCount(report).ShouldBe(0);
         report.HasPendingChanges.ShouldBeFalse();
+        report.Reasons.ShouldBeEmpty();
         report.Classification.ShouldBe(DeployClassification.AutoSafe);
     }
 
@@ -230,16 +305,22 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         await ExecuteAsync(additive, "CREATE TABLE dbo.SomeoneElses (Id int NOT NULL)");
 
         // ... but not while it would also switch READ_COMMITTED_SNAPSHOT on under whoever is connected.
+        var untouched = await DatabaseOptionsAsync(additive);
         var optionRefused = await Deployer(additive).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default);
         optionRefused.Applied.ShouldBeFalse();
         optionRefused.Reasons.ShouldContain(reason => reason.Contains("READ_COMMITTED_SNAPSHOT", StringComparison.Ordinal));
-        await ExecuteAsync(additive, "ALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE");
-        SqlConnection.ClearAllPools();
+        (await DatabaseOptionsAsync(additive)).ShouldBe(untouched);
+        (await ScalarAsync<int>(additive, "SELECT COUNT(*) FROM sys.tables WHERE name = N'Workspaces'")).ShouldBe(0);
+
+        // Adopting must not touch the options of a database that is not Nachos's: only the ones the operator already matched.
+        await SetDatabaseOptionAsync(additive, "READ_COMMITTED_SNAPSHOT ON");
+        var optionsBeforeAdopt = await DatabaseOptionsAsync(additive);
 
         var adopted = await Deployer(additive).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default);
 
         adopted.Applied.ShouldBeTrue();
         (await Deployer(additive).GetStatusAsync(default)).State.ShouldBe(SchemaState.Current);
+        (await DatabaseOptionsAsync(additive)).ShouldBe(optionsBeforeAdopt);
 
         // A clashing table: the same name with another shape is not an additive change, so adopting still refuses.
         var clashing = await fixture.CreateDatabaseAsync();
@@ -428,6 +509,107 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
             failure.Message.ShouldContain("nachos schema upgrade");
         }
     }
+    [Theory]
+    [InlineData("PAGE_VERIFY NONE", "PAGE_VERIFY")]
+    [InlineData("TARGET_RECOVERY_TIME = 0 SECONDS", "TARGET_RECOVERY_TIME")]
+    [InlineData("QUERY_STORE (QUERY_CAPTURE_MODE = ALL)", "QUERY_STORE")]
+    [InlineData("ANSI_NULLS ON", "ANSI_NULLS")]
+    public async Task BehindDatabase_DatabaseOptionDrift_IsUnsafe_AndNeverAppliedUnattended(string drift, string option)
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await SetDatabaseOptionAsync(connectionString, drift);
+        await SetVersionAsync(connectionString, 0);
+        var drifted = await DatabaseOptionsAsync(connectionString);
+
+        // The repro: a lowered stamp used to be enough for the gate to flip the setting back, with ROLLBACK IMMEDIATE, unattended.
+        var report = await AutoSafeDeployAsync(connectionString);
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => Gate(connectionString, automatic: true).EnsureAsync(default));
+
+        report.Applied.ShouldBeFalse();
+        report.Classification.ShouldBe(DeployClassification.Unsafe);
+        report.HasPendingChanges.ShouldBeTrue();
+        report.Reasons.ShouldContain(reason => reason.Contains(option, StringComparison.Ordinal));
+        failure.Message.ShouldContain(option);
+        failure.Message.ShouldContain("nachos schema upgrade");
+        (await DatabaseOptionsAsync(connectionString)).ShouldBe(drifted);
+        (await StampedVersionAsync(connectionString)).ShouldBe(0);
+
+        // Reviewed by an operator, the same deploy does put it right.
+        var reviewed = await Deployer(connectionString).DeployAsync(DeployApproval.OperatorReviewed, false, false, default);
+
+        reviewed.Applied.ShouldBeTrue();
+        (await DatabaseOptionsAsync(connectionString)).ShouldBe(await DatabaseOptionsAsync(await DeployedDatabaseAsync()));
+    }
+
+    [Fact]
+    public async Task CurrentDatabase_DatabaseOptionDrift_IsPendingAndUnsafe()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await SetDatabaseOptionAsync(connectionString, "PAGE_VERIFY NONE");
+
+        var report = await Deployer(connectionString).ReportAsync(default);
+        var refused = await AutoSafeDeployAsync(connectionString);
+
+        report.HasPendingChanges.ShouldBeTrue();
+        report.Classification.ShouldBe(DeployClassification.Unsafe);
+        refused.Applied.ShouldBeFalse();
+        (await DatabaseOptionsAsync(connectionString))["page_verify_option_desc"].ShouldBe("NONE");
+    }
+
+    [Fact]
+    public async Task MissingTable_IsAutoSafe_AndApplied_ThroughTheStatementAllowlist()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, "ALTER TABLE dbo.IdempotencyRecords DROP CONSTRAINT FK_IdempotencyRecords_Workspaces; DROP TABLE dbo.IdempotencyRecords");
+        await SetVersionAsync(connectionString, 0);
+        var report = await Deployer(connectionString).ReportAsync(default);
+        report.Classification.ShouldBe(DeployClassification.AutoSafe);
+        report.Reasons.ShouldBeEmpty();
+
+        await Gate(connectionString, automatic: true).EnsureAsync(default);
+
+        (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM sys.tables WHERE name = N'IdempotencyRecords'")).ShouldBe(1);
+        // CREATE TABLE, CREATE INDEX and the NOCHECK foreign key were all allowed, and the key was validated afterwards.
+        (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM sys.foreign_keys WHERE is_not_trusted = 1")).ShouldBe(0);
+    }
+
+    // ---- the system-database guard and the lock name ----
+
+    [Theory]
+    [InlineData("master")]
+    [InlineData("master ")]
+    [InlineData("MASTER")]
+    [InlineData("tempdb ")]
+    [InlineData("MSDB ")]
+    [InlineData("model   ")]
+    public async Task SystemDatabase_ReachedByAnySpelling_IsRefusedByTheServersOwnId(string spelling)
+    {
+        var connectionString = new SqlConnectionStringBuilder(await fixture.CreateDatabaseAsync()) { InitialCatalog = spelling }.ConnectionString;
+
+        // The client-side name check is not involved: SchemaProbe asks the server which database it really reached.
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => SchemaProbe.ReadAsync(connectionString, default));
+
+        failure.Message.ShouldContain("system database");
+        failure.Message.ShouldContain(spelling.Trim().ToLowerInvariant(), Case.Insensitive);
+    }
+
+    [Fact]
+    public async Task LockIsNamedByTheServersDatabaseName_SoCasingCannotSplitIt()
+    {
+        var lower = await fixture.CreateDatabaseAsync();
+        var shouted = new SqlConnectionStringBuilder(lower);
+        shouted.InitialCatalog = shouted.InitialCatalog.ToUpperInvariant();
+
+        var fromLower = await SchemaProbe.ReadAsync(lower, default);
+        var fromShouted = await SchemaProbe.ReadAsync(shouted.ConnectionString, default);
+        fromShouted.DatabaseName.ShouldBe(fromLower.DatabaseName);
+
+        await using var held = await SchemaLock.AcquireAsync(lower, fromLower.DatabaseName, inMaster: true, TimeSpan.FromSeconds(30), default);
+
+        await Should.ThrowAsync<TimeoutException>(
+            () => SchemaLock.AcquireAsync(shouted.ConnectionString, fromShouted.DatabaseName, inMaster: true, TimeSpan.FromSeconds(1), default));
+    }
+
     [Fact]
     public async Task RcsiOff_ClassifiedUnsafe_NotApplied()
     {

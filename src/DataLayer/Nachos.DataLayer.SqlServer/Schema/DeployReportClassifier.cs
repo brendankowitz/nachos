@@ -53,11 +53,11 @@ internal static class DeployReportClassifier
     /// </summary>
     /// <param name="reportXml">The DeployReport.</param>
     /// <param name="constraintTables">Constraint name to owning table, from the dacpac model (<see cref="DacpacModel"/>).</param>
-    /// <param name="deployScript">Generates the deploy script; called at most once, and only when a table is altered.</param>
+    /// <param name="deployScript">The analysed deploy script, or null if it cannot be parsed; called at most once, and only when a table is altered.</param>
     public static DeployClassification Classify(
         string reportXml,
         IReadOnlyDictionary<string, string> constraintTables,
-        Func<string> deployScript)
+        Func<DeployScriptAnalysis?> deployScript)
     {
         if (Parse(reportXml) is not { } report)
         {
@@ -72,7 +72,7 @@ internal static class DeployReportClassifier
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var verdict = report.HasAlerts ? DeployClassification.Unsafe : DeployClassification.AutoSafe;
-        Lazy<DeployScriptAnalysis?> script = new(() => DeployScriptAnalysis.TryParse(deployScript()));
+        Lazy<DeployScriptAnalysis?> script = new(deployScript);
 
         foreach (var operation in report.Operations)
         {

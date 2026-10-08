@@ -8,7 +8,30 @@
          builds the same DDL for box SQL Server 2025. -->
     <DSP>Microsoft.Data.Tools.Schema.Sql.SqlAzureV12DatabaseSchemaProvider</DSP>
     <ModelCollation>1033, CI</ModelCollation>
+    <!-- Database options. A deploy to an empty database applies every option the model declares, and the Microsoft.Build.Sql
+         defaults are not what a new database gets (PAGE_VERIFY NONE, TARGET_RECOVERY_TIME 0, DISABLE_BROKER, Query Store capturing
+         ALL). So they are all declared here, at the values a new SQL Server 2025 database has (probed in the Testcontainers
+         image), except ReadCommittedSnapshot, which Nachos needs ON. SchemaDeployerTests pins that a bootstrap changes nothing else. -->
     <ReadCommittedSnapshot>True</ReadCommittedSnapshot>
+    <PageVerify>CHECKSUM</PageVerify>
+    <TargetRecoveryTimePeriod>60</TargetRecoveryTimePeriod>
+    <TargetRecoveryTimeUnit>SECONDS</TargetRecoveryTimeUnit>
+    <ServiceBrokerOption>EnableBroker</ServiceBrokerOption>
+    <AnsiNullDefault>False</AnsiNullDefault>
+    <AnsiNulls>False</AnsiNulls>
+    <AnsiPadding>False</AnsiPadding>
+    <AnsiWarnings>False</AnsiWarnings>
+    <ArithAbort>False</ArithAbort>
+    <ConcatNullYieldsNull>False</ConcatNullYieldsNull>
+    <QuotedIdentifier>False</QuotedIdentifier>
+    <DefaultCursor>GLOBAL</DefaultCursor>
+    <QueryStoreDesiredState>ReadWrite</QueryStoreDesiredState>
+    <QueryStoreCaptureMode>Auto</QueryStoreCaptureMode>
+    <QueryStoreStaleQueryThreshold>30</QueryStoreStaleQueryThreshold>
+    <QueryStoreMaxStorageSize>1000</QueryStoreMaxStorageSize>
+    <QueryStoreFlushInterval>900</QueryStoreFlushInterval>
+    <QueryStoreStatsInterval>60</QueryStoreStatsInterval>
+    <QueryStoreMaxPlansPerQuery>200</QueryStoreMaxPlansPerQuery>
     <TreatTSqlWarningsAsErrors>true</TreatTSqlWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>

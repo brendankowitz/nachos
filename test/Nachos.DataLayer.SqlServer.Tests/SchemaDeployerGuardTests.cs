@@ -16,6 +16,11 @@ public sealed class SchemaDeployerGuardTests
     [InlineData("Server=localhost;Database=MODEL")]
     [InlineData("Server=localhost;Initial Catalog=msdb")]
     [InlineData("Server=localhost;Initial Catalog=tempdb")]
+    [InlineData("Server=localhost;Initial Catalog=\"master \"")]
+    [InlineData("Server=localhost;Initial Catalog=\"tempdb  \"")]
+    [InlineData("Server=localhost;Initial Catalog=\"MSDB \"")]
+    [InlineData("Server=localhost;Initial Catalog=\" Model\"")]
+    [InlineData("Server=localhost;Initial Catalog=\"   \"")]
     public async Task ConnectionStringWithoutAUserDatabase_IsRefused(string connectionString)
     {
         var deployer = Deployer(connectionString);

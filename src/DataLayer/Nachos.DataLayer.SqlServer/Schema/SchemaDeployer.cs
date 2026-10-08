@@ -1,4 +1,3 @@
-using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac;
 using Nachos.Abstractions.Schema;
@@ -10,9 +9,16 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// writes DDL itself, and never sets <c>AllowIncompatiblePlatform</c>.
 /// </summary>
 /// <remarks>
-/// DacFx is synchronous, so its calls run on the thread pool. Reports and status reads take no lock; a deploy holds
+/// <para>DacFx is synchronous, so its calls run on the thread pool. Reports and status reads take no lock; a deploy holds
 /// the cross-process schema lock (see <see cref="SchemaLock"/>) from its first read to its last. No connection is held open
-/// across DacFx: it may change a database option, which disconnects every session in the database.
+/// across DacFx: it may change a database option, which disconnects every session in the database.</para>
+/// <para><b>Permissions on box SQL Server.</b> The lock is taken in <c>master</c>, so the login must be able to connect there:
+/// through the <c>guest</c> user, which is enabled in <c>master</c> by default. A contained-database user, or a server with
+/// <c>guest</c> disabled in <c>master</c>, cannot, and the deploy then fails with an <see cref="InvalidOperationException"/>
+/// that says so; nothing has been changed at that point. Run the upgrade with a login that can.</para>
+/// <para><b>Database options.</b> Reports and classification always script database options, so a difference between
+/// the database and the model (<c>PAGE_VERIFY</c>, <c>TARGET_RECOVERY_TIME</c>, <c>READ_COMMITTED_SNAPSHOT</c>, …) shows up as an
+/// unsafe change. Only a bootstrap of an empty database, or an operator-reviewed deploy, applies them.</para>
 /// </remarks>
 public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
 {
@@ -20,39 +26,17 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
 
     private static readonly string[] SystemDatabases = ["master", "model", "msdb", "tempdb"];
 
-    private const string ServerFactsSql = """
-        SELECT CAST(SERVERPROPERTY('EngineEdition') AS int),
-               CAST(SERVERPROPERTY('ProductMajorVersion') AS int),
-               CASE WHEN EXISTS (SELECT 1 FROM sys.objects WHERE is_ms_shipped = 0) THEN 1 ELSE 0 END,
-               CASE WHEN OBJECT_ID(N'dbo.SchemaVersion', N'U') IS NOT NULL
-                     AND COL_LENGTH(N'dbo.SchemaVersion', N'Version') IS NOT NULL
-                    THEN 1 ELSE 0 END,
-               (SELECT is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID())
-        """;
-
-    private const string StampedVersionSql = "SELECT TOP (1) [Version] FROM [dbo].[SchemaVersion] WHERE [Id] = 1";
-
-    private const string UntrustedConstraintsSql = """
-        SELECT QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(parent_object_id)) + N'.' + QUOTENAME(name)
-        FROM sys.check_constraints WHERE is_not_trusted = 1 AND is_disabled = 0 AND is_ms_shipped = 0
-        UNION ALL
-        SELECT QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(parent_object_id)) + N'.' + QUOTENAME(name)
-        FROM sys.foreign_keys WHERE is_not_trusted = 1 AND is_disabled = 0 AND is_ms_shipped = 0
-        """;
-
-    private sealed record Observed(DacpacTarget Target, SchemaStatus Status, bool ReadCommittedSnapshotOn, IReadOnlyList<string> UntrustedConstraints);
-
     /// <inheritdoc />
     public async Task<SchemaStatus> GetStatusAsync(CancellationToken ct)
     {
-        _ = DatabaseName();
+        RequireNamedUserDatabase();
         return (await ReadAsync(ct)).Status;
     }
 
     /// <inheritdoc />
     public async Task<SchemaReport> ReportAsync(CancellationToken ct)
     {
-        _ = DatabaseName();
+        RequireNamedUserDatabase();
         var observed = await ReadAsync(ct);
         return await Task.Run(() => BuildReport(observed, ct), ct);
     }
@@ -65,11 +49,12 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             throw new ArgumentException("Allowing data loss needs an operator-reviewed deploy.", nameof(allowDataLoss));
         }
 
-        var database = DatabaseName();
+        RequireNamedUserDatabase();
 
-        // The platform decides where the lock lives, so ask before taking it.
-        var platform = (await ReadAsync(ct)).Target;
-        await using var held = await SchemaLock.AcquireAsync(options.ConnectionString, database, inMaster: platform != DacpacCatalog.Azure, LockTimeout, ct);
+        // The platform decides where the lock lives and the server's name for the database names it, so ask before taking it.
+        var first = await ReadAsync(ct);
+        await using var held = await SchemaLock.AcquireAsync(
+            options.ConnectionString, first.DatabaseName, inMaster: first.Target != DacpacCatalog.Azure, LockTimeout, ct);
 
         // Everything below is decided from what the database looks like now, under the lock.
         var observed = await ReadAsync(ct);
@@ -92,7 +77,8 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
         }
 
         // An empty database has nothing a deploy could damage, so bootstrapping it needs no review.
-        var mayApply = observed.Status.State == SchemaState.Empty
+        var bootstrap = observed.Status.State == SchemaState.Empty;
+        var mayApply = bootstrap
                        || approval == DeployApproval.OperatorReviewed
                        || report.Classification == DeployClassification.AutoSafe;
         if (!mayApply)
@@ -102,7 +88,10 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
 
         try
         {
-            await Task.Run(() => Deploy(observed.Target, allowDataLoss, ct), ct);
+            // Database options are applied only on a bootstrap or when an operator has reviewed them. An auto-safe deploy
+            // never touches them, even if the classification above were wrong.
+            var scriptDatabaseOptions = bootstrap || approval == DeployApproval.OperatorReviewed;
+            await Task.Run(() => Deploy(observed, allowDataLoss, scriptDatabaseOptions, ct), ct);
 
             var after = await ReadAsync(ct);
             var afterReport = await Task.Run(() => BuildReport(after, ct), ct);
@@ -121,6 +110,7 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             await RollBackStampAsync(observed.Status.Deployed, failure);
             throw;
         }
+
         return report with { Applied = true };
     }
 
@@ -149,32 +139,64 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
                 cause);
         }
     }
+
     private SchemaReport BuildReport(Observed observed, CancellationToken ct)
     {
-        var database = DatabaseName();
-        var deployOptions = DeployOptions(allowDataLoss: false);
+        // Database options are scripted even though an auto-safe deploy will not apply them: the report must show the drift.
+        var deployOptions = DeployOptions(allowDataLoss: false, scriptDatabaseOptions: true);
         var service = new DacServices(options.ConnectionString);
         using var package = DacPackage.Load(observed.Target.Open());
 
-        var xml = service.GenerateDeployReport(package, database, deployOptions, ct);
-        var classification = DeployReportClassifier.Classify(
-            xml,
-            DacpacModel.ConstraintTables(observed.Target),
-            () => service.GenerateDeployScript(package, database, deployOptions, ct));
-        var hasPendingChanges = DeployReportClassifier.HasOperations(xml);
+        var xml = service.GenerateDeployReport(package, observed.DatabaseName, deployOptions, ct);
 
-        // The report cannot show database options, but DacFx would change them (ALTER DATABASE ... WITH ROLLBACK IMMEDIATE,
-        // which disconnects every session). Only a bootstrap, where nothing is connected yet, may do that unattended.
+        // One analysis of the script serves the classifier and the checks below. An empty database is being bootstrapped,
+        // so everything in its script is expected and nothing needs reading.
+        var bootstrap = observed.Status.State == SchemaState.Empty;
+        var script = new Lazy<DeployScriptAnalysis?>(
+            () => DeployScriptAnalysis.TryParse(service.GenerateDeployScript(package, observed.DatabaseName, deployOptions, ct)));
+
+        var classification = DeployReportClassifier.Classify(xml, DacpacModel.ConstraintTables(observed.Target), () => script.Value);
+        var hasPendingChanges = DeployReportClassifier.HasOperations(xml);
         var reasons = new List<string>();
-        if (observed.Status.State != SchemaState.Empty && !observed.ReadCommittedSnapshotOn)
+
+        void Escalate(DeployClassification to)
         {
-            reasons.Add(
-                "Database option READ_COMMITTED_SNAPSHOT is OFF but the schema expects ON. Applying it runs ALTER DATABASE ... WITH ROLLBACK IMMEDIATE, " +
-                "which disconnects every session; run 'nachos schema upgrade --approve-reviewed' in a maintenance window.");
             hasPendingChanges = true;
             if (classification == DeployClassification.AutoSafe)
             {
-                classification = DeployClassification.Unsafe;
+                classification = to;
+            }
+        }
+
+        if (!bootstrap)
+        {
+            if (script.Value is not { } analysis)
+            {
+                reasons.Add("The deploy script could not be parsed, so what the deploy would do cannot be checked.");
+                Escalate(DeployClassification.Unclassifiable);
+            }
+            else
+            {
+                if (analysis.DatabaseOptionChanges.Count > 0)
+                {
+                    // Changing one runs ALTER DATABASE ... WITH ROLLBACK IMMEDIATE, which disconnects every session.
+                    reasons.Add(
+                        $"Database option(s) {string.Join(", ", analysis.DatabaseOptionChanges)} differ from the schema and would be changed. Applying them runs " +
+                        "ALTER DATABASE ... WITH ROLLBACK IMMEDIATE, which disconnects every session; run 'nachos schema upgrade --approve-reviewed' in a maintenance window.");
+                    Escalate(DeployClassification.Unsafe);
+                }
+
+                if (analysis.DisallowedStatements.Count > 0)
+                {
+                    reasons.Add($"The deploy script contains statements outside the auto-safe allowlist: {string.Join(", ", analysis.DisallowedStatements)}.");
+                    Escalate(DeployClassification.Unsafe);
+                }
+
+                if (analysis.HasOpaqueExecution)
+                {
+                    reasons.Add("The deploy script runs dynamic SQL or a procedure whose effect cannot be read from the script.");
+                    Escalate(DeployClassification.Unclassifiable);
+                }
             }
         }
 
@@ -185,102 +207,49 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             reasons.Add(
                 $"Constraint(s) exist but are not trusted (their rows were never validated): {string.Join(", ", observed.UntrustedConstraints)}. " +
                 "Fix the offending rows, then validate with ALTER TABLE ... WITH CHECK CHECK CONSTRAINT, and re-run 'nachos schema report'.");
-            hasPendingChanges = true;
-            if (classification == DeployClassification.AutoSafe)
-            {
-                classification = DeployClassification.Unsafe;
-            }
+            Escalate(DeployClassification.Unsafe);
         }
 
         return new SchemaReport(classification, xml, Applied: false, hasPendingChanges, reasons);
     }
 
-    private void Deploy(DacpacTarget target, bool allowDataLoss, CancellationToken ct)
+    private void Deploy(Observed observed, bool allowDataLoss, bool scriptDatabaseOptions, CancellationToken ct)
     {
-        using var package = DacPackage.Load(target.Open());
+        using var package = DacPackage.Load(observed.Target.Open());
         try
         {
             new DacServices(options.ConnectionString)
-                .Deploy(package, DatabaseName(), upgradeExisting: true, DeployOptions(allowDataLoss), ct);
+                .Deploy(package, observed.DatabaseName, upgradeExisting: true, DeployOptions(allowDataLoss, scriptDatabaseOptions), ct);
         }
         finally
         {
-            // Changing a database option (READ_COMMITTED_SNAPSHOT) disconnects every session in the database, pooled idle
-            // ones included; drop them so nothing reuses a dead connection.
+            // Changing a database option disconnects every session in the database, pooled idle ones included; drop them so
+            // nothing reuses a dead connection.
             using var pooled = new SqlConnection(options.ConnectionString);
             SqlConnection.ClearPool(pooled);
         }
     }
 
-    private static DacDeployOptions DeployOptions(bool allowDataLoss) => new()
+    private static DacDeployOptions DeployOptions(bool allowDataLoss, bool scriptDatabaseOptions) => new()
     {
         BlockOnPossibleDataLoss = !allowDataLoss,
-        // Applies the project's database-level settings (read committed snapshot) to the existing database.
-        // Reports flag an existing database whose options differ, so this only runs unattended on a bootstrap.
-        ScriptDatabaseOptions = true,
+        ScriptDatabaseOptions = scriptDatabaseOptions,
     };
 
-    private string DatabaseName()
+    // An early, connection-free refusal. It is only a convenience: the server's own database id decides (SchemaProbe).
+    private void RequireNamedUserDatabase()
     {
-        var name = new SqlConnectionStringBuilder(options.ConnectionString).InitialCatalog;
+        var name = new SqlConnectionStringBuilder(options.ConnectionString).InitialCatalog.Trim();
         if (name.Length == 0)
         {
             throw new InvalidOperationException($"The connection string must name a database (Initial Catalog), at {SqlServerOptions.SectionName}:ConnectionString.");
         }
 
-        return SystemDatabases.Contains(name, StringComparer.OrdinalIgnoreCase)
-            ? throw new InvalidOperationException($"Nachos will not create its schema in the system database '{name}'. Name a dedicated database in {SqlServerOptions.SectionName}:ConnectionString.")
-            : name;
+        if (SystemDatabases.Contains(name, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Nachos will not create its schema in the system database '{name}'. Name a dedicated database in {SqlServerOptions.SectionName}:ConnectionString.");
+        }
     }
 
-    private async Task<Observed> ReadAsync(CancellationToken ct)
-    {
-        await using var connection = new SqlConnection(options.ConnectionString);
-        await connection.OpenAsync(ct);
-
-        int engineEdition, majorVersion;
-        bool hasObjects, hasStamp, readCommittedSnapshotOn;
-        await using (var command = new SqlCommand(ServerFactsSql, connection))
-        await using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SingleRow, ct))
-        {
-            await reader.ReadAsync(ct);
-            engineEdition = reader.GetInt32(0);
-            majorVersion = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
-            hasObjects = reader.GetInt32(2) == 1;
-            hasStamp = reader.GetInt32(3) == 1;
-            readCommittedSnapshotOn = !reader.IsDBNull(4) && reader.GetBoolean(4);
-        }
-
-        var target = DacpacCatalog.Select(engineEdition, majorVersion);
-
-        int? deployed = null;
-        if (hasStamp)
-        {
-            await using var command = new SqlCommand(StampedVersionSql, connection);
-            var stamped = await command.ExecuteScalarAsync(ct);
-            deployed = stamped is null or DBNull ? null : Convert.ToInt32(stamped, System.Globalization.CultureInfo.InvariantCulture);
-        }
-
-        var state = (hasObjects, deployed) switch
-        {
-            (false, _) => SchemaState.Empty,
-            (true, null) => SchemaState.Unstamped,
-            (true, var v) when v == SchemaInfo.CurrentVersion => SchemaState.Current,
-            (true, var v) when v < SchemaInfo.CurrentVersion => SchemaState.Behind,
-            _ => SchemaState.Ahead,
-        };
-
-        var untrusted = new List<string>();
-        if (hasObjects)
-        {
-            await using var command = new SqlCommand(UntrustedConstraintsSql, connection);
-            await using var reader = await command.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                untrusted.Add(reader.GetString(0));
-            }
-        }
-
-        return new Observed(target, new SchemaStatus(target.Platform, deployed, SchemaInfo.CurrentVersion, state), readCommittedSnapshotOn, untrusted);
-    }
+    private Task<Observed> ReadAsync(CancellationToken ct) => SchemaProbe.ReadAsync(options.ConnectionString, ct);
 }

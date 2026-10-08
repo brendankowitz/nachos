@@ -19,8 +19,8 @@ public sealed class DeployReportClassifierTests
             fixtureOrXml.StartsWith('<') || fixtureOrXml.Length == 0 || !fixtureOrXml.EndsWith(".xml", StringComparison.Ordinal) ? fixtureOrXml : Fixtures.Read(fixtureOrXml),
             ConstraintTables,
             () => scriptFixture is null
-                ? throw new InvalidOperationException("The deploy script must not be generated for this report.")
-                : scriptFixture.EndsWith(".sql", StringComparison.Ordinal) ? Fixtures.Read(scriptFixture) : scriptFixture);
+                ? throw new InvalidOperationException("The deploy script must not be analysed for this report.")
+                : DeployScriptAnalysis.TryParse(scriptFixture.EndsWith(".sql", StringComparison.Ordinal) ? Fixtures.Read(scriptFixture) : scriptFixture));
 
     private static string Report(string body) => $"""<DeploymentReport xmlns="{Ns}">{body}</DeploymentReport>""";
 

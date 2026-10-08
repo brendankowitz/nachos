@@ -45,60 +45,17 @@ IF EXISTS (SELECT 1
            WHERE  [name] = N'$(DatabaseName)')
     BEGIN
         ALTER DATABASE [$(DatabaseName)]
-            SET ANSI_NULLS ON,
-                ANSI_PADDING ON,
-                ANSI_WARNINGS ON,
-                ARITHABORT ON,
-                CONCAT_NULL_YIELDS_NULL ON,
-                QUOTED_IDENTIFIER ON,
-                ANSI_NULL_DEFAULT ON,
-                CURSOR_DEFAULT LOCAL 
-            WITH ROLLBACK IMMEDIATE;
-    END
-
-
-GO
-IF EXISTS (SELECT 1
-           FROM   [master].[dbo].[sysdatabases]
-           WHERE  [name] = N'$(DatabaseName)')
-    BEGIN
-        ALTER DATABASE [$(DatabaseName)]
             SET READ_COMMITTED_SNAPSHOT ON 
             WITH ROLLBACK IMMEDIATE;
     END
 
 
 GO
-IF EXISTS (SELECT 1
-           FROM   [master].[dbo].[sysdatabases]
-           WHERE  [name] = N'$(DatabaseName)')
-    BEGIN
-        ALTER DATABASE [$(DatabaseName)]
-            SET PAGE_VERIFY NONE,
-                DISABLE_BROKER 
-            WITH ROLLBACK IMMEDIATE;
-    END
-
-
-GO
-ALTER DATABASE [$(DatabaseName)]
-    SET TARGET_RECOVERY_TIME = 0 SECONDS 
-    WITH ROLLBACK IMMEDIATE;
-
-
-GO
-IF EXISTS (SELECT 1
-           FROM   [master].[dbo].[sysdatabases]
-           WHERE  [name] = N'$(DatabaseName)')
-    BEGIN
-        ALTER DATABASE [$(DatabaseName)]
-            SET QUERY_STORE (QUERY_CAPTURE_MODE = ALL, CLEANUP_POLICY = (STALE_QUERY_THRESHOLD_DAYS = 367), MAX_STORAGE_SIZE_MB = 100) 
-            WITH ROLLBACK IMMEDIATE;
-    END
-
-
-GO
 PRINT N'Creating Table [dbo].[IdempotencyRecords]...';
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
 
 
 GO
@@ -117,6 +74,10 @@ CREATE TABLE [dbo].[IdempotencyRecords] (
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
+
+
+GO
 PRINT N'Creating Index [dbo].[IdempotencyRecords].[IX_IdempotencyRecords_ExpiresAt]...';
 
 
@@ -127,6 +88,10 @@ CREATE NONCLUSTERED INDEX [IX_IdempotencyRecords_ExpiresAt]
 
 GO
 PRINT N'Creating Table [dbo].[Messages]...';
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
 
 
 GO
@@ -149,6 +114,10 @@ CREATE TABLE [dbo].[Messages] (
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
+
+
+GO
 PRINT N'Creating Index [dbo].[Messages].[IX_Messages_Workspace_Peer]...';
 
 
@@ -159,6 +128,10 @@ CREATE NONCLUSTERED INDEX [IX_Messages_Workspace_Peer]
 
 GO
 PRINT N'Creating Table [dbo].[Peers]...';
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
 
 
 GO
@@ -178,6 +151,10 @@ CREATE TABLE [dbo].[Peers] (
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
+
+
+GO
 PRINT N'Creating Index [dbo].[Peers].[IX_Peers_Workspace_CreatedAt]...';
 
 
@@ -191,6 +168,10 @@ PRINT N'Creating Table [dbo].[PrincipalGrants]...';
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
+
+
+GO
 CREATE TABLE [dbo].[PrincipalGrants] (
     [Id]          BIGINT        IDENTITY (1, 1) NOT NULL,
     [ObjectId]    NVARCHAR (64) COLLATE Latin1_General_100_BIN2_UTF8 NOT NULL,
@@ -199,6 +180,10 @@ CREATE TABLE [dbo].[PrincipalGrants] (
     CONSTRAINT [PK_PrincipalGrants] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [UQ_PrincipalGrants_Object_Workspace_Role] UNIQUE NONCLUSTERED ([ObjectId] ASC, [WorkspaceId] ASC, [Role] ASC)
 );
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
 
 
 GO
@@ -215,6 +200,10 @@ PRINT N'Creating Table [dbo].[SchemaVersion]...';
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
+
+
+GO
 CREATE TABLE [dbo].[SchemaVersion] (
     [Id]        TINYINT            NOT NULL,
     [Version]   INT                NOT NULL,
@@ -224,7 +213,15 @@ CREATE TABLE [dbo].[SchemaVersion] (
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
+
+
+GO
 PRINT N'Creating Table [dbo].[SessionPeers]...';
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
 
 
 GO
@@ -240,6 +237,10 @@ CREATE TABLE [dbo].[SessionPeers] (
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
+
+
+GO
 PRINT N'Creating Index [dbo].[SessionPeers].[IX_SessionPeers_Workspace_Peer]...';
 
 
@@ -250,6 +251,10 @@ CREATE NONCLUSTERED INDEX [IX_SessionPeers_Workspace_Peer]
 
 GO
 PRINT N'Creating Table [dbo].[Sessions]...';
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
 
 
 GO
@@ -269,6 +274,10 @@ CREATE TABLE [dbo].[Sessions] (
     CONSTRAINT [UQ_Sessions_Workspace_Id] UNIQUE NONCLUSTERED ([WorkspaceId] ASC, [Id] ASC),
     CONSTRAINT [UQ_Sessions_Workspace_Name] UNIQUE NONCLUSTERED ([WorkspaceId] ASC, [Name] ASC)
 );
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
 
 
 GO
@@ -294,6 +303,10 @@ PRINT N'Creating Table [dbo].[Workspaces]...';
 
 
 GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER OFF;
+
+
+GO
 CREATE TABLE [dbo].[Workspaces] (
     [Id]               BIGINT             IDENTITY (1, 1) NOT NULL,
     [Name]             NVARCHAR (512)     COLLATE Latin1_General_100_BIN2_UTF8 NOT NULL,
@@ -307,6 +320,10 @@ CREATE TABLE [dbo].[Workspaces] (
     CONSTRAINT [PK_Workspaces] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [UQ_Workspaces_Name] UNIQUE NONCLUSTERED ([Name] ASC)
 );
+
+
+GO
+SET ANSI_NULLS, QUOTED_IDENTIFIER ON;
 
 
 GO
