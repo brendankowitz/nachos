@@ -19,7 +19,7 @@ namespace Nachos.Abstractions.Json;
 /// than serializing the caller's tree themselves, so there is one rule and one implementation.
 /// </para>
 /// <para>
-/// <b>Accepted.</b> <c>null</c>; <see cref="JsonObject"/> and <see cref="JsonArray"/>, walked recursively with each
+/// <b>Accepted.</b> <c>null</c>; <see cref="JsonObject"/> and <see cref="JsonArray"/>, walked in full with each
 /// property name checked; and a <see cref="JsonValue"/> backed by a <see cref="JsonElement"/>, <see cref="string"/>,
 /// <see cref="char"/>, <see cref="bool"/>, <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
 /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="ulong"/>,
@@ -46,9 +46,18 @@ namespace Nachos.Abstractions.Json;
 /// <para>
 /// <b>Depth.</b> Only objects and arrays count, matching <see cref="JsonDocumentOptions.MaxDepth"/>: a root container
 /// is depth 1, and scalars and <c>null</c> add no level. With the default of 64, a tree of 64 nested containers is
-/// accepted and 65 is rejected. The walk recurses once per level, so <c>maxDepth</c> is itself capped at
-/// <see cref="MaxAllowedDepth"/>, and a deeper input is rejected after that many levels instead of exhausting the
-/// stack.
+/// accepted and 65 is rejected. <c>maxDepth</c> is capped at <see cref="MaxAllowedDepth"/> so the result stays within
+/// what <see cref="Utf8JsonWriter"/> accepts by default, and an input nested deeper than <c>maxDepth</c> is rejected
+/// as soon as the first container beyond it is reached.
+/// </para>
+/// <para>
+/// <b>Stack safety.</b> <see cref="ToCanonical"/> walks with an explicit stack kept on the heap, for explicit
+/// containers and for object and array <see cref="JsonElement"/>s alike, so its own native stack use is constant: it
+/// is safe at any permitted depth on any thread, including a very deep input that is then rejected. This covers
+/// <see cref="ToCanonical"/> only. Later System.Text.Json operations on a deep result (<c>ToJsonString</c>,
+/// <c>DeepClone</c>, serialization, <c>JsonNode.DeepEquals</c>) use the framework's own recursion, and a result
+/// nested close to <see cref="MaxAllowedDepth"/> may need more stack than a small thread has. Callers that handle
+/// untrusted depth should keep <c>maxDepth</c> low; <see cref="DefaultMaxDepth"/> is safe for all of them.
 /// </para>
 /// <para>
 /// <b>JSON-backed values.</b> Values that came from parsed JSON (<see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>,
@@ -69,7 +78,7 @@ public static class StrictJsonData
     /// <summary>The default depth limit: 64 nested objects and arrays, the same as <see cref="JsonDocumentOptions.MaxDepth"/>.</summary>
     public const int DefaultMaxDepth = 64;
 
-    /// <summary>The largest <c>maxDepth</c> accepted, the <see cref="Utf8JsonWriter"/> default. It bounds the recursion.</summary>
+    /// <summary>The largest <c>maxDepth</c> accepted: the <see cref="Utf8JsonWriter"/> default depth, so a result can still be written.</summary>
     public const int MaxAllowedDepth = 1000;
 
     private const string NotValid = "JSON data is not valid.";
@@ -95,7 +104,7 @@ public static class StrictJsonData
 
         try
         {
-            return Canonicalize(value, 0, maxDepth);
+            return Canonicalize(value, maxDepth);
         }
         catch (Exception ex) when (ex is (InvalidOperationException or ArgumentException) and not ObjectDisposedException)
         {
@@ -105,52 +114,197 @@ public static class StrictJsonData
         }
     }
 
-    private static JsonNode? Canonicalize(JsonNode? node, int depth, int maxDepth)
+    /// <summary>One child of a container being read: a property name (objects only) and a node or an element.</summary>
+    private readonly record struct Item(string? Key, JsonNode? Node, JsonElement Element, bool IsElement);
+
+    /// <summary>A container being built, with the children still to read and the name the child in progress goes under.</summary>
+    private sealed class Frame(JsonNode result, IEnumerator<Item> children)
     {
-        switch (node)
+        public JsonNode Result { get; } = result;
+
+        public IEnumerator<Item> Children { get; } = children;
+
+        public string? PendingKey { get; set; }
+
+        public void Attach(JsonNode? child)
         {
-            case null:
-                return null;
-            case JsonObject obj:
-                {
-                    RequireDepth(depth + 1, maxDepth);
-                    var result = new JsonObject();
-
-                    // Enumerating a JSON-backed object decodes its keys, which throws on a duplicate or invalid escape.
-                    foreach (var (key, child) in obj)
-                    {
-                        RequireWellFormed(key);
-                        result.Add(key, Canonicalize(child, depth + 1, maxDepth));
-                    }
-
-                    return result;
-                }
-
-            case JsonArray array:
-                {
-                    RequireDepth(depth + 1, maxDepth);
-                    var result = new JsonArray();
-                    foreach (var child in array)
-                    {
-                        result.Add(Canonicalize(child, depth + 1, maxDepth));
-                    }
-
-                    return result;
-                }
-
-            default:
-                return CanonicalizeValue((JsonValue)node, depth, maxDepth);
+            if (Result is JsonObject obj)
+            {
+                obj.Add(PendingKey!, child);
+            }
+            else
+            {
+                ((JsonArray)Result).Add(child);
+            }
         }
     }
 
-    private static JsonNode? CanonicalizeValue(JsonValue value, int depth, int maxDepth)
+    // Iterative on purpose: the open containers live in this stack, not on the native one, so depth costs heap only.
+    private static JsonNode? Canonicalize(JsonNode? root, int maxDepth)
     {
-        // JsonElement first: TryGetValue<T> converts a JSON-backed value, so it would also satisfy the checks below.
-        if (value.TryGetValue(out JsonElement element))
+        var open = new Stack<Frame>();
+        try
         {
-            return FromElement(element, depth, maxDepth);
+            if (TryRead(new Item(null, root, default, false), open, maxDepth, out var rootLeaf))
+            {
+                return rootLeaf;
+            }
+
+            while (true)
+            {
+                var frame = open.Peek();
+                if (frame.Children.MoveNext())
+                {
+                    var child = frame.Children.Current;
+                    if (child.Key is not null)
+                    {
+                        RequireWellFormed(child.Key);
+                        if (((JsonObject)frame.Result).ContainsKey(child.Key))
+                        {
+                            // The same outcome as a repeated name in a parsed object, which the node reports on enumeration.
+                            throw new NachosValidationException(NotValid, new ArgumentException("A property name is repeated."));
+                        }
+                    }
+
+                    frame.PendingKey = child.Key;
+                    if (TryRead(child, open, maxDepth, out var leaf))
+                    {
+                        frame.Attach(leaf);
+                    }
+
+                    continue;
+                }
+
+                open.Pop();
+                frame.Children.Dispose();
+                if (open.Count == 0)
+                {
+                    return frame.Result;
+                }
+
+                open.Peek().Attach(frame.Result);
+            }
+        }
+        finally
+        {
+            foreach (var frame in open)
+            {
+                frame.Children.Dispose();
+            }
+        }
+    }
+
+    // Reads a scalar or null into `leaf` and returns true; for an object or array opens a frame and returns false.
+    private static bool TryRead(Item item, Stack<Frame> open, int maxDepth, out JsonNode? leaf)
+    {
+        leaf = null;
+        if (item.IsElement)
+        {
+            return TryReadElement(item.Element, open, maxDepth, out leaf);
         }
 
+        switch (item.Node)
+        {
+            case null:
+                return true;
+            case JsonObject obj:
+                Open(open, maxDepth, new JsonObject(), ObjectChildren(obj));
+                return false;
+            case JsonArray array:
+                Open(open, maxDepth, new JsonArray(), ArrayChildren(array));
+                return false;
+            default:
+                var value = (JsonValue)item.Node;
+
+                // JsonElement first: TryGetValue<T> converts a JSON-backed value, so it would also satisfy the checks below.
+                if (value.TryGetValue(out JsonElement element))
+                {
+                    return TryReadElement(element, open, maxDepth, out leaf);
+                }
+
+                leaf = CanonicalizeScalar(value);
+                return true;
+        }
+    }
+
+    // A JsonValue can hold an object or array element when it was created with a JsonTypeInfo
+    // (Create<JsonElement>(element, typeInfo) or Create<object>), so the element is read like any JSON data.
+    private static bool TryReadElement(JsonElement element, Stack<Frame> open, int maxDepth, out JsonNode? leaf)
+    {
+        leaf = null;
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                var text = element.GetString()!;
+                RequireWellFormed(text);
+                leaf = JsonValue.Create(text);
+                return true;
+            case JsonValueKind.Number:
+                // A detached copy keeps the digits as written, whatever their size.
+                leaf = JsonValue.Create(element.Clone());
+                return true;
+            case JsonValueKind.True:
+                leaf = JsonValue.Create(true);
+                return true;
+            case JsonValueKind.False:
+                leaf = JsonValue.Create(false);
+                return true;
+            case JsonValueKind.Null:
+                return true;
+            case JsonValueKind.Object:
+                Open(open, maxDepth, new JsonObject(), ElementProperties(element));
+                return false;
+            case JsonValueKind.Array:
+                Open(open, maxDepth, new JsonArray(), ElementItems(element));
+                return false;
+            default:
+                throw new NachosValidationException("The value is an undefined JSON element.");
+        }
+    }
+
+    // Constructed and element levels share the one stack, so they count toward the same limit.
+    private static void Open(Stack<Frame> open, int maxDepth, JsonNode result, IEnumerable<Item> children)
+    {
+        RequireDepth(open.Count + 1, maxDepth);
+        open.Push(new Frame(result, children.GetEnumerator()));
+    }
+
+    // Enumerating a JSON-backed object decodes its keys, which throws on a duplicate or invalid escape.
+    private static IEnumerable<Item> ObjectChildren(JsonObject obj)
+    {
+        foreach (var (key, child) in obj)
+        {
+            yield return new Item(key, child, default, false);
+        }
+    }
+
+    private static IEnumerable<Item> ArrayChildren(JsonArray array)
+    {
+        foreach (var child in array)
+        {
+            yield return new Item(null, child, default, false);
+        }
+    }
+
+    private static IEnumerable<Item> ElementProperties(JsonElement element)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            yield return new Item(property.Name, null, property.Value, true);
+        }
+    }
+
+    private static IEnumerable<Item> ElementItems(JsonElement element)
+    {
+        foreach (var child in element.EnumerateArray())
+        {
+            yield return new Item(null, null, child, true);
+        }
+    }
+
+    // The scalar allowlist, in the order its checks must run. A JsonElement-backed value never reaches here.
+    private static JsonValue? CanonicalizeScalar(JsonValue value)
+    {
         if (value.TryGetValue(out string? text))
         {
             RequireWellFormed(text);
@@ -245,63 +399,6 @@ public static class StrictJsonData
             $"The value is backed by '{BackingType(value)}', which is not a JSON data type. Build it with JsonObject "
             + "and JsonArray, or convert it first with JsonSerializer.SerializeToNode.");
     }
-
-    // A JsonValue can hold an object or array element when it was created with a JsonTypeInfo
-    // (Create<JsonElement>(element, typeInfo) or Create<object>), so the element is walked like any JSON data.
-    private static JsonNode? FromElement(JsonElement element, int depth, int maxDepth)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.String:
-                var text = element.GetString()!;
-                RequireWellFormed(text);
-                return JsonValue.Create(text);
-            case JsonValueKind.Number:
-                // A detached copy keeps the digits as written, whatever their size.
-                return JsonValue.Create(element.Clone());
-            case JsonValueKind.True:
-                return JsonValue.Create(true);
-            case JsonValueKind.False:
-                return JsonValue.Create(false);
-            case JsonValueKind.Null:
-                return null;
-            case JsonValueKind.Object:
-                {
-                    RequireDepth(depth + 1, maxDepth);
-                    var result = new JsonObject();
-                    foreach (var property in element.EnumerateObject())
-                    {
-                        var name = property.Name;
-                        RequireWellFormed(name);
-                        if (result.ContainsKey(name))
-                        {
-                            // The same text as a repeated name in a parsed object, which surfaces as an ArgumentException from the node.
-                            throw new NachosValidationException(NotValid, new ArgumentException("A property name is repeated."));
-                        }
-
-                        result.Add(name, FromElement(property.Value, depth + 1, maxDepth));
-                    }
-
-                    return result;
-                }
-
-            case JsonValueKind.Array:
-                {
-                    RequireDepth(depth + 1, maxDepth);
-                    var result = new JsonArray();
-                    foreach (var child in element.EnumerateArray())
-                    {
-                        result.Add(FromElement(child, depth + 1, maxDepth));
-                    }
-
-                    return result;
-                }
-
-            default:
-                throw new NachosValidationException("The value is an undefined JSON element.");
-        }
-    }
-
     private static void RequireDepth(int depth, int maxDepth)
     {
         if (depth > maxDepth)
