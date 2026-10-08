@@ -31,6 +31,10 @@ internal static class SchemaCommands
         Required = true,
     };
 
+    // Standard output is for machines and redirection, standard error is for the person reading.
+    private const string ReportStreams =
+        "The report XML goes to standard output (redirect it to a file); the classification, whether changes are pending, and the reasons go to standard error.";
+
     private static SchemaDeployer Deployer(string connectionString) =>
         new(new SqlServerOptions { ConnectionString = connectionString });
 
@@ -51,12 +55,15 @@ internal static class SchemaCommands
     private static Command ReportCommand()
     {
         var connection = ConnectionOption();
-        var outFile = new Option<FileInfo>("--out") { Description = "Write the raw DacFx deploy report XML to this file." };
-        var command = new Command("report", "Show what a deploy would change, without changing anything.") { connection, outFile };
+        var outFile = new Option<FileInfo>("--out")
+        {
+            Description = "Write the report XML to this file instead of standard output. Standard output is then empty.",
+        };
+        var command = new Command("report", "Show what a deploy would change, without changing anything. " + ReportStreams) { connection, outFile };
         command.SetAction((parse, ct) => CommandFailure.GuardAsync(parse.InvocationConfiguration.Error, async () =>
         {
             var report = await Deployer(parse.GetRequiredValue(connection)).ReportAsync(ct);
-            await WriteReportAsync(parse.InvocationConfiguration.Output, report, parse.GetValue(outFile), ct);
+            await WriteReportAsync(parse.InvocationConfiguration, report, parse.GetValue(outFile), ct);
             return ExitCodes.Success;
         }, parse.GetRequiredValue(connection)));
         return command;
@@ -65,7 +72,7 @@ internal static class SchemaCommands
     private static Command UpgradeCommand()
     {
         var connection = ConnectionOption();
-        var reportOnly = new Option<bool>("--report-only") { Description = "Print the report and apply nothing." };
+        var reportOnly = new Option<bool>("--report-only") { Description = "Print the report and apply nothing. " + ReportStreams };
         var approveReviewed = new Option<bool>("--approve-reviewed")
         {
             Description = "An operator has read the report: apply unsafe and unclassifiable changes too (never data loss, unless --allow-data-loss).",
@@ -102,7 +109,7 @@ internal static class SchemaCommands
     {
         if (reportOnly)
         {
-            await WriteReportAsync(io.Output, await manager.ReportAsync(ct), outFile: null, ct);
+            await WriteReportAsync(io, await manager.ReportAsync(ct), outFile: null, ct);
             return ExitCodes.Success;
         }
 
@@ -147,23 +154,33 @@ internal static class SchemaCommands
             _ => null,
         };
     }
-    private static async Task WriteReportAsync(TextWriter output, SchemaReport report, FileInfo? outFile, CancellationToken ct)
+
+    private static async Task WriteReportAsync(InvocationConfiguration io, SchemaReport report, FileInfo? outFile, CancellationToken ct)
     {
-        if (outFile is not null)
+        if (outFile is null)
+        {
+            // Nothing but the XML on stdout, so '> report.xml' is a well-formed document.
+            await io.Output.WriteAsync(report.ReportXml);
+            if (!report.ReportXml.EndsWith('\n'))
+            {
+                await io.Output.WriteLineAsync();
+            }
+        }
+        else
         {
             await File.WriteAllTextAsync(outFile.FullName, report.ReportXml, ct);
         }
 
-        await output.WriteLineAsync($"classification: {report.Classification}");
-        await output.WriteLineAsync($"hasPendingChanges: {report.HasPendingChanges}");
+        await io.Error.WriteLineAsync($"classification: {report.Classification}");
+        await io.Error.WriteLineAsync($"hasPendingChanges: {report.HasPendingChanges}");
         foreach (var reason in report.Reasons)
         {
-            await output.WriteLineAsync($"reason: {reason}");
+            await io.Error.WriteLineAsync($"reason: {reason}");
         }
 
         if (outFile is not null)
         {
-            await output.WriteLineAsync($"report: {outFile.FullName}");
+            await io.Error.WriteLineAsync($"report: {outFile.FullName}");
         }
     }
 }

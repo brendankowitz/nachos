@@ -75,7 +75,8 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         var run = await UpgradeAsync(connectionString, "--report-only");
 
         run.ExitCode.ShouldBe(0, run.Error);
-        run.Out.ShouldContain("AutoSafe");
+        XDocument.Parse(run.Out).Root.ShouldNotBeNull();
+        run.Error.ShouldContain("classification: AutoSafe");
         (await StatusAsync(connectionString)).GetProperty("state").GetString().ShouldBe("Empty");
         (await TableCountAsync(connectionString, "Workspaces")).ShouldBe(0);
     }
@@ -92,16 +93,46 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         {
             var run = await CliRun.RunAsync("schema", "report", "--connection", connectionString, "--out", path);
 
+            // With --out the XML goes to the file and stdout stays empty; the summary is on stderr either way.
             run.ExitCode.ShouldBe(0, run.Error);
-            run.Out.ShouldContain("Unsafe");
-            run.Out.ShouldContain("True", Case.Insensitive);
-            run.Out.ShouldContain("PAGE_VERIFY");
+            run.Out.ShouldBeEmpty();
+            run.Error.ShouldContain("classification: Unsafe");
+            run.Error.ShouldContain("hasPendingChanges: True");
+            run.Error.ShouldContain("PAGE_VERIFY");
+            run.Error.ShouldContain(path);
             XDocument.Load(path).Root.ShouldNotBeNull();
         }
         finally
         {
             File.Delete(path);
         }
+    }
+
+    [Theory]
+    [InlineData("report")]
+    [InlineData("upgrade --report-only")]
+    public async Task Report_WithoutOut_PrintsTheFullXmlToStdout_AndTheSummaryToStderr(string entryPoint)
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, "ALTER TABLE dbo.Workspaces ADD NotInTheModel int NULL");
+        string[] args = ["schema", .. entryPoint.Split(' '), "--connection", connectionString];
+
+        var run = await CliRun.RunAsync(args);
+
+        run.ExitCode.ShouldBe(0, run.Error);
+        // stdout is the report and nothing else, so redirecting it gives a well-formed file.
+        var report = XDocument.Parse(run.Out);
+        var names = report.Descendants().Select(e => e.Name.LocalName).ToList();
+        names.ShouldContain("Operation");
+        report.Descendants().Where(e => e.Name.LocalName == "Alert").Select(e => (string?)e.Attribute("Name")).ShouldContain("DataIssue");
+        run.Out.ShouldContain("NotInTheModel");
+        run.Out.ShouldContain("data loss could occur");
+        // The summary is for a person, on the other stream.
+        run.Error.ShouldContain("classification: Unsafe");
+        run.Error.ShouldContain("hasPendingChanges: True");
+        run.Error.ShouldNotContain("<DeploymentReport");
+        run.Out.ShouldNotContain("classification:");
+        (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(1);
     }
 
     [Fact]
@@ -148,7 +179,7 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         var run = await UpgradeAsync(connectionString, "--approve-reviewed");
 
         run.ExitCode.ShouldBe(0, run.Error);
-        (await UpgradeAsync(connectionString, "--report-only")).Out.ShouldContain("AutoSafe");
+        (await UpgradeAsync(connectionString, "--report-only")).Error.ShouldContain("classification: AutoSafe");
     }
 
     [Fact]
