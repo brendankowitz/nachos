@@ -1258,7 +1258,7 @@ public abstract class StoreContractTests : IAsyncLifetime
     /// enum is a 422 (see <c>StrictJsonData</c>), and nothing changes: a create stores no record and an update keeps
     /// the previous value.
     /// </summary>
-    [Theory(Skip = PendingStrictData)]
+    [Theory]
     [MemberData(nameof(StrictIngressRejections))]
     public async Task StrictData_DisallowedValue_IsRejected_AndNothingChanges(string ingressName, string payloadName)
     {
@@ -1276,7 +1276,7 @@ public abstract class StoreContractTests : IAsyncLifetime
     /// A converter the caller attached to a scalar is never run and never stored, at every entry point: the literal
     /// value is.
     /// </summary>
-    [Theory(Skip = PendingStrictData)]
+    [Theory]
     [MemberData(nameof(StrictIngressNames))]
     public async Task StrictData_ScalarConverter_NotInvoked(string ingressName)
     {
@@ -1302,7 +1302,7 @@ public abstract class StoreContractTests : IAsyncLifetime
     /// <see cref="InvalidOperationException"/> and commits nothing. A provider that blocks on re-entry fails these
     /// tests by timing out after <see cref="HangGuard"/>.
     /// </summary>
-    [Fact(Skip = PendingStrictData)]
+    [Fact]
     public async Task AppendFactory_ReentersStore_ThrowsInvalidOperation()
     {
         var (store, _) = NewStore();
@@ -1329,7 +1329,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         retried.Count.ShouldBe(1);
     }
 
-    [Fact(Skip = PendingStrictData)]
+    [Fact]
     public async Task AppendFactory_CreatesWorkspaceThroughTheStore_ThrowsInvalidOperationAndCreatesNothing()
     {
         var (store, _) = NewStore();

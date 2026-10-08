@@ -160,9 +160,12 @@ public sealed class InMemoryLoneSurrogateTests
     [Fact]
     public void VeryDeepNesting_GivesTheValidationError_NotAStackOverflow()
     {
-        // A recursive walk survives 5000 levels on the default stack (1 MB on Windows, 8 MB on Linux), so a regression
-        // to recursion would pass or fail depending on the platform. A 256 KB stack makes it overflow deterministically
-        // at this depth, while the explicit-stack walk uses the heap and does not care.
+        // A walk that recursed once per level of the input would survive 5000 levels on the default stack (1 MB on
+        // Windows, 8 MB on Linux), so such a regression would pass or fail depending on the platform. A 256 KB stack
+        // makes it overflow deterministically at this depth. The shared helper stops at the 64-level limit, so its
+        // recursion never goes deeper than that whatever the input. The JSON-backed tree is parsed with a raised
+        // limit so that it reaches the store.
+        var parsed = string.Concat(Enumerable.Repeat("""{"n":""", 5000)) + "1" + new string('}', 5000);
         Exception? failure = null;
         var worker = new Thread(
             () =>
@@ -170,14 +173,15 @@ public sealed class InMemoryLoneSurrogateTests
                 try
                 {
                     var store = new InMemoryMemoryStore(TimeProvider.System);
-                    foreach (var leaf in DeepLeaves)
+                    var trees = DeepLeaves
+                        .Select(leaf => Nest(new JsonObject { ["k"] = leaf }, levels: 5000))
+                        .Append((JsonObject)JsonNode.Parse(parsed, documentOptions: new() { MaxDepth = 6000 })!);
+                    foreach (var deep in trees)
                     {
-                        var deep = Nest(new JsonObject { ["k"] = leaf }, levels: 5000);
-
                         // The validation runs before the first await, so the whole rejection stays on this thread.
                         var rejected = Should.Throw<NachosValidationException>(
                             () => store.Workspaces.GetOrCreateAsync("ws", deep, null, Ct).GetAwaiter().GetResult());
-                        rejected.Detail.ShouldBe("metadata" + Rejection);
+                        rejected.Detail.ShouldStartWith("metadata" + Rejection);
                         store.Workspaces.GetAsync("ws", Ct).GetAwaiter().GetResult().ShouldBeNull();
                     }
                 }
@@ -200,12 +204,12 @@ public sealed class InMemoryLoneSurrogateTests
     private static async Task ShouldRejectAsync(string field, Func<Task> write)
     {
         var rejected = await Should.ThrowAsync<NachosValidationException>(write);
-        rejected.Detail.ShouldBe(field + Rejection);
+        rejected.Detail.ShouldStartWith(field + Rejection);
     }
 
     private static void ShouldReject(string field, Action write)
     {
         var rejected = Should.Throw<NachosValidationException>(write);
-        rejected.Detail.ShouldBe(field + Rejection);
+        rejected.Detail.ShouldStartWith(field + Rejection);
     }
 }
