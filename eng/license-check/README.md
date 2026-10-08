@@ -310,6 +310,15 @@ a bound context, and every transitive name must trace to a child's declared
 peer requirement. Forwarded bindings must agree exactly; locally provided peers
 and genuinely unresolved optional transitive peers remain supported. A cycle of
 transitive declarations without an originating peer requirement is not evidence.
+Only effective **external** peer requirements propagate: supported removal
+overrides and ordinary/optional dependencies declared by the child's archive
+can satisfy or remove a requirement. A resolved snapshot edge alone cannot
+prove local satisfaction, since external peers also appear in those edges.
+Collection first loads integrity-verified archives, validates their identities
+and peer/platform declarations against the lock, and caches the decoded evidence.
+Graph reconciliation then uses those archive declarations regardless of package
+enumeration order. Missing or rejected child metadata fails explicitly; stale
+transitive annotations cannot recreate a removed or locally satisfied requirement.
 Semver build metadata is ignored for precedence only after every dot-separated
 identifier has been validated as nonempty ASCII alphanumeric/hyphen text, for
 both range tokens and exact locked/archive identities.

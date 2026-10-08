@@ -161,7 +161,7 @@ internal sealed class PnpmLock
         }
     }
 
-    public void ValidateMetadata(PnpmPackage package, JsonElement metadata)
+    public static void ValidateArchiveMetadata(PnpmPackage package, JsonElement metadata)
     {
         if (Collectors.RequiredString(metadata, "name") != package.Name || Collectors.RequiredString(metadata, "version") != package.Version)
             throw new InvalidDataException("pnpm archive identity disagrees with lock.");
@@ -176,6 +176,13 @@ internal sealed class PnpmLock
         foreach (var field in PlatformFields)
             if (!Sequence(metadata, field).SequenceEqual(Sequence(package.Metadata, field)))
                 throw new InvalidDataException($"pnpm platform declaration disagrees: {field}");
+    }
+
+    public void ValidateMetadata(PnpmPackage package, IReadOnlyDictionary<PnpmPackage, JsonElement> declarations)
+    {
+        var metadata = ArchiveMetadata(package, declarations);
+        var actualOptional = OptionalPeers(metadata, yaml: false);
+        var declaredPeers = Strings(package.Metadata, "peerDependencies");
         foreach (var (context, snapshot) in package.Snapshots)
         {
             var dependencies = Strings(metadata, "dependencies");
@@ -222,7 +229,7 @@ internal sealed class PnpmLock
                 var childKey = name + "@" + reference;
                 var child = SnapshotPackage(package.Document, childKey);
                 var childPeers = Identity(childKey).Peers.ToDictionary(peer => Identity(peer).Name, StringComparer.Ordinal);
-                foreach (var peer in Strings(child.Metadata, "peerDependencies").Keys
+                foreach (var peer in ExternalPeers(child, declarations)
                     .Concat(Sequence(child.Snapshots[childKey], "transitivePeerDependencies")).Distinct(StringComparer.Ordinal))
                 {
                     if (peers.ContainsKey(peer) || dependencies.ContainsKey(peer) || optional.ContainsKey(peer) || peer == package.Name)
@@ -234,7 +241,7 @@ internal sealed class PnpmLock
                             throw new InvalidDataException($"pnpm child peer disagrees with local provider: {context}/{peer}");
                         continue;
                     }
-                    if (!HasPeerSource(child, childKey, peer, new HashSet<string>(StringComparer.Ordinal)))
+                    if (!HasPeerSource(child, childKey, peer, declarations, new HashSet<string>(StringComparer.Ordinal)))
                         throw new InvalidDataException($"pnpm transitive peer lacks a declared source: {context}/{peer}");
                     inherited.Add(peer);
                     if (childPeers.TryGetValue(peer, out var binding))
@@ -264,16 +271,32 @@ internal sealed class PnpmLock
     private PnpmPackage SnapshotPackage(int document, string key) =>
         Packages.Single(package => package.Document == document && package.Snapshots.ContainsKey(key));
 
-    private bool HasPeerSource(PnpmPackage package, string key, string name, HashSet<string> visited)
+    private static JsonElement ArchiveMetadata(PnpmPackage package, IReadOnlyDictionary<PnpmPackage, JsonElement> declarations) =>
+        declarations.TryGetValue(package, out var metadata) ? metadata
+            : throw new InvalidDataException($"Verified pnpm archive metadata unavailable: document={package.Document}:{package.Name}@{package.Version}");
+
+    private HashSet<string> ExternalPeers(PnpmPackage package, IReadOnlyDictionary<PnpmPackage, JsonElement> declarations)
     {
-        if (Strings(package.Metadata, "peerDependencies").ContainsKey(name)) return true;
+        var metadata = ArchiveMetadata(package, declarations);
+        var dependencies = Strings(metadata, "dependencies");
+        var optional = Strings(metadata, "optionalDependencies");
+        return Strings(package.Metadata, "peerDependencies")
+            .Where(peer => Effective(package, peer.Key, peer.Value) != "-"
+                && !dependencies.ContainsKey(peer.Key) && !optional.ContainsKey(peer.Key))
+            .Select(peer => peer.Key).ToHashSet(StringComparer.Ordinal);
+    }
+
+    private bool HasPeerSource(PnpmPackage package, string key, string name,
+        IReadOnlyDictionary<PnpmPackage, JsonElement> declarations, HashSet<string> visited)
+    {
+        if (ExternalPeers(package, declarations).Contains(name)) return true;
         if (!visited.Add(key) || !Sequence(package.Snapshots[key], "transitivePeerDependencies").Contains(name, StringComparer.Ordinal))
             return false;
         return Edges.SelectMany(field => Strings(package.Snapshots[key], field))
             .Any(edge =>
             {
                 var childKey = edge.Key + "@" + edge.Value;
-                return HasPeerSource(SnapshotPackage(package.Document, childKey), childKey, name, visited);
+                return HasPeerSource(SnapshotPackage(package.Document, childKey), childKey, name, declarations, visited);
             });
     }
 

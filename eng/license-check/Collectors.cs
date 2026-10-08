@@ -254,17 +254,28 @@ internal static class Collectors
         var graph = PnpmLock.Read(path);
         var cache = inputs.NpmArchives ?? throw new InvalidDataException("pnpm requires verified archives for every locked package, including installed packages.");
         var installed = PnpmInstalled.Read(Path.GetDirectoryName(path)!, graph);
+        var verified = new Dictionary<PnpmPackage, (Dictionary<string, string> Evidence, string Archive, string Root, JsonElement Metadata)>();
         foreach (var package in graph.Packages)
         {
             Capture(() =>
             {
                 var evidence = NpmArchives.Read(package.Download, package.Name, cache, out var archive, out var archiveRoot);
                 using var metadata = JsonDocument.Parse(evidence["package.json"]);
-                graph.ValidateMetadata(package, metadata.RootElement);
+                PnpmLock.ValidateArchiveMetadata(package, metadata.RootElement);
+                verified.Add(package, (evidence, archive, archiveRoot, metadata.RootElement.Clone()));
+            }, $"{path}:document={package.Document}:{package.Name}@{package.Version}", errors);
+        }
+        // Cross-node requirements use archive declarations, independent of lock enumeration order.
+        var declarations = verified.ToDictionary(entry => entry.Key, entry => entry.Value.Metadata);
+        foreach (var (package, archive) in verified)
+        {
+            Capture(() =>
+            {
+                graph.ValidateMetadata(package, declarations);
                 var decision = NpmEvidence(inputs, path, Path.Combine(Path.GetDirectoryName(path)!, "node_modules", package.Name),
-                    package.Download, metadata.RootElement, evidence, archive, archiveRoot);
+                    package.Download, archive.Metadata, archive.Evidence, archive.Archive, archive.Root);
                 foreach (var location in installed.GetValueOrDefault(package.Name + "@" + package.Version, []))
-                    PnpmInstalled.Verify(location, package, cache, evidence);
+                    PnpmInstalled.Verify(location, package, cache, archive.Evidence);
                 packages.Add(decision with { Origin = Relative(inputs.Root, path) + $"#document={package.Document}" });
             }, $"{path}:document={package.Document}:{package.Name}@{package.Version}", errors);
         }
