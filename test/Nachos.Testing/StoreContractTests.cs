@@ -8,6 +8,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
+using Nachos.Testing.Json;
 using Shouldly;
 using Xunit;
 
@@ -1096,5 +1097,258 @@ public abstract class StoreContractTests : IAsyncLifetime
         var none = await store.Grants.GetWorkspaceGrantsAsync(nothing, Ct);
         none.AllWorkspaces.ShouldBeFalse();
         none.Workspaces.ShouldBeEmpty();
+    }
+
+    // ---------------------------------------------------------------- strict JSON data and factory purity
+
+    private const string PendingStrictData =
+        "Pending provider adoption: strict JSON data (#6, 3b) — provider owners remove this Skip when their adoption lands";
+
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(15);
+
+    private static readonly string[] LoneSurrogateList = ["\uD800"];
+
+    private static readonly int[] OneElementList = [1];
+
+    /// <summary>Typed values a provider must reject: a fresh node each call, because a node has one parent.</summary>
+    private static readonly (string Name, Func<JsonNode> Create)[] DisallowedPayloads =
+    [
+        ("lone-surrogate-array", () => JsonValue.Create(LoneSurrogateList)!),
+        ("list-of-int", () => JsonValue.Create(new List<int>(OneElementList))!),
+        ("enum", () => JsonValue.Create(DayOfWeek.Monday)!),
+    ];
+
+    /// <summary>One call that takes a <see cref="JsonObject"/> from the caller, and a read-back of what it writes.</summary>
+    /// <param name="Write">Performs the call with the given metadata or configuration.</param>
+    /// <param name="Snapshot">
+    /// The stored JSON of the written field (the joined metadata of the session's messages for an append), or null
+    /// while the record does not exist.
+    /// </param>
+    private sealed record StrictTarget(Func<JsonObject, Task> Write, Func<Task<string?>> Snapshot);
+
+    /// <summary>An entry point, with the setup it needs (parents, and a record with a known value for an update).</summary>
+    private sealed record StrictIngress(string Name, Func<IMemoryStore, Task<StrictTarget>> Arrange);
+
+    /// <summary>
+    /// Every store call that accepts caller JSON: <c>metadata</c> and <c>configuration</c> of workspaces, peers and
+    /// sessions on create and on update, <see cref="NewMessage.Metadata"/> on append, and message metadata update.
+    /// </summary>
+    private static readonly StrictIngress[] StrictIngresses =
+    [
+        new("workspace.create.metadata", store =>
+        {
+            var name = Unique("ws");
+            return Task.FromResult(new StrictTarget(
+                p => store.Workspaces.GetOrCreateAsync(name, p, null, Ct),
+                async () => (await store.Workspaces.GetAsync(name, Ct))?.Metadata.ToJsonString()));
+        }),
+        new("workspace.create.configuration", store =>
+        {
+            var name = Unique("ws");
+            return Task.FromResult(new StrictTarget(
+                p => store.Workspaces.GetOrCreateAsync(name, null, p, Ct),
+                async () => (await store.Workspaces.GetAsync(name, Ct))?.Configuration.ToJsonString()));
+        }),
+        new("workspace.update.metadata", async store =>
+        {
+            var name = Unique("ws");
+            await store.Workspaces.GetOrCreateAsync(name, Json("keep", 1), Json("keep", 1), Ct);
+            return new StrictTarget(
+                p => store.Workspaces.UpdateAsync(name, p, null, Ct),
+                async () => (await store.Workspaces.GetAsync(name, Ct))?.Metadata.ToJsonString());
+        }),
+        new("workspace.update.configuration", async store =>
+        {
+            var name = Unique("ws");
+            await store.Workspaces.GetOrCreateAsync(name, Json("keep", 1), Json("keep", 1), Ct);
+            return new StrictTarget(
+                p => store.Workspaces.UpdateAsync(name, null, p, Ct),
+                async () => (await store.Workspaces.GetAsync(name, Ct))?.Configuration.ToJsonString());
+        }),
+        new("peer.create.metadata", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            return new StrictTarget(
+                p => store.Peers.GetOrCreateAsync(workspace, "p", p, null, Ct),
+                async () => (await store.Peers.GetAsync(workspace, "p", Ct))?.Metadata.ToJsonString());
+        }),
+        new("peer.create.configuration", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            return new StrictTarget(
+                p => store.Peers.GetOrCreateAsync(workspace, "p", null, p, Ct),
+                async () => (await store.Peers.GetAsync(workspace, "p", Ct))?.Configuration.ToJsonString());
+        }),
+        new("peer.update.metadata", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            await store.Peers.GetOrCreateAsync(workspace, "p", Json("keep", 1), Json("keep", 1), Ct);
+            return new StrictTarget(
+                p => store.Peers.UpdateAsync(workspace, "p", p, null, Ct),
+                async () => (await store.Peers.GetAsync(workspace, "p", Ct))?.Metadata.ToJsonString());
+        }),
+        new("peer.update.configuration", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            await store.Peers.GetOrCreateAsync(workspace, "p", Json("keep", 1), Json("keep", 1), Ct);
+            return new StrictTarget(
+                p => store.Peers.UpdateAsync(workspace, "p", null, p, Ct),
+                async () => (await store.Peers.GetAsync(workspace, "p", Ct))?.Configuration.ToJsonString());
+        }),
+        new("session.create.metadata", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            return new StrictTarget(
+                p => store.Sessions.GetOrCreateAsync(workspace, "s", p, null, null, Ct),
+                async () => (await store.Sessions.GetAsync(workspace, "s", Ct))?.Metadata.ToJsonString());
+        }),
+        new("session.create.configuration", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            return new StrictTarget(
+                p => store.Sessions.GetOrCreateAsync(workspace, "s", null, p, null, Ct),
+                async () => (await store.Sessions.GetAsync(workspace, "s", Ct))?.Configuration.ToJsonString());
+        }),
+        new("session.update.metadata", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            await store.Sessions.GetOrCreateAsync(workspace, "s", Json("keep", 1), Json("keep", 1), null, Ct);
+            return new StrictTarget(
+                p => store.Sessions.UpdateAsync(workspace, "s", p, null, Ct),
+                async () => (await store.Sessions.GetAsync(workspace, "s", Ct))?.Metadata.ToJsonString());
+        }),
+        new("session.update.configuration", async store =>
+        {
+            var workspace = await NewWorkspaceAsync(store);
+            await store.Sessions.GetOrCreateAsync(workspace, "s", Json("keep", 1), Json("keep", 1), null, Ct);
+            return new StrictTarget(
+                p => store.Sessions.UpdateAsync(workspace, "s", null, p, Ct),
+                async () => (await store.Sessions.GetAsync(workspace, "s", Ct))?.Configuration.ToJsonString());
+        }),
+        new("message.append.metadata", async store =>
+        {
+            var (workspace, session) = await NewSessionAsync(store);
+            return new StrictTarget(
+                p => store.Messages.AppendAsync(workspace, session, [Msg("alice", "one", metadata: p)], null, Ct),
+                async () => string.Join(
+                    "|",
+                    (await store.Messages.ListAsync(workspace, session, null, new PageRequest(1, 50), Ct)).Items
+                        .Select(m => m.Metadata.ToJsonString())));
+        }),
+        new("message.update.metadata", async store =>
+        {
+            var (workspace, session) = await NewSessionAsync(store);
+            var message = (await store.Messages.AppendAsync(
+                workspace, session, [Msg("alice", "one", metadata: Json("keep", 1))], null, Ct))[0];
+            return new StrictTarget(
+                p => store.Messages.UpdateMetadataAsync(workspace, session, message.PublicId, p, Ct),
+                async () => (await store.Messages.GetAsync(workspace, session, message.PublicId, Ct))?.Metadata.ToJsonString());
+        }),
+    ];
+
+    public static IEnumerable<object[]> StrictIngressNames => StrictIngresses.Select(i => new object[] { i.Name });
+
+    public static IEnumerable<object[]> StrictIngressRejections =>
+        from ingress in StrictIngresses
+        from payload in DisallowedPayloads
+        select new object[] { ingress.Name, payload.Name };
+
+    /// <summary>
+    /// Metadata and configuration are strict JSON data at every entry point: a value backed by a collection, array or
+    /// enum is a 422 (see <c>StrictJsonData</c>), and nothing changes: a create stores no record and an update keeps
+    /// the previous value.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StrictIngressRejections))]
+    public async Task StrictData_DisallowedValue_IsRejected_AndNothingChanges(string ingressName, string payloadName)
+    {
+        var (store, _) = NewStore();
+        var target = await StrictIngresses.Single(i => i.Name == ingressName).Arrange(store);
+        var payload = DisallowedPayloads.Single(p => p.Name == payloadName);
+        var before = await target.Snapshot();
+
+        await Should.ThrowAsync<NachosValidationException>(() => target.Write(Json("k", payload.Create())));
+
+        (await target.Snapshot()).ShouldBe(before);
+    }
+
+    /// <summary>
+    /// A converter the caller attached to a scalar is never run and never stored, at every entry point: the literal
+    /// value is.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StrictIngressNames))]
+    public async Task StrictData_ScalarConverter_NotInvoked(string ingressName)
+    {
+        var (store, _) = NewStore();
+        var target = await StrictIngresses.Single(i => i.Name == ingressName).Arrange(store);
+        var converter = new CountingUppercaseConverter();
+
+        await target.Write(Json("k", StrictJsonSamples.UppercasedString("abc", converter)));
+
+        (await target.Snapshot()).ShouldBe("""{"k":"abc"}""");
+        converter.Calls.ShouldBe(0);
+    }
+
+    // The append runs on the thread pool: a provider whose AppendAsync is synchronous (it returns a completed task)
+    // would otherwise block inside the call, before any timeout could be attached to the task.
+    private static Task<IReadOnlyList<MessageRecord>> AppendWithHangGuardAsync(
+        IMemoryStore store, string workspace, string session, IdempotencyWrite idempotency) =>
+        Task.Run(() => store.Messages.AppendAsync(workspace, session, [Msg("alice", "one")], idempotency, Ct))
+            .WaitAsync(HangGuard);
+
+    /// <summary>
+    /// <see cref="IdempotencyWrite.SerializeResponse"/> must not call back into any store; a provider fails fast with
+    /// <see cref="InvalidOperationException"/> and commits nothing. A provider that blocks on re-entry fails these
+    /// tests by timing out after <see cref="HangGuard"/>.
+    /// </summary>
+    [Fact]
+    public async Task AppendFactory_ReentersStore_ThrowsInvalidOperation()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+        var key = Unique("key");
+        var reentrant = new IdempotencyWrite(
+            key,
+            Hash("reenter"),
+            201,
+            _ =>
+            {
+                store.Messages.GetAsync(workspace, session, "missing", Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(10));
+
+        await Should.ThrowAsync<InvalidOperationException>(() => AppendWithHangGuardAsync(store, workspace, session, reentrant));
+
+        (await CountMessagesAsync(store, workspace, session)).ShouldBe(0);
+        (await store.Peers.ListAsync(workspace, PeerKind.All, null, new PageRequest(), Ct)).Total.ShouldBe(0);
+
+        // The failed attempt left no idempotency record: the same key is still free.
+        var retried = await store.Messages.AppendAsync(workspace, session, [Msg("alice", "one")], Write(key, "reenter"), Ct);
+        retried.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task AppendFactory_CreatesWorkspaceThroughTheStore_ThrowsInvalidOperationAndCreatesNothing()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+        var other = Unique("other");
+        var reentrant = new IdempotencyWrite(
+            Unique("key"),
+            Hash("reenter-write"),
+            201,
+            _ =>
+            {
+                store.Workspaces.GetOrCreateAsync(other, null, null, Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(10));
+
+        await Should.ThrowAsync<InvalidOperationException>(() => AppendWithHangGuardAsync(store, workspace, session, reentrant));
+
+        (await store.Workspaces.GetAsync(other, Ct)).ShouldBeNull();
+        (await CountMessagesAsync(store, workspace, session)).ShouldBe(0);
     }
 }

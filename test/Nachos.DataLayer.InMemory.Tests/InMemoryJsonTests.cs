@@ -171,7 +171,7 @@ public sealed class InMemoryJsonTests
     private static async Task ShouldRejectAsync(string field, Func<Task> write)
     {
         var rejected = await Should.ThrowAsync<NachosValidationException>(write);
-        rejected.Detail.ShouldBe($"{field} contains a value that is not valid JSON or is nested too deeply.");
+        rejected.Detail.ShouldStartWith($"{field} contains a value that is not valid JSON or is nested too deeply.");
     }
 
     /// <summary>
@@ -234,7 +234,8 @@ public sealed class InMemoryJsonTests
         var rejected = await Should.ThrowAsync<NachosValidationException>(
             () => store.Workspaces.GetOrCreateAsync("ws", (JsonObject)deep, null, Ct));
 
-        rejected.Detail.ShouldBe("metadata contains a value that is not valid JSON or is nested too deeply.");
+        rejected.Detail.ShouldStartWith("metadata contains a value that is not valid JSON or is nested too deeply.");
+        rejected.Detail.ShouldNotContain("secret");
         (await store.Workspaces.GetAsync("ws", Ct)).ShouldBeNull();
     }
 

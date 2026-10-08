@@ -6,7 +6,9 @@ namespace Nachos.Infra.Tests;
 /// Finds <c>az</c>, <c>azd</c>, <c>docker</c>, <c>docker-compose</c>, <c>podman</c>, <c>nerdctl</c>, <c>buildah</c> and
 /// <c>bicep</c> invocations in one logical statement, in any spelling (<c>.exe</c>/<c>.cmd</c>, quoted, or by path
 /// with either slash), and reports those that can reach Azure or a registry. The verb is the first token after the
-/// tool's known global flags (flags are case-sensitive: docker's <c>-H</c> takes a value, <c>-h</c> does not).
+/// tool's known global flags (flags are case-sensitive: docker's <c>-H</c> takes a value, <c>-h</c> does not). Only
+/// the <c>bicep</c> that is az's own verb belongs to the az rule; a <c>bicep</c> anywhere else, including inside az's
+/// arguments (<c>az bicep build --file "$(bicep publish ...)"</c>), is judged as standalone bicep.
 /// <para>
 /// Fail closed: a flag the reader does not know might take a value, and a value flag at the end has lost its
 /// value, so either makes the verb undeterminable and the invocation is reported. No verb at all is fine only for
@@ -39,6 +41,9 @@ internal static class CliInvocations
 
     // Where an invocation's arguments end.
     private static readonly Regex Separator = new(@"[;|&)`]", RegexOptions.CultureInvariant);
+
+    // One argument token (whitespace-separated, as the shell splits an unquoted command line).
+    private static readonly Regex Word = new(@"\S+", RegexOptions.CultureInvariant);
 
     private static readonly Regex Launcher = new(@"\b(?:xargs|parallel|nohup|setsid|stdbuf|watch)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -105,13 +110,15 @@ internal static class CliInvocations
     /// <summary>The rules violated by <paramref name="statement"/>.</summary>
     public static IEnumerable<string> Violations(string statement)
     {
-        var azArgumentsEnd = -1;
+        // Where each az invocation's own verb token starts. Only that token is az's `bicep` subcommand (judged by the
+        // az rule); a bicep elsewhere in az's arguments (`--file "$(bicep publish ...)"`) is a standalone bicep.
+        var azVerbs = new HashSet<int>();
         foreach (Match match in Program.Matches(statement))
         {
             var name = match.Groups["name"].Value;
-            if (name.Equals("bicep", StringComparison.OrdinalIgnoreCase) && match.Index < azArgumentsEnd)
+            if (name.Equals("bicep", StringComparison.OrdinalIgnoreCase) && azVerbs.Contains(match.Index))
             {
-                continue; // the `bicep` subcommand of an `az` invocation is judged by the az rule
+                continue;
             }
 
             var tool = Tools[name];
@@ -139,15 +146,12 @@ internal static class CliInvocations
 
             var end = Separator.Match(rest);
             var arguments = end.Success ? rest[..end.Index] : rest;
-            if (name.Equals("az", StringComparison.OrdinalIgnoreCase))
+            var words = Word.Matches(arguments);
+            var tokens = words.Select(w => w.Value.Trim('"', '\'')).ToList();
+            if (name.Equals("az", StringComparison.OrdinalIgnoreCase) && tool.VerbIndex(tokens) is int verb && verb < tokens.Count)
             {
-                azArgumentsEnd = match.Index + match.Length + arguments.Length;
+                azVerbs.Add(match.Index + match.Length + words[verb].Index);
             }
-
-            var tokens = arguments
-                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim('"', '\''))
-                .ToList();
 
             if (!tool.IsOffline(tokens))
             {
@@ -167,7 +171,18 @@ internal static class CliInvocations
     /// <param name="VerbIsOffline">Judges the tokens from the verb on (never empty).</param>
     private sealed record Tool(string Rule, HashSet<string> Switches, HashSet<string> ValueFlags, Func<IReadOnlyList<string>, bool> VerbIsOffline)
     {
-        public bool IsOffline(List<string> tokens)
+        public bool IsOffline(List<string> tokens) => VerbIndex(tokens) switch
+        {
+            null => false,
+            int i when i == tokens.Count => tokens.All(Informational.Contains), // no verb: a bare mention, or only --version/--help
+            int i => VerbIsOffline(tokens.Skip(i).ToList()),
+        };
+
+        /// <summary>
+        /// The index of the verb, the first token after the known global flags: <c>tokens.Count</c> when there is none,
+        /// null when an unknown flag, or a value flag that lost its value, makes it undeterminable.
+        /// </summary>
+        public int? VerbIndex(List<string> tokens)
         {
             var i = 0;
             while (i < tokens.Count && tokens[i].StartsWith('-'))
@@ -183,17 +198,11 @@ internal static class CliInvocations
                 }
                 else
                 {
-                    return false; // unknown flag, or a value flag that lost its value: verb undeterminable
+                    return null;
                 }
             }
 
-            if (i == tokens.Count)
-            {
-                // No verb: a bare mention, or only --version/--help.
-                return tokens.All(Informational.Contains);
-            }
-
-            return VerbIsOffline(tokens.Skip(i).ToList());
+            return i;
         }
     }
 }

@@ -31,6 +31,12 @@ public interface IMessageStore
     /// inserted and before commit. If it throws, the exception propagates and nothing is stored: no messages, no
     /// idempotency record, no sender peers or memberships created by the attempt, and no <c>Seq</c> gap.
     /// </para>
+    /// <para>
+    /// <see cref="IdempotencyWrite.SerializeResponse"/> must be a pure function of the <see cref="MessageRecord"/>s it
+    /// is given. It runs after the rows are staged and before commit, so it sees no transactional read guarantee beyond
+    /// those records, and it must not call back into any store. A provider must fail fast and deterministically, by
+    /// throwing <see cref="InvalidOperationException"/>, if the store is re-entered from within it.
+    /// </para>
     /// </remarks>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     /// <exception cref="IdempotencyDuplicateException">The key already has an unexpired record.</exception>

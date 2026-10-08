@@ -400,6 +400,7 @@ Key defaults (parity values):
     - Both route aliases share one canonical target.
   - **Replay returns the exact status and body captured inside the original mutation's transaction**, never a later re-read or re-serialization. A racing duplicate re-reads the winner's record. If that record expired before the re-read, the request is a fresh atomic attempt.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
+  - The problem `type` for a reused key is `urn:nachos:problem:idempotency-key-reused`, defined as `ProblemTypes.IdempotencyKeyReused`; both server and client reference that constant. It shares status `422` with validation errors, so clients use `type` to tell them apart.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.
 
@@ -468,6 +469,8 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 | * | `/mcp` | MCP streamable HTTP | M7 |
 
 **Filter compiler:** `FilterCompiler` translates Honcho's JSON filter DSL (field equality, `gt/gte/lt/lte/ne/in/contains/icontains`, nested `metadata`, `AND/OR/NOT`) into parameterized SQL. Each resource has its own field allowlist, and `source_ids` filtering on conclusions gets special handling. The in-memory provider evaluates the same AST.
+
+- **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. A value is classified by its backing runtime value, so any other CLR value (collections, POCOs, enums, `TimeSpan` and so on), including an interface or base-type projection of a non-allowlisted runtime type, is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well formed: `SerializeToNode` has already turned a lone surrogate into U+FFFD, so callers who need that guarantee must build `JsonObject`/`JsonArray` with literal strings. Every provider and in-process client **must** pass constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and store or parse only its result (see the strict-data cases in the shared store contract tests). The HTTP path is unchanged.
 
 ### 9.4 Intentional deviations (Δ summary)
 
@@ -836,6 +839,11 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
   - idempotent writes: `PUT`, get-or-create `POST` keyed by `id`, and `DELETE`.
   `GET H/test` and all chat calls are never auto-retried.
   Non-idempotent mutations (message batch create, upload, conclusion create, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically.
+  Retry policy details (Δ, recorded on PR #6):
+  - **Never auto-retried:** `501` (permanent "not implemented", §9.1); `POST /v3/keys` and `/v3/admin/grants`; adding peers to a session through a scope (`POST …/scopes/{id}/sessions`) until its `scope_backfill` enqueue (§14) is shown to be idempotent.
+  - **Status precedence:** once a response status is received, that status decides. A non-retryable status (`4xx` other than `408`/`429`, and `501`) is final even if reading its body then fails; the client surfaces it without resending. A transport failure while reading the body of a `2xx` or retryable status may be retried, but only for operations that are retryable under the rules above, so a lost successful response to a keyed mutation is replayed safely.
+  - **`Retry-After`:** honored as seconds or an HTTP-date. A delay longer than 30 s is not waited out; the error is surfaced to the caller with the requested delay.
+  - **Problem identity:** clients match problem `type` exactly against the constants in `ProblemTypes` (for example `ProblemTypes.IdempotencyKeyReused`), never by suffix.
 - Typed handles: `Workspace` → `Peer` / `Session`.
 - `GetOrCreateAsync`.
 - `IAsyncEnumerable<T>` auto-pagination.
