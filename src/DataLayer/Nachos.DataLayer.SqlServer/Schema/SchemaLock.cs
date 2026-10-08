@@ -51,8 +51,9 @@ internal sealed class SchemaLock : IAsyncDisposable
             catch (SqlException failure) when (inMaster)
             {
                 throw new InvalidOperationException(
-                    "The schema lock is taken in master, and the login could not connect there (" + failure.Message + ") " +
-                    "Contained-database users and servers with guest disabled in master cannot; run the upgrade with a login that can connect to master. Nothing has been changed.",
+                    "Could not connect to master to take the schema lock (" + failure.Message + ") " +
+                    "If this is a permissions issue: contained-database users, and servers with guest disabled in master, cannot connect there; " +
+                    "run the upgrade with a login that can. Nothing has been changed.",
                     failure);
             }
 

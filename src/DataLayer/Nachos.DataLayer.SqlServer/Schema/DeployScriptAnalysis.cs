@@ -133,7 +133,8 @@ internal sealed partial class DeployScriptAnalysis
     /// </summary>
     private static bool IsAllowed(TSqlStatement statement) => statement switch
     {
-        PrintStatement or UseStatement or PredicateSetStatement or IfStatement or BeginEndBlockStatement or RaiseErrorStatement => true,
+        PrintStatement or PredicateSetStatement or IfStatement or BeginEndBlockStatement or RaiseErrorStatement => true,
+        UseStatement use => use.DatabaseName.Value == DeployedDatabaseVariable,
         BeginTransactionStatement or CommitTransactionStatement or RollbackTransactionStatement or SetTransactionIsolationLevelStatement => true,
         CreateTableStatement or CreateIndexStatement => true,
         CreateProcedureStatement or AlterProcedureStatement or CreateFunctionStatement or AlterFunctionStatement => true,
@@ -141,11 +142,32 @@ internal sealed partial class DeployScriptAnalysis
         AlterTableAddTableElementStatement => true,
         AlterTableConstraintModificationStatement reenable =>
             reenable.ExistingRowsCheckEnforcement == ConstraintEnforcement.Check && reenable.ConstraintEnforcement == ConstraintEnforcement.Check,
-        MergeStatement merge => merge.MergeSpecification.Target is NamedTableReference { SchemaObject: { } target }
-                                && Spell(target).Equals("[dbo].[SchemaVersion]", StringComparison.OrdinalIgnoreCase),
+        MergeStatement merge => IsSchemaVersionStamp(merge),
         ExecuteStatement => true,
         _ => false,
     };
+
+    // DacFx scripts always address the target as the SQLCMD variable; any other USE is somewhere it did not choose.
+    private const string DeployedDatabaseVariable = "$(DatabaseName)";
+
+    // The post-deployment stamp, exactly: a MERGE into this database's dbo.SchemaVersion (one or two name parts, no server or
+    // database), with no WITH clause (a CTE could shadow the table), no OUTPUT, and no DELETE action.
+    private static bool IsSchemaVersionStamp(MergeStatement merge) =>
+        merge.WithCtesAndXmlNamespaces is null
+        && merge.MergeSpecification is { OutputClause: null, OutputIntoClause: null } specification
+        && specification.Target is NamedTableReference { SchemaObject: { } target }
+        && target.ServerIdentifier is null
+        && target.DatabaseIdentifier is null
+        && target.BaseIdentifier.Value.Equals("SchemaVersion", StringComparison.OrdinalIgnoreCase)
+        && (target.SchemaIdentifier is null || target.SchemaIdentifier.Value.Equals("dbo", StringComparison.OrdinalIgnoreCase))
+        && specification.ActionClauses.All(clause => clause.Action is not DeleteMergeAction);
+
+    // A procedure a deploy script may call: a known name, not qualified with a server or database, in the sys schema or unqualified
+    // (an unqualified name resolves to the system procedure; [dbo].[sp_refreshsqlmodule] would be someone else's).
+    private static bool IsHarmlessProcedure(SchemaObjectName? name) =>
+        name is { ServerIdentifier: null, DatabaseIdentifier: null }
+        && (name.SchemaIdentifier is null || name.SchemaIdentifier.Value.Equals("sys", StringComparison.OrdinalIgnoreCase))
+        && HarmlessProcedures.Contains(name.BaseIdentifier.Value);
 
     // ReadCommittedSnapshot -> READ_COMMITTED_SNAPSHOT: the spelling a T-SQL author knows.
     private static string OptionName(DatabaseOptionKind kind) => OptionWords().Replace(kind.ToString(), "$1_$2").ToUpperInvariant();
@@ -211,8 +233,8 @@ internal sealed partial class DeployScriptAnalysis
 
                 case ExecuteStatement execute:
                     var procedure = (execute.ExecuteSpecification.ExecutableEntity as ExecutableProcedureReference)
-                        ?.ProcedureReference?.ProcedureReference?.Name?.BaseIdentifier?.Value;
-                    if (procedure is null || !HarmlessProcedures.Contains(procedure))
+                        ?.ProcedureReference?.ProcedureReference?.Name;
+                    if (!IsHarmlessProcedure(procedure))
                     {
                         analysis.HasOpaqueExecution = true;
                     }
@@ -231,6 +253,14 @@ internal sealed partial class DeployScriptAnalysis
                         analysis._databaseOptionChanges.Add(OptionName(option.OptionKind));
                     }
 
+                    break;
+
+                case AlterDatabaseScopedConfigurationSetStatement scoped:
+                    analysis._databaseOptionChanges.Add($"DATABASE SCOPED CONFIGURATION {scoped.Option.OptionKind.ToString().ToUpperInvariant()}");
+                    break;
+
+                case AlterDatabaseScopedConfigurationStatement scopedOther:
+                    analysis._databaseOptionChanges.Add(scopedOther.GetType().Name);
                     break;
 
                 case AlterDatabaseStatement other:

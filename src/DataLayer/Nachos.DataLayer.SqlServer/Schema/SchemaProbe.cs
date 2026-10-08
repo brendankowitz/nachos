@@ -14,7 +14,9 @@ internal sealed record Observed(DacpacTarget Target, SchemaStatus Status, string
 /// <summary>Reads the facts a schema decision is made from. Writes nothing.</summary>
 internal static class SchemaProbe
 {
-    // master, tempdb, model and msdb are database ids 1 to 4 on SQL Server and Azure SQL Database.
+    // master, tempdb, model and msdb are database ids 1 to 4 on SQL Server. On Azure SQL Database DB_ID() is unique per database
+    // (or elastic pool) and user databases still start at 5. If that were ever untrue the check refuses a legitimate database,
+    // which fails closed: the operator sees the system-database message instead of Nachos writing into the wrong place.
     private const int LastSystemDatabaseId = 4;
 
     private const string DatabaseIdentitySql = "SELECT CAST(DB_ID() AS int), DB_NAME()";

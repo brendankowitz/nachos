@@ -150,7 +150,7 @@ public sealed class DeployScriptAnalysisTests
 
     [Theory]
     [InlineData("PRINT N'hello';")]
-    [InlineData("USE [d];")]
+    [InlineData("USE [$(DatabaseName)];")]
     [InlineData("SET ANSI_NULLS, QUOTED_IDENTIFIER ON; SET NUMERIC_ROUNDABORT OFF; SET NOEXEC ON; SET XACT_ABORT ON;")]
     [InlineData("IF 1 = 1 BEGIN PRINT N'x'; SET NOEXEC ON; END")]
     [InlineData("IF EXISTS (SELECT TOP 1 1 FROM [dbo].[T]) RAISERROR (N'Rows were detected.', 16, 127) WITH NOWAIT;")]
@@ -179,5 +179,74 @@ public sealed class DeployScriptAnalysisTests
     public void ExecuteOfAnUnknownProcedure_IsOpaque()
     {
         DeployScriptAnalysis.TryParse("EXECUTE [dbo].[Mystery];")!.HasOpaqueExecution.ShouldBeTrue();
+    }
+
+    // ---- hardening of the names the allowlist trusts ----
+
+    private const string StampBody = "USING (SELECT CAST(1 AS TINYINT) AS [Id], 1 AS [Version]) AS s ON t.[Id] = s.[Id] WHEN MATCHED THEN UPDATE SET [Version] = s.[Version]";
+
+    [Theory]
+    [InlineData("USE [master];")]
+    [InlineData("USE [nachos];")]
+    [InlineData("USE [$(Other)];")]
+    public void UseOfAnythingButTheDeployVariable_IsDisallowed(string script)
+    {
+        DeployScriptAnalysis.TryParse(script)!.DisallowedStatements.ShouldContain("UseStatement");
+    }
+
+    [Theory]
+    [InlineData("MERGE [SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [dbo].[SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [DBO].[schemaversion] AS t " + StampBody + ";")]
+    public void StampMerge_OnThisDatabasesSchemaVersion_IsAllowed(string script)
+    {
+        DeployScriptAnalysis.TryParse(script)!.DisallowedStatements.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("MERGE [otherdb].[dbo].[SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [linked].[otherdb].[dbo].[SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [other].[SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [dbo].[SchemaVersion] AS t " + StampBody + " OUTPUT inserted.[Id] INTO [dbo].[Elsewhere] ([Id]);")]
+    [InlineData("MERGE [dbo].[SchemaVersion] AS t " + StampBody + " OUTPUT inserted.[Id];")]
+    [InlineData("WITH [SchemaVersion] AS (SELECT CAST(1 AS TINYINT) AS [Id], 1 AS [Version]) MERGE [SchemaVersion] AS t " + StampBody + ";")]
+    [InlineData("MERGE [dbo].[SchemaVersion] AS t USING (SELECT 1 AS [Id]) AS s ON t.[Id] = s.[Id] WHEN MATCHED THEN DELETE;")]
+    public void StampMerge_ThatIsNotExactlyTheStamp_IsDisallowed(string script)
+    {
+        DeployScriptAnalysis.TryParse(script)!.DisallowedStatements.ShouldContain("MergeStatement");
+    }
+
+    [Theory]
+    [InlineData("EXECUTE sp_refreshsqlmodule N'[dbo].[V]';")]
+    [InlineData("EXEC [sys].[sp_refreshsqlmodule] N'[dbo].[V]';")]
+    [InlineData("EXEC [SYS].[sp_refreshview] N'[dbo].[V]';")]
+    public void KnownProcedure_InTheSysSchema_IsNotOpaque(string script)
+    {
+        DeployScriptAnalysis.TryParse(script)!.HasOpaqueExecution.ShouldBeFalse();
+    }
+
+    [Theory]
+    [InlineData("EXECUTE [linked].[otherdb].[dbo].[sp_refreshsqlmodule] N'x';")]
+    [InlineData("EXECUTE [linked].[otherdb].[sys].[sp_refreshsqlmodule] N'x';")]
+    [InlineData("EXECUTE [otherdb].[sys].[sp_refreshsqlmodule] N'x';")]
+    [InlineData("EXECUTE [dbo].[sp_refreshsqlmodule] N'x';")]
+    [InlineData("EXECUTE [other].[sp_refreshview] N'x';")]
+    [InlineData("DECLARE @p sysname = N'sp_refreshsqlmodule'; EXECUTE @p N'x';")]
+    public void KnownProcedureName_ThatIsNotTheSystemOne_IsOpaque(string script)
+    {
+        DeployScriptAnalysis.TryParse(script)!.HasOpaqueExecution.ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData("ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 0;", "DATABASE SCOPED CONFIGURATION MAXDOP")]
+    [InlineData("ALTER DATABASE SCOPED CONFIGURATION SET LEGACY_CARDINALITY_ESTIMATION = ON;", "DATABASE SCOPED CONFIGURATION LEGACYCARDINALITYESTIMATE")]
+    [InlineData("IF 1 = 1 BEGIN ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 8; END", "DATABASE SCOPED CONFIGURATION MAXDOP")]
+    [InlineData("ALTER DATABASE SCOPED CONFIGURATION CLEAR PROCEDURE_CACHE;", "AlterDatabaseScopedConfigurationClearStatement")]
+    public void AlterDatabaseScopedConfiguration_IsReportedAsADatabaseOptionChange(string script, string expected)
+    {
+        var analysis = DeployScriptAnalysis.TryParse(script)!;
+
+        analysis.DatabaseOptionChanges.ShouldContain(expected);
+        analysis.DisallowedStatements.ShouldBeEmpty();
     }
 }

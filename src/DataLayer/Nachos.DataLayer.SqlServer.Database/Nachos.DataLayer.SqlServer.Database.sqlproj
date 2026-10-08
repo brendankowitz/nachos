@@ -9,10 +9,16 @@
     <DSP>Microsoft.Data.Tools.Schema.Sql.SqlAzureV12DatabaseSchemaProvider</DSP>
     <ModelCollation>1033, CI</ModelCollation>
     <!-- Database options. A deploy to an empty database applies every option the model declares, and the Microsoft.Build.Sql
-         defaults are not what a new database gets (PAGE_VERIFY NONE, TARGET_RECOVERY_TIME 0, DISABLE_BROKER, Query Store capturing
-         ALL). So they are all declared here, at the values a new SQL Server 2025 database has (probed in the Testcontainers
-         image), except ReadCommittedSnapshot, which Nachos needs ON. SchemaDeployerTests pins that a bootstrap changes nothing else. -->
+         defaults are not what a new Azure SQL Database has, so the ones that matter are declared here. Azure's own defaults are
+         the target: the first deploy to a new Azure database must not switch anything off. Documented General Purpose defaults:
+         READ_COMMITTED_SNAPSHOT ON, ALLOW_SNAPSHOT_ISOLATION ON, MAXDOP 8, PAGE_VERIFY CHECKSUM, TARGET_RECOVERY_TIME 60,
+         Query Store READ_WRITE/AUTO. The Sql2025 sibling declares the values of a new SQL Server 2025 database instead (probed
+         in the Testcontainers image), which differ (snapshot isolation off, MAXDOP 0); do not copy one project's values to the other.
+         The ANSI, cursor and Query Store capture settings below are the box values; Azure was not probed (Azure is owner-gated).
+         DatabaseOptionsTests pins what this project declares. -->
     <ReadCommittedSnapshot>True</ReadCommittedSnapshot>
+    <AllowSnapshotIsolation>True</AllowSnapshotIsolation>
+    <DbScopedConfigMaxDOP>8</DbScopedConfigMaxDOP>
     <PageVerify>CHECKSUM</PageVerify>
     <TargetRecoveryTimePeriod>60</TargetRecoveryTimePeriod>
     <TargetRecoveryTimeUnit>SECONDS</TargetRecoveryTimeUnit>
@@ -28,7 +34,9 @@
     <QueryStoreDesiredState>ReadWrite</QueryStoreDesiredState>
     <QueryStoreCaptureMode>Auto</QueryStoreCaptureMode>
     <QueryStoreStaleQueryThreshold>30</QueryStoreStaleQueryThreshold>
-    <QueryStoreMaxStorageSize>1000</QueryStoreMaxStorageSize>
+    <!-- Azure's default varies by service tier (10, 100 or 1024 MB; the cap is 10,240). 1024 is the largest default, and a tier
+         with a lower cap is expected to accept it (not probed: Azure is owner-gated). The DacFx Azure provider accepts it at build. -->
+    <QueryStoreMaxStorageSize>1024</QueryStoreMaxStorageSize>
     <QueryStoreFlushInterval>900</QueryStoreFlushInterval>
     <QueryStoreStatsInterval>60</QueryStoreStatsInterval>
     <QueryStoreMaxPlansPerQuery>200</QueryStoreMaxPlansPerQuery>
