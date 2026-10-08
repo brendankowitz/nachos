@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions.Filtering;
-using Nachos.Abstractions.Tests.Json;
+using Nachos.Testing.Json;
 using Nachos.Testing.Filtering;
 using Shouldly;
 
@@ -917,6 +917,7 @@ public sealed class FilterParserTests
     public void DisallowedBackingType_AsRoot_Rejected422() =>
         Should.Throw<NachosValidationException>(() =>
             FilterParser.Parse(JsonValue.Create(new List<int> { 1 }), ResourceKind.Workspace));
+
     [Fact]
     public void TypedComposite_HoldingTheArrayThatHoldsIt_Rejected422AsAType()
     {
@@ -966,6 +967,89 @@ public sealed class FilterParserTests
             ResourceKind.Workspace));
         Should.Throw<NachosValidationException>(() => FilterParser.Parse(
             new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonArray("x\uD800") } }, ResourceKind.Workspace));
+    }
+
+    // ------------------------------------------------------------------ node overload equals text overload
+
+    // Every shared case, fed as text, as a parsed node, as a node rebuilt from CLR-typed scalars and as the library's
+    // own node, must give the same filter or the same kind of failure.
+    [Fact]
+    public void NodeOverload_EqualsTextOverload_AcrossTheSharedCases()
+    {
+        var mismatches = new List<string>();
+
+        foreach (var filterCase in FilterCaseLibrary.All)
+        {
+            var text = filterCase.Filter?.ToJsonString() ?? "null";
+            var results = new[]
+            {
+                Outcome(() => FilterParser.Parse(text, filterCase.Resource)),
+                Outcome(() => FilterParser.Parse(JsonNode.Parse(text), filterCase.Resource)),
+                Outcome(() => FilterParser.Parse(Rebuild(JsonNode.Parse(text)), filterCase.Resource)),
+                Outcome(() => FilterParser.Parse(filterCase.Filter, filterCase.Resource)),
+            };
+
+            if (results.Any(r => !SameOutcome(results[0], r)))
+            {
+                mismatches.Add($"{filterCase.Name}: {string.Join(" | ", results.Select(r => r.Failure ?? r.Filter?.ToString() ?? "null"))}");
+            }
+        }
+
+        FilterCaseLibrary.All.Count.ShouldBeGreaterThan(200);
+        mismatches.ShouldBeEmpty();
+    }
+
+    private static (FilterNode? Filter, string? Failure) Outcome(Func<FilterNode?> parse)
+    {
+        try
+        {
+            return (parse(), null);
+        }
+        catch (NachosValidationException)
+        {
+            return (null, "422");
+        }
+    }
+
+    private static bool SameOutcome((FilterNode? Filter, string? Failure) a, (FilterNode? Filter, string? Failure) b) =>
+        a.Failure == b.Failure && Equals(a.Filter, b.Filter);
+
+    // A tree with the same data whose scalars are CLR values instead of JSON-backed ones.
+    private static JsonNode? Rebuild(JsonNode? node)
+    {
+        switch (node)
+        {
+            case null:
+                return null;
+            case JsonObject obj:
+                var rebuiltObject = new JsonObject();
+                foreach (var (key, value) in obj)
+                {
+                    rebuiltObject[key] = Rebuild(value);
+                }
+
+                return rebuiltObject;
+            case JsonArray array:
+                var rebuiltArray = new JsonArray();
+                foreach (var element in array)
+                {
+                    rebuiltArray.Add(Rebuild(element));
+                }
+
+                return rebuiltArray;
+            default:
+                var json = node.GetValue<JsonElement>();
+                return json.ValueKind switch
+                {
+                    JsonValueKind.String => JsonValue.Create(json.GetString()),
+                    JsonValueKind.True => JsonValue.Create(true),
+                    JsonValueKind.False => JsonValue.Create(false),
+                    JsonValueKind.Number when json.TryGetInt64(out var integer) && json.GetRawText() == integer.ToString(System.Globalization.CultureInfo.InvariantCulture) => JsonValue.Create(integer),
+                    JsonValueKind.Number when json.TryGetDecimal(out var number) && json.GetRawText() == number.ToString(System.Globalization.CultureInfo.InvariantCulture) => JsonValue.Create(number),
+                    JsonValueKind.Number => JsonValue.Create(json.Clone()),
+                    _ => throw new InvalidOperationException($"Unexpected {json.ValueKind}."),
+                };
+        }
     }
     [Fact]
     public void Parse_UndefinedResourceKind_ThrowsArgumentOutOfRange() =>

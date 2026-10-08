@@ -24,10 +24,12 @@ namespace Nachos.Abstractions.Json;
 /// <see cref="char"/>, <see cref="bool"/>, <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
 /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="ulong"/>,
 /// <see cref="float"/>, <see cref="double"/>, <see cref="decimal"/>, <see cref="DateTime"/>,
-/// <see cref="DateTimeOffset"/> or <see cref="Guid"/>. Anything else (collections, dictionaries, POCOs, interface
-/// projections, enums, <see cref="Half"/>, <see cref="Int128"/>, <see cref="TimeSpan"/>, <see cref="DateOnly"/>, a
-/// <see cref="JsonNode"/> nested inside a typed value, and so on) is rejected. The accepted types are read from the
-/// backing value as they are: no getter, converter or <c>ToString</c> of a caller type ever runs, and any
+/// <see cref="DateTimeOffset"/> or <see cref="Guid"/>. Anything else (collections, dictionaries, POCOs, enums,
+/// <see cref="Half"/>, <see cref="Int128"/>, <see cref="TimeSpan"/>, <see cref="DateOnly"/>, a <see cref="JsonNode"/>
+/// nested inside a typed value, and so on) is rejected. A value is classified by its backing runtime value, never by
+/// the type it was declared as: an interface or base-type projection of a non-allowlisted runtime type is rejected,
+/// and one of an allowlisted type (for example an <see cref="int"/> declared as <see cref="IComparable"/>) is
+/// accepted. The accepted types are read from the backing value as they are: no getter, converter or <c>ToString</c> of a caller type ever runs, and any
 /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo"/> or converter attached to a
 /// <see cref="JsonValue"/> is ignored.
 /// </para>
@@ -43,7 +45,9 @@ namespace Nachos.Abstractions.Json;
 /// <para>
 /// <b>Depth.</b> Only objects and arrays count, matching <see cref="JsonDocumentOptions.MaxDepth"/>: a root container
 /// is depth 1, and scalars and <c>null</c> add no level. With the default of 64, a tree of 64 nested containers is
-/// accepted and 65 is rejected.
+/// accepted and 65 is rejected. The walk recurses once per level, so <c>maxDepth</c> is itself capped at
+/// <see cref="MaxAllowedDepth"/>, and a deeper input is rejected after that many levels instead of exhausting the
+/// stack.
 /// </para>
 /// <para>
 /// <b>JSON-backed values.</b> Values that came from parsed JSON (<see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>,
@@ -64,31 +68,37 @@ public static class StrictJsonData
     /// <summary>The default depth limit: 64 nested objects and arrays, the same as <see cref="JsonDocumentOptions.MaxDepth"/>.</summary>
     public const int DefaultMaxDepth = 64;
 
+    /// <summary>The largest <c>maxDepth</c> accepted, the <see cref="Utf8JsonWriter"/> default. It bounds the recursion.</summary>
+    public const int MaxAllowedDepth = 1000;
+
     /// <summary>
     /// Returns a fresh tree holding the strict JSON data of <paramref name="value"/>. See the type remarks for the
     /// accepted values, the canonical form and the depth rule.
     /// </summary>
     /// <param name="value">The tree to read; it is never modified or referenced by the result.</param>
-    /// <param name="maxDepth">The most nested objects and arrays allowed; at least 1.</param>
+    /// <param name="maxDepth">The most nested objects and arrays allowed, from 1 to <see cref="MaxAllowedDepth"/>.</param>
     /// <returns>The canonical tree, or <c>null</c> when <paramref name="value"/> is <c>null</c> or JSON <c>null</c>.</returns>
     /// <exception cref="NachosValidationException">
     /// A value is outside the allowlist (the message names its CLR type), a number is not finite, a string or property
     /// name holds an unpaired surrogate or an invalid escape, a JSON-backed object repeats a property name, or the tree
     /// is nested deeper than <paramref name="maxDepth"/>.
     /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxDepth"/> is less than 1.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxDepth"/> is less than 1 or more than <see cref="MaxAllowedDepth"/>.</exception>
+    /// <exception cref="ObjectDisposedException">A <see cref="JsonElement"/> in the input belongs to a disposed document (a programming error).</exception>
     public static JsonNode? ToCanonical(JsonNode? value, int maxDepth = DefaultMaxDepth)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxDepth, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxDepth, MaxAllowedDepth);
 
         try
         {
             return Canonicalize(value, 0, maxDepth);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is (InvalidOperationException or ArgumentException) and not ObjectDisposedException)
         {
             // Decoding a JSON-backed object or string throws these for an invalid escape or a repeated property name.
-            throw new NachosValidationException($"JSON data is not valid: {ex.Message}", ex);
+            // The detail stays in the inner exception: the message never echoes a key or value.
+            throw new NachosValidationException("JSON data is not valid.", ex);
         }
     }
 
@@ -126,16 +136,16 @@ public static class StrictJsonData
                 }
 
             default:
-                return CanonicalizeValue((JsonValue)node);
+                return CanonicalizeValue((JsonValue)node, depth, maxDepth);
         }
     }
 
-    private static JsonValue? CanonicalizeValue(JsonValue value)
+    private static JsonNode? CanonicalizeValue(JsonValue value, int depth, int maxDepth)
     {
         // JsonElement first: TryGetValue<T> converts a JSON-backed value, so it would also satisfy the checks below.
         if (value.TryGetValue(out JsonElement element))
         {
-            return FromElement(element);
+            return FromElement(element, depth, maxDepth);
         }
 
         if (value.TryGetValue(out string? text))
@@ -233,7 +243,9 @@ public static class StrictJsonData
             + "and JsonArray, or convert it first with JsonSerializer.SerializeToNode.");
     }
 
-    private static JsonValue? FromElement(JsonElement element)
+    // A JsonValue can hold an object or array element when it was created with a JsonTypeInfo
+    // (Create<JsonElement>(element, typeInfo) or Create<object>), so the element is walked like any JSON data.
+    private static JsonNode? FromElement(JsonElement element, int depth, int maxDepth)
     {
         switch (element.ValueKind)
         {
@@ -250,9 +262,39 @@ public static class StrictJsonData
                 return JsonValue.Create(false);
             case JsonValueKind.Null:
                 return null;
+            case JsonValueKind.Object:
+                {
+                    RequireDepth(depth + 1, maxDepth);
+                    var result = new JsonObject();
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        var name = property.Name;
+                        RequireWellFormed(name);
+                        if (result.ContainsKey(name))
+                        {
+                            throw new NachosValidationException("JSON data repeats a property name.");
+                        }
+
+                        result.Add(name, FromElement(property.Value, depth + 1, maxDepth));
+                    }
+
+                    return result;
+                }
+
+            case JsonValueKind.Array:
+                {
+                    RequireDepth(depth + 1, maxDepth);
+                    var result = new JsonArray();
+                    foreach (var child in element.EnumerateArray())
+                    {
+                        result.Add(FromElement(child, depth + 1, maxDepth));
+                    }
+
+                    return result;
+                }
+
             default:
-                // A JsonValue cannot hold an object or array element (a parsed object is a JsonObject), so this is undefined.
-                throw new NachosValidationException($"The value is a JSON element of kind {element.ValueKind}, which is not a JSON scalar.");
+                throw new NachosValidationException("The value is an undefined JSON element.");
         }
     }
 
@@ -268,8 +310,7 @@ public static class StrictJsonData
     {
         if (!double.IsFinite(number))
         {
-            throw new NachosValidationException(
-                $"The number {number.ToString(CultureInfo.InvariantCulture)} is not finite, so it is not a valid JSON number.");
+            throw new NachosValidationException("JSON data holds a number that is not finite, so it is not a valid JSON number.");
         }
     }
 

@@ -84,9 +84,10 @@ public static partial class FilterParser
     /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="ulong"/>,
     /// <see cref="float"/>, <see cref="double"/> (finite) or <see cref="decimal"/>, or a <see cref="DateTime"/>,
     /// <see cref="DateTimeOffset"/> or <see cref="Guid"/> (written as ISO 8601 or the canonical Guid text). Any other
-    /// backing type (collections, dictionaries, POCOs, interface projections, enums, <see cref="TimeSpan"/>, nested
+    /// backing type (collections, dictionaries, POCOs, enums, <see cref="TimeSpan"/>, nested
     /// <see cref="JsonNode"/>s inside a typed value, and so on) is rejected with a
-    /// <see cref="NachosValidationException"/> naming the type; build such a value with <see cref="JsonObject"/> and
+    /// <see cref="NachosValidationException"/> naming the type. A value is classified by its backing runtime value, so
+    /// an interface or base-type projection of a non-allowlisted runtime type is rejected; build such a value with <see cref="JsonObject"/> and
     /// <see cref="JsonArray"/>, or convert it first with <c>JsonSerializer.SerializeToNode</c>; the shared rule is
     /// <see cref="StrictJsonData.ToCanonical"/>. Serialization metadata
     /// or converters attached to a <see cref="JsonValue"/> are ignored, and no caller code runs while a value is

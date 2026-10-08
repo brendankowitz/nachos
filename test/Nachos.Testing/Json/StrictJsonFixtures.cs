@@ -3,9 +3,9 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
-namespace Nachos.Abstractions.Tests.Json;
+namespace Nachos.Testing.Json;
 
-internal interface IName
+public interface IName
 {
     string Name { get; }
 }
@@ -14,7 +14,7 @@ internal interface IName
 /// What a caller might hand over as an <see cref="IName"/>: the contract is one property, but the implementation also
 /// carries a delegate and a getter that throws. Neither may run while a value holding it is rejected.
 /// </summary>
-internal sealed class NameProjection : IName
+public sealed class NameProjection : IName
 {
     public int ExcludedGetterCalls { get; private set; }
 
@@ -43,13 +43,13 @@ internal sealed class NameProjection : IName
 }
 
 /// <summary>A class whose extension-data key bypasses the key converter of a serializer.</summary>
-internal sealed class WithExtensionData
+public sealed class WithExtensionData
 {
     [JsonExtensionData]
     public Dictionary<string, object> Extra { get; } = new() { ["\uD800"] = 1 };
 }
 
-internal sealed class CountingUppercaseConverter : JsonConverter<string>
+public sealed class CountingUppercaseConverter : JsonConverter<string>
 {
     public int Calls { get; private set; }
 
@@ -63,34 +63,51 @@ internal sealed class CountingUppercaseConverter : JsonConverter<string>
     }
 }
 
-/// <summary>Sample inputs shared by the helper and the filter parser tests.</summary>
-internal static class StrictJsonSamples
+/// <summary>A converter that would replace any value with a marker string; it must never run.</summary>
+public sealed class CountingMarkerConverter<T> : JsonConverter<T>
+{
+    public int Calls { get; private set; }
+
+    public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        throw new NotSupportedException();
+
+    public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
+    {
+        Calls++;
+        writer.WriteStringValue("converted!");
+    }
+}
+
+/// <summary>Sample inputs for the strict-JSON-data tests, shared by the helper, filter parser and store contract tests.</summary>
+public static class StrictJsonSamples
 {
     private static readonly byte[] Bytes = [1];
     private static readonly int[] Ints = [1];
 
     /// <summary>Each allowed literal kind with the canonical JSON it must become.</summary>
-    public static TheoryData<string, string> AllowedScalars() => new()
-    {
-        { "bool", "true" },
-        { "sbyte", "-5" },
-        { "byte", "250" },
-        { "short", "-300" },
-        { "ushort", "60000" },
-        { "int", "-70000" },
-        { "uint", "4000000000" },
-        { "long", "-9000000000" },
-        { "ulong", "18000000000000000000" },
-        { "float", "1.5" },
-        { "double", "0.1" },
-        { "decimal", "12.5" },
-        { "char", "\"x\"" },
-        { "string", "\"text\"" },
-        { "DateTime", "\"2026-01-02T03:04:05Z\"" },
-        { "DateTimeOffset", "\"2026-01-02T03:04:05+02:00\"" },
-        { "Guid", "\"0f8fad5b-d9cb-469f-a165-70867728950e\"" },
-        { "JsonElement", "\"e\"" },
-    };
+    public static IEnumerable<object[]> AllowedScalars() => AllowedScalarRows.Select(r => new object[] { r.Kind, r.Json });
+
+    private static readonly (string Kind, string Json)[] AllowedScalarRows =
+    [
+        ("bool", "true"),
+        ("sbyte", "-5"),
+        ("byte", "250"),
+        ("short", "-300"),
+        ("ushort", "60000"),
+        ("int", "-70000"),
+        ("uint", "4000000000"),
+        ("long", "-9000000000"),
+        ("ulong", "18000000000000000000"),
+        ("float", "1.5"),
+        ("double", "0.1"),
+        ("decimal", "12.5"),
+        ("char", "\"x\""),
+        ("string", "\"text\""),
+        ("DateTime", "\"2026-01-02T03:04:05Z\""),
+        ("DateTimeOffset", "\"2026-01-02T03:04:05+02:00\""),
+        ("Guid", "\"0f8fad5b-d9cb-469f-a165-70867728950e\""),
+        ("JsonElement", "\"e\""),
+    ];
 
     public static JsonValue Scalar(string kind) => (kind switch
     {
@@ -116,7 +133,9 @@ internal static class StrictJsonSamples
     })!;
 
     /// <summary>Each kind of backing type outside the allowlist.</summary>
-    public static TheoryData<string> DisallowedKinds() =>
+    public static IEnumerable<object[]> DisallowedKinds() => DisallowedKindNames.Select(k => new object[] { k });
+
+    private static readonly string[] DisallowedKindNames =
     [
         "int[]", "List<int>", "Dictionary<string,int>", "POCO", "enum", "Half", "Int128", "UInt128", "TimeSpan",
         "DateOnly", "TimeOnly", "byte[]", "List<JsonNode>", "JsonNode[]",
@@ -153,5 +172,22 @@ internal static class StrictJsonSamples
     {
         var options = new JsonSerializerOptions { Converters = { converter }, TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
         return JsonValue.Create(text, (JsonTypeInfo<string>)options.GetTypeInfo(typeof(string)))!;
+    }
+
+    /// <summary>
+    /// A <see cref="JsonValue"/> backed by <paramref name="element"/> (which may be an object or an array) that carries
+    /// a <see cref="JsonTypeInfo"/> with <paramref name="converter"/>, declared as <see cref="JsonElement"/>.
+    /// </summary>
+    public static JsonValue CustomizedElement(JsonElement element, CountingMarkerConverter<JsonElement> converter)
+    {
+        var options = new JsonSerializerOptions { Converters = { converter }, TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+        return JsonValue.Create(element, (JsonTypeInfo<JsonElement>)options.GetTypeInfo(typeof(JsonElement)))!;
+    }
+
+    /// <summary>The same, but declared as <see cref="object"/>.</summary>
+    public static JsonValue CustomizedElementAsObject(JsonElement element, CountingMarkerConverter<object> converter)
+    {
+        var options = new JsonSerializerOptions { Converters = { converter }, TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+        return JsonValue.Create<object>(element, (JsonTypeInfo<object>)options.GetTypeInfo(typeof(object)))!;
     }
 }

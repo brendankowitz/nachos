@@ -10,7 +10,9 @@ namespace Nachos.Abstractions;
 /// <remarks>
 /// <c>filters</c> is the Honcho filter body (<c>{"metadata":{...}}</c> and friends), or null for none. Filters, metadata
 /// and configuration must be strict JSON data: values outside the types listed on <see cref="Json.StrictJsonData"/> are a
-/// 422. Invalid ids,
+/// 422. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well
+/// formed: <c>JsonSerializer.SerializeToNode</c> has already turned a lone surrogate into U+FFFD, so callers who need
+/// that guarantee must build <c>JsonObject</c>/<c>JsonArray</c> with literal strings. Invalid ids,
 /// paging, or filters raise <see cref="RequestValidationException"/> or <see cref="NachosValidationException"/> (422);
 /// a missing parent resource raises <see cref="NotFoundException"/> (404); authorization failures raise
 /// <see cref="AuthException"/> (401). Every list method returns the <see cref="Page{T}"/> envelope.

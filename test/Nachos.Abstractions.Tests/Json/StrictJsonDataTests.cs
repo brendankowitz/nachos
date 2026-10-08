@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions.Json;
+using Nachos.Testing.Json;
 using Shouldly;
 
 namespace Nachos.Abstractions.Tests.Json;
@@ -236,10 +237,129 @@ public sealed class StrictJsonDataTests
         StrictJsonData.ToCanonical(JsonValue.Create(1), maxDepth: 1).ShouldNotBeNull();
     }
 
-    [Fact]
-    public void Depth_LimitBelowOne_IsAProgrammingError() =>
-        Should.Throw<ArgumentOutOfRangeException>(() => StrictJsonData.ToCanonical(new JsonObject(), maxDepth: 0));
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(StrictJsonData.MaxAllowedDepth + 1)]
+    [InlineData(int.MaxValue)]
+    public void Depth_LimitOutsideOneToTheCap_IsAProgrammingError(int maxDepth) =>
+        Should.Throw<ArgumentOutOfRangeException>(() => StrictJsonData.ToCanonical(new JsonObject(), maxDepth));
 
+    [Fact]
+    public void Depth_AtTheCap_IsWalkedWithoutExhaustingTheStack()
+    {
+        var node = Nest(StrictJsonData.MaxAllowedDepth, nullLeaf: false);
+
+        StrictJsonData.ToCanonical(node, StrictJsonData.MaxAllowedDepth).ShouldNotBeNull();
+        Rejected(Nest(StrictJsonData.MaxAllowedDepth + 1, nullLeaf: false), StrictJsonData.MaxAllowedDepth);
+    }
+
+    [Fact]
+    public void Depth_HalfAMillionLevels_Rejected422_NotAStackOverflow()
+    {
+        var node = Nest(500_000, nullLeaf: false);
+
+        Rejected(node);
+        Rejected(node, StrictJsonData.MaxAllowedDepth);
+    }
+
+    // ------------------------------------------------------------------ JSON elements that are objects or arrays
+
+    private static JsonValue ElementValue(string json, CountingMarkerConverter<JsonElement> converter, int maxDepth = 64)
+    {
+        var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = Math.Max(maxDepth, 64) + 8 });
+        return StrictJsonSamples.CustomizedElement(document.RootElement.Clone(), converter);
+    }
+
+    [Fact]
+    public void ElementObjectOrArray_IsWalkedAsData_WithoutRunningItsConverter()
+    {
+        var converter = new CountingMarkerConverter<JsonElement>();
+        var objectConverter = new CountingMarkerConverter<object>();
+        using var document = JsonDocument.Parse("""{"a":[1,"x",{"b":null,"c":1.50}],"s":"\u00e9\uD83D\uDE00","t":true}""");
+
+        var asElement = StrictJsonData.ToCanonical(new JsonObject { ["k"] = StrictJsonSamples.CustomizedElement(document.RootElement, converter) });
+        var asObject = StrictJsonData.ToCanonical(new JsonArray(StrictJsonSamples.CustomizedElementAsObject(document.RootElement, objectConverter)));
+
+        JsonNode.DeepEquals(asElement, Parse("""{"k":{"a":[1,"x",{"b":null,"c":1.50}],"s":"\u00e9\uD83D\uDE00","t":true}}""")).ShouldBeTrue();
+        JsonNode.DeepEquals(asObject, Parse("""[{"a":[1,"x",{"b":null,"c":1.50}],"s":"\u00e9\uD83D\uDE00","t":true}]""")).ShouldBeTrue();
+        converter.Calls.ShouldBe(0);
+        objectConverter.Calls.ShouldBe(0);
+    }
+
+    [Fact]
+    public void ElementObjectOrArray_WithBadStringsKeysOrDuplicates_Rejected()
+    {
+        var converter = new CountingMarkerConverter<JsonElement>();
+
+        Rejected(ElementValue("""{"a":"\uD800"}""", converter));
+        Rejected(ElementValue("""[["x","\uDC00"]]""", converter));
+        Rejected(ElementValue("""{"\uD800":1}""", converter));
+        Rejected(ElementValue("""{"a":1,"a":2}""", converter));
+        Rejected(ElementValue("""{"a":[{"b":1,"b":2}]}""", converter));
+        Rejected(ElementValue("""{"a":1,"\u0061":2}""", converter));
+        converter.Calls.ShouldBe(0);
+    }
+
+    [Fact]
+    public void ElementObjectOrArray_CountsTowardTheSameDepthLimit()
+    {
+        var converter = new CountingMarkerConverter<JsonElement>();
+        string Chain(int n) => string.Concat(Enumerable.Repeat("[", n)) + string.Concat(Enumerable.Repeat("]", n));
+
+        // One object holds the element: 1 + 63 = 64 is accepted, 1 + 64 = 65 is not.
+        StrictJsonData.ToCanonical(new JsonObject { ["k"] = ElementValue(Chain(63), converter) }).ShouldNotBeNull();
+        Rejected(new JsonObject { ["k"] = ElementValue(Chain(64), converter) });
+        StrictJsonData.ToCanonical(ElementValue(Chain(64), converter)).ShouldNotBeNull();
+        Rejected(ElementValue(Chain(65), converter));
+    }
+
+    // ------------------------------------------------------------------ error text
+
+    [Fact]
+    public void JsonBackedFailures_HaveAFixedMessage_AndKeepTheDetailInTheInnerException()
+    {
+        foreach (var json in new[] { """{"secret-key":1,"secret-key":2}""", """{"secret-key":"\uD800"}""", """{"\uD800":"secret-value"}""" })
+        {
+            var ex = Rejected(Parse(json));
+
+            ex.Message.ShouldNotContain("secret");
+            ex.Message.ShouldNotContain("\uD800");
+        }
+
+        var duplicate = Rejected(Parse("""{"secret-key":1,"secret-key":2}"""));
+        duplicate.Message.ShouldBe("JSON data is not valid.");
+        duplicate.InnerException.ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void WellFormedChecks_NeverEchoTheOffendingText()
+    {
+        Rejected(new JsonObject { ["secret-key\uD800"] = 1 }).Message.ShouldNotContain("secret");
+        Rejected(JsonValue.Create("secret-value\uD800")).Message.ShouldNotContain("secret");
+        Rejected(JsonValue.Create(double.NaN)).Message.ShouldNotContain("NaN");
+    }
+
+    [Fact]
+    public void ElementOfADisposedDocument_IsAProgrammingError_NotA422()
+    {
+        var document = JsonDocument.Parse("\"x\"");
+        var value = JsonValue.Create(document.RootElement);
+        document.Dispose();
+
+        Should.Throw<ObjectDisposedException>(() => StrictJsonData.ToCanonical(value));
+    }
+
+    // ------------------------------------------------------------------ declared type is irrelevant
+
+    [Fact]
+    public void Projection_IsClassifiedByItsBackingRuntimeValue()
+    {
+        StrictJsonData.ToCanonical(JsonValue.Create<IComparable>(5)).ShouldNotBeNull().ToJsonString().ShouldBe("5");
+        StrictJsonData.ToCanonical(JsonValue.Create<object>("text")).ShouldNotBeNull().ToJsonString().ShouldBe("\"text\"");
+        Rejected(JsonValue.Create<IComparable>(new Version(1, 0)));
+        Rejected(JsonValue.Create<object>(DayOfWeek.Monday));
+    }
     // A chain of nested containers: the root plus (containers - 1) objects, ending in a scalar or null.
     private static JsonNode Nest(int containers, bool nullLeaf)
     {

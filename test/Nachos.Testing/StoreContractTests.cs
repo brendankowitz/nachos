@@ -8,6 +8,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
+using Nachos.Testing.Json;
 using Shouldly;
 using Xunit;
 
@@ -1096,5 +1097,124 @@ public abstract class StoreContractTests : IAsyncLifetime
         var none = await store.Grants.GetWorkspaceGrantsAsync(nothing, Ct);
         none.AllWorkspaces.ShouldBeFalse();
         none.Workspaces.ShouldBeEmpty();
+    }
+
+    // ---------------------------------------------------------------- strict JSON data and factory purity
+
+    private const string PendingStrictData =
+        "Pending provider adoption: strict JSON data (#6, 3b) — provider owners remove this Skip when their adoption lands";
+
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(15);
+
+    private static readonly string[] LoneSurrogateList = ["\uD800"];
+
+    private static readonly int[] OneElementList = [1];
+
+    /// <summary>Typed values a provider must reject: a fresh node each call, because a node has one parent.</summary>
+    private static readonly Func<JsonNode>[] TypedCompositeValues =
+    [
+        () => JsonValue.Create(LoneSurrogateList)!,
+        () => JsonValue.Create(new List<int>(OneElementList))!,
+        () => JsonValue.Create(DayOfWeek.Monday)!,
+    ];
+
+    /// <summary>
+    /// Stored metadata is strict JSON data: a value backed by a collection, array or enum is a 422 on create and on
+    /// update (see <c>StrictJsonData</c>), and nothing is stored.
+    /// </summary>
+    [Fact(Skip = PendingStrictData)]
+    public async Task StrictData_TypedCompositeMetadata_IsRejected()
+    {
+        var (store, _) = NewStore();
+
+        foreach (var typed in TypedCompositeValues)
+        {
+            var created = Unique("ws");
+            await Should.ThrowAsync<NachosValidationException>(
+                () => store.Workspaces.GetOrCreateAsync(created, Json("k", typed()), null, Ct));
+            (await store.Workspaces.GetAsync(created, Ct)).ShouldBeNull();
+
+            var existing = Unique("ws");
+            await store.Workspaces.GetOrCreateAsync(existing, Json("keep", 1), null, Ct);
+            await Should.ThrowAsync<NachosValidationException>(
+                () => store.Workspaces.UpdateAsync(existing, Json("k", typed()), null, Ct));
+            (await store.Workspaces.GetAsync(existing, Ct))!.Metadata.ToJsonString().ShouldBe("""{"keep":1}""");
+        }
+    }
+
+    /// <summary>
+    /// A converter attached to a scalar by the caller is never run and never stored: the literal value is.
+    /// </summary>
+    [Fact(Skip = PendingStrictData)]
+    public async Task StrictData_ScalarConverter_NotInvoked()
+    {
+        var (store, _) = NewStore();
+        var converter = new CountingUppercaseConverter();
+        var workspace = Unique("ws");
+
+        var created = await store.Workspaces.GetOrCreateAsync(
+            workspace, Json("k", StrictJsonSamples.UppercasedString("abc", converter)), null, Ct);
+        var reread = await store.Workspaces.GetAsync(workspace, Ct);
+
+        created.Metadata.ToJsonString().ShouldBe("""{"k":"abc"}""");
+        reread!.Metadata.ToJsonString().ShouldBe("""{"k":"abc"}""");
+        converter.Calls.ShouldBe(0);
+    }
+
+    /// <summary>
+    /// <see cref="IdempotencyWrite.SerializeResponse"/> must not call back into any store; a provider fails fast with
+    /// <see cref="InvalidOperationException"/> and commits nothing. A provider that blocks on re-entry fails these
+    /// tests by timing out.
+    /// </summary>
+    [Fact(Skip = PendingStrictData)]
+    public async Task AppendFactory_ReentersStore_ThrowsInvalidOperation()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+        var key = Unique("key");
+        var reentrant = new IdempotencyWrite(
+            key,
+            Hash("reenter"),
+            201,
+            _ =>
+            {
+                store.Messages.GetAsync(workspace, session, "missing", Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(10));
+
+        await Should.ThrowAsync<InvalidOperationException>(
+            () => store.Messages.AppendAsync(workspace, session, [Msg("alice", "one")], reentrant, Ct).WaitAsync(HangGuard));
+
+        (await CountMessagesAsync(store, workspace, session)).ShouldBe(0);
+        (await store.Peers.ListAsync(workspace, PeerKind.All, null, new PageRequest(), Ct)).Total.ShouldBe(0);
+
+        // The failed attempt left no idempotency record: the same key is still free.
+        var retried = await store.Messages.AppendAsync(workspace, session, [Msg("alice", "one")], Write(key, "reenter"), Ct);
+        retried.Count.ShouldBe(1);
+    }
+
+    [Fact(Skip = PendingStrictData)]
+    public async Task AppendFactory_CreatesWorkspaceThroughTheStore_ThrowsInvalidOperationAndCreatesNothing()
+    {
+        var (store, _) = NewStore();
+        var (workspace, session) = await NewSessionAsync(store);
+        var other = Unique("other");
+        var reentrant = new IdempotencyWrite(
+            Unique("key"),
+            Hash("reenter-write"),
+            201,
+            _ =>
+            {
+                store.Workspaces.GetOrCreateAsync(other, null, null, Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(10));
+
+        await Should.ThrowAsync<InvalidOperationException>(
+            () => store.Messages.AppendAsync(workspace, session, [Msg("alice", "one")], reentrant, Ct).WaitAsync(HangGuard));
+
+        (await store.Workspaces.GetAsync(other, Ct)).ShouldBeNull();
+        (await CountMessagesAsync(store, workspace, session)).ShouldBe(0);
     }
 }
