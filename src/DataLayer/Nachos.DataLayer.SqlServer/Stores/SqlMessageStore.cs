@@ -44,7 +44,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         CancellationToken ct)
     {
         runtime.Guard.ThrowIfReentered();
-        var storedMetadata = messages.Select(message => SqlJson.ToStorage(message.Metadata, "metadata")).ToList();
+        var storedMetadata = messages.Select(message => SqlJson.ToStorage(message.Metadata, JsonField.Metadata)).ToList();
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
@@ -113,7 +113,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct)
     {
         runtime.Guard.ThrowIfReentered();
-        var storedMetadata = SqlJson.ToStorage(metadata, "metadata");
+        var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);

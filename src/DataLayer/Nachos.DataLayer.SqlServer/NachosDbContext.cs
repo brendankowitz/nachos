@@ -83,6 +83,7 @@ internal sealed class NachosDbContext(DbContextOptions<NachosDbContext> options)
         });
     }
 
+    /// <summary>JSON is stored as text in <c>nvarchar(max)</c>, which a CHECK in the dacpac requires to be a JSON object.</summary>
     private static void Json(Microsoft.EntityFrameworkCore.Metadata.Builders.PropertyBuilder<string> property) =>
-        property.HasColumnType("json");
+        property.HasColumnType("nvarchar(max)");
 }

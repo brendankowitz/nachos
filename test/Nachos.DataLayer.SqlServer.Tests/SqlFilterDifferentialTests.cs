@@ -23,6 +23,10 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
     private const string Workspace = "differential";
     private const string Session = "differential-session";
     private const string Max38 = "99999999999999999999999999999999999999";
+    private const string Forty = "1234567890123456789012345678901234567890";
+
+    private static readonly string Nines1000 = new('9', 1000);
+    private static readonly string TenToMinus1000 = "0." + new string('0', 999) + "1";
 
     private static readonly CancellationToken Ct = CancellationToken.None;
     private static readonly InMemoryMemoryStore Reference = new(TimeProvider.System);
@@ -44,6 +48,13 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         "0", "1", "1.0", "1.5", "-1", "-1.5", "100", "1e2", "0.25", "79228162514264337593543950336",
         "79228162514264337593543950337", "0.00000000000000000000000000001", "0.00000000000000000000000000000000000001",
         Max38, "-" + Max38, "-0.5", "-0", "0.1",
+
+        // Beyond decimal and double, up to 1000 digits (indexes 18 to 24, peers p043 to p049).
+        Nines1000, "-" + Nines1000, TenToMinus1000, "1e999", Forty, "1.00", "0." + Nines1000,
+
+        // Exponent spellings, stored as written (indexes 25 to 32, peers p050 to p057).
+        "1E400", "-1e-400", "5E-324", "0e5", "1e999999999999999999999", "79228162514264337593543950335", "1.5E+3",
+        "-1e999999999999999999999",
     ];
 
     private static readonly string[] OtherValues =
@@ -63,6 +74,11 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         "0", "-0", "1", "1.0", "1e0", "10e-1", "1e2", "100.0", "1.5", "-1", "0.25", "2.5e-1",
         "79228162514264337593543950336", "79228162514264337593543950337", "7.9228162514264337593543950336e28",
         "1e-29", "1e-38", "1e-39", "1e-40", "1e40", "-1e40", "1e-400", "1e400", Max38, "1e38", "-" + Max38, "0.1",
+        Nines1000, "-" + Nines1000, "1" + Nines1000, "1e999", "1e1000", "-1e1000", "1e400000", "-1e400000", TenToMinus1000,
+        "1e-1000", "1e-1001", "1e-400000", "-1e-400000", "0." + Nines1000, "0." + Nines1000 + "9", Forty, Forty + ".0", "4.0e1",
+        "1E400", "-1e-400", "-0.1e-399", "5E-324", "4.9E-324", "0.5e-323", "0e5", "-0.0", "1E+2", "100e0",
+        "1e999999999999999999999", "10e999999999999999999998", "-1e999999999999999999999", "0.01e1000000000000000000",
+        "1e999999999999999998", "1.5e3", "1500.00", "79228162514264337593543950335",
     ];
 
     public static TheoryData<string, string> Filters()
@@ -164,9 +180,25 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
 
         // Exact numbers: 2^96 + 1 is distinct from 2^96, 1 equals 1.0, 1e2 equals 100, and 1e-29 is not 0.
         (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":79228162514264337593543950337}}"""))).ShouldBe(["p035"]);
-        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1}}"""))).ShouldBe(["p026", "p027"], ignoreOrder: true);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1}}"""))).ShouldBe(["p026", "p027", "p048"], ignoreOrder: true);
         (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":100.0}}"""))).ShouldBe(["p031", "p032"], ignoreOrder: true);
-        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":0,"lt":1e-28}}}"""))).ShouldBe(["p036", "p037"], ignoreOrder: true);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":0,"lt":1e-28}}}"""))).ShouldBe(["p036", "p037", "p045", "p052"], ignoreOrder: true);
+
+        // Large, tiny and exponent-spelled values compare exactly, stored text unchanged.
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":1e999}}}"""))).ShouldBe(["p043", "p054"], ignoreOrder: true);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"lt":-1e999}}}"""))).ShouldBe(["p044", "p057"], ignoreOrder: true);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1e-1000}}"""))).ShouldBe(["p045"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":0,"lt":1e-999}}}"""))).ShouldBe(["p045"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":1e1000}}}"""))).ShouldBe(["p054"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":0,"lt":1e-1001}}}"""))).ShouldBeEmpty();
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1.234567890123456789012345678901234567890e39}}"""))).ShouldBe(["p047"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":{"gt":0.99,"lt":1}}}"""))).ShouldBe(["p049"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1E400}}"""))).ShouldBe(["p050"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":-0.1e-399}}"""))).ShouldBe(["p051"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":0.5e-323}}"""))).ShouldBe(["p052"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":-0.0}}"""))).ShouldBe(["p025", "p041", "p053"], ignoreOrder: true);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":10e999999999999999999998}}"""))).ShouldBe(["p054"]);
+        (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1500.00}}"""))).ShouldBe(["p056"]);
 
         // An operand longer than a LIKE pattern may be still matches exactly.
         (await ListAsync(store, ResourceKind.Message, Parse(new JsonObject { ["content"] = new JsonObject { ["contains"] = new string('x', 4100) + "need" } }.ToJsonString())))

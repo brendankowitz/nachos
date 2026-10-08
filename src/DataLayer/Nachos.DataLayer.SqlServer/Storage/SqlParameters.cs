@@ -15,7 +15,7 @@ internal static class SqlParameters
     public static SqlParameter Text(string name, string value) =>
         new(name, SqlDbType.NVarChar, value.Length <= MaxSizedText ? MaxSizedText : -1) { Value = value };
 
-    /// <summary>Unbounded text, such as JSON for a <c>json</c> column or an <c>OPENJSON</c> list.</summary>
+    /// <summary>Unbounded text, such as stored JSON or an <c>OPENJSON</c> list.</summary>
     public static SqlParameter LongText(string name, string value) => new(name, SqlDbType.NVarChar, -1) { Value = value };
 
     public static SqlParameter Ascii(string name, string value) =>

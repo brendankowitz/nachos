@@ -5,143 +5,28 @@ using System.Text;
 namespace Nachos.DataLayer.SqlServer.Storage;
 
 /// <summary>
-/// The exact value of a JSON number literal, and the two decimal forms SQL Server needs: the plain text a <c>json</c>
-/// column stores without loss, and an order key that compares like the value.
+/// The exact value of a JSON number literal, and its order key: the form in which SQL Server compares numbers in
+/// filters. Nothing here bounds a number's size or precision.
 /// </summary>
 /// <remarks>
 /// A nonzero value is <c>Sign × d₁.d₂d₃… × 10^Exponent</c>: <see cref="Digits"/> has no leading or trailing zeros and
-/// <see cref="Exponent"/> is the power of ten of its first digit. Zero is <c>(0, "", 0)</c>. Exponents are
-/// <see cref="BigInteger"/> and never expanded, so <c>1e999999999999</c> costs only its length.
+/// <see cref="Exponent"/> is the power of ten of its first digit. Zero is <c>(0, "", 0)</c>. This is the same reduction
+/// the in-memory provider's <c>JsonNumberComparison</c> uses, so both providers order numbers identically. Exponents are
+/// <see cref="BigInteger"/>, so a literal such as <c>1e999999999999999999999</c> costs only its length.
 /// </remarks>
 internal readonly record struct ExactDecimal(int Sign, string Digits, BigInteger Exponent)
 {
-    /// <summary>
-    /// The most significant digits a <c>json</c> column keeps exactly: it stores a number as a SQL <c>decimal</c>, whose
-    /// precision is at most 38. Precision counts the integer digits (none for a lone <c>0</c>) plus every fraction digit.
-    /// </summary>
-    public const int MaxPrecision = 38;
-
-    /// <summary>The order key's digits on each side of the decimal point: weights 10^37 down to 10^-38.</summary>
-    private const int KeyDigits = 2 * MaxPrecision;
-
-    private static readonly string OverflowMagnitude = new('9', KeyDigits + 1);
+    /// <summary>The width of the digit count of the exponent in a key; it bounds nothing a SQL string can hold.</summary>
+    private const int CountWidth = 10;
 
     /// <summary>Parses JSON number text: <c>-? digits (. digits)? ([eE] [+-]? digits)?</c>.</summary>
     /// <exception cref="FormatException">The text is not a JSON number.</exception>
     public static ExactDecimal Parse(string literal)
     {
-        var (negative, integer, fraction, exponent) = Split(literal);
-        var digits = string.Concat(integer, fraction);
-        var first = digits.AsSpan().IndexOfAnyExcept('0');
-        if (first < 0)
-        {
-            return new ExactDecimal(0, string.Empty, BigInteger.Zero);
-        }
-
-        var last = digits.AsSpan().LastIndexOfAnyExcept('0');
-        return new ExactDecimal(negative ? -1 : 1, digits[first..(last + 1)], exponent + (integer.Length - 1 - first));
-    }
-
-    /// <summary>
-    /// True when <paramref name="literal"/> is plain JSON number text (no exponent) that a <c>json</c> column stores
-    /// exactly as written: at most <see cref="MaxPrecision"/> significant positions.
-    /// </summary>
-    public static bool IsStoredVerbatim(string literal)
-    {
-        var (_, integer, fraction, exponent) = Split(literal);
-        return literal.AsSpan().IndexOfAny('e', 'E') < 0
-            && exponent.IsZero
-            && (integer is "0" ? 0 : integer.Length) + fraction.Length <= MaxPrecision;
-    }
-
-    /// <summary>
-    /// The plain decimal text of the value with no redundant zeros (<c>1e2</c> is <c>100</c>, <c>2.5E-1</c> is
-    /// <c>0.25</c>, every zero is <c>0</c>), or null when it needs more than <see cref="MaxPrecision"/> positions, so a
-    /// <c>json</c> column cannot hold it exactly.
-    /// </summary>
-    public string? ToPlain()
-    {
-        if (Sign == 0)
-        {
-            return "0";
-        }
-
-        var lowest = Exponent - (Digits.Length - 1);
-        var integerDigits = Exponent >= 0 ? Exponent + 1 : BigInteger.Zero;
-        var fractionDigits = lowest < 0 ? -lowest : BigInteger.Zero;
-        if (integerDigits + fractionDigits > MaxPrecision)
-        {
-            return null;
-        }
-
-        var high = (int)BigInteger.Max(Exponent, 0);
-        var low = (int)BigInteger.Min(lowest, 0);
-        var text = new StringBuilder(Sign < 0 ? "-" : string.Empty);
-        for (var weight = high; weight >= 0; weight--)
-        {
-            text.Append(DigitAt(weight));
-        }
-
-        if (low < 0)
-        {
-            text.Append('.');
-            for (var weight = -1; weight >= low; weight--)
-            {
-                text.Append(DigitAt(weight));
-            }
-        }
-
-        return text.ToString();
-    }
-
-    /// <summary>
-    /// An order key: compare signs first; for equal nonzero signs, compare the magnitudes ordinally (reversed when
-    /// negative). The magnitude is 76 digits for weights 10^37 down to 10^-38, matching what SQL derives from a stored
-    /// value. A value beyond that window gets a 77-character magnitude that orders correctly against every 76-digit one
-    /// and equals none: 77 nines above 10^38, or the truncated digits followed by <c>5</c> for digits below 10^-38.
-    /// </summary>
-    public (int Sign, string Magnitude) ToOrderKey()
-    {
-        if (Sign == 0)
-        {
-            return (0, new string('0', KeyDigits));
-        }
-
-        if (Exponent >= MaxPrecision)
-        {
-            return (Sign, OverflowMagnitude);
-        }
-
-        var key = new char[KeyDigits];
-        Array.Fill(key, '0');
-        var truncated = false;
-        for (var i = 0; i < Digits.Length; i++)
-        {
-            var weight = Exponent - i;
-            if (weight < -MaxPrecision)
-            {
-                truncated = true;
-                break;
-            }
-
-            key[(int)(MaxPrecision - 1 - weight)] = Digits[i];
-        }
-
-        return (Sign, truncated ? new string(key) + "5" : new string(key));
-    }
-
-    private char DigitAt(int weight)
-    {
-        var index = Exponent - weight;
-        return index >= 0 && index < Digits.Length ? Digits[(int)index] : '0';
-    }
-
-    private static (bool Negative, string Integer, string Fraction, BigInteger Exponent) Split(string literal)
-    {
         var rest = literal.AsSpan();
         var negative = TrySkip(ref rest, '-');
-        var integer = TakeDigits(ref rest).ToString();
-        var fraction = TrySkip(ref rest, '.') ? TakeDigits(ref rest).ToString() : string.Empty;
+        var integer = TakeDigits(ref rest);
+        var fraction = TrySkip(ref rest, '.') ? TakeDigits(ref rest) : [];
 
         var exponent = BigInteger.Zero;
         if (TrySkip(ref rest, 'e') || TrySkip(ref rest, 'E'))
@@ -159,7 +44,56 @@ internal readonly record struct ExactDecimal(int Sign, string Digits, BigInteger
             }
         }
 
-        return rest.IsEmpty ? (negative, integer, fraction, exponent) : throw NotANumber();
+        if (!rest.IsEmpty)
+        {
+            throw NotANumber();
+        }
+
+        var digits = string.Concat(integer, fraction);
+        var first = digits.AsSpan().IndexOfAnyExcept('0');
+        if (first < 0)
+        {
+            return new ExactDecimal(0, string.Empty, BigInteger.Zero);
+        }
+
+        var last = digits.AsSpan().LastIndexOfAnyExcept('0');
+        return new ExactDecimal(negative ? -1 : 1, digits[first..(last + 1)], exponent + (integer.Length - 1 - first));
+    }
+
+    /// <summary>
+    /// The order key: two numbers compare exactly like their keys compared ordinally (as SQL Server compares them under
+    /// a binary collation, where a proper prefix sorts first). This is the algorithm of the schema function
+    /// <c>dbo.JsonNumberOrderKey</c>, which derives the key of a stored number in SQL; the two must change together.
+    /// </summary>
+    /// <remarks>
+    /// Zero is <c>1</c>. Otherwise, with <c>F</c> the digit count of <c>|Exponent|</c> in ten digits followed by the
+    /// digits of <c>|Exponent|</c>, the exponent field is <c>1</c> + <c>F</c> for a non-negative exponent and
+    /// <c>0</c> + 9-complement(<c>F</c>) for a negative one. A positive number is <c>2</c> + field + <see cref="Digits"/>;
+    /// a negative one is <c>0</c> + 9-complement(field + <see cref="Digits"/>) + <c>:</c>, where <c>:</c> sorts after
+    /// every digit, so the larger magnitude sorts first even when one mantissa is a prefix of the other.
+    /// </remarks>
+    public string ToOrderKey()
+    {
+        if (Sign == 0)
+        {
+            return "1";
+        }
+
+        var magnitude = BigInteger.Abs(Exponent).ToString(CultureInfo.InvariantCulture);
+        var count = magnitude.Length.ToString(CultureInfo.InvariantCulture).PadLeft(CountWidth, '0');
+        var field = Exponent.Sign >= 0 ? "1" + count + magnitude : "0" + Complement(count + magnitude);
+        return Sign > 0 ? "2" + field + Digits : "0" + Complement(field + Digits) + ":";
+    }
+
+    private static string Complement(string digits)
+    {
+        var complemented = new StringBuilder(digits.Length);
+        foreach (var digit in digits)
+        {
+            complemented.Append((char)('9' - digit + '0'));
+        }
+
+        return complemented.ToString();
     }
 
     private static bool TrySkip(ref ReadOnlySpan<char> rest, char expected)

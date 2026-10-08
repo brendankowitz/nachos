@@ -23,8 +23,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         CancellationToken ct)
     {
         runtime.Guard.ThrowIfReentered();
-        var storedMetadata = SqlJson.ToStorage(metadata, "metadata");
-        var storedConfiguration = SqlJson.ToStorage(configuration, "configuration");
+        var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
+        var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
 
         var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
@@ -59,8 +59,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
         runtime.Guard.ThrowIfReentered();
-        var storedMetadata = SqlJson.ToStorageOptional(metadata, "metadata");
-        var storedConfiguration = SqlJson.ToStorageOptional(configuration, "configuration");
+        var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
+        var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
 
         var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);

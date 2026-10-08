@@ -32,9 +32,12 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// </para>
 /// <para>
 /// <b>Metadata</b> is walked key by key with <c>OPENJSON</c> (each step must be an object), and values compare only
-/// within one JSON kind using <c>OPENJSON</c>'s <c>type</c> column. <b>Numbers</b> compare exactly: stored numbers are
-/// plain decimals of at most 38 digits (see <c>Storage.SqlJson</c>), which SQL maps to a 76-digit order key; the operand's
-/// key is computed exactly in C# (see <c>Storage.ExactDecimal</c>), including operands beyond that window.
+/// within one JSON kind using <c>OPENJSON</c>'s <c>type</c> column. <b>Numbers</b> compare exactly, with no
+/// approximation and no size or precision limit: metadata stores number text exactly as written (exponent forms
+/// included), and the schema function <c>dbo.JsonNumberOrderKey</c> maps that text to a variable-length key (sign, the
+/// exponent of the first significant digit as an arbitrary-size integer, then the significant digits) that sorts like the
+/// value; the operand's key is computed in C# by the same algorithm (<c>Storage.ExactDecimal.ToOrderKey</c>). So
+/// <c>1e2</c> equals <c>100</c>, and <c>1E400</c>, <c>5E-324</c> or 2^96 + 1 compare exactly.
 /// </para>
 /// </remarks>
 internal static partial class SqlFilterCompiler

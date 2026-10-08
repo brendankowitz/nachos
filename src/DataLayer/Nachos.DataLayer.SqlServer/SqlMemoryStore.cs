@@ -19,10 +19,12 @@ namespace Nachos.DataLayer.SqlServer;
 /// idempotency keys) follow the lock order documented on <c>Storage.Upserts</c>; RCSI makes plain reads lock-free.
 /// </para>
 /// <para>
-/// <b>JSON.</b> Caller JSON passes through <c>StrictJsonData.ToCanonical</c> at every entry point, and then through
-/// the <c>json</c> column's exact domain (see <c>Storage.SqlJson</c>): a number needing more than 38 significant digits,
-/// or a key longer than 4000 UTF-16 code units, is rejected with <see cref="Abstractions.NachosValidationException"/>,
-/// and an exponent literal is stored as the plain decimal of the same value. Every returned object is freshly parsed.
+/// <b>JSON</b> is stored losslessly as text in <c>nvarchar(max)</c> columns that a CHECK constraint requires to hold a
+/// JSON object. Caller JSON passes through <c>StrictJsonData.ToCanonical</c> at every entry point and its canonical text
+/// is stored exactly as emitted: numbers keep their spelling (<c>1e2</c>, <c>1E400</c>, 40-digit integers), with no
+/// normalization and no size cap. The one limit SQL Server itself imposes is that a key longer than 4000 UTF-16 code
+/// units is rejected with <see cref="Abstractions.NachosValidationException"/>, because <c>OPENJSON</c> truncates
+/// longer keys (see <c>Storage.SqlJson</c>). Every returned object is freshly parsed.
 /// </para>
 /// <para>
 /// <b>Serializer re-entry.</b> While an <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback

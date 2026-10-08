@@ -25,7 +25,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// <summary>The longest <c>LIKE</c> pattern SQL Server accepts (8000 bytes of <c>nvarchar</c>).</summary>
     private const int MaxLikePattern = 4000;
 
-    private const string ListColumns = "WITH (t int '$.t', s int '$.s', k nvarchar(max) '$.k')";
+    private const string ListColumns = "WITH (t int '$.t', k nvarchar(max) '$.k')";
 
     private readonly List<SqlParameter> _parameters = [];
     private readonly Dictionary<(SqlDbType Type, string Value), string> _shared = [];
@@ -281,14 +281,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// <summary>The value at a path inside the metadata: the final <c>OPENJSON</c> row, plus its number key on demand.</summary>
     private sealed class MetadataRow(FilterWriter writer, string row, StringBuilder from)
     {
-        private (string Sign, string Magnitude)? _numberKey;
+        private string? _numberKey;
 
         public string Value => $"{row}.[value]";
 
         public string Type => $"{row}.[type]";
 
         /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed.</summary>
-        public (string Sign, string Magnitude) NumberKey => _numberKey ??= writer.NumberKey(Value, from);
+        public string NumberKey => _numberKey ??= writer.NumberKey(Value, Type, from);
     }
 
     /// <summary>False when a key is longer than any stored key can be (see <see cref="SqlJson.MaxKeyLength"/>).</summary>
@@ -386,7 +386,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         var wanted = Alias();
         var element = Alias();
         var from = new StringBuilder($"FROM OPENJSON(CASE WHEN {row.Type} = 4 THEN {row.Value} END) AS {element}");
-        var key = NumberKey($"{element}.[value]", from);
+        var key = NumberKey($"{element}.[value]", $"{element}.[type]", from);
         return $"({row.Type} = 4 AND NOT EXISTS (SELECT 1 FROM OPENJSON({list}) {ListColumns} AS {wanted} WHERE NOT EXISTS (SELECT 1 {from} WHERE {ElementMatches($"{element}.[value]", $"{element}.[type]", key, wanted)})))";
     }
 
@@ -398,17 +398,17 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     }
 
     /// <summary>
-    /// Kind-and-value equality of a JSON value with a list element <c>{t, s, k}</c> (see <see cref="ListParameter"/>).
+    /// Kind-and-value equality of a JSON value with a list element <c>{t, k}</c> (see <see cref="ListParameter"/>).
     /// </summary>
-    private static string ElementMatches(string value, string type, (string Sign, string Magnitude) key, string wanted) =>
+    private static string ElementMatches(string value, string type, string key, string wanted) =>
         $"(({type} = 1 AND {wanted}.t = 1 AND {value} COLLATE {Bin2} = {wanted}.k COLLATE {Bin2} AND DATALENGTH({value}) = DATALENGTH({wanted}.k))"
-        + $" OR ({type} = 2 AND {wanted}.t = 2 AND {key.Sign} = {wanted}.s AND ({key.Sign} = 0 OR {key.Magnitude} = {wanted}.k))"
+        + $" OR ({type} = 2 AND {wanted}.t = 2 AND {key} = {wanted}.k COLLATE {Bin2})"
         + $" OR ({type} = 3 AND {wanted}.t = 3 AND {value} = {wanted}.k))";
 
     /// <summary>
-    /// A list of scalar operands as one JSON parameter of <c>{t, s, k}</c> objects: <c>t</c> is the <c>OPENJSON</c>
-    /// type (1 string, 2 number, 3 boolean), <c>k</c> the string, the number's order magnitude or <c>true</c>/<c>false</c>,
-    /// and <c>s</c> a number's sign.
+    /// A list of scalar operands as one JSON parameter of <c>{t, k}</c> objects: <c>t</c> is the <c>OPENJSON</c> type
+    /// (1 string, 2 number, 3 boolean) and <c>k</c> the string, the number's order key (see
+    /// <see cref="ExactDecimal.ToOrderKey"/>) or <c>true</c>/<c>false</c>.
     /// </summary>
     private string ListParameter(IEnumerable<JsonNode> operands)
     {
@@ -418,7 +418,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
             list.Add(operand.GetValueKind() switch
             {
                 JsonValueKind.String => new JsonObject { ["t"] = 1, ["k"] = operand.GetValue<string>() },
-                JsonValueKind.Number => NumberElement(operand),
+                JsonValueKind.Number => new JsonObject { ["t"] = 2, ["k"] = ExactDecimal.Parse(operand.ToJsonString()).ToOrderKey() },
                 JsonValueKind.True => new JsonObject { ["t"] = 3, ["k"] = "true" },
                 JsonValueKind.False => new JsonObject { ["t"] = 3, ["k"] = "false" },
                 var other => throw new NotSupportedException($"A metadata list element of kind {other} cannot be compared."),
@@ -426,43 +426,34 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         }
 
         return Parameter(SqlDbType.NVarChar, list.ToJsonString(), SqlParameters.LongText);
-
-        static JsonObject NumberElement(JsonNode number)
-        {
-            var (sign, magnitude) = ExactDecimal.Parse(number.ToJsonString()).ToOrderKey();
-            return new JsonObject { ["t"] = 2, ["s"] = sign, ["k"] = magnitude };
-        }
     }
 
     // ------------------------------------------------------------------------------------------------ numbers
 
     /// <summary>
-    /// Appends to <paramref name="from"/> the derivation of a stored number's order key from its text, and returns the key's
-    /// sign and magnitude expressions. Stored numbers are plain decimals of at most 38 digits (see <see cref="SqlJson"/>),
-    /// so the magnitude is the integer digits right-aligned in 38 places followed by the fraction digits left-aligned in 38:
-    /// exactly <see cref="ExactDecimal.ToOrderKey"/>. Text of another kind yields a meaningless key that callers never
-    /// read, because they test the type first; no step can fail.
+    /// Appends to <paramref name="from"/> the order key of a stored JSON number, computed by the schema function
+    /// <c>dbo.JsonNumberOrderKey</c> from the number's text, and returns the key expression. The key is exact for any
+    /// number text, of any length or exponent; <see cref="ExactDecimal.ToOrderKey"/> documents it and computes the same
+    /// key for operands.
     /// </summary>
-    private (string Sign, string Magnitude) NumberKey(string value, StringBuilder from)
+    /// <remarks>
+    /// <c>OPENJSON</c> over <c>nvarchar(max)</c> returns a number's text exactly as stored, at any length (unlike
+    /// <c>JSON_VALUE</c>, which returns at most 4000 characters). Keys compare under a binary collation, where SQL's space
+    /// padding makes a proper prefix sort first, as the key requires. Rows that are not numbers pass NULL and get a NULL
+    /// key, and every caller tests <c>type = 2</c> first, so a NULL never decides a match.
+    /// </remarks>
+    private string NumberKey(string value, string type, StringBuilder from)
     {
-        var unsigned = Alias();
-        var point = Alias();
-        var digits = Alias();
-        var sign = Alias();
-        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT CASE WHEN LEFT({value}, 1) = N'-' THEN SUBSTRING({value}, 2, 100) ELSE {value} END AS a, CASE WHEN LEFT({value}, 1) = N'-' THEN -1 ELSE 1 END AS s) AS {unsigned}");
-        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT CHARINDEX(N'.', {unsigned}.a) AS d) AS {point}");
-        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT CAST(RIGHT(REPLICATE('0', 38) + CAST(CASE WHEN {point}.d > 0 THEN LEFT({unsigned}.a, {point}.d - 1) ELSE {unsigned}.a END AS varchar(100)), 38) + LEFT(CAST(CASE WHEN {point}.d > 0 THEN SUBSTRING({unsigned}.a, {point}.d + 1, 100) ELSE N'' END AS varchar(100)) + REPLICATE('0', 38), 38) AS varchar(80)) COLLATE {Bin2} AS m) AS {digits}");
-        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT CASE WHEN {digits}.m LIKE '%[1-9]%' THEN {unsigned}.s ELSE 0 END AS s) AS {sign}");
-        return ($"{sign}.s", $"{digits}.m");
+        var key = Alias();
+        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT dbo.JsonNumberOrderKey(CASE WHEN {type} = 2 THEN {value} END) COLLATE {Bin2} AS k) AS {key}");
+        return $"{key}.k";
     }
 
     /// <summary>Exact comparison of a stored number's key with a number operand as -1, 0 or 1.</summary>
-    private string CompareNumber((string Sign, string Magnitude) stored, JsonNode operand)
+    private string CompareNumber(string stored, JsonNode operand)
     {
-        var (sign, magnitude) = ExactDecimal.Parse(operand.ToJsonString()).ToOrderKey();
-        var operandSign = Parameter(SqlDbType.Int, sign.ToString(CultureInfo.InvariantCulture), (name, _) => SqlParameters.Int(name, sign));
-        var operandMagnitude = Parameter(SqlDbType.VarChar, magnitude, SqlParameters.Ascii);
-        return $"(CASE WHEN {stored.Sign} <> {operandSign} THEN SIGN({stored.Sign} - {operandSign}) WHEN {stored.Sign} = 0 THEN 0 WHEN {stored.Magnitude} = {operandMagnitude} THEN 0 WHEN {stored.Magnitude} < {operandMagnitude} THEN -{stored.Sign} ELSE {stored.Sign} END)";
+        var key = Parameter(SqlDbType.VarChar, ExactDecimal.Parse(operand.ToJsonString()).ToOrderKey(), SqlParameters.Ascii);
+        return $"(CASE WHEN {stored} = {key} THEN 0 WHEN {stored} < {key} THEN -1 ELSE 1 END)";
     }
 
     // ------------------------------------------------------------------------------------------------ names

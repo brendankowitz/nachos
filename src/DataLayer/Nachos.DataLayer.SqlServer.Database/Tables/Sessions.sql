@@ -7,12 +7,17 @@ CREATE TABLE [dbo].[Sessions]
     [LifecycleVersion] INT            NOT NULL CONSTRAINT [DF_Sessions_LifecycleVersion] DEFAULT 0,
     [DeletionJobId]    BIGINT         NULL,
     [NextMessageSeq]   BIGINT         NOT NULL CONSTRAINT [DF_Sessions_NextMessageSeq] DEFAULT 1,
-    [Metadata]         JSON           NOT NULL CONSTRAINT [DF_Sessions_Metadata] DEFAULT '{}',
-    [InternalMetadata] JSON           NOT NULL CONSTRAINT [DF_Sessions_InternalMetadata] DEFAULT '{}',
-    [Configuration]    JSON           NOT NULL CONSTRAINT [DF_Sessions_Configuration] DEFAULT '{}',
+    [Metadata]         NVARCHAR (MAX) NOT NULL CONSTRAINT [DF_Sessions_Metadata] DEFAULT N'{}',
+    [InternalMetadata] NVARCHAR (MAX) NOT NULL CONSTRAINT [DF_Sessions_InternalMetadata] DEFAULT N'{}',
+    [Configuration]    NVARCHAR (MAX) NOT NULL CONSTRAINT [DF_Sessions_Configuration] DEFAULT N'{}',
     [CreatedAt]        DATETIMEOFFSET (7) NOT NULL, -- application clock; no DB default
 
     CONSTRAINT [PK_Sessions] PRIMARY KEY CLUSTERED ([Id]),
+    -- JSON columns hold a JSON object; each CHECK is written in the form SQL Server stores
+    -- (sys.check_constraints.definition), so DacFx sees no drift.
+    CONSTRAINT [CK_Sessions_Metadata_IsJsonObject] CHECK ((isjson([Metadata],OBJECT)=(1))),
+    CONSTRAINT [CK_Sessions_InternalMetadata_IsJsonObject] CHECK ((isjson([InternalMetadata],OBJECT)=(1))),
+    CONSTRAINT [CK_Sessions_Configuration_IsJsonObject] CHECK ((isjson([Configuration],OBJECT)=(1))),
     CONSTRAINT [FK_Sessions_Workspaces] FOREIGN KEY ([WorkspaceId]) REFERENCES [dbo].[Workspaces] ([Id]),
     CONSTRAINT [UQ_Sessions_Workspace_Name] UNIQUE NONCLUSTERED ([WorkspaceId], [Name]),
     -- Alternate key: lets child tables use a composite FK that carries WorkspaceId.

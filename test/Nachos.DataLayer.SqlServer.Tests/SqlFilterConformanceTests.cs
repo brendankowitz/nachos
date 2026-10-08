@@ -42,7 +42,7 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 transaction,
                 "INSERT dbo.Workspaces (Name, LifecycleState, Metadata, Configuration, CreatedAt) OUTPUT inserted.Id VALUES (@n, 0, @m, N'{}', @c)",
                 ("@n", workspace.Name),
-                ("@m", SqlJson.ToStorage(workspace.Metadata, "metadata")),
+                ("@m", SqlJson.ToStorage(workspace.Metadata, JsonField.Metadata)),
                 ("@c", workspace.CreatedAt));
         }
 
@@ -56,7 +56,7 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 "INSERT dbo.Peers (WorkspaceId, Name, IsInternal, Metadata, Configuration, CreatedAt) OUTPUT inserted.Id VALUES (@w, @n, 0, @m, N'{}', @c)",
                 ("@w", scope),
                 ("@n", peer.Name),
-                ("@m", SqlJson.ToStorage(peer.Metadata, "metadata")),
+                ("@m", SqlJson.ToStorage(peer.Metadata, JsonField.Metadata)),
                 ("@c", peer.CreatedAt));
         }
 
@@ -73,7 +73,7 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 ("@n", session.Name),
                 ("@s", (byte)(session.IsActive ? LifecycleState.Active : LifecycleState.Inactive)),
                 ("@q", messageCount + 1L),
-                ("@m", SqlJson.ToStorage(session.Metadata, "metadata")),
+                ("@m", SqlJson.ToStorage(session.Metadata, JsonField.Metadata)),
                 ("@c", session.CreatedAt));
             sessionIds[session.Name] = sessionId;
 
@@ -106,7 +106,7 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 ("@q", seq),
                 ("@t", message.Content),
                 ("@k", message.TokenCount),
-                ("@m", SqlJson.ToStorage(message.Metadata, "metadata")),
+                ("@m", SqlJson.ToStorage(message.Metadata, JsonField.Metadata)),
                 ("@c", message.CreatedAt));
         }
 
