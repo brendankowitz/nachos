@@ -11,8 +11,10 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// docker-compose/podman/nerdctl/buildah) commands that are not offline (<see cref="CliInvocations"/>), Az PowerShell, Azure endpoints (ARM, Entra, storage,
 /// Key Vault, SQL, App Service, sovereign clouds), Azure actions, registry logins, pushes (any tool) and ACR
 /// references, and reusable workflows from other repositories. Patterns are matched per logical statement (shell and
-/// PowerShell line continuations and YAML folded <c>run: &gt;</c> blocks joined, <c>#</c> comments stripped when
-/// quoting is unambiguous) and reported at the statement's first physical line.
+/// PowerShell line continuations, YAML folded <c>run: &gt;</c> blocks and multi-line plain or quoted YAML scalars
+/// joined, <c>#</c> comments stripped when quoting is unambiguous) and reported at the statement's first physical
+/// line. The continuation lines of a display-only YAML key (<c>name</c>, <c>run-name</c>, <c>description</c>) are prose
+/// and not scanned.
 /// <para>
 /// <c>.github/scripts</c> also holds JavaScript, docs and test fixtures, where words like <c>az</c> are ordinary
 /// identifiers or prose. There, <c>node_modules/</c> (created by <c>npm ci</c>), <c>fixtures/</c> and <c>*.md</c>
@@ -23,9 +25,14 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// except that outside <c>.github/scripts</c> a <c>*.md</c> file is prose and gets only the unambiguous rules.
 /// </para>
 /// <para>
-/// Markdown is never executed by CI, and its sentences ("offline Bicep validation, and SDK conformance") read as
-/// <c>bicep &lt;unknown verb&gt;</c> to the command allow-list. Limit: an ambiguous <c>az &lt;verb&gt;</c> or
-/// <c>bicep &lt;verb&gt;</c> command written only in a Markdown file is not detected.
+/// Markdown outside <c>.github/scripts</c> is read as prose because its sentences ("offline Bicep validation, and SDK
+/// conformance") read as <c>bicep &lt;unknown verb&gt;</c> to the command allow-list. It still flags the unambiguous
+/// commands above; it does NOT flag an ambiguous <c>az &lt;verb&gt;</c> or <c>bicep &lt;verb&gt;</c> command. That is
+/// safe only while Markdown is never executed, so the scripts that could execute it (YAML <c>run:</c> content and
+/// shell/PowerShell scripts under the scanned roots) are checked for running a <c>*.md</c> file as code: given to an
+/// interpreter (bash, sh, zsh, dash, pwsh, powershell, python*, node, source, <c>.</c>, iex, Invoke-Expression, eval),
+/// piped or redirected into one, or invoked as a command (<see cref="MarkdownExecution"/>). Naming a Markdown file
+/// any other way (<c>cat README.md</c>, <c>markdownlint docs/*.md</c>, a trigger path or action input) is not flagged.
 /// </para>
 /// <para>
 /// The only exemption is, inside a workflow whose triggers are exactly <c>workflow_dispatch</c>, a line within a
@@ -105,6 +112,14 @@ internal sealed class UnattendedAzureScanner(string root)
 
     private static readonly Regex BlockScalarIndicator = new(@"^[|>][-+0-9]*$", RegexOptions.CultureInvariant);
 
+    // A YAML `key:` (optionally a sequence entry's first key) followed by whitespace or the end; its column is lead's length.
+    private static readonly Regex KeyNode = new(
+        @"^(?<lead>\s*(?:-\s+)?)(?:""(?<key>[^""]*)""|'(?<key>[^']*)'|(?<key>[\w.-]+))\s*:(?:\s+(?<value>.*))?$",
+        RegexOptions.CultureInvariant);
+
+    // A YAML sequence entry `- value` (not a `- key:`, which KeyNode reads first); its column is the dash's.
+    private static readonly Regex EntryNode = new(@"^(?<lead>\s*)-(?:\s+(?<value>.*))?$", RegexOptions.CultureInvariant);
+
     private static readonly Regex ListEntry = new(
         @"^\s*-\s*(?:""(?<key>[^""]+)""|'(?<key>[^']+)'|(?<key>[\w.-]+))\s*$",
         RegexOptions.CultureInvariant);
@@ -133,8 +148,10 @@ internal sealed class UnattendedAzureScanner(string root)
             }
 
             var exempt = IsWorkflow(relative) ? ExemptLines(lines) : [];
+            var yaml = IsYaml(relative) ? ReadYamlLines(lines) : null;
+            var shellScript = yaml is null && IsShellScript(relative);
 
-            foreach (var statement in Statements(lines, IsYaml(relative)))
+            foreach (var statement in Statements(lines, yaml))
             {
                 // A statement is exempt only if every physical line of it is.
                 if (Enumerable.Range(statement.First, statement.Last - statement.First + 1).All(exempt.Contains))
@@ -154,6 +171,14 @@ internal sealed class UnattendedAzureScanner(string root)
                 {
                     hits.Add(new ScanHit(relative, statement.First + 1, rule));
                 }
+
+                // Only script code runs a file: run: content in YAML (not a trigger path, step name or action input that
+                // names a *.md), and every line of a shell or PowerShell script.
+                var isScript = yaml?.Script[statement.First] ?? shellScript;
+                if (isScript && MarkdownExecution.RunsMarkdown(yaml is null ? statement.Text : WithoutRunKey(statement.Text)))
+                {
+                    hits.Add(new ScanHit(relative, statement.First + 1, MarkdownExecution.Rule));
+                }
             }
         }
 
@@ -166,21 +191,20 @@ internal sealed class UnattendedAzureScanner(string root)
     /// are stripped so a mention in prose is not a hit, unless some line of the file leaves a quote open: a
     /// multi-line string makes it impossible to tell a comment from string content, so nothing is stripped.
     /// In YAML a trailing backtick continues only inside <c>run:</c> content: elsewhere (a step <c>name:</c> such
-    /// as <c>Install `azd`</c>) it is Markdown, and joining it to the next key would invent a command. The lines
-    /// of a folded <c>run: &gt;</c> block are one shell line once YAML folds them, so they form one statement; a
-    /// literal <c>|</c> block keeps one command per line.
+    /// as <c>Install `azd`</c>) it is Markdown, and joining it to the next key would invent a command. Lines that
+    /// YAML folds into one line (<see cref="ReadYamlLines"/>) form one statement; a literal <c>|</c> block keeps one
+    /// command per line, and the continuation lines of a display-only key are not scanned.
     /// </summary>
-    private static IEnumerable<Statement> Statements(string[] lines, bool isYaml)
+    private static IEnumerable<Statement> Statements(string[] lines, YamlLines? yaml)
     {
         var stripComments = !lines.Any(l => ScanLine(l).UnterminatedQuote);
-        var run = isYaml ? RunLines(lines) : null;
         var text = new System.Text.StringBuilder();
         var first = 0;
         for (var i = 0; i < lines.Length; i++)
         {
-            var code = (stripComments ? ScanLine(lines[i]).Code : lines[i]).TrimEnd();
-            var folded = run is not null && run.FoldedBlock[i] >= 0 && i + 1 < lines.Length && run.FoldedBlock[i + 1] == run.FoldedBlock[i];
-            var lineContinues = code.EndsWith('\\') || (code.EndsWith('`') && (run?.Content[i] ?? true));
+            var code = yaml?.Prose[i] == true ? string.Empty : (stripComments ? ScanLine(lines[i]).Code : lines[i]).TrimEnd();
+            var folded = yaml is not null && yaml.Fold[i] >= 0 && i + 1 < lines.Length && yaml.Fold[i + 1] == yaml.Fold[i];
+            var lineContinues = code.EndsWith('\\') || (code.EndsWith('`') && (yaml?.Script[i] ?? true));
             var continues = i + 1 < lines.Length && (folded || lineContinues);
             text.Append(lineContinues && continues ? code[..^1] + " " : folded ? code + " " : code);
             if (continues)
@@ -198,53 +222,213 @@ internal sealed class UnattendedAzureScanner(string root)
     private sealed record Statement(int First, int Last, string Text);
 
     /// <summary>
-    /// The lines of a YAML file that hold script code: a <c>run:</c> line itself and, when its value is a block
-    /// scalar (<c>|</c>, <c>&gt;-</c>, ...), every following line indented deeper than the <c>run</c> key. Lines of a
-    /// FOLDED (<c>&gt;</c>) block carry the index of their <c>run:</c> line in <see cref="RunLineInfo.FoldedBlock"/>
-    /// (-1 otherwise).
+    /// How YAML reads each line, for every <c>key:</c> or <c>- </c> entry whose value is a scalar:
+    /// <list type="bullet">
+    /// <item>A block scalar (<c>|</c>, <c>&gt;-</c>, ...) owns every following line indented deeper than its key; those
+    /// lines are content, never keys. Only a folded (<c>&gt;</c>) <c>run:</c> block is joined, as before; other block
+    /// lines stay one statement each.</item>
+    /// <item>A plain or single/double-quoted scalar continues on lines indented deeper than its key (a plain one stops at
+    /// a <c>key:</c> line, a quoted one at its closing quote; the value may also start on the line after an empty
+    /// <c>key:</c>). YAML joins those lines with a single space and turns a blank line into a newline, so the non-blank
+    /// lines between blank lines share a <see cref="YamlLines.Fold"/> group.</item>
+    /// <item>The continuation lines of a display-only key (<c>name</c>, <c>run-name</c>, <c>description</c>) are
+    /// <see cref="YamlLines.Prose"/>: never a command, so not scanned. The key line itself is scanned as before.</item>
+    /// </list>
+    /// <see cref="YamlLines.Script"/> marks <c>run:</c> content: the key line and every line of its value.
     /// </summary>
-    private static RunLineInfo RunLines(string[] lines)
+    private static YamlLines ReadYamlLines(string[] lines)
     {
-        var content = new bool[lines.Length];
-        var folded = Enumerable.Repeat(-1, lines.Length).ToArray();
-        int? blockKeyIndent = null;
-        var blockStart = -1;
-        var blockFolds = false;
-        for (var i = 0; i < lines.Length; i++)
+        var layout = new YamlLines(new bool[lines.Length], Enumerable.Repeat(-1, lines.Length).ToArray(), new bool[lines.Length]);
+        var i = 0;
+        while (i < lines.Length)
         {
-            var line = lines[i];
-            if (blockKeyIndent is int keyIndent)
-            {
-                if (line.Trim().Length == 0 || IndentOf(line) > keyIndent)
-                {
-                    content[i] = true;
-                    folded[i] = blockFolds ? blockStart : -1;
-                    continue;
-                }
+            i = ReadNode(lines, i, layout);
+        }
 
-                blockKeyIndent = null;
+        return layout;
+    }
+
+    /// <summary>Records the node starting at <paramref name="line"/> in <paramref name="layout"/>; returns the next line to read.</summary>
+    private static int ReadNode(string[] lines, int line, YamlLines layout)
+    {
+        var key = KeyNode.Match(lines[line]);
+        var node = key.Success ? key : EntryNode.Match(lines[line]);
+        if (!node.Success)
+        {
+            return line + 1;
+        }
+
+        var column = node.Groups["lead"].Length;
+        var name = key.Success ? key.Groups["key"].Value : null;
+        var isRun = name == "run";
+        var isProse = name is "name" or "run-name" or "description";
+        layout.Script[line] |= isRun;
+
+        var first = line;
+        var valueAt = node.Groups["value"].Success ? node.Groups["value"].Index : lines[line].Length;
+        if (StripComment(lines[line][valueAt..]).Trim().Length == 0)
+        {
+            // No value on the key line: a scalar may start on the next one (`run:` then a deeper `azd`).
+            first = NextCodeLine(lines, line + 1);
+            if (first < 0 || IndentOf(lines[first]) <= column || KeyNode.IsMatch(lines[first]) || EntryNode.IsMatch(lines[first]))
+            {
+                return line + 1; // a nested mapping or sequence, or nothing
             }
 
-            var run = RunKey.Match(line);
-            if (!run.Success)
+            valueAt = IndentOf(lines[first]);
+        }
+
+        var value = StripComment(lines[first][valueAt..]).Trim();
+        if (BlockScalarIndicator.IsMatch(value))
+        {
+            var end = first + 1;
+            while (end < lines.Length && (lines[end].Trim().Length == 0 || IndentOf(lines[end]) > column))
+            {
+                layout.Script[end] = isRun;
+                layout.Fold[end] = isRun && value.StartsWith('>') ? first : -1;
+                end++;
+            }
+
+            return end;
+        }
+
+        int last;
+        if (value[0] is '"' or '\'')
+        {
+            last = QuotedScalarEnd(lines, first, valueAt, column);
+        }
+        else if (value[0] is '[' or '{' or '&' or '*' or '!' or '%' or '@' or '`' or '|' or '>' || value is "-" or "?" || value.StartsWith("- ", StringComparison.Ordinal) || value.StartsWith("? ", StringComparison.Ordinal))
+        {
+            return first + 1; // flow collection, anchor, alias, tag or other indicator: not read as a scalar
+        }
+        else
+        {
+            last = PlainScalarEnd(lines, first, column);
+        }
+
+        for (var k = first; k <= last; k++)
+        {
+            if (isProse)
+            {
+                layout.Prose[k] = k != line;
+                continue;
+            }
+
+            layout.Script[k] |= isRun;
+            layout.Fold[k] = lines[k].Trim().Length == 0 ? -1 : first;
+        }
+
+        return last + 1;
+    }
+
+    /// <summary>The last line of a plain scalar starting on <paramref name="first"/> under a key at <paramref name="column"/>.</summary>
+    private static int PlainScalarEnd(string[] lines, int first, int column)
+    {
+        var last = first;
+        for (var k = first + 1; k < lines.Length; k++)
+        {
+            if (lines[k].Trim().Length == 0)
             {
                 continue;
             }
 
-            content[i] = true;
-            var indicator = StripComment(run.Groups["value"].Value).Trim();
-            if (BlockScalarIndicator.IsMatch(indicator))
+            if (IndentOf(lines[k]) <= column || KeyNode.IsMatch(lines[k]))
             {
-                blockKeyIndent = run.Groups["lead"].Length;
-                blockStart = i;
-                blockFolds = indicator.StartsWith('>');
+                break; // a plain scalar cannot hold `key: `, so that line is the next node
+            }
+
+            last = k;
+        }
+
+        return last;
+    }
+
+    /// <summary>
+    /// The last line of a quoted scalar opening at <paramref name="quoteAt"/> on <paramref name="first"/>: the line
+    /// that closes it, or the last deeper line before the indentation falls back to the key's (malformed YAML).
+    /// </summary>
+    private static int QuotedScalarEnd(string[] lines, int first, int quoteAt, int column)
+    {
+        var quote = lines[first][quoteAt];
+        if (ClosingQuote(lines[first], quoteAt + 1, quote) >= 0)
+        {
+            return first;
+        }
+
+        var last = first;
+        for (var k = first + 1; k < lines.Length; k++)
+        {
+            if (lines[k].Trim().Length == 0)
+            {
+                continue;
+            }
+
+            if (IndentOf(lines[k]) <= column)
+            {
+                break;
+            }
+
+            last = k;
+            if (ClosingQuote(lines[k], 0, quote) >= 0)
+            {
+                break;
             }
         }
 
-        return new RunLineInfo(content, folded);
+        return last;
     }
 
-    private sealed record RunLineInfo(bool[] Content, int[] FoldedBlock);
+    /// <summary>The index of the quote closing a YAML scalar (<c>\"</c> escapes in double quotes, <c>''</c> in single), or -1.</summary>
+    private static int ClosingQuote(string text, int from, char quote)
+    {
+        for (var i = from; i < text.Length; i++)
+        {
+            if (quote == '"' && text[i] == '\\')
+            {
+                i++;
+            }
+            else if (text[i] == quote && quote == '\'' && i + 1 < text.Length && text[i + 1] == '\'')
+            {
+                i++;
+            }
+            else if (text[i] == quote)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>The first line at or after <paramref name="from"/> that is not blank or a comment, or -1.</summary>
+    private static int NextCodeLine(string[] lines, int from)
+    {
+        for (var i = from; i < lines.Length; i++)
+        {
+            if (StripComment(lines[i]).Trim().Length > 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <param name="Script">The line is <c>run:</c> content.</param>
+    /// <param name="Fold">Lines with the same non-negative group are one line once YAML folds them (-1: not folded).</param>
+    /// <param name="Prose">The line continues a display-only key's value.</param>
+    private sealed record YamlLines(bool[] Script, int[] Fold, bool[] Prose);
+
+    /// <summary>A statement's command line without the YAML <c>run:</c> key it starts with, if any.</summary>
+    private static string WithoutRunKey(string statement)
+    {
+        var run = RunKey.Match(statement);
+        return run.Success ? run.Groups["value"].Value : statement;
+    }
+
+    /// <summary>Shell and PowerShell scripts outside YAML (an extensionless file may be an executable script).</summary>
+    private static bool IsShellScript(string relative) =>
+        Path.GetExtension(relative).ToLowerInvariant() is "" or ".sh" or ".bash" or ".zsh" or ".ksh" or ".dash" or ".ps1" or ".psm1" or ".cmd" or ".bat";
 
     private static Regex Pattern(string expression) =>
         new(expression, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -274,8 +458,9 @@ internal sealed class UnattendedAzureScanner(string root)
 
     /// <summary>
     /// Which rules apply to a file. Under <c>.github/scripts</c> the rules narrow by file type (see the class comment).
-    /// Elsewhere every file gets all rules except <c>*.md</c>, which is prose and gets only the unambiguous rules, so
-    /// an ambiguous <c>az</c>/<c>bicep</c> command written only in Markdown is not detected.
+    /// Elsewhere every file gets all rules except <c>*.md</c>, which is prose and gets only the unambiguous rules: an
+    /// ambiguous <c>az</c>/<c>bicep</c> command written only in Markdown is not detected. Executing Markdown is what
+    /// would make that a gap, and is flagged in the scripts that could do it (<see cref="MarkdownExecution"/>).
     /// </summary>
     private static FileRules RulesFor(string relative)
     {
