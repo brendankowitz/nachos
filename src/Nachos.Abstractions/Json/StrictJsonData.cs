@@ -51,13 +51,16 @@ namespace Nachos.Abstractions.Json;
 /// as soon as the first container beyond it is reached.
 /// </para>
 /// <para>
-/// <b>Stack safety.</b> <see cref="ToCanonical"/> walks with an explicit stack kept on the heap, for explicit
-/// containers and for object and array <see cref="JsonElement"/>s alike, so its own native stack use is constant: it
-/// is safe at any permitted depth on any thread, including a very deep input that is then rejected. This covers
-/// <see cref="ToCanonical"/> only. Later System.Text.Json operations on a deep result (<c>ToJsonString</c>,
-/// <c>DeepClone</c>, serialization, <c>JsonNode.DeepEquals</c>) use the framework's own recursion, and a result
-/// nested close to <see cref="MaxAllowedDepth"/> may need more stack than a small thread has. Callers that handle
-/// untrusted depth should keep <c>maxDepth</c> low; <see cref="DefaultMaxDepth"/> is safe for all of them.
+/// <b>Stack safety.</b> <see cref="ToCanonical"/> uses no native recursion of its own: it walks with an explicit
+/// stack kept on the heap, for explicit containers and for object and array <see cref="JsonElement"/>s alike, so its
+/// frames are constant whatever the depth, including for a very deep input that is then rejected. One framework
+/// exception applies: a lazily parsed tree (<see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>
+/// with null <see cref="JsonNodeOptions"/>) makes System.Text.Json itself recurse once per level as its nodes are first
+/// read, about 64 KiB of stack at <see cref="MaxAllowedDepth"/>, which was verified to fit on a 128 KiB thread. Parsing
+/// with a non-null <see cref="JsonNodeOptions"/> avoids it. Later System.Text.Json operations on a deep result
+/// (<c>ToJsonString</c>, <c>DeepClone</c>, serialization, <c>JsonNode.DeepEquals</c>) also use the framework's own
+/// recursion. Callers that handle untrusted depth should keep <c>maxDepth</c> low; <see cref="DefaultMaxDepth"/> is
+/// safe for all of them.
 /// </para>
 /// <para>
 /// <b>JSON-backed values.</b> Values that came from parsed JSON (<see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>,
@@ -161,7 +164,8 @@ public static class StrictJsonData
                         RequireWellFormed(child.Key);
                         if (((JsonObject)frame.Result).ContainsKey(child.Key))
                         {
-                            // The same outcome as a repeated name in a parsed object, which the node reports on enumeration.
+                            // Reached for element-backed objects, which a JsonDocument allows to repeat a name. A constructed
+                            // JsonObject cannot repeat one and a parsed one fails on enumeration first, so for those this is defensive.
                             throw new NachosValidationException(NotValid, new ArgumentException("A property name is repeated."));
                         }
                     }
@@ -399,6 +403,7 @@ public static class StrictJsonData
             $"The value is backed by '{BackingType(value)}', which is not a JSON data type. Build it with JsonObject "
             + "and JsonArray, or convert it first with JsonSerializer.SerializeToNode.");
     }
+
     private static void RequireDepth(int depth, int maxDepth)
     {
         if (depth > maxDepth)
