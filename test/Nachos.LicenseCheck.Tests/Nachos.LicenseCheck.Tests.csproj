@@ -1,2 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <None Include="Fixtures\complete-licenses.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="DacFxEvidence\license.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="DacFxEvidence\THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\eng\license-exceptions.json" Link="DacFxEvidence\license-exceptions.json" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\..\eng\license-check\Nachos.LicenseCheck.csproj" />
+    <None Include="..\..\eng\license-check\allowlist.json" Link="allowlist.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
