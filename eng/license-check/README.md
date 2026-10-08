@@ -305,6 +305,12 @@ package with the declared name and exact snapshot binding, not merely an
 existing directory within the store. Shared `node_modules` aliases are checked;
 unbound physical packages there are not skipped. Every indexed package still
 requires its archive metadata and documentary comparison before an audit passes.
+Entry admission checks links before directory classification, including dangling
+and file-target links. Store/context/scoped containers must be physical
+directories; non-directory dependency slots fail. Regular store-root metadata
+files are not package slots. `.bin` and physical packages directly under
+top-level `node_modules/<name>` remain outside this installed-store check;
+license decisions still require the locked archives and shipped bundle inventory.
 Peer contexts are reconciled in both directions: optional absence cannot leave
 a bound context, and every transitive name must trace to a child's declared
 peer requirement. Forwarded bindings must agree exactly; locally provided peers

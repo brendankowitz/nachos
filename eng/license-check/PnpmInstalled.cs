@@ -8,36 +8,43 @@ internal static class PnpmInstalled
     {
         var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var store = Collectors.Under(directory, "node_modules/.pnpm");
-        if (!Directory.Exists(store)) return result;
+        var storeDirectory = new DirectoryInfo(store);
+        if (!IsLink(storeDirectory) && !storeDirectory.Exists && !File.Exists(store)) return result;
+        storeDirectory = PhysicalDirectory(storeDirectory);
         var physical = new Dictionary<string, (string Name, string Context)>(
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-        var links = new List<(string Path, string Slot, string? Expected)>();
-        foreach (var context in Directory.EnumerateDirectories(store))
+        var links = new List<(FileSystemInfo Entry, string Slot, string? Expected)>();
+        foreach (var context in storeDirectory.EnumerateFileSystemInfos())
         {
-            var shared = Path.GetFileName(context) == "node_modules";
-            var container = Collectors.Under(store, Collectors.Relative(store, context) + (shared ? "" : "/node_modules"));
-            if (!Directory.Exists(container)) throw new InvalidDataException($"Unsupported pnpm store layout: {context}");
-            var owner = shared ? ((PnpmPackage Package, string Key)?)null : graph.StoreContext(Path.GetFileName(context));
+            if (IsLink(context)) throw new InvalidDataException($"Linked evidence path is not supported: {context.FullName}");
+            var shared = context.Name == "node_modules";
+            // Regular store-root metadata files are not package slots.
+            if (!shared && context is not DirectoryInfo) continue;
+            var container = PhysicalDirectory(new DirectoryInfo(Collectors.Under(store,
+                Collectors.Relative(store, context.FullName) + (shared ? "" : "/node_modules"))));
+            var owner = shared ? ((PnpmPackage Package, string Key)?)null : graph.StoreContext(context.Name);
             var bindings = owner is { } resolved ? PnpmLock.Strings(resolved.Package.Snapshots[resolved.Key], "dependencies")
                 : new Dictionary<string, string>(StringComparer.Ordinal);
             if (owner is { } current)
                 foreach (var (name, reference) in PnpmLock.Strings(current.Package.Snapshots[current.Key], "optionalDependencies"))
                     if (!bindings.TryAdd(name, reference)) throw new InvalidDataException($"Duplicate installed pnpm binding: {current.Key}/{name}");
-            foreach (var entry in Directory.EnumerateDirectories(container))
+            foreach (var entry in container.EnumerateFileSystemInfos())
             {
-                if (Path.GetFileName(entry) == ".bin") continue;
-                if (Path.GetFileName(entry).StartsWith('@'))
+                if (entry.Name == ".bin") continue;
+                if (entry.Name.StartsWith('@'))
                 {
-                    Collectors.Under(store, Collectors.Relative(store, entry));
-                    foreach (var scoped in Directory.EnumerateDirectories(entry))
-                        Inspect(scoped, Path.GetFileName(entry) + "/" + Path.GetFileName(scoped));
+                    var scope = PhysicalDirectory(entry);
+                    Collectors.Under(store, Collectors.Relative(store, entry.FullName));
+                    foreach (var scoped in scope.EnumerateFileSystemInfos())
+                        Inspect(scoped, entry.Name + "/" + scoped.Name);
                 }
-                else Inspect(entry, Path.GetFileName(entry));
+                else Inspect(entry, entry.Name);
             }
 
-            void Inspect(string path, string slot)
+            void Inspect(FileSystemInfo entry, string slot)
             {
-                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                var path = entry.FullName;
+                if (IsLink(entry))
                 {
                     string? expected = null;
                     if (owner is { } source)
@@ -46,9 +53,11 @@ internal static class PnpmInstalled
                             : bindings.TryGetValue(slot, out var reference) ? slot + "@" + reference
                             : throw new InvalidDataException($"Undeclared installed pnpm dependency: {source.Key}/{slot}");
                     }
-                    links.Add((path, slot, expected));
+                    links.Add((entry, slot, expected));
                     return;
                 }
+                if (entry is not DirectoryInfo)
+                    throw new InvalidDataException($"Unsupported pnpm package entry: {path}");
                 if (owner is not { } bound || slot != bound.Package.Name)
                     throw new InvalidDataException($"Unbound physical pnpm package slot: {path}");
                 using var metadata = JsonDocument.Parse(File.ReadAllText(Collectors.Under(store, Collectors.Relative(store, path) + "/package.json")));
@@ -63,15 +72,25 @@ internal static class PnpmInstalled
         }
         foreach (var link in links)
         {
-            var target = Directory.ResolveLinkTarget(link.Path, returnFinalTarget: true)
-                ?? throw new InvalidDataException($"Unresolved pnpm dependency link: {link.Path}");
+            var target = link.Entry.ResolveLinkTarget(returnFinalTarget: true)
+                ?? throw new InvalidDataException($"Unresolved pnpm dependency link: {link.Entry.FullName}");
             var path = Collectors.Under(store, Collectors.Relative(store, target.FullName));
-            if (!Directory.Exists(path)) throw new InvalidDataException($"Missing pnpm dependency link target: {link.Path}");
+            if (!Directory.Exists(path)) throw new InvalidDataException($"Missing pnpm dependency link target: {link.Entry.FullName}");
             if (!physical.TryGetValue(path, out var bound) || bound.Name != link.Slot
                 || link.Expected is { } expected && bound.Context != expected)
-                throw new InvalidDataException($"Installed pnpm link lacks matching physical identity/context evidence: {link.Path}");
+                throw new InvalidDataException($"Installed pnpm link lacks matching physical identity/context evidence: {link.Entry.FullName}");
         }
         return result;
+    }
+
+    private static bool IsLink(FileSystemInfo entry) => entry.LinkTarget is not null
+        || entry.Exists && (entry.Attributes & FileAttributes.ReparsePoint) != 0;
+
+    private static DirectoryInfo PhysicalDirectory(FileSystemInfo entry)
+    {
+        if (IsLink(entry)) throw new InvalidDataException($"Linked evidence path is not supported: {entry.FullName}");
+        if (!Directory.Exists(entry.FullName)) throw new InvalidDataException($"Unsupported pnpm store layout: {entry.FullName}");
+        return new DirectoryInfo(entry.FullName);
     }
 
     public static void Verify(string location, PnpmPackage package, string cache, Dictionary<string, string> archiveEvidence)
