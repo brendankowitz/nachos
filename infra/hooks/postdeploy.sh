@@ -9,17 +9,25 @@ set -euo pipefail
 
 : "${NACHOS_API_URI:?postdeploy: NACHOS_API_URI is not set}"
 
-# Poll until the body is exactly "Healthy". azd waits for the ARM operation, not for the traffic switch, so the
-# first answers can still come from the placeholder revision (or a warming API: Degraded/Unhealthy) and are retried.
-# --max-time bounds each attempt; the budget is attempts x delay.
+# Poll until the status is 200 and the body is exactly "Healthy". azd waits for the ARM operation, not for the
+# traffic switch, so the first answers can still come from the placeholder revision (or a warming API: Degraded, or
+# 503 Unhealthy) and are retried. The body of a non-2xx answer is kept too (no -f; the status comes from -w), so the
+# failure report shows what the API last said. --max-time bounds each attempt; the budget is attempts x delay.
 readonly attempts=10
 readonly delay_seconds=6
 body=""
+status=""
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  body="$(curl -fsS --max-time 30 "${NACHOS_API_URI%/}/health/ready")" || body=""
+  if response="$(curl -sS --max-time 30 -w '\n%{http_code}' "${NACHOS_API_URI%/}/health/ready")"; then
+    status="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+  else
+    status=""
+    body=""
+  fi
   trimmed="${body#"${body%%[![:space:]]*}"}"
   trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-  if [[ "$trimmed" == "Healthy" ]]; then
+  if [[ "$status" == 200 && "$trimmed" == "Healthy" ]]; then
     echo "postdeploy: $NACHOS_API_URI is ready (the deployed API reports Healthy)."
     exit 0
   fi
