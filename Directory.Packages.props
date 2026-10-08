@@ -40,6 +40,8 @@
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.5" />
     <PackageVersion Include="Microsoft.SqlServer.DacFx" Version="170.4.83" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
+    <!-- Bootstrap CLI (Nachos.Cli) -->
+    <PackageVersion Include="System.CommandLine" Version="2.0.12" />
     <!-- Tooling only (eng/license-check); never a product dependency -->
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
