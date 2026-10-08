@@ -62,7 +62,10 @@ public sealed class AuthException : NachosException
     }
 }
 
-/// <summary>An Idempotency-Key was reused with a different request (422).</summary>
+/// <summary>
+/// An Idempotency-Key was reused with a different request (422). Its problem <c>type</c> is
+/// <see cref="ProblemTypes.IdempotencyKeyReused"/>.
+/// </summary>
 public sealed class IdempotencyKeyReusedException : NachosException
 {
     public IdempotencyKeyReusedException(string message, Exception? innerException = null)

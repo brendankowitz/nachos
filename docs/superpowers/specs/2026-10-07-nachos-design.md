@@ -400,6 +400,7 @@ Key defaults (parity values):
     - Both route aliases share one canonical target.
   - **Replay returns the exact status and body captured inside the original mutation's transaction**, never a later re-read or re-serialization. A racing duplicate re-reads the winner's record. If that record expired before the re-read, the request is a fresh atomic attempt.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
+  - The problem `type` for a reused key is `urn:nachos:problem:idempotency-key-reused`, defined as `ProblemTypes.IdempotencyKeyReused`; both server and client reference that constant. It shares status `422` with validation errors, so clients use `type` to tell them apart.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.
 
