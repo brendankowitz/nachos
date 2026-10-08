@@ -14,7 +14,14 @@ namespace Nachos.Client;
 /// exactly once.
 /// </para>
 /// <para>
-/// The body is buffered once and every attempt is a fresh copy of the original request with the same headers,
+/// For a retryable request the response body is read inside the retry loop, so a failure while reading it is
+/// retried like a transport failure. Non-retryable requests pass through untouched (streaming preserved).
+/// </para>
+/// <para>
+/// <see cref="HttpClient.Timeout"/> bounds the whole call, retries and backoff included, and is never retried.
+/// </para>
+/// <para>
+/// The request body is buffered once and every attempt is a fresh copy of the original request with the same headers,
 /// so a replay carries the same <c>Idempotency-Key</c> and identical bytes. A <c>Retry-After</c> longer than
 /// <see cref="MaxRetryAfter"/> is not waited out: the response is returned to the caller instead.
 /// </para>
@@ -76,16 +83,28 @@ public sealed class RetryHandler : DelegatingHandler
         for (var attempt = 1; ; attempt++)
         {
             var attemptRequest = Copy(request, body);
-            HttpResponseMessage response;
+            HttpResponseMessage? response = null;
             try
             {
                 response = await base.SendAsync(attemptRequest, cancellationToken).ConfigureAwait(false);
+
+                // The inner handler returns once headers arrive; HttpClient would read the body after this handler
+                // returns, outside the retry loop. Reading it here keeps a reset mid-body (after the server committed)
+                // inside the loop, where a keyed request can be replayed.
+                await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex, cancellationToken))
             {
+                response?.Dispose();
                 attemptRequest.Dispose();
                 await WaitAsync(Backoff(attempt), cancellationToken).ConfigureAwait(false);
                 continue;
+            }
+            catch
+            {
+                response?.Dispose();
+                attemptRequest.Dispose();
+                throw;
             }
 
             if (attempt >= MaxAttempts || !IsTransient(response.StatusCode))
@@ -113,11 +132,14 @@ public sealed class RetryHandler : DelegatingHandler
         request.Headers.TryGetValues(IdempotencyKeyHeader, out var values) &&
         values.Any(v => !string.IsNullOrWhiteSpace(v));
 
-    // A cancellation is transient only when it is not the caller's: an inner timeout surfaces as
-    // OperationCanceledException while the caller's token is still live.
+    // A cancellation is transient only when it is not the caller's: a timeout raised below this handler surfaces
+    // as OperationCanceledException while the caller's token is still live. HttpClient.Timeout is different: it
+    // covers the whole call including every retry, cancels the token this handler receives, and so is never
+    // retried. TODO(task-12-attempt-timeout): part B adds a per-attempt timeout handler below RetryHandler in the
+    // AddNachosClient pipeline so a single stalled attempt can be retried within the overall HttpClient.Timeout.
     private static bool IsTransient(Exception ex, CancellationToken callerToken) =>
         !callerToken.IsCancellationRequested &&
-        ex is HttpRequestException or TimeoutException or OperationCanceledException;
+        ex is HttpRequestException or IOException or TimeoutException or OperationCanceledException;
 
     private static bool IsTransient(HttpStatusCode status) =>
         status == HttpStatusCode.TooManyRequests ||

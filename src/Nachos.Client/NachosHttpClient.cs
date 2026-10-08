@@ -24,6 +24,10 @@ namespace Nachos.Client;
 /// A retry handler replays the same request, so the key is stable across retries of one call.
 /// </para>
 /// <para>
+/// A success body that is not valid JSON (malformed, a duplicate property name, or a missing required member)
+/// throws <see cref="JsonException"/>.
+/// </para>
+/// <para>
 /// The <see cref="HttpClient"/> is borrowed, not owned: the caller disposes it. The type is safe for concurrent use.
 /// </para>
 /// </remarks>
@@ -220,7 +224,7 @@ public sealed class NachosHttpClient : INachosClient
     {
         var json = await SendAsync(HttpMethod.Get, SessionPeerConfig, [workspaceId, sessionId, peerId], null, null, null, ct)
             .ConfigureAwait(false);
-        return Read<SessionPeerConfig>(JsonNode.Parse(json));
+        return Read<SessionPeerConfig>(WireJson.Parse(json));
     }
 
     public async Task SetSessionPeerConfigAsync(
@@ -246,7 +250,7 @@ public sealed class NachosHttpClient : INachosClient
         var key = idempotencyKey ?? Guid.NewGuid().ToString("D");
         var json = await SendAsync(HttpMethod.Post, Messages, [workspaceId, sessionId], null, new MessageBatchCreate(messages), key, ct)
             .ConfigureAwait(false);
-        var node = JsonNode.Parse(json);
+        var node = WireJson.Parse(json);
         if (node is JsonArray items)
         {
             foreach (var item in items)
@@ -298,7 +302,7 @@ public sealed class NachosHttpClient : INachosClient
         var query = parameters.Count == 0 ? null : string.Join('&', parameters);
 
         var json = await SendAsync(HttpMethod.Post, Keys, [], query, null, null, ct).ConfigureAwait(false);
-        return Read<KeyResponse>(JsonNode.Parse(json));
+        return Read<KeyResponse>(WireJson.Parse(json));
     }
 
     public async Task AddGrantAsync(string objectId, string? workspaceId, string role, CancellationToken ct = default)
@@ -408,14 +412,14 @@ public sealed class NachosHttpClient : INachosClient
 
     private static T ReadEntity<T>(string json, string[] objectMembers)
     {
-        var node = JsonNode.Parse(json);
+        var node = WireJson.Parse(json);
         FillObjects(node, objectMembers);
         return Read<T>(node);
     }
 
     private static Page<T> ReadPage<T>(string json, string[] objectMembers)
     {
-        var node = JsonNode.Parse(json);
+        var node = WireJson.Parse(json);
         if (node?["items"] is JsonArray items)
         {
             foreach (var item in items)

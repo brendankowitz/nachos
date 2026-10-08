@@ -14,18 +14,32 @@ namespace Nachos.Client;
 /// </summary>
 /// <remarks>
 /// Server-supplied text is untrusted: if it echoes the API key back, the key is replaced with
-/// <see cref="Redacted"/> before it reaches any exception.
+/// <see cref="Redacted"/>, and then the text is cut to <see cref="MaxMessageLength"/> (redaction first, so a key
+/// straddling the cut is never partly kept). A body that is not valid JSON (including one with duplicate property
+/// names) is treated as having no detail, and the status alone picks the exception.
 /// </remarks>
 internal static class ErrorMapper
 {
     /// <summary>
     /// The last segment of the RFC 9457 <c>type</c> that marks an Idempotency-Key reused with a different request.
     /// The status (422) and string <c>detail</c> are shared with domain validation, so <c>type</c> is the only
-    /// machine-readable discriminator.
+    /// machine-readable discriminator. Matching the last segment (after <c>/</c>, <c>:</c> or <c>#</c>) accepts
+    /// <see cref="IdempotencyKeyReusedTypeUri"/>.
     /// </summary>
     public const string IdempotencyKeyReusedType = "idempotency-key-reused";
 
+    /// <summary>
+    /// The full <c>type</c> the server is expected to send (title "Unprocessable Entity", status 422). Proposed for a
+    /// public constant in Nachos.Abstractions shared by the API exception handler and this mapper.
+    /// </summary>
+    public const string IdempotencyKeyReusedTypeUri = "urn:nachos:problem:" + IdempotencyKeyReusedType;
+
     public const string Redacted = "[redacted]";
+
+    /// <summary>Longest exception text taken from a server body, including <see cref="TruncationMarker"/>.</summary>
+    public const int MaxMessageLength = 2048;
+
+    public const string TruncationMarker = "…[truncated]";
 
     public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret)
     {
@@ -33,7 +47,7 @@ internal static class ErrorMapper
         var (detail, errors, type) = Parse(body);
         var fallback = string.Create(
             CultureInfo.InvariantCulture, $"Nachos {operation} returned {(int)status} {response.ReasonPhrase}.");
-        var message = Redact(detail ?? fallback, secret);
+        var message = Sanitize(detail ?? fallback, secret);
 
         return status switch
         {
@@ -41,16 +55,21 @@ internal static class ErrorMapper
             HttpStatusCode.NotFound => new NotFoundException(message),
             HttpStatusCode.Conflict => new ConflictException(message),
             HttpStatusCode.UnprocessableEntity when errors is not null =>
-                new RequestValidationException([.. errors.Select(e => e with { Msg = Redact(e.Msg, secret) })]),
+                new RequestValidationException([.. errors.Select(e => e with { Msg = Sanitize(e.Msg, secret) })]),
             HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(message),
             HttpStatusCode.UnprocessableEntity => new NachosValidationException(message),
             _ => new HttpRequestException(
-                Redact(detail is null ? fallback : $"{fallback} {detail}", secret), inner: null, status),
+                Sanitize(detail is null ? fallback : $"{fallback} {detail}", secret), inner: null, status),
         };
     }
 
-    private static string Redact(string text, string? secret) =>
-        string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
+    private static string Sanitize(string text, string? secret)
+    {
+        var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
+        return redacted.Length <= MaxMessageLength
+            ? redacted
+            : string.Concat(redacted.AsSpan(0, MaxMessageLength - TruncationMarker.Length), TruncationMarker);
+    }
 
     private static bool IsIdempotencyKeyReused(string? type) =>
         type is not null &&
@@ -61,7 +80,7 @@ internal static class ErrorMapper
         JsonObject? root;
         try
         {
-            root = JsonNode.Parse(body) as JsonObject;
+            root = WireJson.Parse(body) as JsonObject;
         }
         catch (JsonException)
         {

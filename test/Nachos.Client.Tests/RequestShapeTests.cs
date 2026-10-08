@@ -547,6 +547,33 @@ public sealed class RequestShapeTests
         await Should.ThrowAsync<System.Text.Json.JsonException>(() => client.GetOrCreateWorkspaceAsync("w1"));
     }
 
+    [Theory]
+    [InlineData("""{"id":"w1","id":"w2","created_at":"2026-10-08T12:00:00Z"}""")]
+    [InlineData("""{"id":"w1","metadata":{"a":1,"a":2},"created_at":"2026-10-08T12:00:00Z"}""")]
+    [InlineData("""{"id":"w1","created_at":"2026-10-08T12:00:00Z""")]
+    public async Task MalformedOrDuplicateKeySuccessBody_ThrowsJsonException(string body)
+    {
+        var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.OK, body));
+        var client = new NachosHttpClient(new HttpClient(stub), Options);
+
+        var ex = await Should.ThrowAsync<Exception>(() => client.GetOrCreateWorkspaceAsync("w1"));
+
+        ex.ShouldBeAssignableTo<System.Text.Json.JsonException>();
+    }
+
+    [Fact]
+    public async Task DuplicateKeyPageItem_ThrowsJsonException()
+    {
+        var stub = new StubHandler((_, _) => StubHandler.Json(
+            HttpStatusCode.OK,
+            """{"items":[{"id":"p","id":"q","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}],"total":1,"page":1,"size":50,"pages":1}"""));
+        var client = new NachosHttpClient(new HttpClient(stub), Options);
+
+        var ex = await Should.ThrowAsync<Exception>(() => client.ListPeersAsync("w1", null, null, new PageRequest()));
+
+        ex.ShouldBeAssignableTo<System.Text.Json.JsonException>();
+    }
+
     [Fact]
     public async Task CancelledToken_IsHonoured()
     {
@@ -591,7 +618,7 @@ public sealed class RequestShapeTests
 
     private static void AssertBody(RecordedRequest request, string expected)
     {
-        request.ContentType.ShouldBe("application/json");
+        request.ContentTypeHeader.ShouldBe("application/json; charset=utf-8");
         JsonNode.DeepEquals(JsonNode.Parse(request.Body!), JsonNode.Parse(expected))
             .ShouldBeTrue($"expected {expected} but sent {request.Body}");
     }

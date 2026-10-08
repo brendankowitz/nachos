@@ -39,15 +39,21 @@ public static class RetryClassifier
         // Read-only listing of a peer's sessions.
         (Split("v3/workspaces/{}/peers/{}/sessions"), RetryCategory.Retryable),
 
-        // Membership adds: repeating one leaves the same members.
+        // Membership add: repeating one leaves the same members.
         (Split("v3/workspaces/{}/sessions/{}/peers"), RetryCategory.Retryable),
-        (Split("v3/workspaces/{}/scopes/{}/sessions"), RetryCategory.Retryable),
 
-        // Non-idempotent and without Idempotency-Key support: each call mints a key, enqueues a dream, registers
-        // an endpoint, or writes a grant.
+        // Adding sessions to a scope enqueues a scope_backfill (spec §14); a replay may enqueue a second one.
+        // Assumed non-idempotent until backfill enqueue is proven idempotent; revisit at M6.
+        (Split("v3/workspaces/{}/scopes/{}/sessions"), RetryCategory.Never),
+
+        // Non-idempotent and without Idempotency-Key support: each call mints a key, enqueues a dream, or
+        // registers an endpoint.
         (Split("v3/keys"), RetryCategory.Never),
         (Split("v3/workspaces/{}/schedule_dream"), RetryCategory.Never),
         (Split("v3/workspaces/{}/webhooks"), RetryCategory.Never),
+
+        // Grant add is a set-add (IGrantStore.AddAsync: a duplicate is a no-op), so a replay would be safe; kept
+        // Never as the conservative choice for an admin write until the route's contract is pinned.
         (Split("v3/admin/grants"), RetryCategory.Never),
     ];
 

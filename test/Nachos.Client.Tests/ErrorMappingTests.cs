@@ -53,7 +53,7 @@ public sealed class ErrorMappingTests
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(
             HttpStatusCode.UnprocessableEntity,
-            """{"detail":"Idempotency-Key was already used with a different request","type":"https://nachos.dev/errors/idempotency-key-reused","title":"Unprocessable Entity","status":422}"""));
+            """{"detail":"Idempotency-Key was already used with a different request","type":"urn:nachos:problem:idempotency-key-reused","title":"Unprocessable Entity","status":422}"""));
 
         var ex = await Should.ThrowAsync<IdempotencyKeyReusedException>(
             () => Client(stub).CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")], "k1"));
@@ -151,12 +151,64 @@ public sealed class ErrorMappingTests
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(
             HttpStatusCode.UnprocessableEntity,
-            $$"""{"detail":"reused by {{ApiKey}}","type":"https://nachos.dev/errors/idempotency-key-reused"}"""));
+            $$"""{"detail":"reused by {{ApiKey}}","type":"urn:nachos:problem:idempotency-key-reused","title":"Unprocessable Entity","status":422}"""));
 
         var ex = await Should.ThrowAsync<IdempotencyKeyReusedException>(
             () => Client(stub).CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")]));
 
         ex.ToString().ShouldNotContain(ApiKey);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound, typeof(NotFoundException))]
+    [InlineData(HttpStatusCode.UnprocessableEntity, typeof(NachosValidationException))]
+    [InlineData(HttpStatusCode.Unauthorized, typeof(AuthException))]
+    [InlineData(HttpStatusCode.InternalServerError, typeof(HttpRequestException))]
+    public async Task DuplicateKeyErrorBody_StillMapsByStatus(HttpStatusCode status, Type expected)
+    {
+        var ex = await CaptureAsync(status, """{"detail":"x","detail":"y"}""");
+
+        ex.GetType().ShouldBe(expected);
+        ex.Message.ShouldContain(((int)status).ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.UnprocessableEntity)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task HugeDetail_IsTruncated(HttpStatusCode status)
+    {
+        var ex = await CaptureAsync(status, $$"""{"detail":"{{new string('x', 5_000_000)}}"}""");
+
+        ex.Message.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+        ex.Message.ShouldEndWith(ErrorMapper.TruncationMarker);
+        if (ex is NachosValidationException validation)
+        {
+            validation.Detail.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+        }
+    }
+
+    [Fact]
+    public async Task HugeValidationMsg_IsTruncated()
+    {
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity,
+            $$"""{"detail":[{"loc":["body"],"msg":"{{new string('m', 100_000)}}","type":"value_error"}]}""");
+
+        ex.ShouldBeOfType<RequestValidationException>().Errors.Single().Msg.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+    }
+
+    /// <summary>Redaction runs before truncation, so a key straddling the cut is never partly kept.</summary>
+    [Fact]
+    public async Task KeyAtTruncationBoundary_IsNotPartiallyLeaked()
+    {
+        // The cut falls 6 characters into the key: truncating first would keep "nk-SEC" and then fail to redact it.
+        var keyStart = ErrorMapper.MaxMessageLength - ErrorMapper.TruncationMarker.Length - 6;
+        var detail = new string('x', keyStart) + ApiKey + new string('y', 100);
+
+        var ex = await CaptureAsync(HttpStatusCode.NotFound, $$"""{"detail":"{{detail}}"}""");
+
+        ex.Message.ShouldNotContain(ApiKey[..6]);
     }
 
     private static NachosHttpClient Client(StubHandler stub) =>

@@ -169,6 +169,18 @@ public sealed class RetryBoundaryTests
     }
 
     [Fact]
+    public async Task UnwrappedIOException_FromTheInnerHandler_IsRetried()
+    {
+        var stub = new StubHandler((_, attempt) => attempt == 1
+            ? throw new IOException("connection reset (unwrapped)")
+            : StubHandler.Json(HttpStatusCode.OK, MessageJson));
+
+        await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        stub.Requests.Count.ShouldBe(2);
+    }
+
+    [Fact]
     public async Task TimeoutStyleFailure_NotCallerCancellation_IsRetried()
     {
         var stub = new StubHandler((_, attempt) => attempt == 1
@@ -239,11 +251,73 @@ public sealed class RetryBoundaryTests
         stub.Requests.Count.ShouldBe(3);
         stub.Requests.Select(r => r.Body).Distinct().Count().ShouldBe(1);
         stub.Requests.Select(r => r.IdempotencyKey).Distinct().Count().ShouldBe(1);
-        stub.Requests.ShouldAllBe(r => r.ContentType == "application/json");
+        stub.Requests.ShouldAllBe(r => r.ContentTypeHeader == "application/json; charset=utf-8");
         JsonNode.DeepEquals(
             JsonNode.Parse(stub.Requests[0].Body!),
             JsonNode.Parse("""{"messages":[{"content":"hello","peer_id":"alice","metadata":{"k":"v"}},{"content":"world","peer_id":"bob"}]}"""))
             .ShouldBeTrue(stub.Requests[0].Body);
+    }
+
+    [Fact]
+    public async Task CommittedThenBodyReadFailure_RetriesWithKey_ExactlyOneBatch()
+    {
+        var server = new MessageServer(failAfterCommitOnAttempt: 1, brokenBody: true);
+        var stub = new StubHandler(server.Handle);
+
+        var messages = await Client(Retry(stub)).CreateMessagesAsync("w1", "s1", Batch);
+
+        stub.Requests.Count.ShouldBe(2);
+        server.Batches.ShouldBe(1);
+        stub.Requests.Select(r => r.IdempotencyKey).Distinct().Count().ShouldBe(1);
+        IsGuid(stub.Requests[0].IdempotencyKey).ShouldBeTrue();
+        messages.Select(m => m.Id).ShouldBe(["b1-0", "b1-1"]);
+        server.BrokenBodies.Single().Disposed.ShouldBeTrue("the failed attempt's response must be disposed");
+    }
+
+    [Fact]
+    public async Task BodyReadFailure_WithoutKey_NoReplay()
+    {
+        var server = new MessageServer(failAfterCommitOnAttempt: 1, brokenBody: true);
+        var stub = new StubHandler(server.Handle);
+        var pipeline = new StripIdempotencyKey { InnerHandler = Retry(stub) };
+
+        await Should.ThrowAsync<HttpRequestException>(() => Client(pipeline).CreateMessagesAsync("w1", "s1", Batch));
+
+        stub.Requests.Count.ShouldBe(1);
+        stub.Requests[0].IdempotencyKey.ShouldBeNull();
+        server.Batches.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task BodyReadFailure_OnNonRetryableRoute_IsNotRetried()
+    {
+        var stub = new StubHandler((_, _) => StubHandler.BrokenBody(HttpStatusCode.OK, new BrokenStream()));
+        using var http = new HttpClient(Retry(stub));
+        using var request = Raw(HttpMethod.Post, "/v3/workspaces/w1/chat", "/v3/workspaces/{workspace_id}/chat");
+        request.Content = new StringContent("""{"query":"hi"}""", System.Text.Encoding.UTF8, "application/json");
+
+        await Should.ThrowAsync<HttpRequestException>(() => http.SendAsync(request));
+
+        stub.Requests.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task FailedAttemptResponses_AreDisposedBeforeTheNextAttempt()
+    {
+        var contents = new List<TrackedContent>();
+        var disposedBeforeNext = new List<bool>();
+        var stub = new StubHandler((_, attempt) =>
+        {
+            disposedBeforeNext.AddRange(contents.Select(c => c.Disposed));
+            var content = new TrackedContent(attempt < 3 ? """{"detail":"busy"}""" : MessageJson);
+            contents.Add(content);
+            return new HttpResponseMessage(attempt < 3 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK) { Content = content };
+        });
+
+        await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        stub.Requests.Count.ShouldBe(3);
+        disposedBeforeNext.ShouldBe([true, true, true]);
     }
 
     [Fact]
@@ -390,8 +464,10 @@ public sealed class RetryBoundaryTests
     /// A message endpoint with Idempotency-Key replay: a keyed request whose key was seen replays the stored
     /// response; otherwise the batch commits. It can drop the response after committing on a chosen attempt.
     /// </summary>
-    private sealed class MessageServer(int failAfterCommitOnAttempt)
+    private sealed class MessageServer(int failAfterCommitOnAttempt, bool brokenBody = false)
     {
+        public List<BrokenStream> BrokenBodies { get; } = [];
+
         private readonly Dictionary<string, string> _replays = new(StringComparer.Ordinal);
 
         public int Batches { get; private set; }
@@ -430,7 +506,14 @@ public sealed class RetryBoundaryTests
 
             if (attempt == failAfterCommitOnAttempt)
             {
-                throw new HttpRequestException("connection reset after the batch committed");
+                if (!brokenBody)
+                {
+                    throw new HttpRequestException("connection reset after the batch committed");
+                }
+
+                var stream = new BrokenStream();
+                BrokenBodies.Add(stream);
+                return StubHandler.BrokenBody(HttpStatusCode.Created, stream);
             }
 
             return StubHandler.Json(HttpStatusCode.Created, body);

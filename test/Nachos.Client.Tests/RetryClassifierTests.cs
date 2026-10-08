@@ -72,6 +72,7 @@ public sealed class RetryClassifierTests
     [InlineData("POST", W + "/schedule_dream", RetryCategory.Never)]
     [InlineData("POST", H, RetryCategory.Never)]
     [InlineData("POST", "/v3/admin/grants", RetryCategory.Never)]
+    [InlineData("POST", W + "/scopes/{scope_id}/sessions", RetryCategory.Never)]
     // Non-idempotent mutations: retryable only with an Idempotency-Key.
     [InlineData("POST", M, RetryCategory.RequiresIdempotencyKey)]
     [InlineData("POST", M + "/", RetryCategory.RequiresIdempotencyKey)]
