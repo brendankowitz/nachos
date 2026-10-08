@@ -62,6 +62,33 @@ public sealed class ErrorMappingTests
     }
 
     [Fact]
+    public async Task IdempotencyKeyReuse_MatchesTheSharedProblemTypeConstant()
+    {
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity, $$"""{"detail":"reused","type":"{{ProblemTypes.IdempotencyKeyReused}}"}""");
+
+        ex.ShouldBeOfType<IdempotencyKeyReusedException>();
+    }
+
+    /// <summary>Spec §16: the problem type is matched exactly, never by its last segment.</summary>
+    [Theory]
+    [InlineData("urn:unrelated:problem:idempotency-key-reused")]
+    [InlineData("https://errors.example/problems/idempotency-key-reused")]
+    [InlineData("https://errors.example/problems#idempotency-key-reused")]
+    [InlineData("idempotency-key-reused")]
+    [InlineData("urn:nachos:problem:idempotency-key-reused-v2")]
+    [InlineData("urn:nachos:problem:idempotency-key-reused/extra")]
+    [InlineData("urn:nachos:problem:idempotency-key-reused ")]
+    [InlineData("URN:NACHOS:PROBLEM:IDEMPOTENCY-KEY-REUSED")]
+    [InlineData("urn:nachos:problem:other")]
+    public async Task OtherProblemType_On422_IsDomainValidation(string type)
+    {
+        var ex = await CaptureAsync(HttpStatusCode.UnprocessableEntity, $$"""{"detail":"d","type":"{{type}}"}""");
+
+        ex.ShouldBeOfType<NachosValidationException>();
+    }
+
+    [Fact]
     public async Task OtherStringDetail422_OnMessageCreate_IsDomainValidation()
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.UnprocessableEntity, """{"detail":"peer id invalid","type":"about:blank"}"""));
@@ -287,6 +314,35 @@ public sealed class ErrorMappingTests
         var errors = ex.ShouldBeOfType<RequestValidationException>().Errors;
         errors.Count.ShouldBe(ErrorMapper.MaxValidationErrors);
         errors.ShouldAllBe(e => e.Type == "t");
+    }
+
+    [Fact]
+    public async Task ValidationLocComponents_AreCapped_WithAMarkerComponent()
+    {
+        var huge = new string('z', 100_000);
+        var parts = string.Join(",", Enumerable.Range(0, 100_000).Select(i => i % 2 == 0 ? $"\"{huge[..10]}{ApiKey}\"" : "7"));
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity, $$"""{"detail":[{"loc":[{{parts}}],"msg":"m","type":"t"}]}""");
+
+        var loc = ex.ShouldBeOfType<RequestValidationException>().Errors.Single().Loc;
+        loc.Count.ShouldBe(ErrorMapper.MaxLocComponents + 1);
+        loc[1].ShouldBe(7);
+        loc[ErrorMapper.MaxLocComponents - 1].ShouldBe(7);
+        var marker = loc[^1].ShouldBeOfType<string>();
+        marker.ShouldContain((100_000 - ErrorMapper.MaxLocComponents).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        marker.ShouldStartWith(ErrorMapper.TruncationMarker);
+        ex.ToString().ShouldNotContain(ApiKey);
+    }
+
+    [Fact]
+    public async Task ValidationLocComponents_AtTheCap_HaveNoMarker()
+    {
+        var parts = string.Join(",", Enumerable.Range(0, ErrorMapper.MaxLocComponents));
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity, $$"""{"detail":[{"loc":[{{parts}}],"msg":"m","type":"t"}]}""");
+
+        var loc = ex.ShouldBeOfType<RequestValidationException>().Errors.Single().Loc;
+        loc.ShouldBe(Enumerable.Range(0, ErrorMapper.MaxLocComponents).Cast<object>().ToArray());
     }
 
     private static NachosHttpClient Client(StubHandler stub) =>

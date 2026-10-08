@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
+using Nachos.Abstractions.Json;
 
 namespace Nachos.Client;
 
@@ -16,6 +17,12 @@ namespace Nachos.Client;
 /// </summary>
 /// <remarks>
 /// <para>
+/// A status response mapped by this client, or a body failure wrapped by <see cref="RetryHandler"/>, that carried a
+/// parseable <c>Retry-After</c> holds the requested delay under <see cref="NachosExceptionData.RetryAfter"/> and ends
+/// its message with <c>" Retry-After: {N}s."</c> (spec §16). Other failures do not: a body that fails inside
+/// <see cref="HttpClient"/> buffering on a route the handler never retries, a malformed 2xx body, and a timeout.
+/// </para>
+/// <para>
 /// Every request carries its wire route template in <see cref="RetryHandler.RouteTemplate"/>. Retries happen only
 /// when the <see cref="HttpClient"/> pipeline contains a <see cref="RetryHandler"/>; this type never retries.
 /// </para>
@@ -24,8 +31,20 @@ namespace Nachos.Client;
 /// A retry handler replays the same request, so the key is stable across retries of one call.
 /// </para>
 /// <para>
-/// A success body that is not valid JSON (malformed, a duplicate property name, or a missing required member)
-/// throws <see cref="JsonException"/>.
+/// For an operation that returns a value, a success body that is not valid JSON (malformed, a duplicate property
+/// name, or a missing required member) or has the wrong shape (an entity that is not an object, a collection or page
+/// <c>items</c> that is not an array of objects, a null entry) throws <see cref="JsonException"/>; no null or
+/// placeholder entity is ever returned. <see cref="SetSessionPeerConfigAsync"/> and <see cref="AddGrantAsync"/>
+/// return nothing, so their success body is not interpreted at all.
+/// </para>
+/// <para>
+/// Strict JSON data: every <see cref="JsonObject"/> the caller passes as metadata, peer configuration or filters
+/// (including <see cref="MessageCreate.Metadata"/>) is converted with <see cref="StrictJsonData.ToCanonical"/> before
+/// the request is built, and only that canonical copy is serialized. A value the helper rejects throws its
+/// <see cref="NachosValidationException"/> before anything is sent. Plain string members (ids, message content,
+/// typed configuration text) are a separate contract: they are not JSON data and are not checked here, so an unpaired
+/// surrogate in one is written by the serializer as U+FFFD, giving the same request bytes as a literal U+FFFD. No
+/// claim is made that the server's request identity distinguishes the two.
 /// </para>
 /// <para>
 /// The <see cref="HttpClient"/> is borrowed, not owned: the caller disposes it. The type is safe for concurrent use.
@@ -68,14 +87,25 @@ public sealed class NachosHttpClient : INachosClient
     private readonly HttpClient _http;
     private readonly Uri _baseAddress;
     private readonly string? _apiKey;
+    private readonly TimeProvider _timeProvider;
 
     /// <exception cref="ArgumentException">
     /// <see cref="NachosClientOptions.BaseAddress"/> is missing or relative, or the API key is not printable ASCII.
     /// </exception>
     public NachosHttpClient(HttpClient httpClient, NachosClientOptions options)
+        : this(httpClient, options, TimeProvider.System)
+    {
+    }
+
+    /// <param name="httpClient">The borrowed client.</param>
+    /// <param name="options">Connection settings.</param>
+    /// <param name="timeProvider">Clock for turning an HTTP-date <c>Retry-After</c> into a delay.</param>
+    internal NachosHttpClient(HttpClient httpClient, NachosClientOptions options, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
         var baseAddress = options.BaseAddress;
         if (baseAddress is null || !baseAddress.IsAbsoluteUri)
         {
@@ -96,14 +126,14 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Workspace> GetOrCreateWorkspaceAsync(
         string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, Workspaces, [], null, new WorkspaceCreate(id, metadata, configuration), null, ct)
+        var json = await SendAsync(HttpMethod.Post, Workspaces, [], null, new WorkspaceCreate(id, Data(metadata), configuration), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Workspace>(json, MetadataAndConfiguration);
     }
 
     public async Task<Page<Workspace>> ListWorkspacesAsync(JsonObject? filters, PageRequest page, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, WorkspacesList, [], ListQuery(page), new FilterBody(filters), null, ct)
+        var json = await SendAsync(HttpMethod.Post, WorkspacesList, [], ListQuery(page), new FilterBody(Data(filters)), null, ct)
             .ConfigureAwait(false);
         return ReadPage<Workspace>(json, MetadataAndConfiguration);
     }
@@ -111,7 +141,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Workspace> UpdateWorkspaceAsync(
         string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Put, W, [id], null, new WorkspaceUpdate(metadata, configuration), null, ct)
+        var json = await SendAsync(HttpMethod.Put, W, [id], null, new WorkspaceUpdate(Data(metadata), configuration), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Workspace>(json, MetadataAndConfiguration);
     }
@@ -119,7 +149,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Peer> GetOrCreatePeerAsync(
         string workspaceId, string id, JsonObject? metadata = null, JsonObject? configuration = null, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, Peers, [workspaceId], null, new PeerCreate(id, metadata, configuration), null, ct)
+        var json = await SendAsync(HttpMethod.Post, Peers, [workspaceId], null, new PeerCreate(id, Data(metadata), Data(configuration)), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Peer>(json, MetadataAndConfiguration);
     }
@@ -134,7 +164,7 @@ public sealed class NachosHttpClient : INachosClient
             PeerKind.All => "all",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown peer kind."),
         };
-        var json = await SendAsync(HttpMethod.Post, PeersList, [workspaceId], ListQuery(page), new PeerGet(filters, wireKind), null, ct)
+        var json = await SendAsync(HttpMethod.Post, PeersList, [workspaceId], ListQuery(page), new PeerGet(Data(filters), wireKind), null, ct)
             .ConfigureAwait(false);
         return ReadPage<Peer>(json, MetadataAndConfiguration);
     }
@@ -142,7 +172,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Peer> UpdatePeerAsync(
         string workspaceId, string id, JsonObject? metadata = null, JsonObject? configuration = null, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Put, P, [workspaceId, id], null, new PeerUpdate(metadata, configuration), null, ct)
+        var json = await SendAsync(HttpMethod.Put, P, [workspaceId, id], null, new PeerUpdate(Data(metadata), Data(configuration)), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Peer>(json, MetadataAndConfiguration);
     }
@@ -150,7 +180,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Page<Session>> ListPeerSessionsAsync(
         string workspaceId, string peerId, JsonObject? filters, PageRequest page, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, PeerSessions, [workspaceId, peerId], ListQuery(page), new FilterBody(filters), null, ct)
+        var json = await SendAsync(HttpMethod.Post, PeerSessions, [workspaceId, peerId], ListQuery(page), new FilterBody(Data(filters)), null, ct)
             .ConfigureAwait(false);
         return ReadPage<Session>(json, MetadataAndConfiguration);
     }
@@ -163,7 +193,7 @@ public sealed class NachosHttpClient : INachosClient
         IReadOnlyDictionary<string, SessionPeerConfig>? peers = null,
         CancellationToken ct = default)
     {
-        var body = new SessionCreate(id, metadata, configuration, peers);
+        var body = new SessionCreate(id, Data(metadata), configuration, peers);
         var json = await SendAsync(HttpMethod.Post, Sessions, [workspaceId], null, body, null, ct).ConfigureAwait(false);
         return ReadEntity<Session>(json, MetadataAndConfiguration);
     }
@@ -171,7 +201,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Page<Session>> ListSessionsAsync(
         string workspaceId, JsonObject? filters, PageRequest page, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, SessionsList, [workspaceId], ListQuery(page), new FilterBody(filters), null, ct)
+        var json = await SendAsync(HttpMethod.Post, SessionsList, [workspaceId], ListQuery(page), new FilterBody(Data(filters)), null, ct)
             .ConfigureAwait(false);
         return ReadPage<Session>(json, MetadataAndConfiguration);
     }
@@ -179,7 +209,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Session> UpdateSessionAsync(
         string workspaceId, string id, JsonObject? metadata = null, SessionConfiguration? configuration = null, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Put, S, [workspaceId, id], null, new SessionUpdate(metadata, configuration), null, ct)
+        var json = await SendAsync(HttpMethod.Put, S, [workspaceId, id], null, new SessionUpdate(Data(metadata), configuration), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Session>(json, MetadataAndConfiguration);
     }
@@ -224,7 +254,7 @@ public sealed class NachosHttpClient : INachosClient
     {
         var json = await SendAsync(HttpMethod.Get, SessionPeerConfig, [workspaceId, sessionId, peerId], null, null, null, ct)
             .ConfigureAwait(false);
-        return Read<SessionPeerConfig>(WireJson.Parse(json));
+        return ReadEntity<SessionPeerConfig>(json, []);
     }
 
     public async Task SetSessionPeerConfigAsync(
@@ -248,24 +278,16 @@ public sealed class NachosHttpClient : INachosClient
         }
 
         var key = idempotencyKey ?? Guid.NewGuid().ToString("D");
-        var json = await SendAsync(HttpMethod.Post, Messages, [workspaceId, sessionId], null, new MessageBatchCreate(messages), key, ct)
+        var json = await SendAsync(HttpMethod.Post, Messages, [workspaceId, sessionId], null, new MessageBatchCreate(Data(messages)), key, ct)
             .ConfigureAwait(false);
-        var node = WireJson.Parse(json);
-        if (node is JsonArray items)
-        {
-            foreach (var item in items)
-            {
-                FillObjects(item, MetadataOnly);
-            }
-        }
-
-        return Read<Message[]>(node);
+        var items = RequireArrayOfObjects(WireJson.Parse(json), nameof(Message), MetadataOnly);
+        return Read<Message[]>(items);
     }
 
     public async Task<Page<Message>> ListMessagesAsync(
         string workspaceId, string sessionId, JsonObject? filters, PageRequest page, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Post, MessagesList, [workspaceId, sessionId], ListQuery(page), new FilterBody(filters), null, ct)
+        var json = await SendAsync(HttpMethod.Post, MessagesList, [workspaceId, sessionId], ListQuery(page), new FilterBody(Data(filters)), null, ct)
             .ConfigureAwait(false);
         return ReadPage<Message>(json, MetadataOnly);
     }
@@ -281,7 +303,7 @@ public sealed class NachosHttpClient : INachosClient
     public async Task<Message> UpdateMessageAsync(
         string workspaceId, string sessionId, string messageId, JsonObject? metadata, CancellationToken ct = default)
     {
-        var json = await SendAsync(HttpMethod.Put, MessageById, [workspaceId, sessionId, messageId], null, new MessageUpdate(metadata), null, ct)
+        var json = await SendAsync(HttpMethod.Put, MessageById, [workspaceId, sessionId, messageId], null, new MessageUpdate(Data(metadata)), null, ct)
             .ConfigureAwait(false);
         return ReadEntity<Message>(json, MetadataOnly);
     }
@@ -302,7 +324,7 @@ public sealed class NachosHttpClient : INachosClient
         var query = parameters.Count == 0 ? null : string.Join('&', parameters);
 
         var json = await SendAsync(HttpMethod.Post, Keys, [], query, null, null, ct).ConfigureAwait(false);
-        return Read<KeyResponse>(WireJson.Parse(json));
+        return ReadEntity<KeyResponse>(json, []);
     }
 
     public async Task AddGrantAsync(string objectId, string? workspaceId, string role, CancellationToken ct = default)
@@ -348,7 +370,7 @@ public sealed class NachosHttpClient : INachosClient
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw ErrorMapper.Map(response, text, $"{method} {template}", _apiKey);
+            throw ErrorMapper.Map(response, text, $"{method} {template}", _apiKey, _timeProvider);
         }
 
         return text;
@@ -410,43 +432,77 @@ public sealed class NachosHttpClient : INachosClient
         }
     }
 
-    private static T ReadEntity<T>(string json, string[] objectMembers)
-    {
-        var node = WireJson.Parse(json);
-        FillObjects(node, objectMembers);
-        return Read<T>(node);
-    }
+    // Success bodies are checked for shape here, at the protocol boundary, before deserialization: an entity is a JSON
+    // object, a collection is an array of objects, and a page is an object whose "items" is such an array. Anything else
+    // (a null entry included) throws JsonException, so no null or fabricated entity is ever returned.
+
+    private static T ReadEntity<T>(string json, string[] objectMembers) =>
+        Read<T>(RequireObject(WireJson.Parse(json), typeof(T).Name, objectMembers));
 
     private static Page<T> ReadPage<T>(string json, string[] objectMembers)
     {
-        var node = WireJson.Parse(json);
-        if (node?["items"] is JsonArray items)
-        {
-            foreach (var item in items)
-            {
-                FillObjects(item, objectMembers);
-            }
-        }
-
-        return Read<Page<T>>(node);
+        var page = RequireObject(WireJson.Parse(json), $"a page of {typeof(T).Name}", []);
+        RequireArrayOfObjects(page["items"], typeof(T).Name, objectMembers);
+        return Read<Page<T>>(page);
     }
 
-    private static T Read<T>(JsonNode? node) =>
-        node.Deserialize<T>(Json) ?? throw new JsonException($"Expected a {typeof(T).Name} but the response body was null.");
-
-    private static void FillObjects(JsonNode? entity, string[] members)
+    private static JsonArray RequireArrayOfObjects(JsonNode? node, string itemName, string[] objectMembers)
     {
-        if (entity is not JsonObject obj)
+        if (node is not JsonArray items)
         {
-            return;
+            throw new JsonException($"Expected an array of {itemName} but the response had {Kind(node)}.");
         }
 
-        foreach (var member in members)
+        for (var i = 0; i < items.Count; i++)
+        {
+            RequireObject(items[i], $"{itemName} at index {i}", objectMembers);
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// The node as an object, with each of <paramref name="objectMembers"/> that is absent or null set to <c>{}</c>
+    /// (optional wire members the Abstractions records model as non-null).
+    /// </summary>
+    private static JsonObject RequireObject(JsonNode? node, string what, string[] objectMembers)
+    {
+        if (node is not JsonObject obj)
+        {
+            throw new JsonException($"Expected {what} to be a JSON object but the response had {Kind(node)}.");
+        }
+
+        foreach (var member in objectMembers)
         {
             if (obj[member] is null)
             {
                 obj[member] = new JsonObject();
             }
         }
+
+        return obj;
+    }
+
+    private static string Kind(JsonNode? node) => node is null ? "null" : node.GetValueKind().ToString();
+
+    // Callers pass a validated object or array, so a null result cannot occur; the check keeps that explicit.
+    private static T Read<T>(JsonNode node) =>
+        node.Deserialize<T>(Json) ?? throw new JsonException($"Expected a {typeof(T).Name} but the response body was null.");
+
+    // Strict JSON data (StrictJsonData): each caller JsonNode in a request body is replaced by its canonical copy, and
+    // only that copy is serialized, so the caller's tree (getters, converters, later mutation) never reaches the wire.
+    // A rejected value throws the helper's NachosValidationException before anything is sent.
+    private static JsonObject? Data(JsonObject? value) => (JsonObject?)StrictJsonData.ToCanonical(value);
+
+    private static MessageCreate[] Data(IReadOnlyList<MessageCreate> messages)
+    {
+        var canonical = new MessageCreate[messages.Count];
+        for (var i = 0; i < canonical.Length; i++)
+        {
+            var message = messages[i] ?? throw new ArgumentException($"messages[{i}] is null.", nameof(messages));
+            canonical[i] = message with { Metadata = Data(message.Metadata) };
+        }
+
+        return canonical;
     }
 }

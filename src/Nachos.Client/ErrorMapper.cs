@@ -20,20 +20,6 @@ namespace Nachos.Client;
 /// </remarks>
 internal static class ErrorMapper
 {
-    /// <summary>
-    /// The last segment of the RFC 9457 <c>type</c> that marks an Idempotency-Key reused with a different request.
-    /// The status (422) and string <c>detail</c> are shared with domain validation, so <c>type</c> is the only
-    /// machine-readable discriminator. Matching the last segment (after <c>/</c>, <c>:</c> or <c>#</c>) accepts
-    /// <see cref="IdempotencyKeyReusedTypeUri"/>.
-    /// </summary>
-    public const string IdempotencyKeyReusedType = "idempotency-key-reused";
-
-    /// <summary>
-    /// The full <c>type</c> the server is expected to send (title "Unprocessable Entity", status 422). Proposed for a
-    /// public constant in Nachos.Abstractions shared by the API exception handler and this mapper.
-    /// </summary>
-    public const string IdempotencyKeyReusedTypeUri = "urn:nachos:problem:" + IdempotencyKeyReusedType;
-
     public const string Redacted = "[redacted]";
 
     /// <summary>Longest exception text taken from a server body, including <see cref="TruncationMarker"/>.</summary>
@@ -49,39 +35,55 @@ internal static class ErrorMapper
     /// </summary>
     public const int MaxValidationErrors = 100;
 
+    /// <summary>
+    /// <c>loc</c> components kept per validation error. When there are more, one extra string component (starting with
+    /// <see cref="TruncationMarker"/>) states how many were dropped. Each string component is redacted and bounded like
+    /// the message.
+    /// </summary>
+    public const int MaxLocComponents = 32;
+
     /// <summary>The <c>type</c> of the marker entry that counts the validation errors not kept.</summary>
     public const string OmittedErrorsType = "nachos_client.errors_omitted";
 
-    public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret)
+    /// <remarks>
+    /// When the response carried a parseable <c>Retry-After</c>, the exception holds the delay under
+    /// <see cref="NachosExceptionData.RetryAfter"/> and its message ends with <c>" Retry-After: {N}s."</c> (spec §16),
+    /// whatever the status. The suffix is appended after truncation and counted in <see cref="MaxMessageLength"/>.
+    /// <see cref="RequestValidationException"/> has a fixed message, so it gets the data entry only, and a
+    /// <see cref="NachosValidationException"/>'s <see cref="NachosValidationException.Detail"/> includes the suffix.
+    /// </remarks>
+    public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret, TimeProvider clock)
     {
         var status = response.StatusCode;
         var (detail, parsed, type) = Parse(body);
         var fallback = string.Create(
             CultureInfo.InvariantCulture, $"Nachos {operation} returned {(int)status} {response.ReasonPhrase}.");
-        var message = Sanitize(detail ?? fallback, secret);
+        var retryAfter = RetryAfterHeader.Delay(response, clock);
+        var suffix = retryAfter is { } delay ? RetryAfterHeader.Suffix(delay) : string.Empty;
+        string Message(string text) => Sanitize(text, secret, MaxMessageLength - suffix.Length) + suffix;
 
-        return status switch
+        Exception exception = status switch
         {
-            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(message),
-            HttpStatusCode.NotFound => new NotFoundException(message),
-            HttpStatusCode.Conflict => new ConflictException(message),
+            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(Message(detail ?? fallback)),
+            HttpStatusCode.NotFound => new NotFoundException(Message(detail ?? fallback)),
+            HttpStatusCode.Conflict => new ConflictException(Message(detail ?? fallback)),
             HttpStatusCode.UnprocessableEntity when parsed is { } errors => new RequestValidationException(Sanitize(errors, secret)),
-            HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(message),
-            HttpStatusCode.UnprocessableEntity => new NachosValidationException(message),
-            _ => new HttpRequestException(
-                Sanitize(detail is null ? fallback : $"{fallback} {detail}", secret), inner: null, status),
+            HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(Message(detail ?? fallback)),
+            HttpStatusCode.UnprocessableEntity => new NachosValidationException(Message(detail ?? fallback)),
+            _ => new HttpRequestException(Message(detail is null ? fallback : $"{fallback} {detail}"), inner: null, status),
         };
+        return RetryAfterHeader.WithDelay(exception, retryAfter);
     }
 
-    private static string Sanitize(string text, string? secret)
+    private static string Sanitize(string text, string? secret, int maxLength = MaxMessageLength)
     {
         var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
-        if (redacted.Length <= MaxMessageLength)
+        if (redacted.Length <= maxLength)
         {
             return redacted;
         }
 
-        var cut = MaxMessageLength - TruncationMarker.Length;
+        var cut = maxLength - TruncationMarker.Length;
         if (char.IsHighSurrogate(redacted[cut - 1]))
         {
             cut--; // never keep half of a surrogate pair
@@ -110,9 +112,10 @@ internal static class ErrorMapper
         return [.. sanitized];
     }
 
+    // The status (422) and string detail are shared with domain validation, so the RFC 9457 type is the only
+    // machine-readable discriminator. Spec §16: matched exactly against the shared constant, never by suffix.
     private static bool IsIdempotencyKeyReused(string? type) =>
-        type is not null &&
-        type[(type.LastIndexOfAny(['/', ':', '#']) + 1)..] == IdempotencyKeyReusedType;
+        string.Equals(type, ProblemTypes.IdempotencyKeyReused, StringComparison.Ordinal);
 
     private static (string? Detail, (ValidationError[] Kept, int Omitted)? Errors, string? Type) Parse(string body)
     {
@@ -154,10 +157,19 @@ internal static class ErrorMapper
                 return null;
             }
 
-            errors[i] = new ValidationError([.. loc.Select(LocPart)], msgText, kindText);
+            errors[i] = new ValidationError(Loc(loc), msgText, kindText);
         }
 
         return (errors, items.Count - errors.Length);
+    }
+
+    // Components past the cap are counted, not read; the marker is a string so it is redacted and bounded like the rest.
+    private static object[] Loc(JsonArray loc)
+    {
+        var kept = loc.Take(MaxLocComponents).Select(LocPart);
+        return loc.Count <= MaxLocComponents
+            ? [.. kept]
+            : [.. kept, string.Create(CultureInfo.InvariantCulture, $"{TruncationMarker} {loc.Count - MaxLocComponents} more loc components")];
     }
 
     // FastAPI loc entries are member names (strings) or array indexes (integers).

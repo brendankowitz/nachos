@@ -118,6 +118,7 @@ public sealed class RetryBoundaryTests
     [InlineData(HttpStatusCode.ServiceUnavailable)]
     [InlineData(HttpStatusCode.InternalServerError)]
     [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
     public async Task TransientStatus_ThenOk_Succeeds(HttpStatusCode first)
     {
         var stub = new StubHandler((_, attempt) => attempt == 1 ? Error(first) : StubHandler.Json(HttpStatusCode.OK, MessageJson));
@@ -230,6 +231,8 @@ public sealed class RetryBoundaryTests
     [InlineData(HttpStatusCode.UnprocessableEntity)]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.NotImplemented)]
+    [InlineData((HttpStatusCode)425)]
+    [InlineData(HttpStatusCode.Conflict)]
     public async Task NonTransientStatus_IsNotRetried(HttpStatusCode status)
     {
         var stub = new StubHandler((_, _) => Error(status));

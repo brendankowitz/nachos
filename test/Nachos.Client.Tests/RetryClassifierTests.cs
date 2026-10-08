@@ -103,6 +103,8 @@ public sealed class RetryClassifierTests
     [InlineData("POST", S + "/clone", false, false)]
     [InlineData("POST", S + "/clone", true, true)]
     [InlineData("POST", "/v3/keys", true, false)]
+    [InlineData("POST", "/v3/admin/grants", true, false)]
+    [InlineData("POST", W + "/scopes/{scope_id}/sessions", true, false)]
     public void IsRetryable_FollowsSpec16(string method, string template, bool hasKey, bool expected)
     {
         RetryClassifier.IsRetryable(new HttpMethod(method), template, hasKey).ShouldBe(expected);

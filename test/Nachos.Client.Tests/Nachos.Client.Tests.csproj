@@ -6,5 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nachos.Client\Nachos.Client.csproj" />
+    <!-- Shared strict-JSON-data samples (counting converters, interface projections, allowed scalars). -->
+    <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
   </ItemGroup>
 </Project>
