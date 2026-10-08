@@ -44,18 +44,54 @@ public sealed class PowerShellHookTests
     [RequiresPosixToolFact("pwsh")]
     public void PostdeployPs1_FailsAfterTheWholeBudget_WhenTheBodyIsNeverExactlyHealthy()
     {
-        foreach (var (status, body) in new[] { (HttpStatusCode.OK, InfraTests.EchoBody), (HttpStatusCode.OK, "Degraded"), (HttpStatusCode.OK, "{\"status\":\"Healthy\"}") })
+        var responses = new[]
+        {
+            (HttpStatusCode.OK, InfraTests.EchoBody),
+            (HttpStatusCode.OK, "Degraded"),
+            (HttpStatusCode.OK, "{\"status\":\"Healthy\"}"),
+            (HttpStatusCode.OK, "healthy"),
+            (HttpStatusCode.ServiceUnavailable, "Healthy"),
+        };
+        foreach (var (status, body) in responses)
         {
             using var toolbox = new FakeToolbox();
             using var api = new ScriptedHttpServer((status, body));
 
             var result = toolbox.RunPostdeployPs1(api.Uri);
 
-            result.ExitCode.ShouldNotBe(0, $"body '{body}' must be rejected");
+            result.ExitCode.ShouldNotBe(0, $"{(int)status} '{body}' must be rejected");
             (result.StdOut + result.StdErr).ShouldContain(InfraTests.PlaceholderStillServing);
-            api.Requests.ShouldBe(InfraTests.PostdeployAttempts, $"body '{body}' is retried for the whole budget");
+            api.Requests.ShouldBe(InfraTests.PostdeployAttempts, $"{(int)status} '{body}' is retried for the whole budget");
             toolbox.Count("sleep 6").ShouldBe(InfraTests.PostdeployAttempts - 1);
         }
+    }
+
+    [RequiresPosixToolFact("pwsh")]
+    public void PostdeployPs1_ReportsTheLastAnswer_EvenWhenItIsNot2xx()
+    {
+        // The real API answers 503 "Unhealthy" while a check fails; that body, not '', is what the owner needs to see.
+        using var toolbox = new FakeToolbox();
+        using var api = new ScriptedHttpServer((HttpStatusCode.OK, InfraTests.EchoBody), (HttpStatusCode.ServiceUnavailable, "Unhealthy"));
+
+        var result = toolbox.RunPostdeployPs1(api.Uri);
+
+        result.ExitCode.ShouldNotBe(0);
+        (result.StdOut + result.StdErr).ShouldContain("last answered 'Unhealthy'.");
+    }
+
+    [RequiresPosixToolFact("pwsh")]
+    public void PostdeployPs1_TruncatesAndSanitisesTheExcerpt()
+    {
+        using var toolbox = new FakeToolbox();
+        using var api = new ScriptedHttpServer((HttpStatusCode.ServiceUnavailable, InfraTests.LongUnhealthyBody));
+
+        var result = toolbox.RunPostdeployPs1(api.Uri);
+
+        result.ExitCode.ShouldNotBe(0);
+        var output = result.StdOut + result.StdErr;
+        output.ShouldContain($"last answered '{InfraTests.LongBodyExcerpt}'.");
+        output.ShouldNotContain("\a");
+        output.ShouldNotContain(new string('x', 191));
     }
 
     [RequiresPosixToolFact("pwsh")]

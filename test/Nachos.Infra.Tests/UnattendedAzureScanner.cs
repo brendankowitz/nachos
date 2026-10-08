@@ -7,8 +7,8 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 
 /// <summary>
 /// Spec §18.3: nothing that touches Azure may run unattended. Scans <c>.github/workflows/**</c>,
-/// <c>.github/actions/**</c>, <c>.github/scripts/**</c> and <c>eng/**</c> under a root for az/azd/docker/bicep
-/// commands that are not offline (<see cref="CliInvocations"/>), Az PowerShell, Azure endpoints (ARM, Entra, storage,
+/// <c>.github/actions/**</c>, <c>.github/scripts/**</c> and <c>eng/**</c> under a root for az/azd/docker/bicep (and
+/// docker-compose/podman/nerdctl/buildah) commands that are not offline (<see cref="CliInvocations"/>), Az PowerShell, Azure endpoints (ARM, Entra, storage,
 /// Key Vault, SQL, App Service, sovereign clouds), Azure actions, registry logins, pushes (any tool) and ACR
 /// references, and reusable workflows from other repositories. Patterns are matched per logical statement (shell and
 /// PowerShell line continuations and YAML folded <c>run: &gt;</c> blocks joined, <c>#</c> comments stripped when
@@ -37,7 +37,7 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// </summary>
 internal sealed class UnattendedAzureScanner(string root)
 {
-    // az/azd/docker/bicep invocations (any spelling, flags before the verb) are judged by CliInvocations.
+    // az/azd/docker/bicep (and the other container tools') invocations, any spelling, flags before the verb, are judged by CliInvocations.
     private static readonly Regex[] Forbidden =
     [
         Pattern(@"sqlpackage.*Publish"),
@@ -58,10 +58,7 @@ internal sealed class UnattendedAzureScanner(string root)
         Pattern(@"\bazurewebsites\.net\b"),
         Pattern(@"\busgovcloudapi\.net\b"),
         Pattern(@"\bchinacloudapi\.cn\b"),
-        // Registry pushes by other container tools (docker itself is tokenised): podman/nerdctl/buildah
-        // [image|manifest] push, docker-compose push.
-        Pattern(@"(?<![\w-])(?:podman|nerdctl|buildah)\s+(?:(?:image|manifest)\s+)?push\b"),
-        Pattern(@"\bdocker-compose\s+push\b"),
+        // Registry pushes by other container tools (docker, docker-compose, podman, nerdctl and buildah are tokenised).
         Pattern(@"\bskopeo\s+(?:copy|sync)\b"),
         Pattern(@"\boras\s+(?:push|cp|copy|attach)\b"),
         Pattern(@"\bcrane\s+(?:push|copy|cp)\b"),

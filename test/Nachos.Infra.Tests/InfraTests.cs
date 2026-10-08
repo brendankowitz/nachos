@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Shouldly;
@@ -12,10 +13,6 @@ public sealed class InfraTests
 {
     private const string MainBicep = "infra/main.bicep";
 
-    /// <summary>
-    /// mendhak/http-https-echo (MIT), OCI index of tag 42: answers 200 on every path on 8080. To replace it, change
-    /// the default in main.bicep and main.parameters.json and re-run <see cref="Placeholder_Answers_ProbePaths"/>.
-    /// </summary>
     /// <summary>postdeploy's polling budget (attempts, 6 s apart), the same in both scripts.</summary>
     internal const int PostdeployAttempts = 10;
 
@@ -25,6 +22,18 @@ public sealed class InfraTests
     internal const string PlaceholderStillServing =
         "The placeholder image is still serving (or the API is not healthy). Re-run `azd deploy`; if that cannot succeed, run `azd down`.";
 
+    /// <summary>
+    /// A body postdeploy must never print raw: longer than its 200-character excerpt and holding a control character
+    /// (BEL). <see cref="LongBodyExcerpt"/> is what both scripts must show instead: the first 200 characters, printable ones only.
+    /// </summary>
+    internal static readonly string LongUnhealthyBody = "Unhealthy\a" + new string('x', 300);
+
+    internal static readonly string LongBodyExcerpt = "Unhealthy" + new string('x', 190);
+
+    /// <summary>
+    /// mendhak/http-https-echo (MIT), OCI index of tag 42: answers 200 on every path on 8080. To replace it, change
+    /// the default in main.bicep and main.parameters.json and re-run <see cref="Placeholder_Answers_ProbePaths"/>.
+    /// </summary>
     private const string PlaceholderImage =
         "ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4";
 
@@ -696,7 +705,7 @@ public sealed class InfraTests
     {
         using var toolbox = new FakeToolbox();
 
-        var result = toolbox.RunPostdeploy(["Healthy\n"]);
+        var result = toolbox.RunPostdeploy([(HttpStatusCode.OK, "Healthy\n")]);
 
         result.ExitCode.ShouldBe(0, result.StdErr);
         var gets = toolbox.Calls.Where(c => c.StartsWith("curl", StringComparison.Ordinal)).ToList();
@@ -710,7 +719,7 @@ public sealed class InfraTests
         // azd waits for the ARM operation, not for the traffic switch: the first GET can still hit the placeholder.
         using var toolbox = new FakeToolbox();
 
-        var result = toolbox.RunPostdeploy([EchoBody, "Degraded", "Healthy"]);
+        var result = toolbox.RunPostdeploy([(HttpStatusCode.OK, EchoBody), (HttpStatusCode.ServiceUnavailable, "Unhealthy"), (HttpStatusCode.OK, "Healthy")]);
 
         result.ExitCode.ShouldBe(0, result.StdErr);
         toolbox.Count("curl ").ShouldBe(3);
@@ -720,15 +729,26 @@ public sealed class InfraTests
     [RequiresPosixToolFact("bash")]
     public void PostdeploySh_FailsAfterTheWholeBudget_WhenTheBodyIsNeverExactlyHealthy()
     {
-        foreach (var body in new[] { EchoBody, "Degraded", "Unhealthy", "{\"status\":\"Healthy\"}", "Healthy, mostly", "" })
+        var responses = new[]
+        {
+            (HttpStatusCode.OK, EchoBody),
+            (HttpStatusCode.OK, "Degraded"),
+            (HttpStatusCode.ServiceUnavailable, "Unhealthy"),
+            (HttpStatusCode.OK, "{\"status\":\"Healthy\"}"),
+            (HttpStatusCode.OK, "Healthy, mostly"),
+            (HttpStatusCode.OK, "healthy"),
+            (HttpStatusCode.ServiceUnavailable, "Healthy"),
+            (HttpStatusCode.OK, ""),
+        };
+        foreach (var (status, body) in responses)
         {
             using var toolbox = new FakeToolbox();
 
-            var result = toolbox.RunPostdeploy([body]);
+            var result = toolbox.RunPostdeploy([(status, body)]);
 
-            result.ExitCode.ShouldNotBe(0, $"body '{body}' must be rejected");
+            result.ExitCode.ShouldNotBe(0, $"{(int)status} '{body}' must be rejected");
             result.StdErr.ShouldContain(PlaceholderStillServing);
-            toolbox.Count("curl ").ShouldBe(PostdeployAttempts, $"body '{body}' is retried for the whole budget");
+            toolbox.Count("curl ").ShouldBe(PostdeployAttempts, $"{(int)status} '{body}' is retried for the whole budget");
             toolbox.Count("sleep 6").ShouldBe(PostdeployAttempts - 1);
         }
     }
@@ -738,11 +758,36 @@ public sealed class InfraTests
     {
         using var toolbox = new FakeToolbox();
 
-        var result = toolbox.RunPostdeploy(["Healthy"], curlFails: true);
+        var result = toolbox.RunPostdeploy([(HttpStatusCode.OK, "Healthy")], curlFails: true);
 
         result.ExitCode.ShouldNotBe(0, "a request that never succeeds must not pass");
         result.StdErr.ShouldContain(PlaceholderStillServing);
         toolbox.Count("curl ").ShouldBe(PostdeployAttempts);
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_ReportsTheLastAnswer_EvenWhenItIsNot2xx()
+    {
+        // The real API answers 503 "Unhealthy" while a check fails; that body, not '', is what the owner needs to see.
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostdeploy([(HttpStatusCode.OK, EchoBody), (HttpStatusCode.ServiceUnavailable, "Unhealthy")]);
+
+        result.ExitCode.ShouldNotBe(0);
+        result.StdErr.ShouldContain("last answered 'Unhealthy'.");
+    }
+
+    [RequiresPosixToolFact("bash")]
+    public void PostdeploySh_TruncatesAndSanitisesTheExcerpt()
+    {
+        using var toolbox = new FakeToolbox();
+
+        var result = toolbox.RunPostdeploy([(HttpStatusCode.ServiceUnavailable, LongUnhealthyBody)]);
+
+        result.ExitCode.ShouldNotBe(0);
+        result.StdErr.ShouldContain($"last answered '{LongBodyExcerpt}'.");
+        result.StdErr.ShouldNotContain("\a");
+        result.StdErr.ShouldNotContain(new string('x', 191));
     }
 
     [Fact]
@@ -1183,7 +1228,9 @@ public sealed class InfraTests
     [Fact]
     public void Scanner_DoesNotFlagProseOrSchemaUrls()
     {
-        PlantedWorkflowHits(OnPush("      - name: Lint bicep files\n        run: bicep lint infra/main.bicep\n")).ShouldBeEmpty();
+        // A step name is prose, but the reader cannot tell it from a command: like `azd` and `az`, `bicep` followed by
+        // a word is read as a verb, so only an allowed one stays clean (`Lint bicep files` would be reported).
+        PlantedWorkflowHits(OnPush("      - name: Run bicep lint\n        run: bicep lint infra/main.bicep\n")).ShouldBeEmpty();
         PlantedWorkflowHits(OnPush("      - name: Install azd\n        run: echo later\n")).ShouldBeEmpty();
         PlantedFileHits("eng/arm/params.json", "{ \"$schema\": \"https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#\" }\n")
             .ShouldBeEmpty();

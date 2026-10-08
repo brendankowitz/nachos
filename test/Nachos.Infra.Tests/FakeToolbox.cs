@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace Nachos.Infra.Tests;
 
 /// <summary>
@@ -59,11 +61,20 @@ internal sealed class FakeToolbox : IDisposable
             echo "curl $*" >> "$FAKE_LOG"
             if [[ "$*" == *"api.ipify.org"* ]]; then echo 203.0.113.7; exit 0; fi
             if [[ "${FAKE_CURL_FAIL:-}" == 1 ]]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi
-            # The n-th readiness GET answers body n; once the script runs out, the last body repeats.
+            # The n-th readiness GET answers response n (body, then the -w format with its HTTP status); once the
+            # script runs out, the last response repeats. Like curl, -f/--fail turns a 4xx/5xx into exit 22 with no body.
+            format=""; fail=0
+            while (( $# )); do
+              case "$1" in -w) format="$2" ;; --fail) fail=1 ;; --*) ;; -*f*) fail=1 ;; esac
+              shift
+            done
             n="$(grep -c '^curl ' "$FAKE_LOG")"
             last="$(ls "$FAKE_DIR"/curl-body-* | wc -l)"
             (( n > last )) && n="$last"
+            status="$(cat "$FAKE_DIR/curl-status-$n")"
+            if (( fail && status >= 400 )); then echo "curl: (22) The requested URL returned error: $status" >&2; exit 22; fi
             cat "$FAKE_DIR/curl-body-$n"
+            printf '%b' "${format//%\{http_code\}/$status}"
             exit 0
             """);
         Install("dotnet", """
@@ -101,12 +112,13 @@ internal sealed class FakeToolbox : IDisposable
     public ProcessResult RunPostprovisionPs1(string? keyOutput = null, string listNames = "", string existingSid = "") =>
         RunPowerShell("infra/hooks/postprovision.ps1", PostprovisionEnvironment(keyOutput, 0, null, listNames, existingSid));
 
-    /// <summary>Runs <c>postdeploy.sh</c>; the fake <c>curl</c> answers the n-th readiness GET with <paramref name="bodies"/>[n].</summary>
-    public ProcessResult RunPostdeploy(IReadOnlyList<string> bodies, bool curlFails = false)
+    /// <summary>Runs <c>postdeploy.sh</c>; the fake <c>curl</c> answers the n-th readiness GET with <paramref name="responses"/>[n] (the last repeats).</summary>
+    public ProcessResult RunPostdeploy(IReadOnlyList<(HttpStatusCode Status, string Body)> responses, bool curlFails = false)
     {
-        for (var i = 0; i < bodies.Count; i++)
+        for (var i = 0; i < responses.Count; i++)
         {
-            File.WriteAllText(Path.Combine(directory, $"curl-body-{i + 1}"), bodies[i]);
+            File.WriteAllText(Path.Combine(directory, $"curl-body-{i + 1}"), responses[i].Body);
+            File.WriteAllText(Path.Combine(directory, $"curl-status-{i + 1}"), ((int)responses[i].Status).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         var environment = new Dictionary<string, string>

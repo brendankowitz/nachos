@@ -15,8 +15,15 @@ namespace Nachos.DataLayer.InMemory;
 /// </para>
 /// <para>
 /// JSON is stored canonically (as if parsed from a request), so C#-built values such as a <see cref="Guid"/> are
-/// stored and returned as JSON strings; a value with no JSON form (NaN, Infinity), a repeated property name, or more
-/// than 64 levels of nesting is rejected with <see cref="Abstractions.NachosValidationException"/>.
+/// stored and returned as JSON strings; a value with no JSON form (NaN, Infinity, a string with an unpaired surrogate),
+/// a repeated property name, or more than 64 levels of nesting is rejected with
+/// <see cref="Abstractions.NachosValidationException"/>.
+/// </para>
+/// <para>
+/// Each workspace is guarded by a synchronous <see cref="Lock"/>, deliberately not a <see cref="SemaphoreSlim"/>:
+/// critical sections are short and purely in-memory, and never span an <c>await</c> of user code. The
+/// <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback is synchronous and runs inside the
+/// workspace lock.
 /// </para>
 /// <para>
 /// An <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback must not call this store: it runs

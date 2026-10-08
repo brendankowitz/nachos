@@ -61,6 +61,8 @@ public sealed class HookSecretFlowTests
     [InlineData("infra/hooks/postprovision.ps1", "[Console]::WriteLine($adminKey)")]
     [InlineData("infra/hooks/postprovision.ps1", "[Console]::Error.WriteLine($minted)")]
     [InlineData("infra/hooks/postprovision.ps1", "Write-Host (\"{0}\" -f $adminKey)")]
+    // Piped to a cmdlet that renders its input: only Out-Null / > $null discard.
+    [InlineData("infra/hooks/postprovision.ps1", "$minted | Format-List")]
     public void PlantedPrints_AreFound(string hook, string planted)
     {
         var text = Read(hook).TrimEnd() + "\n" + planted + "\n";
