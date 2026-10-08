@@ -19,9 +19,11 @@ namespace Nachos.Abstractions.Stores;
 /// factory or a connection per operation.
 /// </description></item>
 /// <item><description>
-/// <b>JSON isolation:</b> <see cref="System.Text.Json.Nodes.JsonObject"/> arguments are deep-cloned on input and
-/// every returned <see cref="System.Text.Json.Nodes.JsonObject"/> is a fresh deep clone (no parent), so callers and
-/// stores never share instances. Null metadata or configuration on create is stored and returned as <c>{}</c>.
+/// <b>JSON isolation:</b> caller-supplied <see cref="System.Text.Json.Nodes.JsonObject"/> arguments pass through
+/// <see cref="Nachos.Abstractions.Json.StrictJsonData.ToCanonical"/> on input, so a value outside the strict JSON-data
+/// contract is rejected with <see cref="NachosValidationException"/> and nothing is stored; only the detached canonical
+/// copy is kept. Every returned <see cref="System.Text.Json.Nodes.JsonObject"/> is a fresh deep clone (no parent), so
+/// callers and stores never share instances. Null metadata or configuration on create is stored and returned as <c>{}</c>.
 /// </description></item>
 /// <item><description>
 /// <b>Ordering:</b> workspace, peer and session lists are ordered by creation (<c>CreatedAt</c>, with insertion
