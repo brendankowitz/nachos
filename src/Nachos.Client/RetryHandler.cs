@@ -3,7 +3,7 @@ using System.Net;
 namespace Nachos.Client;
 
 /// <summary>
-/// Operation-aware retries (spec §16): up to <see cref="MaxAttempts"/> attempts on 429, 5xx (except 501),
+/// Operation-aware retries (spec §16): up to <see cref="MaxAttempts"/> attempts on 408, 429, 5xx (except 501),
 /// transport failures, and timeouts that are not the caller's cancellation. Delays use exponential backoff with
 /// full jitter, or the server's <c>Retry-After</c> when present.
 /// </summary>
@@ -14,9 +14,44 @@ namespace Nachos.Client;
 /// exactly once.
 /// </para>
 /// <para>
+/// <b>Retry policy (spec §16).</b>
+/// <list type="bullet">
+/// <item><description>
+/// Retryable statuses are 408, 429 and 5xx other than 501. 501 is never retried: "not implemented" is a permanent
+/// answer for the route, not a transient one.
+/// </description></item>
+/// <item><description>
+/// Status precedence: once a status line is received, that status decides. After a non-retryable status (any 3xx, any
+/// 4xx other than 408/429, and 501) a failure while reading the body is final and is not resent. After a 2xx or a
+/// retryable status the body failure is retried, so a lost successful response to a keyed mutation is replayed
+/// safely. Whenever a body read failure surfaces from this handler (final status, attempts exhausted, the buffer cap,
+/// or a <c>Retry-After</c> over the cap), it is an <see cref="HttpRequestException"/> whose
+/// <see cref="HttpRequestException.StatusCode"/> is the received status and whose inner exception is the read failure;
+/// a cancellation surfaces unchanged. Requests the route rules never replay (for
+/// example an unkeyed message create) are not affected: they are sent once and never reach this logic.
+/// </description></item>
+/// <item><description>
+/// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out. For a status the response
+/// is returned at once, <c>Retry-After</c> header included; <see cref="NachosHttpClient"/> then maps it to the status
+/// exception, which does not carry the delay. For a body failure the failure surfaces at once.
+/// </description></item>
+/// <item><description>
+/// Routes <see cref="RetryClassifier"/> classifies as never retried (keys, grants, adding sessions to a scope until
+/// its backfill enqueue is shown idempotent) are sent once whatever the status.
+/// </description></item>
+/// </list>
+/// </para>
+/// <para>
 /// For a retryable request the response body is read inside the retry loop, so a failure while reading it is
-/// retried like a transport failure (honouring <c>Retry-After</c> when the failed response carried one).
-/// Non-retryable requests pass through untouched (streaming preserved).
+/// retried like a transport failure (honouring <c>Retry-After</c> when the failed response carried one), subject to
+/// the status precedence above. Non-retryable requests pass through untouched (streaming preserved).
+/// </para>
+/// <para>
+/// <b>Ownership.</b> Each attempt sends a copy of the caller's request. The handler owns every copy and disposes each
+/// one before <c>SendAsync</c> returns or throws, on every path (success, retry, exhaustion, exception, cancellation).
+/// A response that is not handed back is disposed before the next attempt. The returned response's
+/// <see cref="HttpResponseMessage.RequestMessage"/> is the caller's original request, which the caller still owns and
+/// disposes. A non-retryable request is sent as is, without a copy.
 /// </para>
 /// <para>
 /// That buffer is capped at <see cref="DefaultMaxResponseBufferSize"/>; a larger body fails with
@@ -29,8 +64,7 @@ namespace Nachos.Client;
 /// </para>
 /// <para>
 /// The request body is buffered once and every attempt is a fresh copy of the original request with the same headers,
-/// so a replay carries the same <c>Idempotency-Key</c> and identical bytes. A <c>Retry-After</c> longer than
-/// <see cref="MaxRetryAfter"/> is not waited out: the response is returned to the caller instead.
+/// so a replay carries the same <c>Idempotency-Key</c> and identical bytes.
 /// </para>
 /// </remarks>
 public sealed class RetryHandler : DelegatingHandler
@@ -100,53 +134,81 @@ public sealed class RetryHandler : DelegatingHandler
 
         for (var attempt = 1; ; attempt++)
         {
-            var attemptRequest = Copy(request, body);
-            HttpResponseMessage? response = null;
-            try
-            {
-                response = await base.SendAsync(attemptRequest, cancellationToken).ConfigureAwait(false);
-
-                // The inner handler returns once headers arrive; HttpClient would read the body after this handler
-                // returns, outside the retry loop. Reading it here keeps a reset mid-body (after the server committed)
-                // inside the loop, where a keyed request can be replayed.
-                await response.Content.LoadIntoBufferAsync(_maxResponseBufferSize, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex, cancellationToken))
-            {
-                // A body failure after the headers arrived still honours the server's Retry-After.
-                var failureWait = (response is null ? null : RetryAfter(response)) ?? Backoff(attempt);
-                response?.Dispose();
-                attemptRequest.Dispose();
-                if (failureWait > MaxRetryAfter)
-                {
-                    throw;
-                }
-
-                await WaitAsync(failureWait, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            catch
-            {
-                response?.Dispose();
-                attemptRequest.Dispose();
-                throw;
-            }
-
-            if (attempt >= MaxAttempts || !IsTransient(response.StatusCode))
+            var (response, wait) = await AttemptAsync(request, body, attempt, cancellationToken).ConfigureAwait(false);
+            if (response is not null)
             {
                 return response;
             }
 
-            var wait = RetryAfter(response) ?? Backoff(attempt);
-            if (wait > MaxRetryAfter)
-            {
-                return response;
-            }
-
-            response.Dispose();
-            attemptRequest.Dispose();
             await WaitAsync(wait, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Sends one copy of <paramref name="original"/>. Returns the response to hand back (its
+    /// <see cref="HttpResponseMessage.RequestMessage"/> set to <paramref name="original"/>), or no response and the wait
+    /// before the next attempt; anything else throws. The copy is disposed before this returns or throws, and a response
+    /// that is not handed back is disposed too.
+    /// </summary>
+    private async Task<(HttpResponseMessage? Final, TimeSpan Wait)> AttemptAsync(
+        HttpRequestMessage original, byte[]? body, int attempt, CancellationToken cancellationToken)
+    {
+        using var copy = Copy(original, body);
+        var canRetry = attempt < MaxAttempts;
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await base.SendAsync(copy, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (canRetry && IsTransient(ex, cancellationToken))
+        {
+            return (null, Backoff(attempt));
+        }
+
+        var status = response.StatusCode;
+        try
+        {
+            // The inner handler returns once headers arrive; HttpClient would read the body after this handler
+            // returns, outside the retry loop. Reading it here keeps a reset mid-body (after the server committed)
+            // inside the loop, where a keyed request can be replayed.
+            await response.Content.LoadIntoBufferAsync(_maxResponseBufferSize, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Status precedence: the received status decides whether a body failure may be retried.
+            var failureWait = canRetry && IsTransient(ex, cancellationToken) && BodyFailureIsRetryable(status)
+                ? RetryAfter(response) ?? Backoff(attempt)
+                : (TimeSpan?)null;
+            response.Dispose();
+            if (failureWait <= MaxRetryAfter)
+            {
+                return (null, failureWait.Value);
+            }
+
+            // A read failure keeps the status it followed; cancellations and anything else surface unchanged.
+            if (ex is HttpRequestException or IOException)
+            {
+                var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
+                throw new HttpRequestException(error, ex.Message, ex, status);
+            }
+
+            throw;
+        }
+
+        if (canRetry && IsRetryableStatus(status))
+        {
+            var wait = RetryAfter(response) ?? Backoff(attempt);
+            if (wait <= MaxRetryAfter)
+            {
+                response.Dispose();
+                return (null, wait);
+            }
+        }
+
+        // The copy is disposed on return; the caller's response must not point at it.
+        response.RequestMessage = original;
+        return (response, default);
     }
 
     private static bool IsRetryable(HttpRequestMessage request) =>
@@ -168,9 +230,15 @@ public sealed class RetryHandler : DelegatingHandler
         ex is not HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded } &&
         ex is HttpRequestException or IOException or TimeoutException or OperationCanceledException;
 
-    private static bool IsTransient(HttpStatusCode status) =>
-        status == HttpStatusCode.TooManyRequests ||
+    // Spec §16: 408, 429 and 5xx other than 501. Every other status (2xx, 3xx, the rest of 4xx, 501) is final.
+    private static bool IsRetryableStatus(HttpStatusCode status) =>
+        status is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
         ((int)status >= 500 && status != HttpStatusCode.NotImplemented);
+
+    // Spec §16 status precedence: a body lost after a 2xx or a retryable status may be retried; after any other status
+    // that status is final, so the read failure surfaces instead.
+    private static bool BodyFailureIsRetryable(HttpStatusCode status) =>
+        ((int)status >= 200 && (int)status <= 299) || IsRetryableStatus(status);
 
     private static HttpRequestMessage Copy(HttpRequestMessage original, byte[]? body)
     {

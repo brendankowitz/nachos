@@ -73,6 +73,23 @@ internal sealed class StubHandler : HttpMessageHandler
         }
     }
 
+    /// <summary>
+    /// True when <paramref name="request"/> was disposed. Works for bodyless requests too: every setter of a disposed
+    /// request throws <see cref="ObjectDisposedException"/>, and re-assigning the current version changes nothing.
+    /// </summary>
+    public static bool IsDisposed(HttpRequestMessage request)
+    {
+        try
+        {
+            request.Version = request.Version;
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
+    }
+
     public static HttpResponseMessage Json(HttpStatusCode status, string json) =>
         new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 

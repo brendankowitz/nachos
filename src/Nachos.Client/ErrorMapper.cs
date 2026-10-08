@@ -20,20 +20,6 @@ namespace Nachos.Client;
 /// </remarks>
 internal static class ErrorMapper
 {
-    /// <summary>
-    /// The last segment of the RFC 9457 <c>type</c> that marks an Idempotency-Key reused with a different request.
-    /// The status (422) and string <c>detail</c> are shared with domain validation, so <c>type</c> is the only
-    /// machine-readable discriminator. Matching the last segment (after <c>/</c>, <c>:</c> or <c>#</c>) accepts
-    /// <see cref="IdempotencyKeyReusedTypeUri"/>.
-    /// </summary>
-    public const string IdempotencyKeyReusedType = "idempotency-key-reused";
-
-    /// <summary>
-    /// The full <c>type</c> the server is expected to send (title "Unprocessable Entity", status 422). Proposed for a
-    /// public constant in Nachos.Abstractions shared by the API exception handler and this mapper.
-    /// </summary>
-    public const string IdempotencyKeyReusedTypeUri = "urn:nachos:problem:" + IdempotencyKeyReusedType;
-
     public const string Redacted = "[redacted]";
 
     /// <summary>Longest exception text taken from a server body, including <see cref="TruncationMarker"/>.</summary>
@@ -48,6 +34,13 @@ internal static class ErrorMapper
     /// but not inspected.
     /// </summary>
     public const int MaxValidationErrors = 100;
+
+    /// <summary>
+    /// <c>loc</c> components kept per validation error. When there are more, one extra string component (starting with
+    /// <see cref="TruncationMarker"/>) states how many were dropped. Each string component is redacted and bounded like
+    /// the message.
+    /// </summary>
+    public const int MaxLocComponents = 32;
 
     /// <summary>The <c>type</c> of the marker entry that counts the validation errors not kept.</summary>
     public const string OmittedErrorsType = "nachos_client.errors_omitted";
@@ -110,9 +103,10 @@ internal static class ErrorMapper
         return [.. sanitized];
     }
 
+    // The status (422) and string detail are shared with domain validation, so the RFC 9457 type is the only
+    // machine-readable discriminator. Spec §16: matched exactly against the shared constant, never by suffix.
     private static bool IsIdempotencyKeyReused(string? type) =>
-        type is not null &&
-        type[(type.LastIndexOfAny(['/', ':', '#']) + 1)..] == IdempotencyKeyReusedType;
+        string.Equals(type, ProblemTypes.IdempotencyKeyReused, StringComparison.Ordinal);
 
     private static (string? Detail, (ValidationError[] Kept, int Omitted)? Errors, string? Type) Parse(string body)
     {
@@ -154,10 +148,19 @@ internal static class ErrorMapper
                 return null;
             }
 
-            errors[i] = new ValidationError([.. loc.Select(LocPart)], msgText, kindText);
+            errors[i] = new ValidationError(Loc(loc), msgText, kindText);
         }
 
         return (errors, items.Count - errors.Length);
+    }
+
+    // Components past the cap are counted, not read; the marker is a string so it is redacted and bounded like the rest.
+    private static object[] Loc(JsonArray loc)
+    {
+        var kept = loc.Take(MaxLocComponents).Select(LocPart);
+        return loc.Count <= MaxLocComponents
+            ? [.. kept]
+            : [.. kept, string.Create(CultureInfo.InvariantCulture, $"{TruncationMarker} {loc.Count - MaxLocComponents} more loc components")];
     }
 
     // FastAPI loc entries are member names (strings) or array indexes (integers).

@@ -17,6 +17,11 @@ public enum RetryCategory
 /// Operation-aware retry rules (spec §16), keyed on the HTTP method and the wire-manifest route template
 /// (for example <c>/v3/workspaces/{workspace_id}/sessions/{session_id}/messages</c>).
 /// </summary>
+/// <remarks>
+/// This decides whether a request may be replayed at all. Which outcomes are retried for a replayable request
+/// (statuses, and the precedence of a received status over a later body-read failure) is
+/// <see cref="RetryHandler"/>'s rule: a non-retryable status is final even if its body then fails to read.
+/// </remarks>
 public static class RetryClassifier
 {
     // POST routes are the only ones whose safety the method does not decide. Each pattern names a route by its
@@ -43,7 +48,7 @@ public static class RetryClassifier
         (Split("v3/workspaces/{}/sessions/{}/peers"), RetryCategory.Retryable),
 
         // Adding sessions to a scope enqueues a scope_backfill (spec §14); a replay may enqueue a second one.
-        // Assumed non-idempotent until backfill enqueue is proven idempotent; revisit at M6.
+        // Spec §16: never auto-retried until the backfill enqueue is shown to be idempotent; revisit at M6.
         (Split("v3/workspaces/{}/scopes/{}/sessions"), RetryCategory.Never),
 
         // Non-idempotent and without Idempotency-Key support: each call mints a key, enqueues a dream, or
@@ -52,8 +57,8 @@ public static class RetryClassifier
         (Split("v3/workspaces/{}/schedule_dream"), RetryCategory.Never),
         (Split("v3/workspaces/{}/webhooks"), RetryCategory.Never),
 
-        // Grant add is a set-add (IGrantStore.AddAsync: a duplicate is a no-op), so a replay would be safe; kept
-        // Never as the conservative choice for an admin write until the route's contract is pinned.
+        // Grant add is a set-add (IGrantStore.AddAsync: a duplicate is a no-op), so a replay would be safe; spec §16
+        // nevertheless lists it as never auto-retried (an admin write).
         (Split("v3/admin/grants"), RetryCategory.Never),
     ];
 
@@ -63,8 +68,13 @@ public static class RetryClassifier
         new(["list", "search", "query", "representation"], StringComparer.Ordinal);
 
     /// <summary>
-    /// True when a transient failure of this request may be replayed. Unknown routes are never retried.
+    /// True when a transient failure of this request may be replayed.
     /// </summary>
+    /// <remarks>
+    /// GET, PUT and DELETE are classified by method alone, so any template with those methods is retryable (except
+    /// chat and <c>GET .../webhooks/test</c>), including one the manifest does not list. Only a POST whose template
+    /// matches no known route shape, or another method (PATCH, HEAD, ...), is unclassified and never retried.
+    /// </remarks>
     public static bool IsRetryable(HttpMethod method, string routeTemplate, bool hasIdempotencyKey) =>
         Classify(method, routeTemplate) switch
         {
