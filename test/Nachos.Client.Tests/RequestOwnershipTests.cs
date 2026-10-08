@@ -99,6 +99,30 @@ public sealed class RequestOwnershipTests
         stub.Messages.Select(StubHandler.IsDisposed).ShouldAllBe(disposed => disposed);
     }
 
+    /// <summary>
+    /// A redirect followed below the retry handler (as SocketsHttpHandler does) rewrites the URI of the request it
+    /// was given, which is the per-attempt copy. The returned response references the caller's original request, so
+    /// its <c>RequestUri</c> is the pre-redirect URI; the final URI is not carried back.
+    /// </summary>
+    [Fact]
+    public async Task RedirectBelowTheHandler_ReturnedRequestMessage_KeepsThePreRedirectUri()
+    {
+        var redirected = new Uri(Base, "/v3/workspaces/w1/sessions/s1/messages/m2");
+        var inner = new RedirectingHandler(redirected, MessageJson);
+        using var http = new HttpClient(Retry(inner, cancelInBackoff: null));
+        var originalUri = new Uri(Base, "/v3/workspaces/w1/sessions/s1/messages/m1");
+        using var request = new HttpRequestMessage(HttpMethod.Get, originalUri);
+        request.Options.Set(RetryHandler.RouteTemplate, "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}");
+
+        using var response = await http.SendAsync(request);
+
+        response.RequestMessage.ShouldBeSameAs(request);
+        response.RequestMessage!.RequestUri.ShouldBe(originalUri);
+        inner.Seen.ShouldNotBeSameAs(request);
+        inner.Seen!.RequestUri.ShouldBe(redirected);
+        StubHandler.IsDisposed(inner.Seen).ShouldBeTrue();
+    }
+
     [Fact]
     public async Task NonRetryableRequest_PassesThroughUncopied_AndIsNotDisposedByTheHandler()
     {
@@ -195,6 +219,23 @@ public sealed class RequestOwnershipTests
         {
             InnerHandler = inner,
         };
+
+    /// <summary>Follows a redirect the way SocketsHttpHandler does: it rewrites the URI of the request it was given.</summary>
+    private sealed class RedirectingHandler(Uri target, string json) : HttpMessageHandler
+    {
+        public HttpRequestMessage? Seen { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Seen = request;
+            request.RequestUri = target;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                RequestMessage = request,
+            });
+        }
+    }
 
     /// <summary>Records the request as the caller handed it to the pipeline, before any retry copy is made.</summary>
     private sealed class OriginalRecorder : DelegatingHandler

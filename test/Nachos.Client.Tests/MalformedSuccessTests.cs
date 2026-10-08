@@ -136,6 +136,113 @@ public sealed class MalformedSuccessTests
         await ShouldThrowJson(EntityRoutes[route], HttpStatusCode.OK, MalformedEntities[bodyIndex]);
     }
 
+    /// <summary>Where an entity is read: alone, as a page item, or as a batch entry. {item} marks the entity.</summary>
+    private static readonly Dictionary<string, (Func<INachosClient, Task> Call, string Entity, string Envelope, bool HasConfiguration)> EntityPlacements = new()
+    {
+        ["GetOrCreateWorkspace"] = (c => c.GetOrCreateWorkspaceAsync("w1"), WorkspaceJson, "{item}", true),
+        ["GetOrCreatePeer"] = (c => c.GetOrCreatePeerAsync("w1", "alice"), PeerJson, "{item}", true),
+        ["UpdateSession"] = (c => c.UpdateSessionAsync("w1", "s1"), SessionJson, "{item}", true),
+        ["GetMessage"] = (c => c.GetMessageAsync("w1", "s1", "m1"), MessageJson, "{item}", false),
+        ["ListPeers.items"] = (c => c.ListPeersAsync("w1", null, null, new PageRequest()), PeerJson, """{"items":[{item}],"total":1,"page":1,"size":50,"pages":1}""", true),
+        ["ListMessages.items"] = (c => c.ListMessagesAsync("w1", "s1", null, new PageRequest()), MessageJson, """{"items":[{item}],"total":1,"page":1,"size":50,"pages":1}""", false),
+        ["CreateMessages.entry"] = (c => c.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")]), MessageJson, "[{item}]", false),
+    };
+
+    /// <summary>A member replaced by a wrong-typed value, or removed when the value is <c>null</c>.</summary>
+    private static readonly (string Member, string? Value)[] WrongMembers =
+    [
+        ("metadata", "\"x\""),
+        ("metadata", "[]"),
+        ("metadata", "5"),
+        ("configuration", "5"),
+        ("configuration", "\"x\""),
+        ("id", "7"),
+        ("id", "null"),
+        ("id", "{}"),
+        ("id", null),
+        ("created_at", "\"not a date\""),
+    ];
+
+    public static TheoryData<string, int> WrongMemberCases()
+    {
+        var data = new TheoryData<string, int>();
+        foreach (var (placement, (_, _, _, hasConfiguration)) in EntityPlacements)
+        {
+            for (var i = 0; i < WrongMembers.Length; i++)
+            {
+                if (hasConfiguration || WrongMembers[i].Member != "configuration")
+                {
+                    data.Add(placement, i);
+                }
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(WrongMemberCases))]
+    public async Task WrongTypedOrMissingEntityMember_ThrowsJsonException(string placement, int memberIndex)
+    {
+        var (call, entity, envelope, _) = EntityPlacements[placement];
+        var (member, value) = WrongMembers[memberIndex];
+        var node = System.Text.Json.Nodes.JsonNode.Parse(entity)!.AsObject();
+        node.Remove(member);
+        if (value is not null)
+        {
+            node[member] = System.Text.Json.Nodes.JsonNode.Parse(value);
+        }
+
+        await ShouldThrowJson(call, HttpStatusCode.OK, envelope.Replace("{item}", node.ToJsonString(), StringComparison.Ordinal));
+    }
+
+    /// <summary>The page envelope's own members typed wrong or missing.</summary>
+    [Theory]
+    [InlineData("total", "\"1\"")]
+    [InlineData("total", "null")]
+    [InlineData("total", "1.5")]
+    [InlineData("total", null)]
+    [InlineData("page", "\"1\"")]
+    [InlineData("page", "null")]
+    [InlineData("page", "1.5")]
+    [InlineData("page", null)]
+    [InlineData("size", "\"50\"")]
+    [InlineData("pages", "true")]
+    public async Task WrongTypedOrMissingPageMember_ThrowsJsonException(string member, string? value)
+    {
+        foreach (var (call, item) in PageRoutes.Values)
+        {
+            var page = System.Text.Json.Nodes.JsonNode.Parse(
+                $$"""{"items":[{{item}}],"total":1,"page":1,"size":50,"pages":1}""")!.AsObject();
+            page.Remove(member);
+            if (value is not null)
+            {
+                page[member] = System.Text.Json.Nodes.JsonNode.Parse(value);
+            }
+
+            await ShouldThrowJson(call, HttpStatusCode.OK, page.ToJsonString());
+        }
+    }
+
+    /// <summary>
+    /// An empty body, or an empty object where an entity, page or batch is expected. A session peer config is the
+    /// exception: every member is optional, so <c>{}</c> is a valid one.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("{}")]
+    public async Task EmptyBodyOrEmptyObject_ThrowsJsonException(string body)
+    {
+        var calls = PageRoutes.Values.Select(r => r.Call)
+            .Concat(EntityRoutes.Where(r => r.Key != "GetSessionPeerConfig" || body != "{}").Select(r => r.Value))
+            .Append(c => c.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")]));
+        foreach (var call in calls)
+        {
+            await ShouldThrowJson(call, HttpStatusCode.OK, body);
+        }
+    }
+
     [Fact]
     public async Task WellFormedPageAndBatch_StillRead()
     {

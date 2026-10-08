@@ -24,16 +24,21 @@ namespace Nachos.Client;
 /// Status precedence: once a status line is received, that status decides. After a non-retryable status (any 3xx, any
 /// 4xx other than 408/429, and 501) a failure while reading the body is final and is not resent. After a 2xx or a
 /// retryable status the body failure is retried, so a lost successful response to a keyed mutation is replayed
-/// safely. Whenever a body read failure surfaces from this handler (final status, attempts exhausted, the buffer cap,
-/// or a <c>Retry-After</c> over the cap), it is an <see cref="HttpRequestException"/> whose
-/// <see cref="HttpRequestException.StatusCode"/> is the received status and whose inner exception is the read failure;
-/// a cancellation surfaces unchanged. Requests the route rules never replay (for
-/// example an unkeyed message create) are not affected: they are sent once and never reach this logic.
+/// safely. When a body read failure that is an <see cref="HttpRequestException"/> or an <see cref="IOException"/>
+/// surfaces from this handler (final status, attempts exhausted, the buffer cap, or a <c>Retry-After</c> over the
+/// cap), it is rethrown as an <see cref="HttpRequestException"/> whose <see cref="HttpRequestException.StatusCode"/>
+/// is the received status and whose inner exception is the read failure. Any other exception from the read (a
+/// cancellation, or a <see cref="TimeoutException"/> or <see cref="TaskCanceledException"/> from a timeout below this
+/// handler) surfaces unchanged, without the status. Requests the route rules never replay (for example an unkeyed
+/// message create) are not affected: they are sent once and never reach this logic.
 /// </description></item>
 /// <item><description>
-/// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out. For a status the response
-/// is returned at once, <c>Retry-After</c> header included; <see cref="NachosHttpClient"/> then maps it to the status
-/// exception, which does not carry the delay. For a body failure the failure surfaces at once.
+/// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out; the error reaches the caller
+/// with the requested delay. For a status the response is returned at once, header included, and
+/// <see cref="NachosHttpClient"/> maps it to an exception carrying the delay (see
+/// <see cref="NachosExceptionData.RetryAfter"/>). For a body failure the wrapped <see cref="HttpRequestException"/>
+/// above carries the same data entry and message suffix. Any surfaced failure whose response had a parseable
+/// <c>Retry-After</c> carries it, including the last one after the attempts are exhausted.
 /// </description></item>
 /// <item><description>
 /// Routes <see cref="RetryClassifier"/> classifies as never retried (keys, grants, adding sessions to a scope until
@@ -51,7 +56,10 @@ namespace Nachos.Client;
 /// one before <c>SendAsync</c> returns or throws, on every path (success, retry, exhaustion, exception, cancellation).
 /// A response that is not handed back is disposed before the next attempt. The returned response's
 /// <see cref="HttpResponseMessage.RequestMessage"/> is the caller's original request, which the caller still owns and
-/// disposes. A non-retryable request is sent as is, without a copy.
+/// disposes. A non-retryable request is sent as is, without a copy. Consequence: when a handler below this one follows
+/// a redirect (SocketsHttpHandler rewrites the URI of the request it was given), the rewrite lands on the disposed
+/// copy, so the returned <see cref="HttpResponseMessage.RequestMessage"/> keeps the caller's pre-redirect
+/// <see cref="HttpRequestMessage.RequestUri"/>; the final URI is not carried back.
 /// </para>
 /// <para>
 /// That buffer is capped at <see cref="DefaultMaxResponseBufferSize"/>; a larger body fails with
@@ -176,21 +184,26 @@ public sealed class RetryHandler : DelegatingHandler
         }
         catch (Exception ex)
         {
-            // Status precedence: the received status decides whether a body failure may be retried.
-            var failureWait = canRetry && IsTransient(ex, cancellationToken) && BodyFailureIsRetryable(status)
-                ? RetryAfter(response) ?? Backoff(attempt)
-                : (TimeSpan?)null;
+            var retryAfter = RetryAfterHeader.Delay(response, _timeProvider);
             response.Dispose();
-            if (failureWait <= MaxRetryAfter)
+
+            // Status precedence: the received status decides whether a body failure may be retried.
+            if (canRetry && IsTransient(ex, cancellationToken) && BodyFailureIsRetryable(status))
             {
-                return (null, failureWait.Value);
+                var failureWait = retryAfter ?? Backoff(attempt);
+                if (failureWait <= MaxRetryAfter)
+                {
+                    return (null, failureWait);
+                }
             }
 
-            // A read failure keeps the status it followed; cancellations and anything else surface unchanged.
+            // A read failure keeps the status it followed and any delay the server asked for (spec §16);
+            // cancellations and anything else surface unchanged.
             if (ex is HttpRequestException or IOException)
             {
                 var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
-                throw new HttpRequestException(error, ex.Message, ex, status);
+                var message = retryAfter is { } delay ? ex.Message + RetryAfterHeader.Suffix(delay) : ex.Message;
+                throw RetryAfterHeader.WithDelay(new HttpRequestException(error, message, ex, status), retryAfter);
             }
 
             throw;
@@ -198,7 +211,7 @@ public sealed class RetryHandler : DelegatingHandler
 
         if (canRetry && IsRetryableStatus(status))
         {
-            var wait = RetryAfter(response) ?? Backoff(attempt);
+            var wait = RetryAfterHeader.Delay(response, _timeProvider) ?? Backoff(attempt);
             if (wait <= MaxRetryAfter)
             {
                 response.Dispose();
@@ -267,23 +280,6 @@ public sealed class RetryHandler : DelegatingHandler
         }
 
         return copy;
-    }
-
-    private TimeSpan? RetryAfter(HttpResponseMessage response)
-    {
-        var retryAfter = response.Headers.RetryAfter;
-        if (retryAfter?.Delta is { } delta)
-        {
-            return delta < TimeSpan.Zero ? TimeSpan.Zero : delta;
-        }
-
-        if (retryAfter?.Date is { } date)
-        {
-            var wait = date - _timeProvider.GetUtcNow();
-            return wait < TimeSpan.Zero ? TimeSpan.Zero : wait;
-        }
-
-        return null;
     }
 
     // Full jitter: a uniform wait in [0, BaseDelay * 2^(attempt-1)).

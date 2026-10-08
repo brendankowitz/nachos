@@ -17,6 +17,10 @@ namespace Nachos.Client;
 /// </summary>
 /// <remarks>
 /// <para>
+/// An exception raised for a response that carried a parseable <c>Retry-After</c> holds the requested delay under
+/// <see cref="NachosExceptionData.RetryAfter"/> and ends its message with <c>" Retry-After: {N}s."</c> (spec §16).
+/// </para>
+/// <para>
 /// Every request carries its wire route template in <see cref="RetryHandler.RouteTemplate"/>. Retries happen only
 /// when the <see cref="HttpClient"/> pipeline contains a <see cref="RetryHandler"/>; this type never retries.
 /// </para>
@@ -81,14 +85,25 @@ public sealed class NachosHttpClient : INachosClient
     private readonly HttpClient _http;
     private readonly Uri _baseAddress;
     private readonly string? _apiKey;
+    private readonly TimeProvider _timeProvider;
 
     /// <exception cref="ArgumentException">
     /// <see cref="NachosClientOptions.BaseAddress"/> is missing or relative, or the API key is not printable ASCII.
     /// </exception>
     public NachosHttpClient(HttpClient httpClient, NachosClientOptions options)
+        : this(httpClient, options, TimeProvider.System)
+    {
+    }
+
+    /// <param name="httpClient">The borrowed client.</param>
+    /// <param name="options">Connection settings.</param>
+    /// <param name="timeProvider">Clock for turning an HTTP-date <c>Retry-After</c> into a delay.</param>
+    internal NachosHttpClient(HttpClient httpClient, NachosClientOptions options, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
         var baseAddress = options.BaseAddress;
         if (baseAddress is null || !baseAddress.IsAbsoluteUri)
         {
@@ -353,7 +368,7 @@ public sealed class NachosHttpClient : INachosClient
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw ErrorMapper.Map(response, text, $"{method} {template}", _apiKey);
+            throw ErrorMapper.Map(response, text, $"{method} {template}", _apiKey, _timeProvider);
         }
 
         return text;

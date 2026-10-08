@@ -45,36 +45,45 @@ internal static class ErrorMapper
     /// <summary>The <c>type</c> of the marker entry that counts the validation errors not kept.</summary>
     public const string OmittedErrorsType = "nachos_client.errors_omitted";
 
-    public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret)
+    /// <remarks>
+    /// When the response carried a parseable <c>Retry-After</c>, the exception holds the delay under
+    /// <see cref="NachosExceptionData.RetryAfter"/> and its message ends with <c>" Retry-After: {N}s."</c> (spec §16),
+    /// whatever the status. The suffix is appended after truncation and counted in <see cref="MaxMessageLength"/>.
+    /// <see cref="RequestValidationException"/> has a fixed message, so it gets the data entry only, and a
+    /// <see cref="NachosValidationException"/>'s <see cref="NachosValidationException.Detail"/> includes the suffix.
+    /// </remarks>
+    public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret, TimeProvider clock)
     {
         var status = response.StatusCode;
         var (detail, parsed, type) = Parse(body);
         var fallback = string.Create(
             CultureInfo.InvariantCulture, $"Nachos {operation} returned {(int)status} {response.ReasonPhrase}.");
-        var message = Sanitize(detail ?? fallback, secret);
+        var retryAfter = RetryAfterHeader.Delay(response, clock);
+        var suffix = retryAfter is { } delay ? RetryAfterHeader.Suffix(delay) : string.Empty;
+        string Message(string text) => Sanitize(text, secret, MaxMessageLength - suffix.Length) + suffix;
 
-        return status switch
+        Exception exception = status switch
         {
-            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(message),
-            HttpStatusCode.NotFound => new NotFoundException(message),
-            HttpStatusCode.Conflict => new ConflictException(message),
+            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(Message(detail ?? fallback)),
+            HttpStatusCode.NotFound => new NotFoundException(Message(detail ?? fallback)),
+            HttpStatusCode.Conflict => new ConflictException(Message(detail ?? fallback)),
             HttpStatusCode.UnprocessableEntity when parsed is { } errors => new RequestValidationException(Sanitize(errors, secret)),
-            HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(message),
-            HttpStatusCode.UnprocessableEntity => new NachosValidationException(message),
-            _ => new HttpRequestException(
-                Sanitize(detail is null ? fallback : $"{fallback} {detail}", secret), inner: null, status),
+            HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(Message(detail ?? fallback)),
+            HttpStatusCode.UnprocessableEntity => new NachosValidationException(Message(detail ?? fallback)),
+            _ => new HttpRequestException(Message(detail is null ? fallback : $"{fallback} {detail}"), inner: null, status),
         };
+        return RetryAfterHeader.WithDelay(exception, retryAfter);
     }
 
-    private static string Sanitize(string text, string? secret)
+    private static string Sanitize(string text, string? secret, int maxLength = MaxMessageLength)
     {
         var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
-        if (redacted.Length <= MaxMessageLength)
+        if (redacted.Length <= maxLength)
         {
             return redacted;
         }
 
-        var cut = MaxMessageLength - TruncationMarker.Length;
+        var cut = maxLength - TruncationMarker.Length;
         if (char.IsHighSurrogate(redacted[cut - 1]))
         {
             cut--; // never keep half of a surrogate pair
