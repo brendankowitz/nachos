@@ -136,6 +136,31 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
     }
 
     [Fact]
+    public async Task RedirectedStreams_AreUtf8WithoutBom_SoANonAsciiReportParses_RealProcess()
+    {
+        // Outside ASCII and outside every OEM code page at once: a console-code-page writer either mangles it or loses it.
+        const string column = "Größe_Ж";
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, $"ALTER TABLE dbo.Workspaces ADD [{column}] int NULL");
+
+        // RunProcessAsync decodes both streams as strict UTF-8 and keeps a byte order mark as U+FEFF.
+        var report = await CliRun.RunProcessAsync("schema", "report", "--connection", connectionString);
+        var refused = await CliRun.RunProcessAsync("schema", "upgrade", "--connection", connectionString);
+
+        report.ExitCode.ShouldBe(0, report.Error);
+        report.Out.ShouldNotStartWith("\uFEFF");
+        report.Error.ShouldNotStartWith("\uFEFF");
+        var document = XDocument.Parse(report.Out);
+        document.Declaration?.Encoding.ShouldBe("utf-8", StringCompareShould.IgnoreCase);
+        document.ToString().ShouldContain(column);
+        report.Error.ShouldContain("classification: Unsafe");
+
+        refused.ExitCode.ShouldBe(2);
+        refused.Error.ShouldNotStartWith("\uFEFF");
+        refused.Error.ShouldContain(column);
+    }
+
+    [Fact]
     public async Task AllowDataLoss_WithoutApproveReviewed_Exit1()
     {
         // Rejected before any connection is attempted, so the connection string never has to work.

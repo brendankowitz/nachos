@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Nachos.Cli;
 
 namespace Nachos.Cli.Tests;
@@ -15,9 +16,13 @@ internal sealed record CliRun(int ExitCode, string Out, string Error)
         return new CliRun(exitCode, output.ToString(), error.ToString());
     }
 
+    // Redirected output is promised as UTF-8 without a byte order mark, so anything else must fail the test that reads it.
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     /// <summary>
     /// Runs the built CLI as a separate process, exactly as an operator or a hook would, so that nothing in the real startup path
-    /// (<c>Program.cs</c>, the console streams) can leak what the in-process runs hide.
+    /// (<c>Program.cs</c>, the console streams) can leak what the in-process runs hide. Both streams are read as raw bytes and
+    /// decoded as strict UTF-8; a byte order mark is kept, so it shows up as a leading U+FEFF.
     /// </summary>
     public static async Task<CliRun> RunProcessAsync(params string[] args)
     {
@@ -33,10 +38,17 @@ internal sealed record CliRun(int ExitCode, string Out, string Error)
         }
 
         using var process = Process.Start(start)!;
-        var output = process.StandardOutput.ReadToEndAsync();
-        var error = process.StandardError.ReadToEndAsync();
+        var output = ReadAllBytesAsync(process.StandardOutput.BaseStream);
+        var error = ReadAllBytesAsync(process.StandardError.BaseStream);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         await process.WaitForExitAsync(timeout.Token);
-        return new CliRun(process.ExitCode, await output, await error);
+        return new CliRun(process.ExitCode, StrictUtf8.GetString(await output), StrictUtf8.GetString(await error));
+    }
+
+    private static async Task<byte[]> ReadAllBytesAsync(Stream stream)
+    {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 }

@@ -348,4 +348,13 @@ public sealed class KeyCommandTests
         run.ExitCode.ShouldBe(1);
         run.Out.ShouldBeEmpty();
     }
+
+    [Fact]
+    public async Task RedirectedStdout_IsTheTokenAndOneLineFeed_RealProcess()
+    {
+        var run = await CliRun.RunProcessAsync("keys", "create", "--admin", "--signing-secret", Secret);
+
+        Issuer().Validate(Token(run)).Admin.ShouldBeTrue();
+        run.Error.ShouldBeEmpty();
+    }
 }
