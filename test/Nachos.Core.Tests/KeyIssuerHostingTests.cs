@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Microsoft.IdentityModel.Tokens;
 using Nachos.Abstractions;
+using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
 using Nachos.Core.Validation;
@@ -15,10 +16,10 @@ namespace Nachos.Core.Tests;
 public sealed class KeyIssuerHostingTests
 {
     [Fact]
-    public void EmptyKeys_PermitTrustedLibraryDependenciesWithoutAPartialClient()
+    public void EmptyKeys_PermitTrustedClientButCannotIssueKeys()
     {
         var services = new ServiceCollection();
-        services.AddNachos(_ => { });
+        services.AddNachos(builder => builder.Services.AddSingleton(Substitute.For<IMemoryStore>()));
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         using var scope = provider.CreateScope();
 
@@ -26,7 +27,8 @@ public sealed class KeyIssuerHostingTests
         scope.ServiceProvider.GetRequiredService<IOptions<SigningKeyOptions>>().Value.Keys.ShouldBeEmpty();
         scope.ServiceProvider.GetRequiredService<RequestValidator>().ShouldNotBeNull();
         scope.ServiceProvider.GetRequiredService<IConfigurationResolver>().Resolve(null).ShouldNotBeNull();
-        scope.ServiceProvider.GetService<INachosClient>().ShouldBeNull();
+        scope.ServiceProvider.GetRequiredService<INachosClient>()
+            .ShouldBeSameAs(scope.ServiceProvider.GetRequiredService<NachosService>());
         Should.Throw<NachosValidationException>(() => issuer.Issue(new(true, null, null, null, null)));
     }
 

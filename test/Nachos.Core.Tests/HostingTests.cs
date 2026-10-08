@@ -14,7 +14,7 @@ namespace Nachos.Core.Tests;
 public sealed class HostingTests
 {
     [Fact]
-    public void AddNachos_RegistersHelpersAndExposesProviderServicesWithoutAPartialClient()
+    public void AddNachos_RegistersCompleteScopedClientAndExposesProviderServices()
     {
         var services = new ServiceCollection();
         var store = Substitute.For<IMemoryStore>();
@@ -35,7 +35,11 @@ public sealed class HostingTests
         scope.ServiceProvider.GetRequiredService<RequestValidator>().ShouldNotBeNull();
         scope.ServiceProvider.GetRequiredService<IOptions<NachosOptions>>().Value.Summary.MessagesPerShort.ShouldBe(37);
         scope.ServiceProvider.GetRequiredService<TimeProvider>().ShouldBeSameAs(TimeProvider.System);
-        scope.ServiceProvider.GetService<INachosClient>().ShouldBeNull();
+        scope.ServiceProvider.GetRequiredService<INachosClient>()
+            .ShouldBeSameAs(scope.ServiceProvider.GetRequiredService<NachosService>());
+        using var otherScope = provider.CreateScope();
+        otherScope.ServiceProvider.GetRequiredService<INachosClient>()
+            .ShouldNotBeSameAs(scope.ServiceProvider.GetRequiredService<INachosClient>());
     }
 
     [Fact]

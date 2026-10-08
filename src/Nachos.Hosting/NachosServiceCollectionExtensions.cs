@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Nachos.Abstractions;
+using Nachos.Core;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
 using Nachos.Core.Tokens;
@@ -10,8 +12,7 @@ namespace Microsoft.Extensions.DependencyInjection;
 public static class NachosServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the Core helpers without selecting a storage provider.
-    /// The complete service/client registration ships with Task 4b.
+    /// Registers the complete scoped client and Core helpers without selecting a storage provider.
     /// </summary>
     public static IServiceCollection AddNachos(this IServiceCollection services, Action<NachosBuilder> configure)
     {
@@ -23,6 +24,8 @@ public static class NachosServiceCollectionExtensions
         services.TryAddSingleton<ITokenCounter, TiktokenTokenCounter>();
         services.TryAddScoped<IConfigurationResolver, ConfigurationResolver>();
         services.TryAddScoped<RequestValidator>();
+        services.TryAddScoped<NachosService>();
+        services.TryAddScoped<INachosClient>(provider => provider.GetRequiredService<NachosService>());
         configure(new NachosBuilder(services));
         return services;
     }
