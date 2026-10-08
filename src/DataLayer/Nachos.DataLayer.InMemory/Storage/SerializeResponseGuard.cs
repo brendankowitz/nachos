@@ -18,6 +18,13 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// it runs after the callback returned.
 /// </para>
 /// <para>
+/// Edge cases: (a) a callback that re-enters, swallows the rejection and then throws a different exception fails the
+/// append with that other exception; (b) work the callback starts that re-enters while the callback is still running
+/// is always rejected, but whether the append fails depends on whether that attempt lands before the latch is read, so
+/// such work is out of contract; (c) when the callback blocks on <c>Task.Run(...).Wait()</c> and lets the rejection
+/// propagate, the append fails with the callback's own <see cref="AggregateException"/>.
+/// </para>
+/// <para>
 /// Out of contract: a callback that does not flow its context (<see cref="ExecutionContext.SuppressFlow"/>, or
 /// <see cref="ExecutionContext.Run"/> with a context captured outside) defeats the guard. Work on another thread then
 /// waits for the workspace gate; a call on the callback's own thread re-enters the gate and is caught at commit by

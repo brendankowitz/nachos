@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions;
@@ -183,7 +184,7 @@ public sealed class InMemoryMemoryStoreTests
 
     /// <summary>
     /// One read and one write of each sub-store (Idempotency has only a read), a call with an already-canceled token
-    /// (the guard wins over cancellation) and the test-only seeding entry point.
+    /// (the guard wins over cancellation) and each of the five test-only seeding entry points.
     /// </summary>
     private static readonly Dictionary<string, Func<InMemoryMemoryStore, Task>> Reentries = new(StringComparer.Ordinal)
     {
@@ -200,12 +201,49 @@ public sealed class InMemoryMemoryStoreTests
         ["Idempotency.TryGetAsync"] = store => store.Idempotency.TryGetAsync("ws", "key", Ct),
         ["Messages.ListAsync(canceled)"] =
             store => store.Messages.ListAsync("ws", "s", null, new PageRequest(), new CancellationToken(canceled: true)),
+        ["SeedWorkspace"] = store =>
+        {
+            store.SeedWorkspace("inner-ws", Start, new JsonObject());
+            return Task.CompletedTask;
+        },
         ["SeedPeer"] = store =>
         {
             store.SeedPeer("ws", "inner", Start, new JsonObject());
             return Task.CompletedTask;
         },
+        ["SeedSession"] = store =>
+        {
+            store.SeedSession("ws", "inner-session", Start, true, new JsonObject());
+            return Task.CompletedTask;
+        },
+        ["SeedMember"] = store =>
+        {
+            store.SeedMember("ws", "s", "inner", true);
+            return Task.CompletedTask;
+        },
+        ["SeedMessage"] = store =>
+        {
+            store.SeedMessage("ws", "s", "inner-id", "inner", "inner-message", 1, Start, new JsonObject());
+            return Task.CompletedTask;
+        },
     };
+
+    /// <summary>A sixth Seed* method must join the table above, or this fails.</summary>
+    [Fact]
+    public void ReentryTable_CoversEverySeedMethod()
+    {
+        var seedMethods = typeof(InMemoryMemoryStore)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+            .Select(method => method.Name)
+            .Where(name => name.StartsWith("Seed", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal);
+
+        seedMethods.ShouldNotBeEmpty();
+        foreach (var name in seedMethods)
+        {
+            Reentries.ShouldContainKey(name);
+        }
+    }
 
     public static TheoryData<string, bool> ReentryCases()
     {
@@ -287,19 +325,67 @@ public sealed class InMemoryMemoryStoreTests
         await ShouldHoldNoTraceOfTheAppendAsync(store);
     }
 
-    /// <summary>Every method of every sub-store interface, as "Property.Method".</summary>
+    /// <summary>Documented edge case: the serializer's own, different, exception wins over the swallowed rejection.</summary>
+    [Fact]
+    public async Task Append_SerializerThatSwallowsTheRejectionAndThrowsAnotherException_FailsWithThatException()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        var serializer = Serializer(_ =>
+        {
+            try
+            {
+                store.Workspaces.GetAsync("ws", Ct).GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException)
+            {
+                // Swallowed on purpose.
+            }
+
+            throw new ArgumentException("other");
+        });
+
+        var append = store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], serializer, Ct);
+
+        (await Should.ThrowAsync<ArgumentException>(append)).Message.ShouldBe("other");
+        await ShouldHoldNoTraceOfTheAppendAsync(store);
+    }
+
+    /// <summary>
+    /// The methods a sub-store interface exposes: those it declares and those it inherits from its base interfaces
+    /// (<c>GetMethods()</c> on an interface type reports only its own).
+    /// </summary>
+    private static IEnumerable<MethodInfo> EntryPointsOf(Type subStore) =>
+        subStore.GetMethods().Concat(subStore.GetInterfaces().SelectMany(inherited => inherited.GetMethods()));
+
+    /// <summary>Every method of every sub-store interface, inherited ones included, as "Property.Method".</summary>
     public static TheoryData<string> AllEntryPoints()
     {
         var cases = new TheoryData<string>();
         foreach (var subStore in typeof(IMemoryStore).GetProperties())
         {
-            foreach (var method in subStore.PropertyType.GetMethods())
+            foreach (var method in EntryPointsOf(subStore.PropertyType))
             {
                 cases.Add($"{subStore.Name}.{method.Name}");
             }
         }
 
         return cases;
+    }
+
+    /// <summary>
+    /// <see cref="AllEntryPoints"/> only sees methods of the six sub-stores, so a store-level method on the
+    /// <see cref="IMemoryStore"/> itself would escape the guard unnoticed: fail loudly instead.
+    /// </summary>
+    [Fact]
+    public void MemoryStoreInterface_DeclaresOnlyTheSixSubStoreGetters()
+    {
+        var subStores = new[] { "Workspaces", "Peers", "Sessions", "Messages", "Grants", "Idempotency" };
+
+        typeof(IMemoryStore).GetInterfaces().ShouldBeEmpty();
+        typeof(IMemoryStore).GetProperties().Select(p => p.Name).Order(StringComparer.Ordinal)
+            .ShouldBe(subStores.Order(StringComparer.Ordinal));
+        typeof(IMemoryStore).GetMethods().Select(m => m.Name).Order(StringComparer.Ordinal)
+            .ShouldBe(subStores.Select(name => $"get_{name}").Order(StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -312,7 +398,8 @@ public sealed class InMemoryMemoryStoreTests
         var (store, _) = await NewSessionStoreAsync();
         var subStoreName = entryPoint[..entryPoint.IndexOf('.', StringComparison.Ordinal)];
         var property = typeof(IMemoryStore).GetProperty(subStoreName).ShouldNotBeNull();
-        var method = property.PropertyType.GetMethod(entryPoint[(subStoreName.Length + 1)..]).ShouldNotBeNull();
+        var method = EntryPointsOf(property.PropertyType)
+            .First(m => m.Name == entryPoint[(subStoreName.Length + 1)..]);
         var arguments = method.GetParameters()
             .Select(p => p.HasDefaultValue ? p.DefaultValue : p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null)
             .ToArray();
@@ -414,6 +501,151 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Peers.GetAsync("ws2", "outer", Ct)).ShouldBeNull();
     }
 
+    // ---------------------------------------------------------------- the guard is per store instance
+
+    /// <summary>Another store instance in the same process, with the same workspace and session as the first.</summary>
+    private static async Task<InMemoryMemoryStore> NewOtherStoreAsync() => (await NewSessionStoreAsync()).Store;
+
+    /// <summary>Creates peer <c>from-a</c> in <paramref name="other"/> by the named route, from inside a serializer.</summary>
+    private static void CreateOtherPeerFromSerializer(InMemoryMemoryStore other, string route)
+    {
+        switch (route)
+        {
+            case "awaited-async":
+                static async Task CreateAsync(InMemoryMemoryStore store)
+                {
+                    await Task.Yield();
+                    await store.Peers.GetOrCreateAsync("ws", "from-a", null, null, Ct);
+                    await Task.Yield();
+                }
+
+                CreateAsync(other).GetAwaiter().GetResult();
+                break;
+            case "task-run":
+                Task.Run(() => other.Peers.GetOrCreateAsync("ws", "from-a", null, null, Ct)).Wait();
+                break;
+            case "seed-peer":
+                other.SeedPeer("ws", "from-a", Start, new JsonObject());
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(route), route, null);
+        }
+    }
+
+    /// <summary>
+    /// The guard belongs to one store instance: a serializer may use a different instance, however it reaches it,
+    /// and neither the append nor the other instance is affected.
+    /// </summary>
+    [Theory]
+    [InlineData("awaited-async")]
+    [InlineData("task-run")]
+    [InlineData("seed-peer")]
+    public async Task Append_SerializerThatCallsAnotherStoreInstance_Succeeds(string route)
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        var other = await NewOtherStoreAsync();
+        var crossing = Serializer(_ =>
+        {
+            CreateOtherPeerFromSerializer(other, route);
+            return "body";
+        });
+
+        var appended = await store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], crossing, Ct);
+
+        appended.Select(m => m.Seq).ShouldBe([1L]);
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct))!.ResponseBody.ShouldBe("body");
+        (await other.Peers.GetAsync("ws", "from-a", Ct)).ShouldNotBeNull();
+        (await other.Messages.AppendAsync("ws", "s", [Msg("alice", "after")], null, Ct))[0].Seq.ShouldBe(1);
+    }
+
+    /// <summary>
+    /// Each instance latches its own re-entry. Here store B's serializer, running inside store A's, calls store A:
+    /// the call is rejected and A's append fails, while B's own append is untouched when its serializer swallows that.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Append_NestedSerializerThatCallsTheOuterStore_IsRejectedAndFailsOnlyTheOuterAppend(bool innerSwallows)
+    {
+        var (outerStore, _) = await NewSessionStoreAsync();
+        var innerStore = await NewOtherStoreAsync();
+        InvalidOperationException? innerRaised = null;
+        var inner = Serializer(_ =>
+        {
+            try
+            {
+                outerStore.Workspaces.GetAsync("ws", Ct).GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException ex)
+            {
+                innerRaised = ex;
+                if (!innerSwallows)
+                {
+                    throw;
+                }
+            }
+
+            return "inner-body";
+        });
+        var outer = Serializer(_ =>
+        {
+            try
+            {
+                innerStore.Messages.AppendAsync("ws", "s", [Msg("inner", "inner-message")], inner, Ct).GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException)
+            {
+                // The inner append failed with the rejection; the outer serializer swallows it, and must still fail.
+            }
+
+            return "outer-body";
+        });
+
+        var append = outerStore.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], outer, Ct);
+        var thrown = await Should.ThrowAsync<InvalidOperationException>(append);
+
+        thrown.Message.ShouldBe(ReentryRejected);
+        innerRaised.ShouldNotBeNull().Message.ShouldBe(ReentryRejected);
+        await ShouldHoldNoTraceOfTheAppendAsync(outerStore);
+        var innerMessages = await innerStore.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct);
+        innerMessages.Items.Select(m => m.Content).ShouldBe(innerSwallows ? ["inner-message"] : []);
+        (await innerStore.Idempotency.TryGetAsync("ws", "key", Ct) is not null).ShouldBe(innerSwallows);
+    }
+
+    /// <summary>
+    /// A finished append on another instance, run inside the serializer, does not lift the guard of the first: the
+    /// two guards are independent.
+    /// </summary>
+    [Fact]
+    public async Task Append_SerializerThatCompletedAnotherStoresAppend_IsStillGuarded()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        var other = await NewOtherStoreAsync();
+        InvalidOperationException? raised = null;
+        var serializer = Serializer(_ =>
+        {
+            other.Messages.AppendAsync("ws", "s", [Msg("alice", "elsewhere")], WellBehaved("other-key"), Ct).GetAwaiter().GetResult();
+            try
+            {
+                store.Workspaces.GetAsync("ws", Ct).GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException ex)
+            {
+                raised = ex;
+            }
+
+            return "body";
+        });
+
+        var append = store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], serializer, Ct);
+
+        (await Should.ThrowAsync<InvalidOperationException>(append)).Message.ShouldBe(ReentryRejected);
+        raised.ShouldNotBeNull().Message.ShouldBe(ReentryRejected);
+        await ShouldHoldNoTraceOfTheAppendAsync(store);
+        (await other.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Items.Select(m => m.Content)
+            .ShouldBe(["elsewhere"]);
+    }
+
     [Fact]
     public async Task Append_WellBehavedSerializer_SeesTheStagedMessagesAndCommits()
     {
@@ -436,6 +668,49 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Items.Select(m => m.Content)
             .ShouldBe(["first", "second", "third"]);
         (await store.Sessions.IsActiveMemberAsync("ws", "s", "bob", Ct)).ShouldBeTrue();
+    }
+
+    /// <summary>
+    /// The serializer is handed its own copies of the staged records: one that mutates every record, or the list, can
+    /// change neither what the append returns nor what is stored, and it still saw the staged values first.
+    /// </summary>
+    [Fact]
+    public async Task Append_SerializerThatMutatesTheRecordsItIsGiven_CannotChangeTheResultOrStoredData()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        List<(string PublicId, long Seq, string Content, string Metadata)>? seen = null;
+        var mutating = Serializer(messages =>
+        {
+            seen = [.. messages.Select(m => (m.PublicId, m.Seq, m.Content, m.Metadata.ToJsonString()))];
+            foreach (var message in messages)
+            {
+                message.Metadata["k"] = "tampered";
+                message.Metadata["extra"] = true;
+            }
+
+            if (messages is IList<MessageRecord> { IsReadOnly: false } list)
+            {
+                list.Clear();
+            }
+
+            return "body";
+        });
+        NewMessage[] batch =
+        [
+            new("alice", "first", 1, new JsonObject { ["k"] = 1 }, null),
+            new("bob", "second", 1, new JsonObject { ["k"] = 2 }, null),
+        ];
+
+        var appended = await store.Messages.AppendAsync("ws", "s", batch, mutating, Ct);
+
+        appended.Select(m => (m.Seq, m.Content, Metadata: m.Metadata.ToJsonString()))
+            .ShouldBe([(1L, "first", """{"k":1}"""), (2L, "second", """{"k":2}""")]);
+        seen.ShouldNotBeNull().ShouldBe(appended.Select(m => (m.PublicId, m.Seq, m.Content, m.Metadata.ToJsonString())));
+        var stored = await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct);
+        stored.Items.Select(m => (m.PublicId, m.Metadata.ToJsonString()))
+            .ShouldBe(appended.Select(m => (m.PublicId, m.Metadata.ToJsonString())));
+        (await store.Messages.GetAsync("ws", "s", appended[0].PublicId, Ct))!.Metadata.ToJsonString().ShouldBe("""{"k":1}""");
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct))!.ResponseBody.ShouldBe("body");
     }
 
     // ---------------------------------------------------------------- guard bypassed (out of contract)

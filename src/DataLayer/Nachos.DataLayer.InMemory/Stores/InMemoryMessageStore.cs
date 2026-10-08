@@ -20,11 +20,20 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
     /// </para>
     /// <para>
     /// The serializer must be a pure function of the staged records it receives: it must not call the store and gets
-    /// no transactional read. While it runs, every entry point of this store rejects calls from its execution context
+    /// no transactional read. It receives its own deep copies, so mutating them changes neither the result of the
+    /// append nor the stored data. While it runs, every entry point of this store rejects calls from its execution context
     /// with <see cref="InvalidOperationException"/> before taking any lock (see <see cref="SerializeResponseGuard"/>),
     /// and if any call was attempted the append throws <see cref="InvalidOperationException"/> after the serializer
     /// returns, even if the serializer swallowed the rejection. A serializer that lets the rejection propagate fails
     /// the append with that same exception. Either way nothing is stored.
+    /// </para>
+    /// <para>
+    /// Edge cases of that contract: (a) a serializer that re-enters, swallows the rejection and then throws a
+    /// different exception fails the append with that other exception; (b) work the serializer starts that re-enters
+    /// while the serializer is still running is always rejected, but whether the append fails depends on whether that
+    /// attempt lands before the latch is read, so such work is out of contract; (c) a serializer that blocks on
+    /// <c>Task.Run(...).Wait()</c> and lets the rejection propagate fails the append with its own
+    /// <see cref="AggregateException"/>, not with the rejection itself.
     /// </para>
     /// <para>
     /// The staleness check before commit is defence in depth for a serializer that defeats the guard by not flowing
@@ -65,7 +74,8 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                             idempotency.Key,
                             idempotency.RequestHash,
                             idempotency.ResponseStatus,
-                            state.SerializeResponseGuard.Invoke(idempotency.SerializeResponse, result),
+                            state.SerializeResponseGuard.Invoke(
+                                idempotency.SerializeResponse, staged.Messages.Select(JsonCopy.Out).ToList()),
                             now + idempotency.Ttl);
 
                     if (!staged.IsCurrent())
