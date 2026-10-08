@@ -14,4 +14,19 @@ public static class NachosExceptionData
     /// except for <see cref="Nachos.Abstractions.RequestValidationException"/>, whose message is fixed.
     /// </remarks>
     public const string RetryAfter = "Nachos.RetryAfter";
+
+    /// <summary>Reads the <see cref="RetryAfter"/> entry of <paramref name="exception"/>.</summary>
+    /// <returns>True when the entry is present and is a <see cref="TimeSpan"/>; false otherwise.</returns>
+    public static bool TryGetRetryAfter(Exception exception, out TimeSpan delay)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception.Data[RetryAfter] is TimeSpan value)
+        {
+            delay = value;
+            return true;
+        }
+
+        delay = default;
+        return false;
+    }
 }
