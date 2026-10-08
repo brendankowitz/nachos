@@ -9,7 +9,7 @@ namespace Nachos.DataLayer.InMemory.Stores;
 internal sealed class InMemoryGrantStore(InMemoryState state) : IGrantStore
 {
     public Task AddAsync(GrantRecord grant, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 lock (state.Gate)
@@ -29,7 +29,7 @@ internal sealed class InMemoryGrantStore(InMemoryState state) : IGrantStore
             ct);
 
     public Task RemoveAsync(GrantRecord grant, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 lock (state.Gate)
@@ -40,7 +40,7 @@ internal sealed class InMemoryGrantStore(InMemoryState state) : IGrantStore
             ct);
 
     public Task<IReadOnlyList<GrantRecord>> ListAsync(string? objectId, CancellationToken ct) =>
-        StoreTask.Run<IReadOnlyList<GrantRecord>>(
+        state.Run<IReadOnlyList<GrantRecord>>(
             () =>
             {
                 lock (state.Gate)
@@ -51,7 +51,7 @@ internal sealed class InMemoryGrantStore(InMemoryState state) : IGrantStore
             ct);
 
     public Task<WorkspaceGrants> GetWorkspaceGrantsAsync(string objectId, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var all = false;

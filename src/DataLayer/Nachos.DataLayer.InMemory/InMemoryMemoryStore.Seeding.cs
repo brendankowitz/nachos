@@ -12,12 +12,14 @@ namespace Nachos.DataLayer.InMemory;
 /// <remarks>
 /// Each call inserts one new row and throws if it already exists or its parent is missing. Membership and message
 /// calls must name peers that were seeded first; messages of one session are appended in call order, which fixes
-/// their <c>Seq</c>. Join and leave times come from the store's clock.
+/// their <c>Seq</c>. Join and leave times come from the store's clock. Like every entry point, each call rejects a
+/// call from inside a <see cref="IdempotencyWrite.SerializeResponse"/> callback.
 /// </remarks>
 public sealed partial class InMemoryMemoryStore
 {
     internal void SeedWorkspace(string name, DateTimeOffset createdAt, JsonObject metadata)
     {
+        RejectSerializeResponseReentry();
         lock (_state.Gate)
         {
             var record = new WorkspaceRecord(name, JsonCopy.Own(metadata, "metadata"), new JsonObject(), LifecycleState.Active, createdAt);
@@ -27,6 +29,7 @@ public sealed partial class InMemoryMemoryStore
 
     internal void SeedPeer(string workspaceName, string name, DateTimeOffset createdAt, JsonObject metadata)
     {
+        RejectSerializeResponseReentry();
         var workspace = _state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
@@ -37,6 +40,7 @@ public sealed partial class InMemoryMemoryStore
 
     internal void SeedSession(string workspaceName, string name, DateTimeOffset createdAt, bool isActive, JsonObject metadata)
     {
+        RejectSerializeResponseReentry();
         var workspace = _state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
@@ -49,6 +53,7 @@ public sealed partial class InMemoryMemoryStore
     /// <param name="active">False seeds a former member: it joined and has since left.</param>
     internal void SeedMember(string workspaceName, string sessionName, string peerName, bool active)
     {
+        RejectSerializeResponseReentry();
         var workspace = _state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
@@ -69,6 +74,7 @@ public sealed partial class InMemoryMemoryStore
         DateTimeOffset createdAt,
         JsonObject metadata)
     {
+        RejectSerializeResponseReentry();
         var workspace = _state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
@@ -84,6 +90,14 @@ public sealed partial class InMemoryMemoryStore
                 tokenCount,
                 JsonCopy.Own(metadata, "metadata"),
                 createdAt));
+        }
+    }
+
+    private void RejectSerializeResponseReentry()
+    {
+        if (_state.SerializeResponseGuard.Reject() is { } rejection)
+        {
+            throw rejection;
         }
     }
 }

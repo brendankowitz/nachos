@@ -10,9 +10,6 @@ namespace Nachos.DataLayer.InMemory.Stores;
 
 internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
 {
-    private const string SerializerModifiedStore =
-        "The response serializer modified the store; it must be a pure function of the stored messages.";
-
     /// <remarks>
     /// <para>
     /// Atomicity: under the workspace gate the append first stages everything it will write (see
@@ -22,9 +19,17 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
     /// nothing behind and no Seq gap.
     /// </para>
     /// <para>
-    /// The serializer must not call the store. It runs inside the workspace gate, which is re-entrant, so a call on the
-    /// same thread would get in; if it changed anything the staging relied on, the append throws
-    /// <see cref="InvalidOperationException"/> before committing.
+    /// The serializer must be a pure function of the staged records it receives: it must not call the store and gets
+    /// no transactional read. While it runs, every entry point of this store rejects calls from its execution context
+    /// with <see cref="InvalidOperationException"/> before taking any lock (see <see cref="SerializeResponseGuard"/>),
+    /// and if any call was attempted the append throws <see cref="InvalidOperationException"/> after the serializer
+    /// returns, even if the serializer swallowed the rejection. A serializer that lets the rejection propagate fails
+    /// the append with that same exception. Either way nothing is stored.
+    /// </para>
+    /// <para>
+    /// The staleness check before commit is defence in depth for a serializer that defeats the guard by not flowing
+    /// its execution context (out of contract): the gate is re-entrant, so such a call on the same thread gets in, and
+    /// if it changed anything the staging relied on, the append throws the same exception instead of committing.
     /// </para>
     /// </remarks>
     public Task<IReadOnlyList<MessageRecord>> AppendAsync(
@@ -33,7 +38,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
         IReadOnlyList<NewMessage> messages,
         IdempotencyWrite? idempotency,
         CancellationToken ct) =>
-        StoreTask.Run<IReadOnlyList<MessageRecord>>(
+        state.Run<IReadOnlyList<MessageRecord>>(
             () =>
             {
                 var ownedMetadata = messages.Select(message => JsonCopy.Own(message.Metadata, "metadata")).ToList();
@@ -60,12 +65,12 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                             idempotency.Key,
                             idempotency.RequestHash,
                             idempotency.ResponseStatus,
-                            idempotency.SerializeResponse(result),
+                            state.SerializeResponseGuard.Invoke(idempotency.SerializeResponse, result),
                             now + idempotency.Ttl);
 
                     if (!staged.IsCurrent())
                     {
-                        throw new InvalidOperationException(SerializerModifiedStore);
+                        throw new InvalidOperationException(SerializeResponseGuard.ReentryMessage);
                     }
 
                     staged.Commit(idempotencyRecord);
@@ -76,7 +81,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
 
     public Task<MessageRecord?> GetAsync(
         string workspaceName, string sessionName, string publicId, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
@@ -91,7 +96,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
 
     public Task<MessageRecord> UpdateMetadataAsync(
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var ownedMetadata = JsonCopy.Own(metadata, "metadata");
@@ -110,7 +115,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
 
     public Task<Page<MessageRecord>> ListAsync(
         string workspaceName, string sessionName, FilterNode? filter, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);

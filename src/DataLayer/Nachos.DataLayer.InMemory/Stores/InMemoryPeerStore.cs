@@ -17,7 +17,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
         JsonObject? configuration,
         CancellationToken ct,
         bool isInternal = false) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var ownedMetadata = JsonCopy.Own(metadata, "metadata");
@@ -39,7 +39,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
             ct);
 
     public Task<PeerRecord?> GetAsync(string workspaceName, string name, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 if (state.FindWorkspace(workspaceName) is not { } workspace)
@@ -56,7 +56,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
 
     public Task<PeerRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var newMetadata = JsonCopy.OwnOptional(metadata, "metadata");
@@ -81,7 +81,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
 
     public Task<Page<PeerRecord>> ListAsync(
         string workspaceName, PeerKind kind, FilterNode? filter, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
@@ -104,7 +104,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
 
     public Task<Page<SessionRecord>> ListSessionsForPeerAsync(
         string workspaceName, string peerName, FilterNode? filter, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);

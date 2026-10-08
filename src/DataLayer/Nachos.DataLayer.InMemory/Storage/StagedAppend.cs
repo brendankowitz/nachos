@@ -10,9 +10,11 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// the workspace gate without touching stored state, together with the stored state it was computed from.
 /// </summary>
 /// <remarks>
-/// The gate is re-entrant, so caller code run between staging and <see cref="Commit"/> (the response serializer) can
-/// change the store on the same thread. <see cref="IsCurrent"/> detects that, so the append can fail before anything
-/// is written instead of committing half of a plan that no longer fits.
+/// Caller code runs between staging and <see cref="Commit"/> (the response serializer). <see cref="SerializeResponseGuard"/>
+/// rejects its calls into the store, but a serializer that does not flow its execution context defeats the guard (out of
+/// contract), and the gate is re-entrant, so it could still change the store on the same thread. <see cref="IsCurrent"/>
+/// detects that, so the append can fail before anything is written instead of committing half of a plan that no longer
+/// fits (for instance duplicate <c>Seq</c> values).
 /// </remarks>
 internal sealed class StagedAppend
 {

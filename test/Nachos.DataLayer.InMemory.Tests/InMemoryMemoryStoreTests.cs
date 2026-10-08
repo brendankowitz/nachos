@@ -174,36 +174,301 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Workspaces.GetAsync("ws", Ct)).ShouldBeNull();
     }
 
-    // ---------------------------------------------------------------- serializer re-entrancy
+    // ---------------------------------------------------------------- SerializeResponse re-entry
 
-    private const string SerializerModifiedStore =
-        "The response serializer modified the store; it must be a pure function of the stored messages.";
+    private const string ReentryRejected = "The SerializeResponse callback must not call the store.";
+
+    /// <summary>Bounds every wait in these tests, so a deadlock fails the test instead of hanging the run.</summary>
+    private static readonly TimeSpan DeadlockTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// One read and one write of each sub-store (Idempotency has only a read), a call with an already-canceled token
+    /// (the guard wins over cancellation) and the test-only seeding entry point.
+    /// </summary>
+    private static readonly Dictionary<string, Func<InMemoryMemoryStore, Task>> Reentries = new(StringComparer.Ordinal)
+    {
+        ["Workspaces.GetAsync"] = store => store.Workspaces.GetAsync("ws", Ct),
+        ["Workspaces.GetOrCreateAsync"] = store => store.Workspaces.GetOrCreateAsync("inner-ws", null, null, Ct),
+        ["Peers.GetAsync"] = store => store.Peers.GetAsync("ws", "outer", Ct),
+        ["Peers.GetOrCreateAsync"] = store => store.Peers.GetOrCreateAsync("ws", "inner", null, null, Ct),
+        ["Sessions.GetAsync"] = store => store.Sessions.GetAsync("ws", "s", Ct),
+        ["Sessions.AddPeersAsync"] = store => store.Sessions.AddPeersAsync("ws", "s", Members("inner"), Ct),
+        ["Messages.ListAsync"] = store => store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct),
+        ["Messages.AppendAsync"] = store => store.Messages.AppendAsync("ws", "s", [Msg("inner", "inner-message")], null, Ct),
+        ["Grants.GetWorkspaceGrantsAsync"] = store => store.Grants.GetWorkspaceGrantsAsync("obj", Ct),
+        ["Grants.AddAsync"] = store => store.Grants.AddAsync(new GrantRecord("obj", null, GrantRoles.Admin), Ct),
+        ["Idempotency.TryGetAsync"] = store => store.Idempotency.TryGetAsync("ws", "key", Ct),
+        ["Messages.ListAsync(canceled)"] =
+            store => store.Messages.ListAsync("ws", "s", null, new PageRequest(), new CancellationToken(canceled: true)),
+        ["SeedPeer"] = store =>
+        {
+            store.SeedPeer("ws", "inner", Start, new JsonObject());
+            return Task.CompletedTask;
+        },
+    };
+
+    public static TheoryData<string, bool> ReentryCases()
+    {
+        var cases = new TheoryData<string, bool>();
+        foreach (var entryPoint in Reentries.Keys)
+        {
+            cases.Add(entryPoint, false);
+            cases.Add(entryPoint, true);
+        }
+
+        return cases;
+    }
+
+    /// <summary>A pure serializer; its body records the <c>Seq</c> values it was given.</summary>
+    private static IdempotencyWrite WellBehaved(string key) =>
+        new(key, new string('a', 64), 201, messages => string.Join(",", messages.Select(m => m.Seq)), TimeSpan.FromMinutes(1));
+
+    private static IdempotencyWrite Serializer(Func<IReadOnlyList<MessageRecord>, string> serialize) =>
+        new("key", new string('a', 64), 201, serialize, TimeSpan.FromMinutes(1));
+
+    /// <summary>
+    /// The failed append of <c>outer-message</c> by the new sender <c>outer</c>, under key <c>key</c>, left nothing
+    /// behind, the re-entered call changed nothing either, and the store works normally from this same execution
+    /// context with <c>Seq</c> starting at 1.
+    /// </summary>
+    private static async Task ShouldHoldNoTraceOfTheAppendAsync(InMemoryMemoryStore store)
+    {
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Peers.ListAsync("ws", PeerKind.All, null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Sessions.ListPeersAsync("ws", "s", new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct)).ShouldBeNull();
+        (await store.Workspaces.ListAsync(null, new PageRequest(), Ct)).Items.Select(w => w.Name).ShouldBe(["ws"]);
+        (await store.Grants.ListAsync(null, Ct)).ShouldBeEmpty();
+
+        var next = store.Messages.AppendAsync("ws", "s", [Msg("alice", "after")], WellBehaved("next"), Ct);
+        (await next).Select(m => m.Seq).ShouldBe([1L]);
+        (await store.Idempotency.TryGetAsync("ws", "next", Ct))!.ResponseBody.ShouldBe("1");
+    }
+
+    /// <summary>
+    /// Every entry point rejects a call from inside the serializer. A serializer that lets the rejection propagate fails
+    /// the append with that very exception; one that swallows it still fails the append.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ReentryCases))]
+    public async Task Append_SerializerThatCallsTheStore_FailsAndStoresNothing(string entryPoint, bool swallow)
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        InvalidOperationException? raised = null;
+        var reentrant = Serializer(_ =>
+        {
+            try
+            {
+                Reentries[entryPoint](store).GetAwaiter().GetResult();
+            }
+            catch (InvalidOperationException ex)
+            {
+                raised = ex;
+                if (!swallow)
+                {
+                    throw;
+                }
+            }
+
+            return "body";
+        });
+
+        // Called directly, not inside a lambda, so a guard left set would leak into this method's later calls.
+        var append = store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], reentrant, Ct);
+        var thrown = await Should.ThrowAsync<InvalidOperationException>(append);
+
+        thrown.Message.ShouldBe(ReentryRejected);
+        raised.ShouldNotBeNull().Message.ShouldBe(ReentryRejected);
+        if (!swallow)
+        {
+            thrown.ShouldBeSameAs(raised);
+        }
+
+        await ShouldHoldNoTraceOfTheAppendAsync(store);
+    }
+
+    /// <summary>Every method of every sub-store interface, as "Property.Method".</summary>
+    public static TheoryData<string> AllEntryPoints()
+    {
+        var cases = new TheoryData<string>();
+        foreach (var subStore in typeof(IMemoryStore).GetProperties())
+        {
+            foreach (var method in subStore.PropertyType.GetMethods())
+            {
+                cases.Add($"{subStore.Name}.{method.Name}");
+            }
+        }
+
+        return cases;
+    }
+
+    /// <summary>
+    /// No entry point is missed: each rejects the call before looking at its arguments, so defaults suffice.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(AllEntryPoints))]
+    public async Task EveryEntryPoint_CalledFromTheSerializer_IsRejectedBeforeUsingItsArguments(string entryPoint)
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        var subStoreName = entryPoint[..entryPoint.IndexOf('.', StringComparison.Ordinal)];
+        var property = typeof(IMemoryStore).GetProperty(subStoreName).ShouldNotBeNull();
+        var method = property.PropertyType.GetMethod(entryPoint[(subStoreName.Length + 1)..]).ShouldNotBeNull();
+        var arguments = method.GetParameters()
+            .Select(p => p.HasDefaultValue ? p.DefaultValue : p.ParameterType.IsValueType ? Activator.CreateInstance(p.ParameterType) : null)
+            .ToArray();
+        Exception? raised = null;
+        var reentrant = Serializer(_ =>
+        {
+            raised = method.Invoke(property.GetValue(store), arguments).ShouldBeAssignableTo<Task>()!.Exception?.InnerException;
+            return "body";
+        });
+
+        var append = store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], reentrant, Ct);
+
+        (await Should.ThrowAsync<InvalidOperationException>(append)).Message.ShouldBe(ReentryRejected);
+        raised.ShouldBeOfType<InvalidOperationException>().Message.ShouldBe(ReentryRejected);
+        await ShouldHoldNoTraceOfTheAppendAsync(store);
+    }
+
+    /// <summary>
+    /// The guard flows with the execution context, so a serializer that blocks on store work it handed to another thread
+    /// gets a rejection instead of waiting forever for the workspace gate its own thread holds.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Append_SerializerThatCallsTheStoreFromAnotherThread_FailsInsteadOfDeadlocking(bool swallow)
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        var reentrant = Serializer(_ =>
+        {
+            try
+            {
+                // ListAsync needs the gate of workspace "ws", which this thread holds while the serializer runs.
+                Task.Run(() => store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Wait();
+            }
+            catch (AggregateException) when (swallow)
+            {
+                // Swallowed on purpose: the append must fail anyway.
+            }
+
+            return "body";
+        });
+
+        var append = Task.Run(() => store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message")], reentrant, Ct));
+        (await Task.WhenAny(append, Task.Delay(DeadlockTimeout))).ShouldBeSameAs(append, "the append deadlocked");
+
+        var error = append.Exception.ShouldNotBeNull().InnerException.ShouldNotBeNull();
+        if (!swallow)
+        {
+            error = error.ShouldBeOfType<AggregateException>().InnerException.ShouldNotBeNull();
+        }
+
+        error.ShouldBeOfType<InvalidOperationException>().Message.ShouldBe(ReentryRejected);
+        await ShouldHoldNoTraceOfTheAppendAsync(store);
+    }
+
+    /// <summary>
+    /// The guard belongs to the execution context running the serializer: 32 appends made while another append's
+    /// serializer is running, and then re-enters, all succeed.
+    /// </summary>
+    [Fact]
+    public async Task Append_ReenteringSerializer_DoesNotAffectConcurrentAppends()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        await store.Workspaces.GetOrCreateAsync("ws2", null, null, Ct);
+        await store.Sessions.GetOrCreateAsync("ws2", "s", null, null, null, Ct);
+        var inside = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var othersDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reentrant = Serializer(_ =>
+        {
+            inside.SetResult();
+            othersDone.Task.Wait(DeadlockTimeout);
+            store.Messages.ListAsync("ws2", "s", null, new PageRequest(), Ct).GetAwaiter().GetResult();
+            return "body";
+        });
+        var reentering = Task.Run(() => store.Messages.AppendAsync("ws2", "s", [Msg("outer", "outer-message")], reentrant, Ct));
+        await inside.Task.WaitAsync(DeadlockTimeout);
+
+        IReadOnlyList<MessageRecord>[] batches;
+        try
+        {
+            batches = await RunConcurrentlyAsync(
+                32, i => store.Messages.AppendAsync("ws", "s", [Msg("alice", $"{i}-a"), Msg("alice", $"{i}-b")], WellBehaved($"key-{i}"), Ct));
+        }
+        finally
+        {
+            othersDone.SetResult();
+        }
+
+        (await Should.ThrowAsync<InvalidOperationException>(reentering.WaitAsync(DeadlockTimeout))).Message.ShouldBe(ReentryRejected);
+        for (var i = 0; i < batches.Length; i++)
+        {
+            batches[i].Select(m => m.Seq).ShouldBe([batches[i][0].Seq, batches[i][0].Seq + 1]);
+            (await store.Idempotency.TryGetAsync("ws", $"key-{i}", Ct))!.ResponseBody
+                .ShouldBe($"{batches[i][0].Seq},{batches[i][1].Seq}");
+        }
+
+        batches.SelectMany(b => b).Select(m => m.Seq).Order().ShouldBe(Enumerable.Range(1, 64).Select(i => (long)i));
+        (await store.Messages.ListAsync("ws2", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Peers.GetAsync("ws2", "outer", Ct)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Append_WellBehavedSerializer_SeesTheStagedMessagesAndCommits()
+    {
+        var (store, _) = await NewSessionStoreAsync();
+        await store.Messages.AppendAsync("ws", "s", [Msg("alice", "first")], null, Ct);
+        IReadOnlyList<MessageRecord>? seen = null;
+        var write = Serializer(messages =>
+        {
+            seen = messages;
+            return string.Join(",", messages.Select(m => $"{m.Seq}:{m.Content}"));
+        });
+
+        // Called directly, so a guard left set would make the calls below fail.
+        var appended = await store.Messages.AppendAsync("ws", "s", [Msg("bob", "second"), Msg("alice", "third")], write, Ct);
+
+        seen.ShouldNotBeNull().Select(m => (m.PublicId, m.Seq, m.PeerName, m.Content))
+            .ShouldBe(appended.Select(m => (m.PublicId, m.Seq, m.PeerName, m.Content)));
+        appended.Select(m => m.Seq).ShouldBe([2L, 3L]);
+        (await store.Idempotency.TryGetAsync("ws", "key", Ct))!.ResponseBody.ShouldBe("2:second,3:third");
+        (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Items.Select(m => m.Content)
+            .ShouldBe(["first", "second", "third"]);
+        (await store.Sessions.IsActiveMemberAsync("ws", "s", "bob", Ct)).ShouldBeTrue();
+    }
+
+    // ---------------------------------------------------------------- guard bypassed (out of contract)
 
     public static TheoryData<string> Interferences() => new() { "append", "create-sender-peer", "reactivate-sender" };
+
+    /// <summary>
+    /// Runs <paramref name="call"/> on this thread in <paramref name="outside"/>, an execution context captured before the
+    /// append, which hides the re-entry guard. That is out of contract; these tests show the commit-time staleness check
+    /// still keeps the store consistent (no duplicate <c>Seq</c>, no half-applied plan) when the guard is defeated.
+    /// </summary>
+    private static void BypassingTheGuard(ExecutionContext outside, Func<Task> call) =>
+        ExecutionContext.Run(outside, _ => call().GetAwaiter().GetResult(), null);
 
     /// <summary>A serializer that writes to the store invalidates what the append staged, so nothing of it may commit.</summary>
     [Theory]
     [MemberData(nameof(Interferences))]
-    public async Task Append_SerializerThatWritesToTheStore_IsRejectedBeforeAnythingCommits(string interference)
+    public async Task Append_SerializerThatBypassesTheGuardAndWrites_IsRejectedBeforeAnythingCommits(string interference)
     {
         var (store, _) = await NewSessionStoreAsync();
         await store.Sessions.AddPeersAsync("ws", "s", new Dictionary<string, SessionPeerConfig> { ["left"] = new(true, false) }, Ct);
         await store.Sessions.RemovePeersAsync("ws", "s", ["left"], Ct);
-        var reentrant = new IdempotencyWrite(
-            "key",
-            new string('a', 64),
-            201,
-            _ =>
-            {
-                Interfere(store, interference);
-                return "body";
-            },
-            TimeSpan.FromMinutes(1));
+        var outside = ExecutionContext.Capture().ShouldNotBeNull();
+        var reentrant = Serializer(_ =>
+        {
+            BypassingTheGuard(outside, () => Interfere(store, interference));
+            return "body";
+        });
 
         var thrown = await Should.ThrowAsync<InvalidOperationException>(
             () => store.Messages.AppendAsync("ws", "s", [Msg("outer", "outer-message"), Msg("left", "left-message")], reentrant, Ct));
 
-        thrown.Message.ShouldBe(SerializerModifiedStore);
+        thrown.Message.ShouldBe(ReentryRejected);
         var stored = (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Items;
         stored.ShouldNotContain(m => m.Content == "outer-message" || m.Content == "left-message");
         stored.Select(m => m.Seq).ShouldBe(Enumerable.Range(1, stored.Count).Select(i => (long)i));
@@ -223,7 +488,7 @@ public sealed class InMemoryMemoryStoreTests
     }
 
     [Fact]
-    public async Task Append_SerializerThatAppendsElsewhereWithTheSameKey_IsRejectedAndKeepsTheInnerRecord()
+    public async Task Append_SerializerThatBypassesTheGuardAndAppendsElsewhereWithTheSameKey_IsRejectedAndKeepsTheInnerRecord()
     {
         // alice is already an active member of both sessions, so nothing but the idempotency record differs afterwards.
         var (store, _) = await NewSessionStoreAsync();
@@ -231,21 +496,17 @@ public sealed class InMemoryMemoryStoreTests
         await store.Sessions.AddPeersAsync("ws", "s", Members("alice"), Ct);
         await store.Sessions.AddPeersAsync("ws", "other", Members("alice"), Ct);
         var inner = new IdempotencyWrite("key", new string('b', 64), 201, _ => "inner-body", TimeSpan.FromMinutes(1));
-        var outer = new IdempotencyWrite(
-            "key",
-            new string('a', 64),
-            201,
-            _ =>
-            {
-                store.Messages.AppendAsync("ws", "other", [Msg("alice", "inner-message")], inner, Ct).GetAwaiter().GetResult();
-                return "outer-body";
-            },
-            TimeSpan.FromMinutes(1));
+        var outside = ExecutionContext.Capture().ShouldNotBeNull();
+        var outer = Serializer(_ =>
+        {
+            BypassingTheGuard(outside, () => store.Messages.AppendAsync("ws", "other", [Msg("alice", "inner-message")], inner, Ct));
+            return "outer-body";
+        });
 
         var thrown = await Should.ThrowAsync<InvalidOperationException>(
             () => store.Messages.AppendAsync("ws", "s", [Msg("alice", "outer-message")], outer, Ct));
 
-        thrown.Message.ShouldBe(SerializerModifiedStore);
+        thrown.Message.ShouldBe(ReentryRejected);
         (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
         var record = (await store.Idempotency.TryGetAsync("ws", "key", Ct))!;
         record.RequestHash.ShouldBe(new string('b', 64));
@@ -255,25 +516,21 @@ public sealed class InMemoryMemoryStoreTests
     }
 
     [Fact]
-    public async Task Append_SerializerThatRemovesAnActiveSender_IsRejectedBeforeAnythingCommits()
+    public async Task Append_SerializerThatBypassesTheGuardAndRemovesAnActiveSender_IsRejectedBeforeAnythingCommits()
     {
         var (store, _) = await NewSessionStoreAsync();
         await store.Sessions.AddPeersAsync("ws", "s", Members("alice"), Ct);
-        var removing = new IdempotencyWrite(
-            "key",
-            new string('a', 64),
-            201,
-            _ =>
-            {
-                store.Sessions.RemovePeersAsync("ws", "s", ["alice"], Ct).GetAwaiter().GetResult();
-                return "body";
-            },
-            TimeSpan.FromMinutes(1));
+        var outside = ExecutionContext.Capture().ShouldNotBeNull();
+        var removing = Serializer(_ =>
+        {
+            BypassingTheGuard(outside, () => store.Sessions.RemovePeersAsync("ws", "s", ["alice"], Ct));
+            return "body";
+        });
 
         var thrown = await Should.ThrowAsync<InvalidOperationException>(
             () => store.Messages.AppendAsync("ws", "s", [Msg("alice", "outer-message")], removing, Ct));
 
-        thrown.Message.ShouldBe(SerializerModifiedStore);
+        thrown.Message.ShouldBe(ReentryRejected);
         (await store.Messages.ListAsync("ws", "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
         (await store.Idempotency.TryGetAsync("ws", "key", Ct)).ShouldBeNull();
         // The removal the serializer made stands; the append did not silently reactivate the sender.
@@ -281,17 +538,12 @@ public sealed class InMemoryMemoryStoreTests
         (await store.Messages.AppendAsync("ws", "s", [Msg("alice", "after")], null, Ct))[0].Seq.ShouldBe(1);
     }
 
-    /// <summary>Called from inside a serializer, where blocking is unavoidable; the store completes synchronously.</summary>
-    private static void Interfere(InMemoryMemoryStore store, string interference)
+    private static Task Interfere(InMemoryMemoryStore store, string interference) => interference switch
     {
-        var write = interference switch
-        {
-            "append" => store.Messages.AppendAsync("ws", "s", [Msg("inner", "inner-message")], null, Ct),
-            "create-sender-peer" => store.Peers.GetOrCreateAsync("ws", "outer", null, null, Ct),
-            _ => store.Sessions.AddPeersAsync("ws", "s", new Dictionary<string, SessionPeerConfig> { ["left"] = new(false, false) }, Ct),
-        };
-        write.GetAwaiter().GetResult();
-    }
+        "append" => store.Messages.AppendAsync("ws", "s", [Msg("inner", "inner-message")], null, Ct),
+        "create-sender-peer" => store.Peers.GetOrCreateAsync("ws", "outer", null, null, Ct),
+        _ => store.Sessions.AddPeersAsync("ws", "s", new Dictionary<string, SessionPeerConfig> { ["left"] = new(false, false) }, Ct),
+    };
 
     // ---------------------------------------------------------------- get-or-create races
 

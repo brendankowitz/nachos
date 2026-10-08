@@ -23,12 +23,18 @@ namespace Nachos.DataLayer.InMemory;
 /// Each workspace is guarded by a synchronous <see cref="Lock"/>, deliberately not a <see cref="SemaphoreSlim"/>:
 /// critical sections are short and purely in-memory, and never span an <c>await</c> of user code. The
 /// <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback is synchronous and runs inside the
-/// workspace lock.
+/// workspace lock, after the append's rows are staged and before they are committed.
 /// </para>
 /// <para>
-/// An <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback must not call this store: it runs
-/// inside the append's critical section, and an append whose staged state it changed fails with
-/// <see cref="InvalidOperationException"/> without storing anything.
+/// An <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback must be a pure function of the
+/// records it receives: it must not call back into the store and has no transactional read guarantee. This store fails
+/// fast and deterministically: while the callback runs, every entry point (of every sub-store) called from the
+/// execution context running it, including work it hands to <c>Task.Run</c>, throws
+/// <see cref="InvalidOperationException"/> before taking any lock, instead of reading, writing or deadlocking. If any
+/// such call was attempted, the append throws <see cref="InvalidOperationException"/> even when the callback swallowed
+/// the exception, and stores nothing (no messages, peers, memberships, idempotency record or <c>Seq</c> gap). Other
+/// callers, concurrent appends included, are unaffected. Suppressing execution-context flow
+/// (<see cref="ExecutionContext.SuppressFlow"/>) defeats the guard and is out of contract.
 /// </para>
 /// </remarks>
 public sealed partial class InMemoryMemoryStore : IMemoryStore
