@@ -68,10 +68,13 @@ public sealed class RequestValidator
             return;
         }
 
-        if (configuration.Summary?.MessagesPerShortSummary is < 10 ||
-            configuration.Summary?.MessagesPerLongSummary is < 20)
+        var schemaErrors = GetSummaryMinimumViolations(configuration.Summary)
+            .Select(violation => new ValidationError(["body", "configuration", "summary", violation.Field],
+                $"Input should be greater than or equal to {violation.Minimum}.", "greater_than_equal"))
+            .ToArray();
+        if (schemaErrors.Length > 0)
         {
-            throw new NachosValidationException("Summary cadence must be at least 10 short and 20 long messages.");
+            throw new RequestValidationException(schemaErrors);
         }
 
         if (GetInstructionBudgetErrors(configuration).Any())
@@ -87,6 +90,19 @@ public sealed class RequestValidator
 
     public void ValidateMessageConfiguration(MessageConfiguration? configuration) =>
         ValidateInstructions(configuration?.Reasoning?.CustomInstructions);
+
+    internal static IEnumerable<(string Field, int Minimum)> GetSummaryMinimumViolations(SummaryConfiguration? summary)
+    {
+        if (summary?.MessagesPerShortSummary is < 10)
+        {
+            yield return ("messages_per_short_summary", 10);
+        }
+
+        if (summary?.MessagesPerLongSummary is < 20)
+        {
+            yield return ("messages_per_long_summary", 20);
+        }
+    }
 
     internal IEnumerable<string> GetInstructionBudgetErrors(WorkspaceConfiguration configuration)
     {

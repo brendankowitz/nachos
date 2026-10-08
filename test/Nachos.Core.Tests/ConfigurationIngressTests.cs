@@ -27,7 +27,8 @@ public sealed class ConfigurationIngressTests
         var error = Record.Exception(() => Resolve(input, layer));
 
         opaque.GetterCalls.ShouldBe(0);
-        error.ShouldBeOfType<NachosValidationException>().Detail.ShouldContain(nameof(OpaqueReasoning));
+        error.ShouldBeOfType<InvalidOperationException>().InnerException
+            .ShouldBeOfType<NachosValidationException>().Detail.ShouldContain(nameof(OpaqueReasoning));
     }
 
     [Theory]
@@ -44,7 +45,7 @@ public sealed class ConfigurationIngressTests
 
         converter.Calls.ShouldBe(0);
         opaque.GetterCalls.ShouldBe(0);
-        error.ShouldBeOfType<NachosValidationException>();
+        error.ShouldBeOfType<InvalidOperationException>().InnerException.ShouldBeOfType<NachosValidationException>();
     }
 
     [Theory]
@@ -66,7 +67,7 @@ public sealed class ConfigurationIngressTests
         var error = Record.Exception(() => Resolve(new JsonObject { ["future"] = value }));
 
         opaque.GetterCalls.ShouldBe(0);
-        error.ShouldBeOfType<NachosValidationException>();
+        error.ShouldBeOfType<InvalidOperationException>().InnerException.ShouldBeOfType<NachosValidationException>();
     }
 
     [Theory]
@@ -173,7 +174,8 @@ public sealed class ConfigurationIngressTests
         ];
         foreach (var input in invalid)
         {
-            Should.Throw<NachosValidationException>(() => Resolve(input, layer));
+            Should.Throw<InvalidOperationException>(() => Resolve(input, layer))
+                .InnerException.ShouldBeOfType<NachosValidationException>();
         }
     }
 
@@ -186,7 +188,7 @@ public sealed class ConfigurationIngressTests
         var error = Record.Exception(() => Resolve(input));
 
         converter.Calls.ShouldBe(0);
-        error.ShouldBeOfType<NachosValidationException>();
+        error.ShouldBeOfType<InvalidOperationException>().InnerException.ShouldBeOfType<NachosValidationException>();
     }
 
     [Theory]
@@ -223,7 +225,8 @@ public sealed class ConfigurationIngressTests
         }
         else
         {
-            Should.Throw<NachosValidationException>(() => Resolve(input));
+            Should.Throw<InvalidOperationException>(() => Resolve(input))
+                .InnerException.ShouldBeOfType<NachosValidationException>();
         }
 
         converter.Calls.ShouldBe(0);
@@ -240,7 +243,7 @@ public sealed class ConfigurationIngressTests
     }
 
     [Fact]
-    public void InstructionBudgets_KeepDeploymentAndResourceErrorClassifications()
+    public void InstructionBudgets_ValidateDeploymentWithoutRevalidatingStoredResources()
     {
         var options = new NachosOptions
         {
@@ -252,9 +255,9 @@ public sealed class ConfigurationIngressTests
         var resolver = new ConfigurationResolver(Options.Create(options), new LengthCounter());
         var input = new JsonObject { ["reasoning"] = new JsonObject { ["custom_instructions"] = "long" } };
 
-        Should.Throw<NachosValidationException>(() => resolver.Resolve(input));
-        Should.Throw<NachosValidationException>(() => resolver.Resolve(null, input));
-        Should.Throw<NachosValidationException>(() => resolver.Resolve(null, null, input));
+        resolver.Resolve(input).Reasoning.CustomInstructions.Value.ShouldBe("long");
+        resolver.Resolve(null, input).Reasoning.CustomInstructions.Value.ShouldBe("long");
+        resolver.Resolve(null, null, input).Reasoning.CustomInstructions.Value.ShouldBe("long");
     }
 
     private static ResolvedConfiguration Resolve(JsonObject input, string layer = "workspace")

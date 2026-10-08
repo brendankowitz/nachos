@@ -4,6 +4,7 @@ using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Core.Configuration;
 using Nachos.Core.Tokens;
+using Nachos.Core.Validation;
 using NSubstitute;
 using Shouldly;
 
@@ -136,8 +137,10 @@ public sealed class ConfigurationResolverTests
         var invalid = new JsonObject { ["summary"] = new JsonObject { [field] = value } };
         var valid = new JsonObject { ["summary"] = new JsonObject { [field] = 100 } };
 
-        Should.Throw<NachosValidationException>(() => CreateResolver().Resolve(invalid, valid));
-        Should.Throw<NachosValidationException>(() => CreateResolver().Resolve(null, invalid));
+        Should.Throw<InvalidOperationException>(() => CreateResolver().Resolve(invalid, valid))
+            .Message.ShouldContain("workspace");
+        Should.Throw<InvalidOperationException>(() => CreateResolver().Resolve(null, invalid))
+            .Message.ShouldContain("session");
     }
 
     [Fact]
@@ -155,11 +158,14 @@ public sealed class ConfigurationResolverTests
     [InlineData("""{"summary":{"messages_per_short_summary":10.5}}""")]
     [InlineData("""{"custom_instructions":42}""")]
     [InlineData("""{"peer_card":{"use":[]}}""")]
-    public void MalformedKnownFields_ProduceRequestValidationErrors(string json)
+    public void MalformedKnownFields_ProduceNonRequestConfigurationErrors(string json)
     {
-        var error = Should.Throw<RequestValidationException>(() => CreateResolver().Resolve(Json(json)));
+        var error = Should.Throw<InvalidOperationException>(() => CreateResolver().Resolve(Json(json)));
 
-        error.Errors.ShouldHaveSingleItem().Loc.Take(2).ShouldBe(new object[] { "body", "configuration" });
+        error.Message.ShouldContain("workspace");
+        error.InnerException.ShouldBeOfType<System.Text.Json.JsonException>();
+        Should.Throw<InvalidOperationException>(() => CreateResolver().Resolve(null, Json(json)))
+            .Message.ShouldContain("session");
     }
 
     [Theory]
@@ -169,25 +175,55 @@ public sealed class ConfigurationResolverTests
     [InlineData("dream")]
     [InlineData("dialectic")]
     [InlineData("")]
-    public void EveryCustomInstructionField_EnforcesTheTokenCap(string section)
+    public void StoredInstructionFields_AreUnchangedAndNotRecountedAfterBudgetLowering(string section)
     {
-        var counter = Substitute.For<ITokenCounter>();
-        counter.Count("too many tokens").Returns(2001);
+        var counter = new CountingCounter();
         var value = new JsonObject { ["custom_instructions"] = "too many tokens" };
         var config = section.Length == 0 ? value : new JsonObject { [section] = value };
+        var admitted = System.Text.Json.JsonSerializer.Deserialize<Nachos.Abstractions.Contracts.WorkspaceConfiguration>(config);
+        new RequestValidator(Options.Create(new NachosOptions()), counter).ValidateWorkspaceConfiguration(admitted);
+        counter.Calls.ShouldBe(1);
+        var options = new NachosOptions { Deriver = new() { MaxCustomInstructionsTokens = 3 } };
+        var resolver = CreateResolver(options, counter);
 
-        Should.Throw<NachosValidationException>(() => CreateResolver(counter: counter).Resolve(config));
-        Should.Throw<NachosValidationException>(() => CreateResolver(counter: counter).Resolve(null, config));
+        foreach (var layer in new[] { "workspace", "session" })
+        {
+            var result = layer == "workspace" ? resolver.Resolve(config) : resolver.Resolve(null, config);
+            var instructions = section switch
+            {
+                "reasoning" => result.Reasoning.CustomInstructions,
+                "peer_card" => result.PeerCard.CustomInstructions,
+                "summary" => result.Summary.CustomInstructions,
+                "dream" => result.Dream.CustomInstructions,
+                "dialectic" => result.Dialectic.CustomInstructions,
+                _ => result.CustomInstructions,
+            };
+            instructions.ShouldBe(new ResolvedValue<string?>("too many tokens", layer));
+            result.MaxCustomInstructionsTokens.Value.ShouldBe(3);
+        }
+        counter.Calls.ShouldBe(1);
     }
 
     [Fact]
-    public void MessageReasoningInstructions_AreAlsoValidated()
+    public void StoredMessageInstructions_AreNotRecountedAfterBudgetLowering()
     {
-        var counter = Substitute.For<ITokenCounter>();
-        counter.Count("oversized").Returns(2001);
+        var counter = new CountingCounter();
+        new RequestValidator(Options.Create(new NachosOptions()), counter)
+            .ValidateMessageConfiguration(new(new(CustomInstructions: "oversized")));
+        counter.Calls.ShouldBe(1);
+        var resolver = CreateResolver(new NachosOptions { Deriver = new() { MaxCustomInstructionsTokens = 3 } }, counter);
 
-        Should.Throw<NachosValidationException>(() => CreateResolver(counter: counter)
-            .Resolve(null, null, Json("""{"reasoning":{"custom_instructions":"oversized"}}""")));
+        resolver.Resolve(null, null, Json("""{"reasoning":{"custom_instructions":"oversized"}}"""))
+            .Reasoning.CustomInstructions.ShouldBe(new ResolvedValue<string?>("oversized", "message"));
+        counter.Calls.ShouldBe(1);
+    }
+
+    [Fact]
+    public void MalformedMessageReasoning_IsANonRequestConfigurationError()
+    {
+        Should.Throw<InvalidOperationException>(() =>
+            CreateResolver().Resolve(null, null, Json("""{"reasoning":{"enabled":"false"}}""")))
+            .Message.ShouldContain("message");
     }
 
     [Fact]
@@ -223,5 +259,15 @@ public sealed class ConfigurationResolverTests
 
         result.Reasoning.Enabled.Value.ShouldBe(true);
         result.Summary.MessagesPerShortSummary.Value.ShouldBe(12);
+    }
+
+    private sealed class CountingCounter : ITokenCounter
+    {
+        public int Calls { get; private set; }
+        public int Count(string text)
+        {
+            Calls++;
+            return text.Length;
+        }
     }
 }

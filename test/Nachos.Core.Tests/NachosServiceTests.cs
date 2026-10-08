@@ -241,7 +241,7 @@ public sealed class NachosServiceTests
     {
         await Should.ThrowAsync<NachosValidationException>(() => Service.GetOrCreateWorkspaceAsync("W",
             configuration: new(CustomInstructions: "\uD800")));
-        await Should.ThrowAsync<NachosValidationException>(() => Service.GetOrCreateSessionAsync("W", "S",
+        await Should.ThrowAsync<RequestValidationException>(() => Service.GetOrCreateSessionAsync("W", "S",
             configuration: new(Summary: new(MessagesPerShortSummary: 9))));
         var opaque = new JsonObject { ["payload"] = JsonValue.Create(new List<int> { 1, 2 }) };
         await Should.ThrowAsync<NachosValidationException>(() => Service.UpdatePeerAsync("W", "P", metadata: opaque));

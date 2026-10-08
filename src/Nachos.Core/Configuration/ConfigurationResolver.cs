@@ -12,16 +12,15 @@ namespace Nachos.Core.Configuration;
 public sealed class ConfigurationResolver : IConfigurationResolver
 {
     private readonly WorkspaceConfiguration _global;
-    private readonly RequestValidator _validator;
     private readonly int _maxTokensShort;
     private readonly int _maxTokensLong;
     private readonly int _maxCustomInstructionsTokens;
 
     public ConfigurationResolver(IOptions<NachosOptions> options, ITokenCounter tokenCounter)
     {
-        _validator = new RequestValidator(options, tokenCounter);
+        var validator = new RequestValidator(options, tokenCounter);
         _global = options.Value.ToResourceConfiguration();
-        var instructionErrors = _validator.GetInstructionBudgetErrors(_global).ToArray();
+        var instructionErrors = validator.GetInstructionBudgetErrors(_global).ToArray();
         if (instructionErrors.Length > 0)
         {
             throw new OptionsValidationException(Microsoft.Extensions.Options.Options.DefaultName,
@@ -35,12 +34,11 @@ public sealed class ConfigurationResolver : IConfigurationResolver
 
     public ResolvedConfiguration Resolve(JsonObject? workspace, JsonObject? session = null, JsonObject? message = null)
     {
-        var w = Read<WorkspaceConfiguration>(workspace);
-        var s = Read<SessionConfiguration>(session);
-        var m = Read<MessageConfiguration>(message);
-        _validator.ValidateWorkspaceConfiguration(w);
-        _validator.ValidateSessionConfiguration(s);
-        _validator.ValidateMessageConfiguration(m);
+        var w = Read<WorkspaceConfiguration>(workspace, "workspace");
+        ValidateStoredSummary(w?.Summary, "workspace");
+        var s = Read<SessionConfiguration>(session, "session");
+        ValidateStoredSummary(s?.Summary, "session");
+        var m = Read<MessageConfiguration>(message, "message");
 
         return new(
             new(
@@ -68,18 +66,24 @@ public sealed class ConfigurationResolver : IConfigurationResolver
             Global(_maxCustomInstructionsTokens));
     }
 
-    private static T? Read<T>(JsonObject? configuration)
+    private static T? Read<T>(JsonObject? configuration, string source)
     {
         try
         {
             return StrictJsonData.ToCanonical(configuration) is { } canonical ? canonical.Deserialize<T>() : default;
         }
-        catch (JsonException error)
+        catch (Exception error) when (error is JsonException or NachosValidationException)
         {
-            var path = error.Path?.Split('.').Skip(1).Cast<object>() ?? [];
-            throw new RequestValidationException(
-                [new ValidationError(["body", "configuration", .. path],
-                    "Configuration contains a value of the wrong type.", "value_error")], error);
+            throw new InvalidOperationException($"Stored {source} configuration is invalid.", error);
+        }
+    }
+
+    private static void ValidateStoredSummary(SummaryConfiguration? summary, string source)
+    {
+        foreach (var (field, minimum) in RequestValidator.GetSummaryMinimumViolations(summary))
+        {
+            throw new InvalidOperationException(
+                $"Stored {source} configuration has invalid summary.{field}; minimum is {minimum}.");
         }
     }
 

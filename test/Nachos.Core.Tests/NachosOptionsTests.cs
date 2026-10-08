@@ -1,8 +1,8 @@
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions;
 using Nachos.Core.Configuration;
 using Nachos.Core.Tokens;
+using Nachos.Core.Validation;
 using NSubstitute;
 using Shouldly;
 
@@ -74,7 +74,7 @@ public sealed class NachosOptionsTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void CounterFailures_RetainIdentityForDeploymentAndResources(bool deployment, bool domainFailure)
+    public void CounterFailures_RetainIdentityForDeploymentAndResourceAdmission(bool deployment, bool domainFailure)
     {
         var options = deployment ? WithInstructions("Summary.CustomInstructions", "counter fails") : new NachosOptions();
         Exception failure = domainFailure
@@ -85,13 +85,14 @@ public sealed class NachosOptionsTests
 
         var actual = Should.Throw<Exception>(() =>
         {
-            var resolver = new ConfigurationResolver(Options.Create(options), counter);
-            if (!deployment)
+            if (deployment)
             {
-                resolver.Resolve(new JsonObject
-                {
-                    ["summary"] = new JsonObject { ["custom_instructions"] = "counter fails" },
-                });
+                _ = new ConfigurationResolver(Options.Create(options), counter);
+            }
+            else
+            {
+                new RequestValidator(Options.Create(options), counter)
+                    .ValidateWorkspaceConfiguration(new(Summary: new(CustomInstructions: "counter fails")));
             }
         });
 
