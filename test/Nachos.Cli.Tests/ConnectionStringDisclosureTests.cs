@@ -8,7 +8,7 @@ namespace Nachos.Cli.Tests;
 /// </summary>
 public sealed class ConnectionStringDisclosureTests
 {
-    private static void ShouldNotLeak(CliRun run, params string[] fragments)
+    internal static void ShouldNotLeak(CliRun run, params string[] fragments)
     {
         foreach (var fragment in fragments)
         {
@@ -79,5 +79,33 @@ public sealed class ConnectionStringDisclosureTests
         run.Error.ShouldContain("system database");
         run.Error.ShouldContain("<redacted>");
         ShouldNotLeak(run, "msdb");
+    }
+
+    [Fact]
+    public async Task KeywordConflictOnlyTheConnectionRejects_IsMalformed_RealProcess()
+    {
+        // SqlConnectionStringBuilder accepts this; only the SqlConnection constructor rejects the pair, and quotes the keywords.
+        const string cs = "Server=127.0.0.1,1;Initial Catalog=nachos;Authentication=ActiveDirectoryIntegrated;Password=Pq7Secret";
+
+        var run = await CliRun.RunProcessAsync("schema", "status", "--connection", cs);
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+        run.Error.ShouldBe("error: The connection string is malformed (details redacted).\n".ReplaceLineEndings());
+        ShouldNotLeak(run, "Pq7Secret");
+    }
+
+    [Fact]
+    public async Task ValuesOfHarmlessKeywords_StayReadable_SoTheNetworkErrorIsIntact()
+    {
+        // "SQL Server", "0", "3", "false" and "." all occur in the network error; none of them is where or as whom we connect.
+        const string cs = "Server=127.0.0.1,1;Initial Catalog=.;Application Name=SQL Server;Connect Retry Count=0;Connect Timeout=3;Encrypt=false";
+
+        var run = await CliRun.RunAsync("schema", "status", "--connection", cs);
+
+        run.ExitCode.ShouldBe(1);
+        run.Error.ShouldContain("connection to SQL Server.");
+        run.Error.ShouldNotContain("<redacted>");
+        run.Error.ShouldNotContain("malformed");
     }
 }

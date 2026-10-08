@@ -41,7 +41,17 @@ internal sealed record CliRun(int ExitCode, string Out, string Error)
         var output = ReadAllBytesAsync(process.StandardOutput.BaseStream);
         var error = ReadAllBytesAsync(process.StandardError.BaseStream);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        await process.WaitForExitAsync(timeout.Token);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // A hung CLI (or a child it started) must not outlive the test run or hold the output pipes open.
+            process.Kill(entireProcessTree: true);
+            throw;
+        }
+
         return new CliRun(process.ExitCode, StrictUtf8.GetString(await output), StrictUtf8.GetString(await error));
     }
 

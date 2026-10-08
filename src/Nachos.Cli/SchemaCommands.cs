@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Data.SqlClient;
 using Nachos.Abstractions.Schema;
 using Nachos.DataLayer.SqlServer.Schema;
 
@@ -38,17 +39,53 @@ internal static class SchemaCommands
     private static SchemaDeployer Deployer(string connectionString) =>
         new(new SqlServerOptions { ConnectionString = connectionString });
 
+    /// <summary>
+    /// Runs a schema command under <see cref="CommandFailure.GuardAsync"/>. The connection string is checked first, without opening
+    /// anything, by the same two SqlClient parsers that would read it later; the builder alone accepts some keyword conflicts that only
+    /// the connection rejects. A string they reject gets a fixed message, because their errors quote its pieces. Only this check calls
+    /// a string malformed: anything thrown later is a runtime failure and has the string's sensitive tokens scrubbed instead.
+    /// </summary>
+    private static Task<int> GuardAsync(ParseResult parse, Option<string> connection, Func<SchemaDeployer, Task<int>> body)
+    {
+        var connectionString = parse.GetRequiredValue(connection);
+        var error = parse.InvocationConfiguration.Error;
+        return CommandFailure.GuardAsync(error, async () =>
+        {
+            if (!IsWellFormed(connectionString))
+            {
+                await error.WriteLineAsync("error: The connection string is malformed (details redacted).");
+                return ExitCodes.Error;
+            }
+
+            return await body(Deployer(connectionString));
+        }, connectionString);
+    }
+
+    private static bool IsWellFormed(string connectionString)
+    {
+        try
+        {
+            _ = new SqlConnectionStringBuilder(connectionString);
+            using var unopened = new SqlConnection(connectionString);
+            return true;
+        }
+        catch (Exception parseFailure) when (parseFailure is ArgumentException or FormatException or KeyNotFoundException)
+        {
+            return false;
+        }
+    }
+
     private static Command StatusCommand()
     {
         var connection = ConnectionOption();
         var command = new Command("status", "Print the database's schema position as JSON.") { connection };
-        command.SetAction((parse, ct) => CommandFailure.GuardAsync(parse.InvocationConfiguration.Error, async () =>
+        command.SetAction((parse, ct) => GuardAsync(parse, connection, async deployer =>
         {
-            var status = await Deployer(parse.GetRequiredValue(connection)).GetStatusAsync(ct);
+            var status = await deployer.GetStatusAsync(ct);
             await parse.InvocationConfiguration.Output.WriteLineAsync(JsonSerializer.Serialize(
                 new { platform = status.Platform, deployed = status.Deployed, current = status.Current, state = status.State }, StatusJson));
             return ExitCodes.Success;
-        }, parse.GetRequiredValue(connection)));
+        }));
         return command;
     }
 
@@ -60,12 +97,12 @@ internal static class SchemaCommands
             Description = "Write the report XML to this file instead of standard output. Standard output is then empty.",
         };
         var command = new Command("report", "Show what a deploy would change, without changing anything. " + ReportStreams) { connection, outFile };
-        command.SetAction((parse, ct) => CommandFailure.GuardAsync(parse.InvocationConfiguration.Error, async () =>
+        command.SetAction((parse, ct) => GuardAsync(parse, connection, async deployer =>
         {
-            var report = await Deployer(parse.GetRequiredValue(connection)).ReportAsync(ct);
+            var report = await deployer.ReportAsync(ct);
             await WriteReportAsync(parse.InvocationConfiguration, report, parse.GetValue(outFile), ct);
             return ExitCodes.Success;
-        }, parse.GetRequiredValue(connection)));
+        }));
         return command;
     }
 
@@ -93,14 +130,14 @@ internal static class SchemaCommands
                 result.AddError("--allow-data-loss is only valid together with --approve-reviewed.");
             }
         });
-        command.SetAction((parse, ct) => CommandFailure.GuardAsync(parse.InvocationConfiguration.Error, () => UpgradeAsync(
+        command.SetAction((parse, ct) => GuardAsync(parse, connection, deployer => UpgradeAsync(
             parse.InvocationConfiguration,
-            Deployer(parse.GetRequiredValue(connection)),
+            deployer,
             parse.GetValue(reportOnly),
             parse.GetValue(approveReviewed) ? DeployApproval.OperatorReviewed : DeployApproval.AutoSafeOnly,
             parse.GetValue(allowDataLoss),
             parse.GetValue(adoptUnstamped),
-            ct), parse.GetRequiredValue(connection)));
+            ct)));
         return command;
     }
 

@@ -12,6 +12,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
 
+    /// <summary>A working connection string for the server as its administrator, with no database named.</summary>
+    public string ServerConnectionString => _container.GetConnectionString();
+
     /// <summary>Creates a uniquely named empty database and returns a connection string for it.</summary>
     public async Task<string> CreateDatabaseAsync()
     {
