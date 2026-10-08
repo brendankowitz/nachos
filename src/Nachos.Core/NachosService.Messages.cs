@@ -6,6 +6,7 @@ using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Json;
 using Nachos.Core.Configuration;
 using Nachos.Core.Idempotency;
+using Nachos.Core.Validation;
 
 namespace Nachos.Core;
 
@@ -48,6 +49,7 @@ public sealed partial class NachosService
     /// <summary>
     /// One validation, token-counting, atomic append and replay path for trusted in-process and authorized HTTP callers.
     /// The unchanged original envelope determines identity, including unknown fields and null-versus-omitted fields.
+    /// All string values and property names are Unicode-validated before hashing, token counting or store access.
     /// Both HTTP aliases use POST /v3/workspaces/{w}/sessions/{s}/messages with the resolved w and s values.
     /// </summary>
     public async Task<CapturedResponse> CreateMessagesResponseAsync(string workspaceId, string sessionId,
@@ -59,6 +61,7 @@ public sealed partial class NachosService
         {
             throw new NachosValidationException("Idempotency-Key must contain 1 to 255 ASCII characters.");
         }
+        JsonUnicodeValidator.Validate(requestBody);
         var messages = ReadMessages(requestBody);
         validator.ValidateMessages(messages);
         var hash = idempotencyKey is null ? null : RequestHasher.Hash("POST",
