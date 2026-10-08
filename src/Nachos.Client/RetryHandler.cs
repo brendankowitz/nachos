@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 
 namespace Nachos.Client;
@@ -27,10 +28,11 @@ namespace Nachos.Client;
 /// safely. When a body read failure that is an <see cref="HttpRequestException"/> or an <see cref="IOException"/>
 /// surfaces from this handler (final status, attempts exhausted, the buffer cap, or a <c>Retry-After</c> over the
 /// cap), it is rethrown as an <see cref="HttpRequestException"/> whose <see cref="HttpRequestException.StatusCode"/>
-/// is the received status and whose inner exception is the read failure. Any other exception from the read (a
-/// cancellation, or a <see cref="TimeoutException"/> or <see cref="TaskCanceledException"/> from a timeout below this
-/// handler) surfaces unchanged, without the status. Requests the route rules never replay (for example an unkeyed
-/// message create) are not affected: they are sent once and never reach this logic.
+/// is the received status and whose inner exception is the read failure. This handler's own attempt timeout (below)
+/// surfaces the same way, with a <see cref="TimeoutException"/> as the inner exception. Any other exception from the
+/// read (the caller's cancellation, or a <see cref="TimeoutException"/> or <see cref="TaskCanceledException"/> from a
+/// timeout below this handler) surfaces unchanged, without the status. Requests the route rules never replay (for
+/// example an unkeyed message create) are not affected: they are sent once and never reach this logic.
 /// </description></item>
 /// <item><description>
 /// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out; the error reaches the caller
@@ -38,8 +40,8 @@ namespace Nachos.Client;
 /// <see cref="NachosHttpClient"/> maps it to an exception carrying the delay (see
 /// <see cref="NachosExceptionData.RetryAfter"/>). For a body failure the wrapped <see cref="HttpRequestException"/>
 /// above carries the same data entry and message suffix. Mapped status responses and body failures wrapped by this
-/// handler carry the delay, including the last one after the attempts are exhausted; a failure that surfaces raw
-/// (for example a timeout below this handler) does not.
+/// handler carry the delay, including the last one after the attempts are exhausted (a timed-out body read included);
+/// a failure that surfaces raw (for example a timeout below this handler) does not.
 /// </description></item>
 /// <item><description>
 /// Routes <see cref="RetryClassifier"/> classifies as never retried (keys, grants, adding sessions to a scope until
@@ -69,7 +71,25 @@ namespace Nachos.Client;
 /// for content that is already buffered.
 /// </para>
 /// <para>
-/// <see cref="HttpClient.Timeout"/> bounds the whole call, retries and backoff included, and is never retried.
+/// <b>Attempt timeout.</b> Each attempt runs under the caller's token linked with a timer of the configured attempt
+/// timeout (default <see cref="DefaultAttemptTimeout"/>, 30 s; <see cref="Timeout.InfiniteTimeSpan"/> disables it),
+/// created on the injected <see cref="TimeProvider"/>. For a retryable request the attempt is the send plus buffering
+/// the response body; a new attempt gets a fresh timer, and backoff waits are not counted. A timed-out attempt is a
+/// transient failure exactly like a transport failure: it is retried (up to <see cref="MaxAttempts"/>, with backoff)
+/// only when the request is retryable and, if a status line was already received, only when status precedence allows
+/// it. When it is not retried (attempts exhausted, a final status, a <c>Retry-After</c> over the cap, or a request
+/// that is never retried) it surfaces as an <see cref="HttpRequestException"/> with
+/// <see cref="HttpRequestError.Unknown"/> whose inner exception is a <see cref="TimeoutException"/> (itself wrapping
+/// the cancellation), whose <see cref="HttpRequestException.StatusCode"/> is the received status if a status line
+/// arrived, and which carries the <see cref="NachosExceptionData.RetryAfter"/> entry and message suffix when that
+/// response had a parseable <c>Retry-After</c>. A request that is never retried is sent as is, so its attempt timeout
+/// bounds only the time to response headers; its body is streamed to <see cref="HttpClient"/> after this handler
+/// returns. The caller's cancellation always wins: if the caller's token has fired, the cancellation surfaces
+/// untouched and is never retried or reported as a timeout.
+/// </para>
+/// <para>
+/// <see cref="HttpClient.Timeout"/> (100 s unless changed) bounds the whole call, retries and backoff included, and
+/// is never retried: it cancels the token this handler receives, which counts as the caller's cancellation.
 /// </para>
 /// <para>
 /// The request body is buffered once and every attempt is a fresh copy of the original request with the same headers,
@@ -93,48 +113,96 @@ public sealed class RetryHandler : DelegatingHandler
     /// <summary>Default cap on a buffered response body for retryable requests.</summary>
     public const long DefaultMaxResponseBufferSize = 64L * 1024 * 1024;
 
+    /// <summary>
+    /// Default bound on one attempt (send plus, for a retryable request, buffering the body). Three timed-out attempts
+    /// and the largest backoffs (0.5 s + 1 s) fit inside <see cref="HttpClient"/>'s default 100 s
+    /// <see cref="HttpClient.Timeout"/>.
+    /// </summary>
+    public static readonly TimeSpan DefaultAttemptTimeout = TimeSpan.FromSeconds(30);
+
     private const string IdempotencyKeyHeader = "Idempotency-Key";
 
     private readonly TimeProvider _timeProvider;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<double> _jitter;
     private readonly long _maxResponseBufferSize;
+    private readonly TimeSpan _attemptTimeout;
 
+    /// <summary>Uses the system clock and <see cref="DefaultAttemptTimeout"/>.</summary>
     public RetryHandler()
         : this(TimeProvider.System)
     {
     }
 
+    /// <summary>Uses <paramref name="timeProvider"/> and <see cref="DefaultAttemptTimeout"/>.</summary>
     public RetryHandler(TimeProvider timeProvider)
-        : this(timeProvider, delay: null, Random.Shared.NextDouble)
+        : this(timeProvider, DefaultAttemptTimeout)
     {
     }
 
-    /// <param name="timeProvider">Clock for <c>Retry-After</c> dates and, by default, for delays.</param>
+    /// <param name="timeProvider">Clock for backoff waits, <c>Retry-After</c> dates and the attempt timeout.</param>
+    /// <param name="attemptTimeout">
+    /// Bound on each attempt; <see cref="Timeout.InfiniteTimeSpan"/> disables it. See <see cref="IsValidAttemptTimeout"/>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="attemptTimeout"/> is out of range.</exception>
+    public RetryHandler(TimeProvider timeProvider, TimeSpan attemptTimeout)
+        : this(timeProvider, delay: null, Random.Shared.NextDouble, attemptTimeout: attemptTimeout)
+    {
+    }
+
+    /// <param name="timeProvider">Clock for <c>Retry-After</c> dates, the attempt timeout and, by default, delays.</param>
     /// <param name="delay">The wait between attempts; null waits on <paramref name="timeProvider"/>.</param>
     /// <param name="jitter">A source of values in [0, 1) that scales the backoff ceiling.</param>
     /// <param name="maxResponseBufferSize">Largest response body buffered for a retryable request.</param>
+    /// <param name="attemptTimeout">Bound on each attempt; null is <see cref="DefaultAttemptTimeout"/>.</param>
     internal RetryHandler(
         TimeProvider timeProvider,
         Func<TimeSpan, CancellationToken, Task>? delay,
         Func<double> jitter,
-        long maxResponseBufferSize = DefaultMaxResponseBufferSize)
+        long maxResponseBufferSize = DefaultMaxResponseBufferSize,
+        TimeSpan? attemptTimeout = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResponseBufferSize);
-        _maxResponseBufferSize = maxResponseBufferSize;
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(jitter);
+        var timeout = attemptTimeout ?? DefaultAttemptTimeout;
+        if (!IsValidAttemptTimeout(timeout))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(attemptTimeout), timeout, "The attempt timeout must be positive and at most int.MaxValue milliseconds, or infinite.");
+        }
+
+        _maxResponseBufferSize = maxResponseBufferSize;
         _timeProvider = timeProvider;
         _delay = delay ?? ((wait, ct) => Task.Delay(wait, timeProvider, ct));
         _jitter = jitter;
+        _attemptTimeout = timeout;
     }
+
+    /// <summary>
+    /// True for <see cref="Timeout.InfiniteTimeSpan"/> (no attempt timeout) or a positive span of at most
+    /// <see cref="int.MaxValue"/> milliseconds, the same range <see cref="HttpClient.Timeout"/> accepts.
+    /// </summary>
+    public static bool IsValidAttemptTimeout(TimeSpan attemptTimeout) =>
+        attemptTimeout == Timeout.InfiniteTimeSpan ||
+        (attemptTimeout > TimeSpan.Zero && attemptTimeout.TotalMilliseconds <= int.MaxValue);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (!IsRetryable(request))
         {
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            // Sent once, as is: the attempt timeout bounds the time to response headers only, because the body is
+            // streamed to HttpClient after this handler returns.
+            using var once = new AttemptScope(_timeProvider, _attemptTimeout, cancellationToken);
+            try
+            {
+                return await base.SendAsync(request, once.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (once.TimedOut)
+            {
+                throw AttemptTimedOut(ex, status: null, retryAfter: null);
+            }
         }
 
         var body = request.Content is null
@@ -163,16 +231,21 @@ public sealed class RetryHandler : DelegatingHandler
         HttpRequestMessage original, byte[]? body, int attempt, CancellationToken cancellationToken)
     {
         using var copy = Copy(original, body);
+        using var scope = new AttemptScope(_timeProvider, _attemptTimeout, cancellationToken);
         var canRetry = attempt < MaxAttempts;
 
         HttpResponseMessage response;
         try
         {
-            response = await base.SendAsync(copy, cancellationToken).ConfigureAwait(false);
+            response = await base.SendAsync(copy, scope.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (canRetry && IsTransient(ex, cancellationToken))
         {
             return (null, Backoff(attempt));
+        }
+        catch (OperationCanceledException ex) when (scope.TimedOut)
+        {
+            throw AttemptTimedOut(ex, status: null, retryAfter: null);
         }
 
         var status = response.StatusCode;
@@ -181,7 +254,7 @@ public sealed class RetryHandler : DelegatingHandler
             // The inner handler returns once headers arrive; HttpClient would read the body after this handler
             // returns, outside the retry loop. Reading it here keeps a reset mid-body (after the server committed)
             // inside the loop, where a keyed request can be replayed.
-            await response.Content.LoadIntoBufferAsync(_maxResponseBufferSize, cancellationToken).ConfigureAwait(false);
+            await response.Content.LoadIntoBufferAsync(_maxResponseBufferSize, scope.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -198,8 +271,13 @@ public sealed class RetryHandler : DelegatingHandler
                 }
             }
 
-            // A read failure keeps the status it followed and any delay the server asked for (spec §16);
-            // cancellations and anything else surface unchanged.
+            // A read failure keeps the status it followed and any delay the server asked for (spec §16); so does an
+            // attempt timeout. The caller's cancellation and anything else surface unchanged.
+            if (ex is OperationCanceledException canceled && scope.TimedOut)
+            {
+                throw AttemptTimedOut(canceled, status, retryAfter);
+            }
+
             if (ex is HttpRequestException or IOException)
             {
                 var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
@@ -233,12 +311,11 @@ public sealed class RetryHandler : DelegatingHandler
         request.Headers.TryGetValues(IdempotencyKeyHeader, out var values) &&
         values.Any(v => !string.IsNullOrWhiteSpace(v));
 
-    // A cancellation is transient only when it is not the caller's: a timeout raised below this handler surfaces
-    // as OperationCanceledException while the caller's token is still live. HttpClient.Timeout is different: it
-    // covers the whole call including every retry, cancels the token this handler receives, and so is never
-    // retried. TODO(task-12-attempt-timeout): part B adds a per-attempt timeout handler below RetryHandler in the
-    // AddNachosClient pipeline so a single stalled attempt can be retried within the overall HttpClient.Timeout.
-    // A configured limit (such as the response buffer cap) fails the same way on every attempt, so it never retries.
+    // A cancellation is transient only when it is not the caller's: this handler's own attempt timeout, or a timeout
+    // raised below it, surfaces as OperationCanceledException while the caller's token is still live. HttpClient.Timeout
+    // is different: it covers the whole call including every retry, cancels the token this handler receives, and so is
+    // never retried. A configured limit (such as the response buffer cap) fails the same way on every attempt, so it
+    // never retries.
     private static bool IsTransient(Exception ex, CancellationToken callerToken) =>
         !callerToken.IsCancellationRequested &&
         ex is not HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded } &&
@@ -283,6 +360,17 @@ public sealed class RetryHandler : DelegatingHandler
         return copy;
     }
 
+    // The attempt timeout surfaces like a transport failure: an HttpRequestException (with the received status and any
+    // Retry-After delay, as for a body failure) whose inner TimeoutException keeps the cancellation as its cause.
+    private HttpRequestException AttemptTimedOut(OperationCanceledException cause, HttpStatusCode? status, TimeSpan? retryAfter)
+    {
+        var timeout = string.Create(
+            CultureInfo.InvariantCulture, $"The Nachos request attempt did not complete within {_attemptTimeout.TotalSeconds:0.###} s.");
+        var message = retryAfter is { } delay ? timeout + RetryAfterHeader.Suffix(delay) : timeout;
+        return RetryAfterHeader.WithDelay(
+            new HttpRequestException(HttpRequestError.Unknown, message, new TimeoutException(timeout, cause), status), retryAfter);
+    }
+
     // Full jitter: a uniform wait in [0, BaseDelay * 2^(attempt-1)).
     private TimeSpan Backoff(int failedAttempt) =>
         BaseDelay * (Math.Pow(2, failedAttempt - 1) * _jitter());
@@ -292,5 +380,44 @@ public sealed class RetryHandler : DelegatingHandler
         cancellationToken.ThrowIfCancellationRequested();
         await _delay(wait, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// One attempt's cancellation: the caller's token linked with a timer on the handler's clock. Disposing it stops the
+    /// timer; it never cancels anything itself.
+    /// </summary>
+    private sealed class AttemptScope : IDisposable
+    {
+        private readonly CancellationToken _caller;
+        private readonly CancellationTokenSource? _timeout;
+        private readonly CancellationTokenSource? _linked;
+
+        public AttemptScope(TimeProvider clock, TimeSpan attemptTimeout, CancellationToken caller)
+        {
+            _caller = caller;
+            if (attemptTimeout == Timeout.InfiniteTimeSpan)
+            {
+                Token = caller;
+                return;
+            }
+
+            _timeout = new CancellationTokenSource(attemptTimeout, clock);
+            _linked = CancellationTokenSource.CreateLinkedTokenSource(caller, _timeout.Token);
+            Token = _linked.Token;
+        }
+
+        public CancellationToken Token { get; }
+
+        /// <summary>
+        /// True when the attempt's timeout fired and the caller's token did not. The caller's cancellation always wins,
+        /// so a call the caller cancelled is never reported as timed out.
+        /// </summary>
+        public bool TimedOut => _timeout is { IsCancellationRequested: true } && !_caller.IsCancellationRequested;
+
+        public void Dispose()
+        {
+            _linked?.Dispose();
+            _timeout?.Dispose();
+        }
     }
 }
