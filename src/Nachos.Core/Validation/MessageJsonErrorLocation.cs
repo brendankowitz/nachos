@@ -9,7 +9,9 @@ internal static class MessageJsonErrorLocation
     /// Recovers a structured location without changing admission or the original cause.
     /// For caller-parsed documents retaining comments, a rejected comment immediately after
     /// a field value can be attributed to that field rather than its containing object.
-    /// This issue-8 limitation does not relax normal strict-JSON schema-location requirements.
+    /// Comments before or between array elements can be attributed to the following element
+    /// rather than the containing array. These issue-8 limitations do not relax normal
+    /// strict-JSON schema-location requirements.
     /// </summary>
     public static List<object> Find(JsonElement messages, JsonException error)
     {
