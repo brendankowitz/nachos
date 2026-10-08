@@ -19,7 +19,13 @@ internal sealed record ScanHit(string File, int Line, string Pattern);
 /// are skipped, and <c>*.js|mjs|cjs|ts|json</c> are checked only for unambiguous commands (<c>azd</c> with a
 /// deploying verb, <c>docker push</c>, ACR and ARM endpoints, Az cmdlets). Limit: JavaScript that shells out to
 /// <c>az</c> through a string is detected only when the string holds such an unambiguous command. Every other
-/// file there, and every file under the other roots (including any tracked <c>node_modules</c>), gets all rules.
+/// file there, and every file under the other roots (including any tracked <c>node_modules</c>), gets all rules,
+/// except that outside <c>.github/scripts</c> a <c>*.md</c> file is prose and gets only the unambiguous rules.
+/// </para>
+/// <para>
+/// Markdown is never executed by CI, and its sentences ("offline Bicep validation, and SDK conformance") read as
+/// <c>bicep &lt;unknown verb&gt;</c> to the command allow-list. Limit: an ambiguous <c>az &lt;verb&gt;</c> or
+/// <c>bicep &lt;verb&gt;</c> command written only in a Markdown file is not detected.
 /// </para>
 /// <para>
 /// The only exemption is, inside a workflow whose triggers are exactly <c>workflow_dispatch</c>, a line within a
@@ -266,12 +272,16 @@ internal sealed class UnattendedAzureScanner(string root)
         }
     }
 
-    /// <summary>Which rules apply to a file; only <c>.github/scripts</c> narrows them (see the class comment).</summary>
+    /// <summary>
+    /// Which rules apply to a file. Under <c>.github/scripts</c> the rules narrow by file type (see the class comment).
+    /// Elsewhere every file gets all rules except <c>*.md</c>, which is prose and gets only the unambiguous rules, so
+    /// an ambiguous <c>az</c>/<c>bicep</c> command written only in Markdown is not detected.
+    /// </summary>
     private static FileRules RulesFor(string relative)
     {
         if (!relative.StartsWith(".github/scripts/", StringComparison.OrdinalIgnoreCase))
         {
-            return FileRules.All;
+            return relative.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ? FileRules.Unambiguous : FileRules.All;
         }
 
         var directories = relative.Split('/')[..^1];
