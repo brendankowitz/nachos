@@ -4,10 +4,12 @@ using Nachos.LicenseCheck;
 try
 {
     var options = new Dictionary<string, string>(StringComparer.Ordinal);
-    var fetch = args.FirstOrDefault() == "fetch-npm";
-    var known = new HashSet<string>(fetch ? ["--lock", "--npm-archives"]
+    var command = args.FirstOrDefault();
+    var fetch = command is "fetch-npm" or "fetch-pnpm";
+    var inventory = command == "inventory-pnpm";
+    var known = new HashSet<string>(fetch ? ["--lock", "--npm-archives"] : inventory ? ["--lock", "--report"]
         : ["--repo", "--nuget-inventory", "--nuget-cache", "--api-publish", "--cli-publish", "--python-archives", "--npm-archives", "--report"], StringComparer.Ordinal);
-    for (var index = fetch ? 1 : 0; index < args.Length; index += 2)
+    for (var index = fetch || inventory ? 1 : 0; index < args.Length; index += 2)
     {
         if (!known.Contains(args[index]) || index + 1 >= args.Length || !options.TryAdd(args[index], args[index + 1]))
         {
@@ -16,6 +18,27 @@ try
     }
     string Required(string name) => options.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
         ? Path.GetFullPath(value) : throw new InvalidDataException($"Required argument: {name}");
+    if (command is "fetch-pnpm" or "inventory-pnpm")
+    {
+        var graph = PnpmLock.Read(Required("--lock"));
+        if (fetch)
+            await NpmArchives.FetchRecordsAsync(graph.Packages.Select(package => (package.Name, package.Download)), Required("--npm-archives"));
+        else
+        {
+            var output = Required("--report");
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            File.WriteAllText(output, JsonSerializer.Serialize(new
+            {
+                packages = graph.Packages.Select(package => new
+                {
+                    document = package.Document, package = package.Name, version = package.Version,
+                    integrity = package.Download.GetProperty("integrity").GetString(),
+                    resolved = package.Download.GetProperty("resolved").GetString(), snapshots = package.Snapshots.Keys
+                })
+            }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        return 0;
+    }
     if (fetch)
     {
         await NpmArchives.FetchAsync(Required("--lock"), Required("--npm-archives"));

@@ -14,6 +14,9 @@ internal static class NpmArchives
     private const int MaxEntries = 20000;
 
     public static Dictionary<string, string> Read(JsonElement locked, string name, string cache, out string archivePath, string? declared = null)
+        => Read(locked, name, cache, out archivePath, out _, declared);
+
+    public static Dictionary<string, string> Read(JsonElement locked, string name, string cache, out string archivePath, out string archiveRoot, string? declared = null)
     {
         var (_, digest, filename) = Descriptor(locked, name);
         archivePath = Collectors.Under(cache, filename);
@@ -24,6 +27,10 @@ internal static class NpmArchives
         using var tar = new TarReader(bounded);
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var basename = name.Split('/')[^1];
+        var typesRoot = name.StartsWith("@types/", StringComparison.Ordinal)
+            ? basename + " v" + string.Join('.', Collectors.RequiredString(locked, "version").Split('.').Take(2)) : null;
+        archiveRoot = "";
         while (tar.GetNextEntry() is { } entry)
         {
             if (seen.Count >= MaxEntries)
@@ -31,7 +38,9 @@ internal static class NpmArchives
                 throw new InvalidDataException("npm archive entry count limit exceeded.");
             }
             var pathInArchive = entry.Name.TrimEnd('/');
-            if (pathInArchive != "package" && !pathInArchive.StartsWith("package/", StringComparison.Ordinal)
+            var root = pathInArchive.Split('/')[0];
+            if (archiveRoot.Length == 0) archiveRoot = root;
+            if (root != archiveRoot || root != "package" && root != basename && root != typesRoot
                 || pathInArchive.Contains('\\', StringComparison.Ordinal) || pathInArchive.Contains(':', StringComparison.Ordinal)
                 || pathInArchive.Split('/').Any(segment => segment is "." or ".." or "")
                 || !seen.Add(pathInArchive))
@@ -42,15 +51,15 @@ internal static class NpmArchives
             {
                 continue;
             }
-            if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile) || entry.DataStream is null)
+            if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile) || entry.Length > 0 && entry.DataStream is null)
             {
                 throw new InvalidDataException($"Unsafe linked/special npm archive entry: {entry.Name}");
             }
-            if (!pathInArchive.StartsWith("package/", StringComparison.Ordinal))
+            if (!pathInArchive.StartsWith(archiveRoot + "/", StringComparison.Ordinal))
             {
                 throw new InvalidDataException($"Unsafe npm archive file path: {entry.Name}");
             }
-            var relative = pathInArchive["package/".Length..];
+            var relative = pathInArchive[(archiveRoot.Length + 1)..];
             var evidence = relative == "package.json" || relative == declared
                 || LicenseText.IsImplicitNpmDocument(relative);
             if (!evidence)
@@ -65,7 +74,12 @@ internal static class NpmArchives
             {
                 throw new InvalidDataException($"npm archive evidence size limit exceeded: {relative}");
             }
-            using var reader = new StreamReader(entry.DataStream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+            if (entry.Length == 0)
+            {
+                result.Add(relative, "");
+                continue;
+            }
+            using var reader = new StreamReader(entry.DataStream!, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
             result.Add(relative, reader.ReadToEnd());
         }
         bounded.CopyTo(Stream.Null);
@@ -80,16 +94,20 @@ internal static class NpmArchives
     {
         var records = NpmLock.Read(lockPath);
         var directory = Path.GetDirectoryName(lockPath)!;
+        await FetchRecordsAsync(records.Where(record => record.Key.Length > 0
+            && !Directory.Exists(Collectors.Under(directory, record.Key)))
+            .Select(record => (NpmLock.Name(record.Key), record.Value)), cache).ConfigureAwait(false);
+    }
+
+    public static async Task FetchRecordsAsync(IEnumerable<(string Name, JsonElement Locked)> records, string cache)
+    {
+        var downloads = records.Select(record => (record.Name, record.Locked, Descriptor(record.Locked, record.Name))).ToArray();
         Directory.CreateDirectory(cache);
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
-        foreach (var (location, locked) in records.Where(record => record.Key.Length > 0))
+        foreach (var (name, locked, descriptor) in downloads)
         {
-            if (Directory.Exists(Collectors.Under(directory, location)))
-            {
-                continue;
-            }
-            var (uri, digest, filename) = Descriptor(locked, NpmLock.Name(location));
+            var (uri, digest, filename) = descriptor;
             var path = Collectors.Under(cache, filename);
             if (File.Exists(path))
             {
@@ -123,7 +141,7 @@ internal static class NpmArchives
                 }
                 Verify(partial, digest);
                 File.Move(partial, path);
-                Console.WriteLine($"Downloaded verified npm evidence: {NpmLock.Name(location)}@{Collectors.RequiredString(locked, "version")}");
+                Console.WriteLine($"Downloaded verified npm evidence: {name}@{Collectors.RequiredString(locked, "version")}");
             }
             finally
             {
@@ -135,7 +153,7 @@ internal static class NpmArchives
         }
     }
 
-    private static (Uri Uri, byte[] Digest, string Filename) Descriptor(JsonElement locked, string name)
+    internal static (Uri Uri, byte[] Digest, string Filename) Descriptor(JsonElement locked, string name)
     {
         var version = Collectors.RequiredString(locked, "version");
         var resolved = Collectors.RequiredString(locked, "resolved");

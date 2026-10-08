@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)] [string] $CliPublishRoot,
     [string] $PythonArchives,
     [string] $NpmArchives,
+    [string[]] $PnpmLocks,
     [string] $NugetInventory,
     [string] $NugetCache,
     [string] $OutputDirectory = (Join-Path $PSScriptRoot 'artifacts'),
@@ -41,6 +42,13 @@ $arguments = @(
     '--nuget-cache', $NugetCache, '--api-publish', $ApiPublishRoot, '--cli-publish', $CliPublishRoot,
     '--report', (Join-Path $OutputDirectory 'license-report.json')
 )
+if ($PnpmLocks) {
+    if (-not $NpmArchives) { throw 'PnpmLocks fetching requires NpmArchives.' }
+    foreach ($lock in $PnpmLocks) {
+        & dotnet $checker fetch-pnpm --lock $lock --npm-archives $NpmArchives
+        if ($LASTEXITCODE -ne 0) { throw "pnpm archive provisioning failed: $lock" }
+    }
+}
 if ($PythonArchives) {
     $arguments += @('--python-archives', $PythonArchives)
 }

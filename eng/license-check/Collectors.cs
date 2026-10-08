@@ -12,7 +12,7 @@ internal static class Collectors
 {
     private static readonly HashSet<string> ExcludedDirectories = new(StringComparer.OrdinalIgnoreCase)
         { ".git", "node_modules", "bin", "obj", "dist", ".astro", "artifacts", "fixtures-work" };
-    private static readonly string[] UnsupportedLocks = ["yarn.lock", "pnpm-lock.yaml", "uv.lock", "poetry.lock", "Pipfile.lock"];
+    private static readonly string[] UnsupportedLocks = ["yarn.lock", "uv.lock", "poetry.lock", "Pipfile.lock"];
 
     public static List<PackageEvidence> Collect(AuditInputs inputs, List<string> errors)
     {
@@ -33,9 +33,24 @@ internal static class Collectors
                 }
                 var manifest = Path.Combine(directory, "package.json");
                 var npmLock = Path.Combine(directory, "package-lock.json");
-                if (File.Exists(manifest) || File.Exists(npmLock))
+                var pnpmLock = Path.Combine(directory, "pnpm-lock.yaml");
+                if (File.Exists(manifest) || File.Exists(npmLock) || File.Exists(pnpmLock))
                 {
-                    Capture(() => Npm(inputs, npmLock, packages, errors), npmLock, errors);
+                    Capture(() =>
+                    {
+                        using var package = JsonDocument.Parse(File.ReadAllText(Under(directory, "package.json")));
+                        var manager = package.RootElement.TryGetProperty("packageManager", out var pin) ? pin.GetString() : null;
+                        if (File.Exists(npmLock) && File.Exists(pnpmLock))
+                            throw new InvalidDataException("Unsupported lock choice: ambiguous npm/pnpm locks; select the declared manager, not a convenient inventory.");
+                        if (File.Exists(pnpmLock) || manager?.StartsWith("pnpm@", StringComparison.Ordinal) == true)
+                            Pnpm(inputs, pnpmLock, packages, errors);
+                        else
+                        {
+                            if (manager is not null && !manager.StartsWith("npm@", StringComparison.Ordinal))
+                                throw new InvalidDataException($"Unsupported packageManager declaration: {manager}");
+                            Npm(inputs, npmLock, packages, errors);
+                        }
+                    }, directory, errors);
                 }
                 if (File.Exists(Path.Combine(directory, "pyproject.toml")) || File.Exists(Path.Combine(directory, "requirements.txt")))
                 {
@@ -209,10 +224,11 @@ internal static class Collectors
                 var expectedName = NpmLock.Name(location);
                 Dictionary<string, string>? archived = null;
                 string? archivePath = null;
+                var archiveRoot = "package";
                 if (!Directory.Exists(installed))
                 {
                     archived = NpmArchives.Read(locked, expectedName, inputs.NpmArchives
-                        ?? throw new InvalidDataException("Locked npm package is not installed; npm archive directory is required."), out archivePath);
+                        ?? throw new InvalidDataException("Locked npm package is not installed; npm archive directory is required."), out archivePath, out archiveRoot);
                 }
                 using var metadata = JsonDocument.Parse(archived is null
                     ? File.ReadAllText(Under(installed, "package.json")) : archived["package.json"]);
@@ -228,41 +244,71 @@ internal static class Collectors
                 {
                     throw new InvalidDataException("npm installed license metadata disagrees with package-lock.json.");
                 }
-                var declared = installedLicense?.StartsWith("SEE LICENSE IN ", StringComparison.Ordinal) == true
-                    ? installedLicense["SEE LICENSE IN ".Length..] : null;
-                if (declared is not null)
-                {
-                    Under(installed, declared);
-                    if (declared.Contains('\\', StringComparison.Ordinal) || declared.Split('/').Any(part => part is "." or ".." or "")
-                        || !LicenseText.IsDocumentationPath(declared))
-                    {
-                        throw new InvalidDataException($"unsupported license entry (not a documentation file): {declared}");
-                    }
-                }
-                if (archived is not null && declared is not null && !archived.ContainsKey(declared))
-                {
-                    archived = NpmArchives.Read(locked, name, inputs.NpmArchives!, out archivePath, declared);
-                }
-                var evidence = archived ?? InstalledNpmEvidence(installed);
-                if (declared is not null && !evidence.ContainsKey(declared))
-                {
-                    var declaredPath = Under(installed, declared);
-                    evidence.Add(declared, archived is null && File.Exists(declaredPath) ? File.ReadAllText(declaredPath) : "");
-                }
-                var texts = evidence.Where(item => item.Key != "package.json").Select(item =>
-                {
-                    var primary = !LicenseText.IsNoticePath(item.Key) && !VendoredPath(item.Key)
-                        && (declared is null ? !item.Key.Contains('/') || item.Key.StartsWith("licenses/", StringComparison.OrdinalIgnoreCase)
-                            || item.Key.StartsWith("licences/", StringComparison.OrdinalIgnoreCase) : item.Key == declared);
-                    return new LicenseFile((archivePath is null ? Relative(inputs.Root, installed) + "/"
-                        : Relative(inputs.Root, archivePath) + "!package/") + item.Key, item.Value, primary);
-                }).ToArray();
-                packages.Add(new PackageEvidence("npm", name, version, Relative(inputs.Root, path), declared is null ? installedLicense : null, texts));
+                packages.Add(NpmEvidence(inputs, path, installed, locked, metadata.RootElement, archived, archivePath, archiveRoot));
             }, $"{path}:{location}", errors);
         }
     }
 
-    private static Dictionary<string, string> InstalledNpmEvidence(string installed)
+    private static void Pnpm(AuditInputs inputs, string path, List<PackageEvidence> packages, List<string> errors)
+    {
+        var graph = PnpmLock.Read(path);
+        var cache = inputs.NpmArchives ?? throw new InvalidDataException("pnpm requires verified archives for every locked package, including installed packages.");
+        var installed = PnpmInstalled.Read(Path.GetDirectoryName(path)!, graph);
+        foreach (var package in graph.Packages)
+        {
+            Capture(() =>
+            {
+                var evidence = NpmArchives.Read(package.Download, package.Name, cache, out var archive, out var archiveRoot);
+                using var metadata = JsonDocument.Parse(evidence["package.json"]);
+                graph.ValidateMetadata(package, metadata.RootElement);
+                var decision = NpmEvidence(inputs, path, Path.Combine(Path.GetDirectoryName(path)!, "node_modules", package.Name),
+                    package.Download, metadata.RootElement, evidence, archive, archiveRoot);
+                foreach (var location in installed.GetValueOrDefault(package.Name + "@" + package.Version, []))
+                    PnpmInstalled.Verify(location, package, cache, evidence);
+                packages.Add(decision with { Origin = Relative(inputs.Root, path) + $"#document={package.Document}" });
+            }, $"{path}:document={package.Document}:{package.Name}@{package.Version}", errors);
+        }
+    }
+
+    private static PackageEvidence NpmEvidence(AuditInputs inputs, string path, string installed, JsonElement locked,
+        JsonElement metadata, Dictionary<string, string>? archived, string? archivePath, string archiveRoot)
+    {
+        var name = RequiredString(metadata, "name");
+        var version = RequiredString(locked, "version");
+        var installedLicense = NpmLicense(metadata);
+        var declared = installedLicense?.StartsWith("SEE LICENSE IN ", StringComparison.Ordinal) == true
+            ? installedLicense["SEE LICENSE IN ".Length..] : null;
+        if (declared is not null)
+        {
+            Under(installed, declared);
+            if (declared.Contains('\\', StringComparison.Ordinal) || declared.Split('/').Any(part => part is "." or ".." or "")
+                || !LicenseText.IsDocumentationPath(declared))
+            {
+                throw new InvalidDataException($"unsupported license entry (not a documentation file): {declared}");
+            }
+        }
+        if (archived is not null && declared is not null && !archived.ContainsKey(declared))
+        {
+            archived = NpmArchives.Read(locked, name, inputs.NpmArchives!, out archivePath, out archiveRoot, declared);
+        }
+        var evidence = archived ?? InstalledNpmEvidence(installed);
+        if (declared is not null && !evidence.ContainsKey(declared))
+        {
+            var declaredPath = Under(installed, declared);
+            evidence.Add(declared, archived is null && File.Exists(declaredPath) ? File.ReadAllText(declaredPath) : "");
+        }
+        var texts = evidence.Where(item => item.Key != "package.json").Select(item =>
+        {
+            var primary = !LicenseText.IsNoticePath(item.Key) && !VendoredPath(item.Key)
+                && (declared is null ? !item.Key.Contains('/') || item.Key.StartsWith("licenses/", StringComparison.OrdinalIgnoreCase)
+                    || item.Key.StartsWith("licences/", StringComparison.OrdinalIgnoreCase) : item.Key == declared);
+            return new LicenseFile((archivePath is null ? Relative(inputs.Root, installed) + "/"
+                : Relative(inputs.Root, archivePath) + "!" + archiveRoot + "/") + item.Key, item.Value, primary);
+        }).ToArray();
+        return new PackageEvidence("npm", name, version, Relative(inputs.Root, path), declared is null ? installedLicense : null, texts);
+    }
+
+    internal static Dictionary<string, string> InstalledNpmEvidence(string installed, bool includeNestedDirectories = false)
     {
         var evidence = new Dictionary<string, string>(StringComparer.Ordinal);
         var directories = new Stack<string>();
@@ -279,7 +325,7 @@ internal static class Collectors
             }
             foreach (var child in Directory.EnumerateDirectories(directory))
             {
-                if (directory != installed || Path.GetFileName(child).Equals("licenses", StringComparison.OrdinalIgnoreCase)
+                if (includeNestedDirectories || directory != installed || Path.GetFileName(child).Equals("licenses", StringComparison.OrdinalIgnoreCase)
                     || Path.GetFileName(child).Equals("licences", StringComparison.OrdinalIgnoreCase))
                 {
                     directories.Push(Under(installed, Relative(installed, child)));
@@ -289,7 +335,7 @@ internal static class Collectors
         return evidence;
     }
 
-    private static string? NpmLicense(JsonElement metadata)
+    internal static string? NpmLicense(JsonElement metadata)
     {
         if (!metadata.TryGetProperty("license", out var license))
         {
