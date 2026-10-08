@@ -309,7 +309,7 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 1:** Write the tests:
   - `IdValidatorTests.Rejects` (`""`, 513 characters, `"a b"`, `"é"`) and `.Accepts` (`"a-Z_9"`);
   - `TokenCounterTests.KnownStrings` (`"hello world"` → 2; `""` → 0);
-  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`, `.SummaryMinimumsEnforced` (short 9 → `NachosValidationException`);
+  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`, `.SummaryMinimumsEnforced` (short 9 → `RequestValidationException` with `loc` `["body","configuration","summary","messages_per_short_summary"]`; amended on #6, see spec §9 "Validation happens at admission"). `IdValidator` keeps the documented domain `NachosValidationException`, and Task 9 owns body-`id` schema checks;
   - `NachosServiceTests`, which use an NSubstitute `IMemoryStore` so that Task 4 never depends on Task 8: `CreateMessages_101_Throws422`, `CreateMessages_ComputesTokenCount`, `GetOrCreateSession_WithPeers_EnsuresMembership`, `ListPeers_DefaultKindExcludesInternal`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `NachosService` maps records to wire DTOs: `Session.IsActive = State == Active`, and `Message.Id = PublicId`. Filter JSON goes through `FilterParser.Parse`.

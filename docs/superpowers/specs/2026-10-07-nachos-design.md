@@ -355,6 +355,11 @@ Embedding dimensions: default 1536 (`text-embedding-3-small`). `VECTOR` float32 
 - **Deployment defaults** are `IOptions<NachosOptions>`, bound from `appsettings`, environment variables, and Azure App Configuration (optional). Sections: `Database`, `Llm` (model profiles), `Embeddings`, `Deriver`, `Summary`, `Dialectic` (levels), `Dream`, `Webhooks`, `Auth`, `Limits`, `Telemetry`.
 - **Resource configuration** follows the Honcho v3 shape so SDKs work: `reasoning`, `peer_card`, `summary`, `dream`, `dialectic`, `custom_instructions`. It can be set on Workspace and Session. Message-level config supports `reasoning` only. Peer and session-peer configs carry `observe_me` and `observe_others`.
 - `IConfigurationResolver.Resolve(workspace, session?, message?)` returns `ResolvedConfiguration`, applying precedence message > session > workspace > global. Custom-instruction text is capped (`Deriver.MaxCustomInstructionsTokens`, default 2000).
+  - **Validation happens at admission, not on read (Δ, recorded on PR #6).**
+    - **Wire schema constraints** are checked when a create or update request is admitted, and fail as array-shaped `HTTPValidationError` with the full `loc` (for example `["body","configuration","summary","messages_per_short_summary"]`). This covers `summary` minimums and the other manifest-declared ranges.
+    - **Deployment-tunable budgets** are also admission-only: `Deriver.MaxCustomInstructionsTokens` and other token budgets, which fail as a domain `NachosValidationException`.
+    - **Lowering a budget later** never invalidates stored resources. Reads and `Resolve` return the stored values unchanged; nothing is clamped, rejected, or relabelled as a request error. Prompt-time hard budgets (§11.6) are a separate guard at the point of use.
+    - **Corrupt stored configuration** that violates a structural invariant the admission path guarantees (shape, types, strict JSON data) makes `Resolve` throw a non-request configuration error. That is a logged server error (`500`), never a `422` with a `body.*` location.
 
 Key defaults (parity values):
 
