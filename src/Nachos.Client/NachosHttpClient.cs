@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Azure.Core;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -88,10 +89,14 @@ public sealed class NachosHttpClient : INachosClient
     private readonly HttpClient _http;
     private readonly Uri _baseAddress;
     private readonly string? _apiKey;
+    private readonly TokenCredential? _credential;
+    private readonly TokenRequestContext _tokenRequest;
     private readonly TimeProvider _timeProvider;
 
     /// <exception cref="ArgumentException">
-    /// <see cref="NachosClientOptions.BaseAddress"/> is missing or relative, or the API key is not printable ASCII.
+    /// <paramref name="options"/> breaks a rule documented on <see cref="NachosClientOptions"/>: the base address is
+    /// missing, relative or not http(s), the API key is not printable ASCII, or a credential has no scopes. The message
+    /// never contains a configured value.
     /// </exception>
     public NachosHttpClient(HttpClient httpClient, NachosClientOptions options)
         : this(httpClient, options, TimeProvider.System)
@@ -99,29 +104,26 @@ public sealed class NachosHttpClient : INachosClient
     }
 
     /// <param name="httpClient">The borrowed client.</param>
-    /// <param name="options">Connection settings.</param>
+    /// <param name="options">Connection settings, read once here.</param>
     /// <param name="timeProvider">Clock for turning an HTTP-date <c>Retry-After</c> into a delay.</param>
     internal NachosHttpClient(HttpClient httpClient, NachosClientOptions options, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(timeProvider);
-        _timeProvider = timeProvider;
+        var failures = options.Validate();
+        if (failures.Count > 0)
+        {
+            throw new ArgumentException(string.Join(" ", failures), nameof(options));
+        }
+
         var baseAddress = options.BaseAddress;
-        if (baseAddress is null || !baseAddress.IsAbsoluteUri)
-        {
-            throw new ArgumentException("BaseAddress must be an absolute URI.", nameof(options));
-        }
-
-        // The message never echoes the key.
-        if (options.ApiKey is { } key && (key.Length == 0 || key.Any(c => c is < '!' or > '~')))
-        {
-            throw new ArgumentException("ApiKey must be non-empty printable ASCII without whitespace.", nameof(options));
-        }
-
         _http = httpClient;
+        _timeProvider = timeProvider;
         _baseAddress = baseAddress.AbsoluteUri.EndsWith('/') ? baseAddress : new Uri(baseAddress.AbsoluteUri + "/");
         _apiKey = options.ApiKey;
+        _credential = options.Credential;
+        _tokenRequest = new TokenRequestContext([.. options.Scopes]);
     }
 
     public async Task<Workspace> GetOrCreateWorkspaceAsync(
@@ -349,11 +351,11 @@ public sealed class NachosHttpClient : INachosClient
         using var request = new HttpRequestMessage(method, Resolve(template, routeValues, query));
         request.Options.Set(RetryHandler.RouteTemplate, template);
 
-        // TODO(task-12-credential): when NachosClientOptions.Credential is set, acquire an Entra token for
-        // NachosClientOptions.Scopes here and send it instead of the API key.
-        if (_apiKey is not null)
+        // The bearer value doubles as the secret redacted from any server text mapped into an exception.
+        var bearer = await BearerAsync(ct).ConfigureAwait(false);
+        if (bearer is not null)
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         }
 
         if (idempotencyKey is not null)
@@ -371,10 +373,30 @@ public sealed class NachosHttpClient : INachosClient
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw ErrorMapper.Map(response, text, $"{method} {template}", _apiKey, _timeProvider);
+            throw ErrorMapper.Map(response, text, $"{method} {template}", bearer, _timeProvider);
         }
 
         return text;
+    }
+
+    /// <summary>
+    /// The credential's token for this call when a credential is set (its exceptions propagate unchanged), else the
+    /// API key, else null.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The credential returned a token that cannot be sent as a header.</exception>
+    private async ValueTask<string?> BearerAsync(CancellationToken ct)
+    {
+        if (_credential is null)
+        {
+            return _apiKey;
+        }
+
+        var token = (await _credential.GetTokenAsync(_tokenRequest, ct).ConfigureAwait(false)).Token;
+
+        // The message never echoes the token.
+        return token is not null && NachosClientOptions.IsBearerValue(token)
+            ? token
+            : throw new InvalidOperationException("The token credential returned an empty access token or one that is not printable ASCII without whitespace.");
     }
 
     /// <summary>

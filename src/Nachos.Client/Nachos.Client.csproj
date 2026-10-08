@@ -5,6 +5,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- TokenCredential (Entra auth). Versions are pinned centrally in Directory.Packages.props. -->
+    <PackageReference Include="Azure.Core" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- RetryHandler's delay and jitter seams are internal so tests never sleep for real. -->
     <InternalsVisibleTo Include="Nachos.Client.Tests" />
   </ItemGroup>

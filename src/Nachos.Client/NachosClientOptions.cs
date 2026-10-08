@@ -1,20 +1,75 @@
+using Azure.Core;
+
 namespace Nachos.Client;
 
 /// <summary>Connection settings for <see cref="NachosHttpClient"/>.</summary>
 /// <remarks>
+/// <para>
 /// A class rather than a record on purpose: a record's generated <c>ToString</c> would print <see cref="ApiKey"/>.
+/// <c>ToString</c> is <see cref="object.ToString"/> (the type name only).
+/// </para>
+/// <para>
+/// The rules on each property are checked by the <see cref="NachosHttpClient"/> constructor
+/// (<see cref="ArgumentException"/>) and, under <c>AddNachosClient</c>, when the options are first created
+/// (<c>OptionsValidationException</c>). No failure message ever contains a configured value.
+/// </para>
 /// </remarks>
 public sealed class NachosClientOptions
 {
-    /// <summary>Absolute root of the Nachos server; <c>v3/...</c> routes are resolved beneath it.</summary>
+    /// <summary>
+    /// Absolute <c>http</c> or <c>https</c> root of the Nachos server; <c>v3/...</c> routes are resolved beneath it.
+    /// </summary>
     public required Uri BaseAddress { get; set; }
 
-    /// <summary>A NachosKey token, sent as <c>Authorization: Bearer &lt;key&gt;</c>. Null sends no credentials.</summary>
+    /// <summary>
+    /// A NachosKey token, sent as <c>Authorization: Bearer &lt;key&gt;</c>: non-empty printable ASCII without
+    /// whitespace. Null sends no credentials. Ignored when <see cref="Credential"/> is set.
+    /// </summary>
     public string? ApiKey { get; set; }
 
-    /// <summary>Entra scopes requested for the token credential.</summary>
+    /// <summary>
+    /// An Entra credential, preferred over <see cref="ApiKey"/> when set. Every call asks it for a token for
+    /// <see cref="Scopes"/> (<see cref="TokenCredential.GetTokenAsync"/> with the call's cancellation token; the
+    /// credential does its own caching) and sends <c>Authorization: Bearer &lt;token&gt;</c>; retries of one call reuse
+    /// that token. An exception from the credential propagates unchanged: it is not retried, wrapped or mapped. A token
+    /// that is empty or not printable ASCII without whitespace is rejected with <see cref="InvalidOperationException"/>
+    /// before anything is sent.
+    /// </summary>
+    public TokenCredential? Credential { get; set; }
+
+    /// <summary>
+    /// Entra scopes requested for <see cref="Credential"/>, for example <c>api://nachos/.default</c>. Required when
+    /// <see cref="Credential"/> is set: at least one, none blank. The client copies them at construction.
+    /// </summary>
     public string[] Scopes { get; set; } = [];
 
-    // TODO(task-12-credential): add `TokenCredential? Credential` (Entra) once Azure.Core is pinned in
-    // Directory.Packages.props; NachosHttpClient's authorization path then prefers it over ApiKey.
+    /// <summary>The rules these options break, as messages that never contain a configured value; empty when valid.</summary>
+    internal List<string> Validate()
+    {
+        var failures = new List<string>();
+        if (BaseAddress is not { IsAbsoluteUri: true })
+        {
+            failures.Add("BaseAddress must be an absolute URI.");
+        }
+        else if (BaseAddress.Scheme is not ("http" or "https"))
+        {
+            failures.Add("BaseAddress must use the http or https scheme.");
+        }
+
+        if (ApiKey is { } key && !IsBearerValue(key))
+        {
+            failures.Add("ApiKey must be non-empty printable ASCII without whitespace.");
+        }
+
+        if (Credential is not null && (Scopes is not { Length: > 0 } || Scopes.Any(string.IsNullOrWhiteSpace)))
+        {
+            failures.Add("Scopes must hold at least one non-blank scope when Credential is set.");
+        }
+
+        return failures;
+    }
+
+    /// <summary>True for a value that can follow <c>Bearer </c> in a header: non-empty printable ASCII, no whitespace.</summary>
+    internal static bool IsBearerValue(string value) =>
+        value.Length > 0 && !value.Any(c => c is < '!' or > '~');
 }

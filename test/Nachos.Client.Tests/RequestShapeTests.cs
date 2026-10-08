@@ -507,6 +507,17 @@ public sealed class RequestShapeTests
             new NachosHttpClient(new HttpClient(), new NachosClientOptions { BaseAddress = new Uri("/api", UriKind.Relative) }));
     }
 
+    [Theory]
+    [InlineData("ftp://nachos.test/")]
+    [InlineData("file:///tmp/nachos")]
+    public void NonHttpBaseAddress_IsRejected(string baseAddress)
+    {
+        var ex = Should.Throw<ArgumentException>(() =>
+            new NachosHttpClient(new HttpClient(), new NachosClientOptions { BaseAddress = new Uri(baseAddress) }));
+
+        ex.Message.ShouldNotContain(baseAddress);
+    }
+
     [Fact]
     public async Task AbsentOptionalResponseFields_AreHandled()
     {
