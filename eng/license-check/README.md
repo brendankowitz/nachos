@@ -305,6 +305,11 @@ package with the declared name and exact snapshot binding, not merely an
 existing directory within the store. Shared `node_modules` aliases are checked;
 unbound physical packages there are not skipped. Every indexed package still
 requires its archive metadata and documentary comparison before an audit passes.
+Peer contexts are reconciled in both directions: optional absence cannot leave
+a bound context, and every transitive name must trace to a child's declared
+peer requirement. Forwarded bindings must agree exactly; locally provided peers
+and genuinely unresolved optional transitive peers remain supported. A cycle of
+transitive declarations without an originating peer requirement is not evidence.
 
 Docs distribution classification still comes from the actual bundle manifest.
 Archive availability, graph reconciliation and absence from that manifest do

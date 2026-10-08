@@ -193,15 +193,16 @@ internal sealed class PnpmLock
                 var effective = Effective(package, name, request);
                 if (effective == "-")
                 {
-                    if (locked.ContainsKey(name) || lockedOptional.ContainsKey(name))
+                    if (locked.ContainsKey(name) || lockedOptional.ContainsKey(name) || contextPeers.ContainsKey(name))
                         throw new InvalidDataException($"Removed pnpm override remains in snapshot: {context}/{name}");
                     continue;
                 }
                 expected.Add(name);
-                var target = optional.ContainsKey(name) ? lockedOptional : locked;
+                var optionalPeerOnly = actualOptional.Contains(name) && !dependencies.ContainsKey(name) && !optional.ContainsKey(name);
+                var target = optional.ContainsKey(name) || optionalPeerOnly && lockedOptional.ContainsKey(name) ? lockedOptional : locked;
                 if (!target.TryGetValue(name, out var reference))
                 {
-                    if (peers.ContainsKey(name) && actualOptional.Contains(name)) continue;
+                    if (optionalPeerOnly && !contextPeers.ContainsKey(name)) continue;
                     throw new InvalidDataException($"pnpm archive declaration missing from snapshot: {context}/{name}");
                 }
                 var (_, resolved, _) = Identity(name + "@" + reference);
@@ -213,7 +214,67 @@ internal sealed class PnpmLock
             }
             if (locked.Keys.Concat(lockedOptional.Keys).Any(name => !expected.Contains(name)))
                 throw new InvalidDataException($"pnpm snapshot has undeclared dependency: {context}");
+            var inherited = new HashSet<string>(StringComparer.Ordinal);
+            var forwarded = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (name, reference) in locked.Concat(lockedOptional)
+                .Where(pair => dependencies.ContainsKey(pair.Key) || optional.ContainsKey(pair.Key)))
+            {
+                var childKey = name + "@" + reference;
+                var child = SnapshotPackage(package.Document, childKey);
+                var childPeers = Identity(childKey).Peers.ToDictionary(peer => Identity(peer).Name, StringComparer.Ordinal);
+                foreach (var peer in Strings(child.Metadata, "peerDependencies").Keys
+                    .Concat(Sequence(child.Snapshots[childKey], "transitivePeerDependencies")).Distinct(StringComparer.Ordinal))
+                {
+                    if (peers.ContainsKey(peer) || dependencies.ContainsKey(peer) || optional.ContainsKey(peer) || peer == package.Name)
+                    {
+                        var supplied = peer == package.Name ? context
+                            : locked.TryGetValue(peer, out var suppliedReference) ? peer + "@" + suppliedReference
+                            : lockedOptional.TryGetValue(peer, out suppliedReference) ? peer + "@" + suppliedReference : null;
+                        if (childPeers.TryGetValue(peer, out var childBinding) && childBinding != supplied)
+                            throw new InvalidDataException($"pnpm child peer disagrees with local provider: {context}/{peer}");
+                        continue;
+                    }
+                    if (!HasPeerSource(child, childKey, peer, new HashSet<string>(StringComparer.Ordinal)))
+                        throw new InvalidDataException($"pnpm transitive peer lacks a declared source: {context}/{peer}");
+                    inherited.Add(peer);
+                    if (childPeers.TryGetValue(peer, out var binding))
+                    {
+                        if (forwarded.TryGetValue(peer, out var other) && other != binding)
+                            throw new InvalidDataException($"Conflicting pnpm transitive peer bindings: {context}/{peer}");
+                        forwarded[peer] = binding;
+                    }
+                }
+            }
+            var transitive = Sequence(snapshot, "transitivePeerDependencies").ToHashSet(StringComparer.Ordinal);
+            if (!transitive.SetEquals(inherited))
+                throw new InvalidDataException($"pnpm transitive peer declarations disagree with child requirements: {context}");
+            foreach (var (name, binding) in forwarded)
+                if (!contextPeers.TryGetValue(name, out var contextual) || contextual != binding)
+                    throw new InvalidDataException($"pnpm forwarded peer context disagrees: {context}/{name}");
+            foreach (var (name, contextual) in contextPeers)
+            {
+                var reference = locked.GetValueOrDefault(name) ?? lockedOptional.GetValueOrDefault(name);
+                var binding = peers.ContainsKey(name) && reference is not null ? name + "@" + reference : forwarded.GetValueOrDefault(name);
+                if (contextual != binding)
+                    throw new InvalidDataException($"Unexplained pnpm peer context: {context}/{name}");
+            }
         }
+    }
+
+    private PnpmPackage SnapshotPackage(int document, string key) =>
+        Packages.Single(package => package.Document == document && package.Snapshots.ContainsKey(key));
+
+    private bool HasPeerSource(PnpmPackage package, string key, string name, HashSet<string> visited)
+    {
+        if (Strings(package.Metadata, "peerDependencies").ContainsKey(name)) return true;
+        if (!visited.Add(key) || !Sequence(package.Snapshots[key], "transitivePeerDependencies").Contains(name, StringComparer.Ordinal))
+            return false;
+        return Edges.SelectMany(field => Strings(package.Snapshots[key], field))
+            .Any(edge =>
+            {
+                var childKey = edge.Key + "@" + edge.Value;
+                return HasPeerSource(SnapshotPackage(package.Document, childKey), childKey, name, visited);
+            });
     }
 
     internal (PnpmPackage Package, string Key) StoreContext(string folder)
