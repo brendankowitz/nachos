@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
@@ -15,6 +16,8 @@ public sealed class InMemoryLoneSurrogateTests
     private static CancellationToken Ct => CancellationToken.None;
 
     private static readonly DateTimeOffset SeedTime = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private static readonly string[] DeepLeaves = ["fine", "\uD800"];
 
     private const string Rejection = " contains a value that is not valid JSON or is nested too deeply.";
 
@@ -155,15 +158,42 @@ public sealed class InMemoryLoneSurrogateTests
     }
 
     [Fact]
-    public async Task VeryDeepNesting_GivesTheValidationError_NotAStackOverflow()
+    public void VeryDeepNesting_GivesTheValidationError_NotAStackOverflow()
     {
-        var store = new InMemoryMemoryStore(TimeProvider.System);
-        foreach (var leaf in new[] { "fine", "\uD800" })
-        {
-            var deep = Nest(new JsonObject { ["k"] = leaf }, levels: 5000);
+        // A recursive walk survives 5000 levels on the default stack (1 MB on Windows, 8 MB on Linux), so a regression
+        // to recursion would pass or fail depending on the platform. A 256 KB stack makes it overflow deterministically
+        // at this depth, while the explicit-stack walk uses the heap and does not care.
+        Exception? failure = null;
+        var worker = new Thread(
+            () =>
+            {
+                try
+                {
+                    var store = new InMemoryMemoryStore(TimeProvider.System);
+                    foreach (var leaf in DeepLeaves)
+                    {
+                        var deep = Nest(new JsonObject { ["k"] = leaf }, levels: 5000);
 
-            await ShouldRejectAsync("metadata", () => store.Workspaces.GetOrCreateAsync("ws", deep, null, Ct));
-            (await store.Workspaces.GetAsync("ws", Ct)).ShouldBeNull();
+                        // The validation runs before the first await, so the whole rejection stays on this thread.
+                        var rejected = Should.Throw<NachosValidationException>(
+                            () => store.Workspaces.GetOrCreateAsync("ws", deep, null, Ct).GetAwaiter().GetResult());
+                        rejected.Detail.ShouldBe("metadata" + Rejection);
+                        store.Workspaces.GetAsync("ws", Ct).GetAwaiter().GetResult().ShouldBeNull();
+                    }
+                }
+                catch (Exception e)
+                {
+                    failure = e;
+                }
+            },
+            maxStackSize: 256 * 1024);
+
+        worker.Start();
+        worker.Join();
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
 
