@@ -7,6 +7,8 @@
   <ItemGroup>
     <!-- TokenCredential (Entra auth). Versions are pinned centrally in Directory.Packages.props. -->
     <PackageReference Include="Azure.Core" />
+    <!-- AddNachosClient: IHttpClientFactory, options and DI abstractions. -->
+    <PackageReference Include="Microsoft.Extensions.Http" />
   </ItemGroup>
 
   <ItemGroup>

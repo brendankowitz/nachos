@@ -10,8 +10,8 @@ namespace Nachos.Client;
 /// </para>
 /// <para>
 /// The rules on each property are checked by the <see cref="NachosHttpClient"/> constructor
-/// (<see cref="ArgumentException"/>) and, under <c>AddNachosClient</c>, when the options are first created
-/// (<c>OptionsValidationException</c>). No failure message ever contains a configured value.
+/// (<see cref="ArgumentException"/>) and, under <c>AddNachosClient</c>, at host start and whenever the options are
+/// first read (<c>OptionsValidationException</c>). No failure message ever contains a configured value.
 /// </para>
 /// </remarks>
 public sealed class NachosClientOptions
@@ -43,6 +43,16 @@ public sealed class NachosClientOptions
     /// </summary>
     public string[] Scopes { get; set; } = [];
 
+    /// <summary>
+    /// Bound on each attempt of a call (send plus buffering the response body) under <c>AddNachosClient</c>, handed to
+    /// <see cref="RetryHandler"/>. Default <see cref="RetryHandler.DefaultAttemptTimeout"/> (30 s);
+    /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Otherwise positive and at most <see cref="int.MaxValue"/>
+    /// milliseconds. The overall bound stays <see cref="HttpClient.Timeout"/> (100 s by default), which covers every
+    /// attempt and backoff of a call. A <see cref="NachosHttpClient"/> constructed by hand does not use it: pass the
+    /// timeout to the <see cref="RetryHandler"/> you build.
+    /// </summary>
+    public TimeSpan AttemptTimeout { get; set; } = RetryHandler.DefaultAttemptTimeout;
+
     /// <summary>The rules these options break, as messages that never contain a configured value; empty when valid.</summary>
     internal List<string> Validate()
     {
@@ -64,6 +74,11 @@ public sealed class NachosClientOptions
         if (Credential is not null && (Scopes is not { Length: > 0 } || Scopes.Any(string.IsNullOrWhiteSpace)))
         {
             failures.Add("Scopes must hold at least one non-blank scope when Credential is set.");
+        }
+
+        if (!RetryHandler.IsValidAttemptTimeout(AttemptTimeout))
+        {
+            failures.Add("AttemptTimeout must be positive and at most int.MaxValue milliseconds, or Timeout.InfiniteTimeSpan.");
         }
 
         return failures;
