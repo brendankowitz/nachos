@@ -328,7 +328,7 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
   - **Behind current version:** generate a DeployReport and classify it as `AutoSafe`, `Unsafe`, or `Unclassifiable`. Apply only `AutoSafe` changes, and only with `BlockOnPossibleDataLoss = true`. Everything else fails closed with a message pointing to `nachos schema upgrade`.
   - The check runs on first data access, not at startup.
 - **CI:** build **both** dacpacs and publish both as artifacts. CI publishes a `sqlpackage /Action:DeployReport` for the **Sql2025** dacpac against an empty SQL Server 2025 service container. An Azure dacpac DeployReport needs a real Azure SQL target, which is an owner-gated action (§18.3), and `AllowIncompatiblePlatform` is banned. So the Azure report is produced by `nachos schema report` during owner-approved runs. CI never runs `Publish` unattended.
-- **azd:** a `postprovision` hook runs `nachos schema upgrade --report-only` and then applies the change only if it is auto-safe. Otherwise the hook stops and prints the report.
+- **azd:** a `postprovision` hook runs `nachos schema upgrade` with no flags (`AutoSafeOnly`). It applies the change only if it is auto-safe. Otherwise the CLI refuses (exit 2) and prints the reasons and the advice, and the hook stops. The operator then runs `nachos schema report` (report XML on stdout, or `--out <file>`) to review the change before re-running with `--approve-reviewed` (and `--allow-data-loss` if needed).
 - Test containers (SQL Server 2025) deploy the **Sql2025 dacpac** through the same `SchemaDeployer` code path that self-hosted production uses. `AllowIncompatiblePlatform` is never set, in tests or production.
 
 ### 7.4 Postgres-feature equivalents
