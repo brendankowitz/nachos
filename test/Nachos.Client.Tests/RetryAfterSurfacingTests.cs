@@ -8,9 +8,11 @@ namespace Nachos.Client.Tests;
 
 /// <summary>
 /// Spec §16: a <c>Retry-After</c> longer than 30 s is not waited out; the error reaches the caller with the requested
-/// delay. Every exception raised for a response that carried a parseable <c>Retry-After</c> holds the delay in
-/// <see cref="Exception.Data"/> under <see cref="NachosExceptionData.RetryAfter"/> and ends its message with
-/// <c>" Retry-After: {N}s."</c>.
+/// delay. A status response mapped by the client, or a body failure wrapped by the retry handler, that carried a
+/// parseable <c>Retry-After</c> holds the delay in <see cref="Exception.Data"/> under
+/// <see cref="NachosExceptionData.RetryAfter"/> and ends its message with <c>" Retry-After: {N}s."</c>. A delay of
+/// exactly 30 s is still waited out. Not covered: a body that fails inside <see cref="HttpClient"/> buffering on a
+/// never-retried route, a malformed 2xx body, and a timeout below the handler.
 /// </summary>
 public sealed class RetryAfterSurfacingTests
 {
@@ -19,6 +21,9 @@ public sealed class RetryAfterSurfacingTests
     private static readonly DateTimeOffset Now = new(2026, 10, 8, 12, 0, 0, TimeSpan.Zero);
 
     private static readonly Uri Base = new("https://nachos.test/");
+
+    private const string MessageJson =
+        """{"id":"m1","content":"hi","peer_id":"alice","session_id":"s1","metadata":{},"created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":1}""";
 
     private static readonly IReadOnlyList<MessageCreate> Batch = [new("hello", "alice")];
 
@@ -38,6 +43,36 @@ public sealed class RetryAfterSurfacingTests
         ex.Message.ShouldEndWith(" Retry-After: 31s.");
         stub.Requests.Count.ShouldBe(1);
         _delays.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task Status_RetryAfterExactlyTheCap_IsWaitedOnce_ThenSucceeds(HttpStatusCode status)
+    {
+        var stub = new StubHandler((_, attempt) => attempt == 1
+            ? WithRetryAfter(Error(status), "30")
+            : StubHandler.Json(HttpStatusCode.OK, MessageJson));
+
+        var message = await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        message.Id.ShouldBe("m1");
+        stub.Requests.Count.ShouldBe(2);
+        _delays.ShouldBe([TimeSpan.FromSeconds(30)]);
+    }
+
+    [Fact]
+    public async Task BodyFailureAfter2xx_RetryAfterExactlyTheCap_IsWaitedOnce_ThenSucceeds()
+    {
+        var stub = new StubHandler((_, attempt) => attempt == 1
+            ? WithRetryAfter(StubHandler.BrokenBody(HttpStatusCode.Created, new BrokenStream()), "30")
+            : StubHandler.Json(HttpStatusCode.Created, "[]"));
+
+        await Client(Retry(stub)).CreateMessagesAsync("w1", "s1", Batch, "k1");
+
+        stub.Requests.Count.ShouldBe(2);
+        stub.Requests[1].IdempotencyKey.ShouldBe("k1");
+        _delays.ShouldBe([TimeSpan.FromSeconds(30)]);
     }
 
     [Fact]

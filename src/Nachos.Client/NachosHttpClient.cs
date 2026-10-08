@@ -17,8 +17,10 @@ namespace Nachos.Client;
 /// </summary>
 /// <remarks>
 /// <para>
-/// An exception raised for a response that carried a parseable <c>Retry-After</c> holds the requested delay under
-/// <see cref="NachosExceptionData.RetryAfter"/> and ends its message with <c>" Retry-After: {N}s."</c> (spec §16).
+/// A status response mapped by this client, or a body failure wrapped by <see cref="RetryHandler"/>, that carried a
+/// parseable <c>Retry-After</c> holds the requested delay under <see cref="NachosExceptionData.RetryAfter"/> and ends
+/// its message with <c>" Retry-After: {N}s."</c> (spec §16). Other failures do not: a body that fails inside
+/// <see cref="HttpClient"/> buffering on a route the handler never retries, a malformed 2xx body, and a timeout.
 /// </para>
 /// <para>
 /// Every request carries its wire route template in <see cref="RetryHandler.RouteTemplate"/>. Retries happen only

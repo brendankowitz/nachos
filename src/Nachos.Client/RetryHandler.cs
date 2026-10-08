@@ -37,8 +37,9 @@ namespace Nachos.Client;
 /// with the requested delay. For a status the response is returned at once, header included, and
 /// <see cref="NachosHttpClient"/> maps it to an exception carrying the delay (see
 /// <see cref="NachosExceptionData.RetryAfter"/>). For a body failure the wrapped <see cref="HttpRequestException"/>
-/// above carries the same data entry and message suffix. Any surfaced failure whose response had a parseable
-/// <c>Retry-After</c> carries it, including the last one after the attempts are exhausted.
+/// above carries the same data entry and message suffix. Mapped status responses and body failures wrapped by this
+/// handler carry the delay, including the last one after the attempts are exhausted; a failure that surfaces raw
+/// (for example a timeout below this handler) does not.
 /// </description></item>
 /// <item><description>
 /// Routes <see cref="RetryClassifier"/> classifies as never retried (keys, grants, adding sessions to a scope until
