@@ -15,7 +15,14 @@ namespace Nachos.Client;
 /// </para>
 /// <para>
 /// For a retryable request the response body is read inside the retry loop, so a failure while reading it is
-/// retried like a transport failure. Non-retryable requests pass through untouched (streaming preserved).
+/// retried like a transport failure (honouring <c>Retry-After</c> when the failed response carried one).
+/// Non-retryable requests pass through untouched (streaming preserved).
+/// </para>
+/// <para>
+/// That buffer is capped at <see cref="DefaultMaxResponseBufferSize"/>; a larger body fails with
+/// <see cref="HttpRequestError.ConfigurationLimitExceeded"/> and is not retried. On retryable routes the caller's
+/// <see cref="HttpClient.MaxResponseContentBufferSize"/> is not consulted, because HttpClient skips its own limit
+/// for content that is already buffered.
 /// </para>
 /// <para>
 /// <see cref="HttpClient.Timeout"/> bounds the whole call, retries and backoff included, and is never retried.
@@ -40,11 +47,15 @@ public sealed class RetryHandler : DelegatingHandler
     /// <summary>The backoff ceiling after the first failed attempt; it doubles per attempt.</summary>
     public static readonly TimeSpan BaseDelay = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>Default cap on a buffered response body for retryable requests.</summary>
+    public const long DefaultMaxResponseBufferSize = 64L * 1024 * 1024;
+
     private const string IdempotencyKeyHeader = "Idempotency-Key";
 
     private readonly TimeProvider _timeProvider;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<double> _jitter;
+    private readonly long _maxResponseBufferSize;
 
     public RetryHandler()
         : this(TimeProvider.System)
@@ -59,8 +70,15 @@ public sealed class RetryHandler : DelegatingHandler
     /// <param name="timeProvider">Clock for <c>Retry-After</c> dates and, by default, for delays.</param>
     /// <param name="delay">The wait between attempts; null waits on <paramref name="timeProvider"/>.</param>
     /// <param name="jitter">A source of values in [0, 1) that scales the backoff ceiling.</param>
-    internal RetryHandler(TimeProvider timeProvider, Func<TimeSpan, CancellationToken, Task>? delay, Func<double> jitter)
+    /// <param name="maxResponseBufferSize">Largest response body buffered for a retryable request.</param>
+    internal RetryHandler(
+        TimeProvider timeProvider,
+        Func<TimeSpan, CancellationToken, Task>? delay,
+        Func<double> jitter,
+        long maxResponseBufferSize = DefaultMaxResponseBufferSize)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxResponseBufferSize);
+        _maxResponseBufferSize = maxResponseBufferSize;
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(jitter);
         _timeProvider = timeProvider;
@@ -91,13 +109,20 @@ public sealed class RetryHandler : DelegatingHandler
                 // The inner handler returns once headers arrive; HttpClient would read the body after this handler
                 // returns, outside the retry loop. Reading it here keeps a reset mid-body (after the server committed)
                 // inside the loop, where a keyed request can be replayed.
-                await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+                await response.Content.LoadIntoBufferAsync(_maxResponseBufferSize, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex, cancellationToken))
             {
+                // A body failure after the headers arrived still honours the server's Retry-After.
+                var failureWait = (response is null ? null : RetryAfter(response)) ?? Backoff(attempt);
                 response?.Dispose();
                 attemptRequest.Dispose();
-                await WaitAsync(Backoff(attempt), cancellationToken).ConfigureAwait(false);
+                if (failureWait > MaxRetryAfter)
+                {
+                    throw;
+                }
+
+                await WaitAsync(failureWait, cancellationToken).ConfigureAwait(false);
                 continue;
             }
             catch
@@ -137,8 +162,10 @@ public sealed class RetryHandler : DelegatingHandler
     // covers the whole call including every retry, cancels the token this handler receives, and so is never
     // retried. TODO(task-12-attempt-timeout): part B adds a per-attempt timeout handler below RetryHandler in the
     // AddNachosClient pipeline so a single stalled attempt can be retried within the overall HttpClient.Timeout.
+    // A configured limit (such as the response buffer cap) fails the same way on every attempt, so it never retries.
     private static bool IsTransient(Exception ex, CancellationToken callerToken) =>
         !callerToken.IsCancellationRequested &&
+        ex is not HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded } &&
         ex is HttpRequestException or IOException or TimeoutException or OperationCanceledException;
 
     private static bool IsTransient(HttpStatusCode status) =>

@@ -211,6 +211,84 @@ public sealed class ErrorMappingTests
         ex.Message.ShouldNotContain(ApiKey[..6]);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Truncation_NeverSplitsASurrogatePair(int offset)
+    {
+        // Emoji (two UTF-16 units each) laid so that the cut lands on a pair boundary or inside a pair.
+        var cut = ErrorMapper.MaxMessageLength - ErrorMapper.TruncationMarker.Length;
+        var detail = new string('x', cut - offset) + string.Concat(Enumerable.Repeat("\U0001F600", 100));
+
+        var ex = await CaptureAsync(HttpStatusCode.NotFound, $$"""{"detail":"{{detail}}"}""");
+
+        ex.Message.ShouldEndWith(ErrorMapper.TruncationMarker);
+        var kept = ex.Message[..^ErrorMapper.TruncationMarker.Length];
+        char.IsHighSurrogate(kept[^1]).ShouldBeFalse("a lone high surrogate was left before the marker");
+        kept.EnumerateRunes().ShouldAllBe(r => r != System.Text.Rune.ReplacementChar);
+    }
+
+    [Fact]
+    public async Task EchoedApiKey_InValidationLocAndType_IsRedacted()
+    {
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity,
+            $$"""{"detail":[{"loc":["header","{{ApiKey}}",3],"msg":"bad","type":"t-{{ApiKey}}"}]}""");
+
+        var error = ex.ShouldBeOfType<RequestValidationException>().Errors.Single();
+        error.Loc.ShouldBe(["header", $"{ErrorMapper.Redacted}", 3]);
+        error.Type.ShouldBe($"t-{ErrorMapper.Redacted}");
+        ex.ToString().ShouldNotContain(ApiKey);
+    }
+
+    [Fact]
+    public async Task HugeValidationLocAndType_AreTruncated()
+    {
+        var huge = new string('z', 100_000);
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity,
+            $$"""{"detail":[{"loc":["body","{{huge}}"],"msg":"m","type":"{{huge}}"}]}""");
+
+        var error = ex.ShouldBeOfType<RequestValidationException>().Errors.Single();
+        ((string)error.Loc[1]).Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+        error.Type.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+    }
+
+    [Fact]
+    public async Task ValidationErrorCount_IsCapped_WithAMarkerEntry()
+    {
+        var body = new System.Text.StringBuilder("""{"detail":[""");
+        for (var i = 0; i < 100_000; i++)
+        {
+            body.Append(i == 0 ? string.Empty : ",").Append(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $$"""{"loc":["body","messages",{{i}},"{{ApiKey}}"],"msg":"m {{ApiKey}}","type":"t-{{ApiKey}}"}""");
+        }
+
+        var ex = await CaptureAsync(HttpStatusCode.UnprocessableEntity, body.Append("]}").ToString());
+
+        var errors = ex.ShouldBeOfType<RequestValidationException>().Errors;
+        errors.Count.ShouldBe(ErrorMapper.MaxValidationErrors + 1);
+        errors[ErrorMapper.MaxValidationErrors - 1].Loc[2].ShouldBe(ErrorMapper.MaxValidationErrors - 1);
+        var marker = errors[^1];
+        marker.Type.ShouldBe(ErrorMapper.OmittedErrorsType);
+        marker.Msg.ShouldContain((100_000 - ErrorMapper.MaxValidationErrors).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        ex.ToString().ShouldNotContain(ApiKey);
+        errors.ShouldAllBe(e => !e.Type.Contains(ApiKey) && !e.Msg.Contains(ApiKey));
+    }
+
+    [Fact]
+    public async Task ValidationErrorCount_AtTheCap_HasNoMarker()
+    {
+        var items = Enumerable.Range(0, ErrorMapper.MaxValidationErrors)
+            .Select(i => $$"""{"loc":["body",{{i}}],"msg":"m","type":"t"}""");
+        var ex = await CaptureAsync(HttpStatusCode.UnprocessableEntity, $$"""{"detail":[{{string.Join(",", items)}}]}""");
+
+        var errors = ex.ShouldBeOfType<RequestValidationException>().Errors;
+        errors.Count.ShouldBe(ErrorMapper.MaxValidationErrors);
+        errors.ShouldAllBe(e => e.Type == "t");
+    }
+
     private static NachosHttpClient Client(StubHandler stub) =>
         new NachosHttpClient(new HttpClient(stub), new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/"), ApiKey = ApiKey });
 

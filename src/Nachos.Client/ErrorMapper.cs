@@ -41,10 +41,21 @@ internal static class ErrorMapper
 
     public const string TruncationMarker = "…[truncated]";
 
+    /// <summary>
+    /// Validation errors kept from one response. When there are more, one extra marker entry (empty <c>loc</c>,
+    /// <c>type</c> <see cref="OmittedErrorsType"/>) states how many were dropped; the exception type stays
+    /// <see cref="RequestValidationException"/> so callers handle it the same way. Entries past the cap are counted
+    /// but not inspected.
+    /// </summary>
+    public const int MaxValidationErrors = 100;
+
+    /// <summary>The <c>type</c> of the marker entry that counts the validation errors not kept.</summary>
+    public const string OmittedErrorsType = "nachos_client.errors_omitted";
+
     public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret)
     {
         var status = response.StatusCode;
-        var (detail, errors, type) = Parse(body);
+        var (detail, parsed, type) = Parse(body);
         var fallback = string.Create(
             CultureInfo.InvariantCulture, $"Nachos {operation} returned {(int)status} {response.ReasonPhrase}.");
         var message = Sanitize(detail ?? fallback, secret);
@@ -54,8 +65,7 @@ internal static class ErrorMapper
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(message),
             HttpStatusCode.NotFound => new NotFoundException(message),
             HttpStatusCode.Conflict => new ConflictException(message),
-            HttpStatusCode.UnprocessableEntity when errors is not null =>
-                new RequestValidationException([.. errors.Select(e => e with { Msg = Sanitize(e.Msg, secret) })]),
+            HttpStatusCode.UnprocessableEntity when parsed is { } errors => new RequestValidationException(Sanitize(errors, secret)),
             HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(message),
             HttpStatusCode.UnprocessableEntity => new NachosValidationException(message),
             _ => new HttpRequestException(
@@ -66,16 +76,45 @@ internal static class ErrorMapper
     private static string Sanitize(string text, string? secret)
     {
         var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
-        return redacted.Length <= MaxMessageLength
-            ? redacted
-            : string.Concat(redacted.AsSpan(0, MaxMessageLength - TruncationMarker.Length), TruncationMarker);
+        if (redacted.Length <= MaxMessageLength)
+        {
+            return redacted;
+        }
+
+        var cut = MaxMessageLength - TruncationMarker.Length;
+        if (char.IsHighSurrogate(redacted[cut - 1]))
+        {
+            cut--; // never keep half of a surrogate pair
+        }
+
+        return string.Concat(redacted.AsSpan(0, cut), TruncationMarker);
+    }
+
+    // Every server-supplied string (msg, type, string loc parts) is redacted and bounded like the detail text.
+    private static ValidationError[] Sanitize((ValidationError[] Kept, int Omitted) errors, string? secret)
+    {
+        var sanitized = errors.Kept
+            .Select(e => new ValidationError(
+                [.. e.Loc.Select(part => part is string text ? Sanitize(text, secret) : part)],
+                Sanitize(e.Msg, secret),
+                Sanitize(e.Type, secret)))
+            .ToList();
+        if (errors.Omitted > 0)
+        {
+            sanitized.Add(new ValidationError(
+                [],
+                string.Create(CultureInfo.InvariantCulture, $"{errors.Omitted} more validation errors were omitted by the client."),
+                OmittedErrorsType));
+        }
+
+        return [.. sanitized];
     }
 
     private static bool IsIdempotencyKeyReused(string? type) =>
         type is not null &&
         type[(type.LastIndexOfAny(['/', ':', '#']) + 1)..] == IdempotencyKeyReusedType;
 
-    private static (string? Detail, IReadOnlyList<ValidationError>? Errors, string? Type) Parse(string body)
+    private static (string? Detail, (ValidationError[] Kept, int Omitted)? Errors, string? Type) Parse(string body)
     {
         JsonObject? root;
         try
@@ -101,11 +140,11 @@ internal static class ErrorMapper
         };
     }
 
-    // Null when any entry lacks the required loc/msg/type, so a malformed body falls back to the status mapping.
-    private static ValidationError[]? ParseErrors(JsonArray items)
+    // Null when any kept entry lacks the required loc/msg/type, so a malformed body falls back to the status mapping.
+    private static (ValidationError[] Kept, int Omitted)? ParseErrors(JsonArray items)
     {
-        var errors = new ValidationError[items.Count];
-        for (var i = 0; i < items.Count; i++)
+        var errors = new ValidationError[Math.Min(items.Count, MaxValidationErrors)];
+        for (var i = 0; i < errors.Length; i++)
         {
             if (items[i] is not JsonObject item ||
                 item["loc"] is not JsonArray loc ||
@@ -118,7 +157,7 @@ internal static class ErrorMapper
             errors[i] = new ValidationError([.. loc.Select(LocPart)], msgText, kindText);
         }
 
-        return errors;
+        return (errors, items.Count - errors.Length);
     }
 
     // FastAPI loc entries are member names (strings) or array indexes (integers).

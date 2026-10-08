@@ -302,6 +302,186 @@ public sealed class RetryBoundaryTests
     }
 
     [Fact]
+    public async Task BodyFailureOnEveryAttempt_ThreeAttempts_SurfacesTheFailure_AllDisposed()
+    {
+        var streams = new List<BrokenStream>();
+        var stub = new StubHandler((_, _) =>
+        {
+            var stream = new BrokenStream();
+            streams.Add(stream);
+            return StubHandler.BrokenBody(HttpStatusCode.Created, stream);
+        });
+
+        await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).CreateMessagesAsync("w1", "s1", Batch));
+
+        stub.Requests.Count.ShouldBe(3);
+        _delays.ShouldBe([TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500)]);
+        streams.Count.ShouldBe(3);
+        streams.ShouldAllBe(s => s.Disposed);
+        foreach (var message in stub.Messages)
+        {
+            (await StubHandler.IsDisposedAsync(message)).ShouldBeTrue("every request copy must be disposed");
+        }
+    }
+
+    [Theory]
+    [InlineData("status,body,ok")]
+    [InlineData("body,status,ok")]
+    [InlineData("transport,body,ok")]
+    [InlineData("body,transport,ok")]
+    public async Task MixedFailureKinds_ShareTheThreeAttemptBudget(string plan)
+    {
+        var steps = plan.Split(',');
+        var stub = new StubHandler((_, attempt) => steps[attempt - 1] switch
+        {
+            "status" => Error(HttpStatusCode.ServiceUnavailable),
+            "body" => StubHandler.BrokenBody(HttpStatusCode.OK, new BrokenStream()),
+            "transport" => throw new HttpRequestException("transport failure"),
+            _ => StubHandler.Json(HttpStatusCode.OK, MessageJson),
+        });
+
+        var message = await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        message.Id.ShouldBe("m1");
+        stub.Requests.Count.ShouldBe(3);
+        _delays.Count.ShouldBe(2);
+    }
+
+    [Theory]
+    [InlineData("status,body,body")]
+    [InlineData("body,transport,body")]
+    [InlineData("transport,status,body")]
+    public async Task MixedFailureKinds_NeverExceedThreeAttempts(string plan)
+    {
+        var steps = plan.Split(',');
+        var stub = new StubHandler((_, attempt) => attempt > steps.Length
+            ? StubHandler.Json(HttpStatusCode.OK, MessageJson)
+            : steps[attempt - 1] switch
+            {
+                "status" => Error(HttpStatusCode.ServiceUnavailable),
+                "body" => StubHandler.BrokenBody(HttpStatusCode.OK, new BrokenStream()),
+                _ => throw new HttpRequestException("transport failure"),
+            });
+
+        await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1"));
+
+        stub.Requests.Count.ShouldBe(3);
+    }
+
+    [Fact]
+    public async Task CallerCancellationWhileBufferingTheBody_StopsImmediately()
+    {
+        using var cts = new CancellationTokenSource();
+        StallingStream? stream = null;
+        var stub = new StubHandler((_, _) =>
+        {
+            stream = new StallingStream(() => cts.Cancel());
+            var content = new StreamContent(stream);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            return new HttpResponseMessage(HttpStatusCode.Created) { Content = content };
+        });
+
+        await Should.ThrowAsync<OperationCanceledException>(
+            () => Client(Retry(stub)).CreateMessagesAsync("w1", "s1", Batch, ct: cts.Token));
+
+        stub.Requests.Count.ShouldBe(1);
+        _delays.ShouldBeEmpty();
+        stream!.ReadWasCancelled.ShouldBeTrue("the caller's token must reach the body read");
+        stream.Disposed.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task BodyFailureRaisedAfterCallerCancelled_IsNotRetried()
+    {
+        using var cts = new CancellationTokenSource();
+        var stub = new StubHandler((_, _) => StubHandler.BrokenBody(HttpStatusCode.OK, new BrokenStream(() => cts.Cancel())));
+
+        await Should.ThrowAsync<OperationCanceledException>(
+            () => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1", cts.Token));
+
+        stub.Requests.Count.ShouldBe(1);
+        _delays.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task BodyFailure_HonoursRetryAfter()
+    {
+        var stub = new StubHandler((_, attempt) => attempt == 1
+            ? WithRetryAfter(
+                StubHandler.BrokenBody(HttpStatusCode.TooManyRequests, new BrokenStream()),
+                new RetryConditionHeaderValue(TimeSpan.FromSeconds(7)))
+            : StubHandler.Json(HttpStatusCode.OK, MessageJson));
+
+        await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        stub.Requests.Count.ShouldBe(2);
+        _delays.ShouldBe([TimeSpan.FromSeconds(7)]);
+    }
+
+    [Fact]
+    public async Task BodyFailure_HonoursRetryAfterHttpDate()
+    {
+        var stub = new StubHandler((_, attempt) => attempt == 1
+            ? WithRetryAfter(
+                StubHandler.BrokenBody(HttpStatusCode.ServiceUnavailable, new BrokenStream()),
+                new RetryConditionHeaderValue(Now.AddSeconds(9)))
+            : StubHandler.Json(HttpStatusCode.OK, MessageJson));
+
+        await Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1");
+
+        _delays.ShouldBe([TimeSpan.FromSeconds(9)]);
+    }
+
+    [Fact]
+    public async Task BodyFailure_WithRetryAfterBeyondCap_SurfacesWithoutRetrying()
+    {
+        var stream = new BrokenStream();
+        var stub = new StubHandler((_, _) => WithRetryAfter(
+            StubHandler.BrokenBody(HttpStatusCode.ServiceUnavailable, stream),
+            new RetryConditionHeaderValue(TimeSpan.FromSeconds(120))));
+
+        await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1"));
+
+        stub.Requests.Count.ShouldBe(1);
+        _delays.ShouldBeEmpty();
+        stream.Disposed.ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResponseOverTheBufferLimit_IsNotRetried_AndSurfaces(bool lengthKnown)
+    {
+        var stub = new StubHandler((_, _) => Padded(MessageJson, BufferLimit + 1, lengthKnown));
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(
+            () => Client(Retry(stub, maxResponseBufferSize: BufferLimit)).GetMessageAsync("w1", "s1", "m1"));
+
+        ex.HttpRequestError.ShouldBe(HttpRequestError.ConfigurationLimitExceeded);
+        ex.Message.ShouldContain(BufferLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        stub.Requests.Count.ShouldBe(1);
+        _delays.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResponseAtTheBufferLimit_IsAccepted(bool lengthKnown)
+    {
+        var stub = new StubHandler((_, _) => Padded(MessageJson, BufferLimit, lengthKnown));
+
+        var message = await Client(Retry(stub, maxResponseBufferSize: BufferLimit)).GetMessageAsync("w1", "s1", "m1");
+
+        message.Id.ShouldBe("m1");
+    }
+
+    [Fact]
+    public void DefaultBufferLimit_Is64MiB()
+    {
+        RetryHandler.DefaultMaxResponseBufferSize.ShouldBe(64L * 1024 * 1024);
+    }
+
+    [Fact]
     public async Task FailedAttemptResponses_AreDisposedBeforeTheNextAttempt()
     {
         var contents = new List<TrackedContent>();
@@ -437,8 +617,21 @@ public sealed class RetryBoundaryTests
         return response;
     }
 
-    private RetryHandler Retry(HttpMessageHandler inner, Func<double>? jitter = null) =>
-        new(_time, RecordDelay, jitter ?? (() => 0.5)) { InnerHandler = inner };
+    private const int BufferLimit = 1024;
+
+    private RetryHandler Retry(
+        HttpMessageHandler inner, Func<double>? jitter = null, long maxResponseBufferSize = RetryHandler.DefaultMaxResponseBufferSize) =>
+        new(_time, RecordDelay, jitter ?? (() => 0.5), maxResponseBufferSize) { InnerHandler = inner };
+
+    /// <summary>A 200 whose JSON body is padded with trailing spaces to exactly <paramref name="size"/> bytes.</summary>
+    private static HttpResponseMessage Padded(string json, int size, bool lengthKnown)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(json.PadRight(size));
+        bytes.Length.ShouldBe(size);
+        HttpContent content = lengthKnown ? new ByteArrayContent(bytes) : new StreamContent(new UnknownLengthStream(bytes));
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
 
     private Task RecordDelay(TimeSpan delay, CancellationToken ct)
     {
