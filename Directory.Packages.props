@@ -38,7 +38,9 @@
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <!-- SQL Server provider (Nachos.DataLayer.SqlServer) -->
-    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.5" />
+    <!-- 6.1.7: EF Core SqlServer 10.0.12 requires >= 6.1.6 (NU1605 otherwise). -->
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.7" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.12" />
     <PackageVersion Include="Microsoft.SqlServer.DacFx" Version="170.4.83" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
     <!-- Bootstrap CLI (Nachos.Cli) -->
