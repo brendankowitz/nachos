@@ -71,6 +71,13 @@ internal sealed class RoundTripHarness : IDisposable
     /// <summary>Every attempt that left <see cref="RetryHandler"/> for the server, as <c>"METHOD /path?query"</c>.</summary>
     public WireLog Wire { get; } = new();
 
+    /// <summary>
+    /// The HTTP client's own named <see cref="HttpClient"/> (retry pipeline, wire log, test server), for requests
+    /// <see cref="INachosClient"/> cannot express (Task 11: a replay without the key; staged-gap request bodies).
+    /// </summary>
+    public HttpClient CreatePipelineClient() =>
+        _httpServices.GetRequiredService<IHttpClientFactory>().CreateClient(NachosClientServiceCollectionExtensions.HttpClientName);
+
     public void Dispose()
     {
         _inProcessScope.Dispose();
