@@ -310,6 +310,9 @@ a bound context, and every transitive name must trace to a child's declared
 peer requirement. Forwarded bindings must agree exactly; locally provided peers
 and genuinely unresolved optional transitive peers remain supported. A cycle of
 transitive declarations without an originating peer requirement is not evidence.
+Semver build metadata is ignored for precedence only after every dot-separated
+identifier has been validated as nonempty ASCII alphanumeric/hyphen text, for
+both range tokens and exact locked/archive identities.
 
 Docs distribution classification still comes from the actual bundle manifest.
 Archive availability, graph reconciliation and absence from that manifest do

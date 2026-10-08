@@ -81,7 +81,7 @@ internal static class NpmRange
 
     private static Number Parse(string text, out int parts)
     {
-        var match = Regex.Match(text, @"^(0|[1-9]\d*|[xX*])(?:\.(0|[1-9]\d*|[xX*]))?(?:\.(0|[1-9]\d*|[xX*]))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$");
+        var match = Regex.Match(text, @"^(0|[1-9]\d*|[xX*])(?:\.(0|[1-9]\d*|[xX*]))?(?:\.(0|[1-9]\d*|[xX*]))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$");
         if (!match.Success) throw new InvalidDataException($"Unsupported npm semver/range token: {text}");
         var numbers = new int[3];
         parts = 0;
