@@ -30,6 +30,8 @@ public sealed partial class NachosService
             items = [];
             foreach (var message in messages)
             {
+                // Keep typed ID failures domain-shaped before raw wire-schema checks classify nulls and missing fields.
+                if (message is not null) IdValidator.Validate(message.PeerId, "peer_id");
                 items.Add(message is null ? null : new JsonObject
                 {
                     ["content"] = StrictJsonData.ToCanonical(JsonValue.Create(message.Content)),
@@ -62,7 +64,7 @@ public sealed partial class NachosService
             throw new NachosValidationException("Idempotency-Key must contain 1 to 255 ASCII characters.");
         }
         JsonUnicodeValidator.Validate(requestBody);
-        var messages = ReadMessages(requestBody);
+        var messages = MessageEnvelopeReader.Read(requestBody, MessageJson);
         validator.ValidateMessages(messages);
         var hash = idempotencyKey is null ? null : RequestHasher.Hash("POST",
             "/v3/workspaces/{w}/sessions/{s}/messages",
@@ -103,25 +105,6 @@ public sealed partial class NachosService
                 // The next read returns the winner, or null if it expired/disappeared. Only a live hash can conflict.
                 await Task.Yield();
             }
-        }
-    }
-
-    private static MessageCreate[] ReadMessages(JsonElement requestBody)
-    {
-        if (requestBody.ValueKind != JsonValueKind.Object ||
-            !requestBody.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
-        {
-            throw new RequestValidationException(
-                [new ValidationError(["body", "messages"], "Messages must be an array.", "list_type")]);
-        }
-        try
-        {
-            return messages.Deserialize<MessageCreate[]>(MessageJson)!;
-        }
-        catch (JsonException error)
-        {
-            throw new RequestValidationException(
-                [new ValidationError(["body", "messages"], "A message contains a value of the wrong type.", "value_error")], error);
         }
     }
 
