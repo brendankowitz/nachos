@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions.Domain;
@@ -215,23 +214,13 @@ internal static class InMemoryFilterEvaluator
     /// Compares by numeric value, using the JSON number text (stored JSON is canonical).
     /// </summary>
     /// <remarks>
-    /// Precision bound: numbers compare as <see cref="System.Decimal"/> when both parse into decimal range; beyond that
-    /// they fall back to <see cref="double"/> (so, for example, values below decimal's smallest step or above its range
-    /// may compare equal). The SQL provider documents its own bound.
+    /// Exact: every metadata number comparison (<c>eq ne in gt gte lt lte</c> and array containment) compares the
+    /// literals' values with no precision or range bound, so <c>0</c> and <c>1e-29</c> differ, as do integers beyond
+    /// <see cref="decimal"/> and <see cref="double"/> precision; see <see cref="JsonNumberComparison"/>. The
+    /// <c>token_count</c> column compares as <see cref="decimal"/>, its documented type.
     /// </remarks>
-    private static int CompareNumbers(JsonValue left, JsonValue right)
-    {
-        var leftText = left.ToJsonString();
-        var rightText = right.ToJsonString();
-        return TryParseDecimal(leftText, out var leftDecimal) && TryParseDecimal(rightText, out var rightDecimal)
-            ? leftDecimal.CompareTo(rightDecimal)
-            : ParseDouble(leftText).CompareTo(ParseDouble(rightText));
-    }
-
-    private static bool TryParseDecimal(string text, out decimal value) =>
-        decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-
-    private static double ParseDouble(string text) => double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+    private static int CompareNumbers(JsonValue left, JsonValue right) =>
+        JsonNumberComparison.Compare(left.ToJsonString(), right.ToJsonString());
 
     private static string? AsString(JsonNode? node) =>
         node is JsonValue value && value.GetValueKind() == JsonValueKind.String ? value.GetValue<string>() : null;
