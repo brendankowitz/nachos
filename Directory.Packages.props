@@ -20,6 +20,7 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
     <PackageVersion Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
@@ -32,5 +33,7 @@
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.5" />
     <PackageVersion Include="Microsoft.SqlServer.DacFx" Version="170.4.83" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
+    <!-- Tooling only (eng/license-check); never a product dependency -->
+    <PackageVersion Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 </Project>
