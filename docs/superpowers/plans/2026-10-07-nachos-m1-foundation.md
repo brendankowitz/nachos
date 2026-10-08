@@ -309,7 +309,7 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 1:** Write the tests:
   - `IdValidatorTests.Rejects` (`""`, 513 characters, `"a b"`, `"é"`) and `.Accepts` (`"a-Z_9"`);
   - `TokenCounterTests.KnownStrings` (`"hello world"` → 2; `""` → 0);
-  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`, `.SummaryMinimumsEnforced` (short 9 → `RequestValidationException` with `loc` `["body","configuration","summary","messages_per_short_summary"]`; amended on #6, see spec §9 "Validation happens at admission"). `IdValidator` keeps the documented domain `NachosValidationException`, and Task 9 owns body-`id` schema checks;
+  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`; `ConfigurationAdmissionTests.SummaryMinimumsEnforced` (admission, not the resolver: stored data that violates a minimum is a non-request error per spec §9; short 9 → `RequestValidationException` with `loc` `["body","configuration","summary","messages_per_short_summary"]`; amended on #6, see spec §9 "Validation happens at admission"). `IdValidator` keeps the documented domain `NachosValidationException`, and Task 9 owns body-`id` schema checks;
   - `NachosServiceTests`, which use an NSubstitute `IMemoryStore` so that Task 4 never depends on Task 8: `CreateMessages_101_Throws422`, `CreateMessages_ComputesTokenCount`, `GetOrCreateSession_WithPeers_EnsuresMembership`, `ListPeers_DefaultKindExcludesInternal`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `NachosService` maps records to wire DTOs: `Session.IsActive = State == Active`, and `Message.Id = PublicId`. Filter JSON goes through `FilterParser.Parse`.
@@ -465,7 +465,7 @@ These are the input classes most likely to bite users. Each line names the test 
 - Produces:
   - `IKeyIssuer.Issue(NachosKeyClaims claims) → string`, where `NachosKeyClaims(bool Admin, string? Workspace, string? Peer, string? Session, DateTimeOffset? ExpiresAt)`. The token is an HS256 JWT with claims `t` (ISO-8601 UTC string), `exp?`, `ad?`, `w?`, `p?`, `s?`, and a `kid` header.
   - `IKeyIssuer.Validate(string token) → NachosKeyClaims`, which throws `AuthException`.
-  - `SigningKeyOptions { IReadOnlyList<SigningKey> Keys }`, where `SigningKey(string Kid, string Secret)`. `Keys[0]` signs; all keys validate. A missing `kid` validates against `Keys[0]`.
+  - `SigningKeyOptions { IReadOnlyList<SigningKey> Keys }`, where `SigningKey(string? Kid, string? Secret)` with a parameterless constructor so the configuration binder keeps incomplete entries and the issuer rejects them (amended on #6, N1). `Keys[0]` signs; all keys validate. A missing `kid` validates against `Keys[0]`.
   - `NachosPrincipal(bool IsAdmin, IReadOnlySet<string> Workspaces, string? Peer, string? Session)`.
   - Auth options bound from `Nachos:Auth`: `{ bool Enabled = true; SigningKeyOptions NachosKey; MicrosoftIdentityOptions? Entra }`. `Enabled = false` outside Development throws at startup.
   - Entra mapping: app role `Nachos.Admin` → admin. App role `Nachos.Workspace` → `IGrantStore.GetWorkspaceGrantsAsync(oid)`. `WorkspaceGrants.AllWorkspaces` gives access to every workspace and is carried separately from `IsAdmin`; it never grants admin-only routes such as `POST /v3/keys`, `/v3/workspaces/list`, or `/v3/admin/grants`. Add `NachosPrincipal.AllWorkspaces` (bool), alongside `Workspaces`. Entra never maps to a peer or session.
