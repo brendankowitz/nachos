@@ -1101,9 +1101,6 @@ public abstract class StoreContractTests : IAsyncLifetime
 
     // ---------------------------------------------------------------- strict JSON data and factory purity
 
-    private const string PendingStrictData =
-        "Pending provider adoption: strict JSON data (#6, 3b) — provider owners remove this Skip when their adoption lands";
-
     private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(15);
 
     private static readonly string[] LoneSurrogateList = ["\uD800"];
