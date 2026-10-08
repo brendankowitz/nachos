@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text;
 using Shouldly;
 
 namespace Nachos.Cli.Tests;
@@ -36,23 +36,15 @@ public sealed class NoticeTests
         var output = Path.Combine(Path.GetTempPath(), $"nachos-publish-{Guid.NewGuid():N}");
         try
         {
-            var start = new ProcessStartInfo("dotnet")
-            {
-                WorkingDirectory = RepoRoot(),
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            foreach (var argument in new[] { "publish", Path.Combine("src", "Nachos.Cli"), "-c", "Release", "-o", output, "--nologo", "-v", "q" })
-            {
-                start.ArgumentList.Add(argument);
-            }
-
-            using var process = Process.Start(start)!;
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            var stderr = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-            await process.WaitForExitAsync(timeout.Token);
-            process.ExitCode.ShouldBe(0, $"{await stdout}{await stderr}");
+            // No worker node or compiler server may outlive the publish: either would inherit its output pipes and hold them open.
+            var (exitCode, stdout, stderr) = await DotnetProcess.RunAsync(
+                [
+                    "publish", Path.Combine("src", "Nachos.Cli"), "-c", "Release", "-o", output, "--nologo", "-v", "q",
+                    "-nodeReuse:false", "-p:UseSharedCompilation=false",
+                ],
+                TimeSpan.FromMinutes(5),
+                RepoRoot());
+            exitCode.ShouldBe(0, $"{Encoding.UTF8.GetString(stdout)}{Encoding.UTF8.GetString(stderr)}");
 
             foreach (var (published, source) in Notices)
             {

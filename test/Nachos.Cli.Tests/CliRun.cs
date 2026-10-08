@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using Nachos.Cli;
 
@@ -26,39 +25,8 @@ internal sealed record CliRun(int ExitCode, string Out, string Error)
     /// </summary>
     public static async Task<CliRun> RunProcessAsync(params string[] args)
     {
-        var start = new ProcessStartInfo("dotnet")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Nachos.Cli.dll"));
-        foreach (var arg in args)
-        {
-            start.ArgumentList.Add(arg);
-        }
-
-        using var process = Process.Start(start)!;
-        var output = ReadAllBytesAsync(process.StandardOutput.BaseStream);
-        var error = ReadAllBytesAsync(process.StandardError.BaseStream);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // A hung CLI (or a child it started) must not outlive the test run or hold the output pipes open.
-            process.Kill(entireProcessTree: true);
-            throw;
-        }
-
-        return new CliRun(process.ExitCode, StrictUtf8.GetString(await output), StrictUtf8.GetString(await error));
-    }
-
-    private static async Task<byte[]> ReadAllBytesAsync(Stream stream)
-    {
-        using var buffer = new MemoryStream();
-        await stream.CopyToAsync(buffer);
-        return buffer.ToArray();
+        var (exitCode, output, error) = await DotnetProcess.RunAsync(
+            [Path.Combine(AppContext.BaseDirectory, "Nachos.Cli.dll"), .. args], TimeSpan.FromMinutes(2));
+        return new CliRun(exitCode, StrictUtf8.GetString(output), StrictUtf8.GetString(error));
     }
 }
