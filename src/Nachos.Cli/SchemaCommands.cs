@@ -44,7 +44,7 @@ internal static class SchemaCommands
             await parse.InvocationConfiguration.Output.WriteLineAsync(JsonSerializer.Serialize(
                 new { platform = status.Platform, deployed = status.Deployed, current = status.Current, state = status.State }, StatusJson));
             return ExitCodes.Success;
-        }));
+        }, parse.GetRequiredValue(connection)));
         return command;
     }
 
@@ -58,7 +58,7 @@ internal static class SchemaCommands
             var report = await Deployer(parse.GetRequiredValue(connection)).ReportAsync(ct);
             await WriteReportAsync(parse.InvocationConfiguration.Output, report, parse.GetValue(outFile), ct);
             return ExitCodes.Success;
-        }));
+        }, parse.GetRequiredValue(connection)));
         return command;
     }
 
@@ -93,7 +93,7 @@ internal static class SchemaCommands
             parse.GetValue(approveReviewed) ? DeployApproval.OperatorReviewed : DeployApproval.AutoSafeOnly,
             parse.GetValue(allowDataLoss),
             parse.GetValue(adoptUnstamped),
-            ct)));
+            ct), parse.GetRequiredValue(connection)));
         return command;
     }
 

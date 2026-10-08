@@ -1,6 +1,5 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using System.Text.RegularExpressions;
 
 namespace Nachos.Cli;
 
@@ -84,7 +83,7 @@ public static class CliApp
     // must not turn "Required argument missing" into a redaction.
     private static string Redacted(ParseError error, HashSet<string> userTokens)
     {
-        if (!userTokens.Any(token => Echoes(error.Message, token)))
+        if (!userTokens.Any(token => Redaction.Echoes(error.Message, token)))
         {
             return error.Message;
         }
@@ -96,8 +95,4 @@ public static class CliApp
             _ => "Unrecognized argument (value redacted).",
         };
     }
-
-    private static bool Echoes(string message, string token) =>
-        message.Contains($"'{token}'", StringComparison.Ordinal) ||
-        Regex.IsMatch(message, $@"(?<![\w-]){Regex.Escape(token)}(?![\w-])", RegexOptions.CultureInvariant);
 }
