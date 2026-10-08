@@ -341,6 +341,18 @@ public sealed class KeyCommandTests
     }
 
     [Fact]
+    public async Task OptionWithoutAValue_SaysSo_WhenAnotherValueIsTheSameWordInAnotherCase()
+    {
+        // The parser echoes tokens verbatim, so "required" is not an echo in "Required argument missing".
+        var run = await CreateAsync("--signing-secret", Secret, "--kid", "required", "--workspace");
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+        run.Error.ShouldContain("Required argument missing for option: '--workspace'");
+        run.Error.ShouldNotContain("redacted");
+    }
+
+    [Fact]
     public async Task InvalidWorkspaceId_Exit1()
     {
         var run = await CreateAsync("--workspace", "not a valid id!", "--signing-secret", Secret);
@@ -356,5 +368,18 @@ public sealed class KeyCommandTests
 
         Issuer().Validate(Token(run)).Admin.ShouldBeTrue();
         run.Error.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task RedirectedStderr_IsUtf8WithoutBom_SoANonAsciiErrorSurvives_RealProcess()
+    {
+        // The id rule says "1–512" with an en dash, which a console-code-page writer turns into '?' or a byte that is not UTF-8.
+        // RunProcessAsync decodes stderr as strict UTF-8 and keeps a byte order mark as U+FEFF.
+        var run = await CliRun.RunProcessAsync("keys", "create", "--workspace", "not a valid id!", "--signing-secret", Secret);
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+        run.Error.ShouldNotStartWith("\uFEFF");
+        run.Error.ShouldContain("1\u2013512");
     }
 }

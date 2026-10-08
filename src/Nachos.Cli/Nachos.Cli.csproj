@@ -12,6 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Nachos.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Nachos.Core\Nachos.Core.csproj" />
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
     <ProjectReference Include="..\DataLayer\Nachos.DataLayer.SqlServer\Nachos.DataLayer.SqlServer.csproj" />

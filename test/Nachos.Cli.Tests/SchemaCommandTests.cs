@@ -171,15 +171,6 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
     }
 
     [Fact]
-    public async Task Upgrade_ConnectionFailure_Exit1()
-    {
-        var run = await UpgradeAsync("Server=127.0.0.1,1;Database=nachos_unused;Connect Timeout=3;Encrypt=false");
-
-        run.ExitCode.ShouldBe(1);
-        run.Error.ShouldNotBeNullOrWhiteSpace();
-    }
-
-    [Fact]
     public async Task Upgrade_UnsafeDrift_Exit2_PrintsReasons()
     {
         var connectionString = await DeployedDatabaseAsync();

@@ -67,6 +67,10 @@ public sealed class ConnectionStringDisclosureTests
         run.Error.ShouldContain("SQL Server", Case.Insensitive);
         run.Error.ShouldNotContain("malformed");
         ShouldNotLeak(run, "Zx9Secret", "nachos_unique_db_name", "probe_user_name");
+        // One line for the person reading it: the message, no stack trace.
+        run.Error.ShouldEndWith(Environment.NewLine);
+        run.Error.Count(c => c == '\n').ShouldBe(1, run.Error);
+        run.Error.ShouldNotContain("   at ");
     }
 
     [Fact]
