@@ -32,7 +32,15 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
 
     private const string StampedVersionSql = "SELECT TOP (1) [Version] FROM [dbo].[SchemaVersion] WHERE [Id] = 1";
 
-    private sealed record Observed(DacpacTarget Target, SchemaStatus Status, bool ReadCommittedSnapshotOn);
+    private const string UntrustedConstraintsSql = """
+        SELECT QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(parent_object_id)) + N'.' + QUOTENAME(name)
+        FROM sys.check_constraints WHERE is_not_trusted = 1 AND is_disabled = 0 AND is_ms_shipped = 0
+        UNION ALL
+        SELECT QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(parent_object_id)) + N'.' + QUOTENAME(name)
+        FROM sys.foreign_keys WHERE is_not_trusted = 1 AND is_disabled = 0 AND is_ms_shipped = 0
+        """;
+
+    private sealed record Observed(DacpacTarget Target, SchemaStatus Status, bool ReadCommittedSnapshotOn, IReadOnlyList<string> UntrustedConstraints);
 
     /// <inheritdoc />
     public async Task<SchemaStatus> GetStatusAsync(CancellationToken ct)
@@ -92,19 +100,55 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             return report;
         }
 
-        await Task.Run(() => Deploy(observed.Target, allowDataLoss, ct), ct);
-
-        var after = await ReadAsync(ct);
-        var afterReport = await Task.Run(() => BuildReport(after, ct), ct);        if (after.Status.State != SchemaState.Current || afterReport.HasPendingChanges)
+        try
         {
-            throw new InvalidOperationException(
-                $"The deploy finished but the database is {after.Status.State} and still differs from the expected schema ({afterReport.Classification}). " +
-                "Run 'nachos schema report' and review the remaining changes.");
-        }
+            await Task.Run(() => Deploy(observed.Target, allowDataLoss, ct), ct);
 
+            var after = await ReadAsync(ct);
+            var afterReport = await Task.Run(() => BuildReport(after, ct), ct);
+            if (after.Status.State != SchemaState.Current || afterReport.HasPendingChanges)
+            {
+                throw new InvalidOperationException(
+                    $"The deploy finished but the database is {after.Status.State} and still differs from the expected schema ({afterReport.Classification}). " +
+                    "Run 'nachos schema report' and review the remaining changes.");
+            }
+        }
+        catch (Exception failure)
+        {
+            // The post-deployment script stamps the new version before DacFx's own validation and our re-report run, so a
+            // deploy that fails either would otherwise leave a stamp claiming a schema the database does not have, and every
+            // later gate would take the Current no-op path. Put the stamp back while the lock is still held.
+            await RollBackStampAsync(observed.Status.Deployed, failure);
+            throw;
+        }
         return report with { Applied = true };
     }
 
+    // Restores the stamp the database had before the deploy: its old version, or no row at all if it had none (it then
+    // reads Unstamped, so an operator must adopt it explicitly). The version is only ever lowered, never raised, and never
+    // below what the database had before this deploy.
+    private async Task RollBackStampAsync(int? previous, Exception cause)
+    {
+        try
+        {
+            await using var connection = new SqlConnection(options.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None);
+            await using var command = new SqlCommand(
+                previous is null
+                    ? "IF OBJECT_ID(N'dbo.SchemaVersion', N'U') IS NOT NULL DELETE FROM [dbo].[SchemaVersion] WHERE [Id] = 1"
+                    : "IF OBJECT_ID(N'dbo.SchemaVersion', N'U') IS NOT NULL UPDATE [dbo].[SchemaVersion] SET [Version] = @previous WHERE [Id] = 1 AND [Version] > @previous",
+                connection);
+            command.Parameters.AddWithValue("@previous", (object?)previous ?? DBNull.Value);
+            await command.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+        catch (Exception rollbackFailure) when (rollbackFailure is SqlException or InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                $"The deploy failed ({cause.Message}) and the schema version stamp could not be restored ({rollbackFailure.Message}). " +
+                "The database may be stamped current without matching the schema: run 'nachos schema report' and fix it before starting Nachos.",
+                cause);
+        }
+    }
     private SchemaReport BuildReport(Observed observed, CancellationToken ct)
     {
         var database = DatabaseName();
@@ -127,6 +171,20 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             reasons.Add(
                 "Database option READ_COMMITTED_SNAPSHOT is OFF but the schema expects ON. Applying it runs ALTER DATABASE ... WITH ROLLBACK IMMEDIATE, " +
                 "which disconnects every session; run 'nachos schema upgrade --approve-reviewed' in a maintenance window.");
+            hasPendingChanges = true;
+            if (classification == DeployClassification.AutoSafe)
+            {
+                classification = DeployClassification.Unsafe;
+            }
+        }
+
+        // DacFx compares definitions, not trust. A constraint added WITH NOCHECK over rows that violate it looks identical to
+        // a sound one, so a deploy that failed half-way would otherwise read as a database with nothing left to do.
+        if (observed.UntrustedConstraints.Count > 0)
+        {
+            reasons.Add(
+                $"Constraint(s) exist but are not trusted (their rows were never validated): {string.Join(", ", observed.UntrustedConstraints)}. " +
+                "Fix the offending rows, then validate with ALTER TABLE ... WITH CHECK CHECK CONSTRAINT, and re-run 'nachos schema report'.");
             hasPendingChanges = true;
             if (classification == DeployClassification.AutoSafe)
             {
@@ -212,6 +270,17 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
             _ => SchemaState.Ahead,
         };
 
-        return new Observed(target, new SchemaStatus(target.Platform, deployed, SchemaInfo.CurrentVersion, state), readCommittedSnapshotOn);
+        var untrusted = new List<string>();
+        if (hasObjects)
+        {
+            await using var command = new SqlCommand(UntrustedConstraintsSql, connection);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                untrusted.Add(reader.GetString(0));
+            }
+        }
+
+        return new Observed(target, new SchemaStatus(target.Platform, deployed, SchemaInfo.CurrentVersion, state), readCommittedSnapshotOn, untrusted);
     }
 }

@@ -398,6 +398,37 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
     }
 
     [Fact]
+    public async Task FailedPostDeployVerification_RollsStampBack_GateRefusesAgain()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        // The I1 repro: the CHECK is gone, a row that violates it arrives, and the version is behind. Applying the change
+        // adds the constraint WITH NOCHECK, so the stamp moves to current while the schema still differs from the model.
+        await ExecuteAsync(connectionString, "ALTER TABLE dbo.Sessions DROP CONSTRAINT CK_Sessions_LifecycleState");
+        await ExecuteAsync(connectionString, "INSERT dbo.Workspaces (Name, LifecycleState, CreatedAt) VALUES (N'w', 0, SYSDATETIMEOFFSET())");
+        await ExecuteAsync(connectionString, "INSERT dbo.Sessions (WorkspaceId, Name, LifecycleState, CreatedAt) SELECT Id, N's', 9, SYSDATETIMEOFFSET() FROM dbo.Workspaces");
+        await SetVersionAsync(connectionString, 0);
+
+        // DacFx's own validation of the unchecked constraint fails the deploy, after the post-deployment script has stamped it.
+        await Should.ThrowAsync<DacServicesException>(
+            () => Deployer(connectionString).DeployAsync(DeployApproval.OperatorReviewed, allowDataLoss: false, adoptUnstamped: false, default));
+
+        (await StampedVersionAsync(connectionString)).ShouldBe(0);
+        (await Deployer(connectionString).GetStatusAsync(default)).State.ShouldBe(SchemaState.Behind);
+
+        // The failed deploy leaves the CHECK in place but unvalidated. DacFx's report cannot see that, so the deployer must.
+        var report = await Deployer(connectionString).ReportAsync(default);
+        report.Classification.ShouldBe(DeployClassification.Unsafe);
+        report.HasPendingChanges.ShouldBeTrue();
+        report.Reasons.ShouldContain(reason => reason.Contains("CK_Sessions_LifecycleState", StringComparison.Ordinal) && reason.Contains("not trusted", StringComparison.Ordinal));
+
+        // Each gate is fresh, so none can be served a cached outcome.
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var failure = await Should.ThrowAsync<InvalidOperationException>(() => Gate(connectionString, automatic: true).EnsureAsync(default));
+            failure.Message.ShouldContain("nachos schema upgrade");
+        }
+    }
+    [Fact]
     public async Task RcsiOff_ClassifiedUnsafe_NotApplied()
     {
         var connectionString = await DeployedDatabaseAsync();
