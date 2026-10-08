@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Nachos.Abstractions.Json;
 
 namespace Nachos.Abstractions.Filtering;
 
@@ -10,12 +11,13 @@ namespace Nachos.Abstractions.Filtering;
 /// against the resource's field types. This is the only place filter JSON is interpreted.
 /// </summary>
 /// <remarks>
-/// <para><b>Input.</b> The <see cref="JsonNode"/> overload first round-trips the filter through JSON text, so filters
-/// built in C# (<c>int</c>, <see cref="DateTimeOffset"/>, <see cref="Guid"/> values and so on) behave exactly like
-/// the same filter received over HTTP, and the tree the parser walks is a private copy. Duplicate property names,
-/// strings that are not well-formed UTF-16 (including inside typed arrays and dictionaries), objects and arrays nested
-/// more than 64 deep (scalars add no level, in either overload) and malformed JSON are rejected with a
-/// <see cref="NachosValidationException"/>.</para>
+/// <para><b>Input.</b> The <see cref="JsonNode"/> overload first writes the filter as canonical JSON text from strict
+/// JSON data only (see <see cref="Parse(JsonNode?, ResourceKind)"/>), so filters built in C# (<c>int</c>,
+/// <see cref="DateTimeOffset"/>, <see cref="Guid"/> values and so on) behave exactly like the same filter received
+/// over HTTP, and the tree the parser walks is a private copy. Duplicate property names, strings that are not
+/// well-formed UTF-16, objects and arrays nested more than 64 deep (scalars add no level, in either overload) and
+/// malformed JSON are rejected with a <see cref="NachosValidationException"/>. The same rule governs stored metadata and
+/// configuration; see <see cref="StrictJsonData"/>.</para>
 /// <para><b>Top level.</b> An object whose keys are AND-ed together. <c>AND</c>, <c>OR</c> and <c>NOT</c> (upper case)
 /// each take an array of filter objects; <c>NOT [c1…cn]</c> is <c>NOT (c1 OR … OR cn)</c>. Keys that are not a field
 /// of the resource are ignored (they match everything).</para>
@@ -56,7 +58,7 @@ public static partial class FilterParser
     /// </remarks>
     public const int MaxListItems = 1000;
 
-    private const int MaxDepth = 64;
+    private const int MaxDepth = StrictJsonData.DefaultMaxDepth;
 
     private const string Wildcard = "*";
 
@@ -71,31 +73,33 @@ public static partial class FilterParser
     /// </summary>
     private readonly record struct Operand(JsonValue? Value, int Overflow = 0);
 
-    /// <summary>Parses <paramref name="filters"/> for <paramref name="kind"/>.</summary>
+    /// <summary>
+    /// Parses <paramref name="filters"/> for <paramref name="kind"/>. This in-process overload accepts strict JSON data
+    /// only, so a constructed filter means what the same JSON means over HTTP.
+    /// </summary>
+    /// <remarks>
+    /// Accepted: <c>null</c>; <see cref="JsonObject"/> and <see cref="JsonArray"/> nodes, nested at most 64 deep; and a
+    /// <see cref="JsonValue"/> backed by a <see cref="JsonElement"/> (JSON text, parsed strictly), a <see cref="string"/>
+    /// or <see cref="char"/>, a <see cref="bool"/>, <see cref="sbyte"/>, <see cref="byte"/>, <see cref="short"/>,
+    /// <see cref="ushort"/>, <see cref="int"/>, <see cref="uint"/>, <see cref="long"/>, <see cref="ulong"/>,
+    /// <see cref="float"/>, <see cref="double"/> (finite) or <see cref="decimal"/>, or a <see cref="DateTime"/>,
+    /// <see cref="DateTimeOffset"/> or <see cref="Guid"/> (written as ISO 8601 or the canonical Guid text). Any other
+    /// backing type (collections, dictionaries, POCOs, interface projections, enums, <see cref="TimeSpan"/>, nested
+    /// <see cref="JsonNode"/>s inside a typed value, and so on) is rejected with a
+    /// <see cref="NachosValidationException"/> naming the type; build such a value with <see cref="JsonObject"/> and
+    /// <see cref="JsonArray"/>, or convert it first with <c>JsonSerializer.SerializeToNode</c>; the shared rule is
+    /// <see cref="StrictJsonData.ToCanonical"/>. Serialization metadata
+    /// or converters attached to a <see cref="JsonValue"/> are ignored, and no caller code runs while a value is
+    /// rejected.
+    /// </remarks>
     /// <returns>The filter, or null when <paramref name="filters"/> is null or an empty object.</returns>
-    /// <exception cref="NachosValidationException">The filter is malformed or holds an invalid value.</exception>
+    /// <exception cref="NachosValidationException">The filter is malformed, holds a value outside the accepted types, or holds an invalid value.</exception>
     public static FilterNode? Parse(JsonNode? filters, ResourceKind kind)
     {
-        if (filters is null)
-        {
-            return null;
-        }
-
-        // Every failure here comes from the input, so all of it sits inside one boundary; programming errors such as an
-        // undefined ResourceKind surface later, from the text overload, outside any translation.
-        string json;
-        try
-        {
-            // Serialization silently replaces an unpaired surrogate with U+FFFD, so check the caller's strings first.
-            RequireRepresentable(filters);
-            json = filters.ToJsonString();
-        }
-        catch (Exception ex) when (ex is NotSupportedException or InvalidOperationException or ArgumentException or JsonException)
-        {
-            throw new NachosValidationException($"Filters cannot be represented as JSON: {ex.Message}", ex);
-        }
-
-        return Parse(json, kind);
+        // StrictJsonData rejects what a writer would silently rewrite or serialize through caller code. Its result is a
+        // fresh tree of plain values, so writing it to text cannot run a caller converter, and the parser walks a private copy.
+        var canonical = StrictJsonData.ToCanonical(filters, MaxDepth);
+        return canonical is null ? null : Parse(canonical.ToJsonString(), kind);
     }
 
     /// <summary>Parses the filter JSON text <paramref name="json"/> for <paramref name="kind"/>.</summary>
@@ -136,21 +140,6 @@ public static partial class FilterParser
             JsonObject obj => ParseObject(obj, fields),
             _ => throw Invalid("Filters must be a JSON object."),
         };
-    }
-
-    private static void RequireWellFormed(string text)
-    {
-        for (var i = 0; i < text.Length; i++)
-        {
-            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
-            {
-                i++;
-            }
-            else if (char.IsSurrogate(text[i]))
-            {
-                throw Invalid("Filters contain a string with an unpaired surrogate.");
-            }
-        }
     }
 
     private static void DecodeAll(JsonNode? node)

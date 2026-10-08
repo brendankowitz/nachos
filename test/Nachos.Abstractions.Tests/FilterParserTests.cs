@@ -1,5 +1,7 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions.Filtering;
+using Nachos.Abstractions.Tests.Json;
 using Nachos.Testing.Filtering;
 using Shouldly;
 
@@ -806,11 +808,10 @@ public sealed class FilterParserTests
     [InlineData(63)]
     [InlineData(64)]
     [InlineData(65)]
-    public void DepthParity_TypedArrayAsInnermostContainer(int containers)
+    public void DepthParity_ArrayAsInnermostContainer(int containers)
     {
-        // The typed array is the innermost container, so the root and (containers - 2) objects enclose it.
-        string[] tags = ["ok"];
-        JsonNode node = JsonValue.Create(tags)!;
+        // The array is the innermost container, so the root and (containers - 2) objects enclose it.
+        JsonNode node = new JsonArray("ok");
         for (var i = 0; i < containers - 2; i++)
         {
             node = new JsonObject { ["k"] = node };
@@ -831,93 +832,141 @@ public sealed class FilterParserTests
         }
     }
 
-    [Fact]
-    public void TypedArrayValue_WithLoneSurrogate_Rejected422()
-    {
-        string[] lone = ["ok", "\uD800"];
-        string[] loneLow = ["\uDC00"];
+    // ------------------------------------------------------------------ strict JSON-data inputs
 
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["content"] = JsonValue.Create(lone) }, ResourceKind.Message));
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["metadata"] = new JsonObject { ["tags"] = JsonValue.Create(loneLow) } },
-            ResourceKind.Workspace));
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["content"] = new JsonObject { ["in"] = JsonValue.Create(new List<object> { "ok", '\uD800' }) } },
-            ResourceKind.Message));
+    private static FilterNode.MetadataPath ParseMetadataValue(JsonNode? value) =>
+        FilterParser.Parse(new JsonObject { ["metadata"] = new JsonObject { ["k"] = value } }, ResourceKind.Workspace)
+            .ShouldBeOfType<FilterNode.MetadataPath>();
+
+    private static void RejectedBecauseOfType(JsonNode? value, Type backingType)
+    {
+        var ex = Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(new JsonObject { ["metadata"] = new JsonObject { ["k"] = value } }, ResourceKind.Workspace));
+        ex.Message.ShouldContain(backingType.ToString());
+        ex.Message.ShouldContain("JsonObject");
+        ex.Message.ShouldContain("JsonArray");
+        ex.Message.ShouldContain("JsonSerializer.SerializeToNode");
     }
 
     [Fact]
-    public void TypedCompositeValue_HoldingNodeWithLoneSurrogate_Rejected422() =>
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["content"] = JsonValue.Create(new List<JsonNode> { "ok", "\uD800" }) },
-            ResourceKind.Message));
+    public void InterfaceProjection_Rejected422_WithoutRunningCallerCode()
+    {
+        var projection = new NameProjection();
+
+        RejectedBecauseOfType(StrictJsonSamples.InterfaceProjection(projection), typeof(NameProjection));
+
+        projection.ExcludedGetterCalls.ShouldBe(0);
+    }
 
     [Fact]
-    public void TypedCompositeValue_CycleThroughNode_Rejected422()
+    public void ExtensionDataClass_WithLoneSurrogateKey_Rejected422AsAType()
     {
-        // A typed list holding the array that holds it: validation must stop at the depth limit, not overflow the stack.
+        var ex = Should.Throw<NachosValidationException>(() => ParseMetadataValue(JsonValue.Create(new WithExtensionData())));
+
+        ex.Message.ShouldContain(typeof(WithExtensionData).ToString());
+        ex.Message.ShouldNotContain("surrogate");
+    }
+
+    [Fact]
+    public void ScalarWithCustomConverter_ConverterIgnored_LiteralValueUsed()
+    {
+        var converter = new CountingUppercaseConverter();
+
+        var parsed = FilterParser.Parse(
+            new JsonObject { ["name"] = StrictJsonSamples.UppercasedString("abc", converter) }, ResourceKind.Workspace);
+
+        parsed.ShouldBe(new FilterNode.Field(FilterColumns.Name, FilterOp.Eq, Value("\"abc\"")));
+        converter.Calls.ShouldBe(0);
+    }
+
+    [Theory]
+    [MemberData(nameof(StrictJsonSamples.AllowedScalars), MemberType = typeof(StrictJsonSamples))]
+    public void AllowedScalar_RoundTripsIntoTheExpectedFilterValue(string kind, string expectedJson)
+    {
+        var parsed = ParseMetadataValue(StrictJsonSamples.Scalar(kind));
+
+        JsonNode.DeepEquals(parsed.Value, Value(expectedJson)).ShouldBeTrue(parsed.Value?.ToJsonString());
+    }
+
+    [Fact]
+    public void JsonElementBackedString_WithEscapedLoneSurrogate_Rejected422()
+    {
+        using var document = JsonDocument.Parse("\"\\uD800\"");
+
+        Should.Throw<NachosValidationException>(() => ParseMetadataValue(JsonValue.Create(document.RootElement)));
+    }
+
+    [Fact]
+    public void ConstructedFilter_NonFiniteFloat_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => ParseMetadataValue(JsonValue.Create(float.NaN)));
+        Should.Throw<NachosValidationException>(() => ParseMetadataValue(JsonValue.Create(float.PositiveInfinity)));
+        Should.Throw<NachosValidationException>(() => ParseMetadataValue(JsonValue.Create(float.NegativeInfinity)));
+    }
+
+    [Theory]
+    [MemberData(nameof(StrictJsonSamples.DisallowedKinds), MemberType = typeof(StrictJsonSamples))]
+    public void DisallowedBackingType_Rejected422_NamingTheType(string kind)
+    {
+        var (value, type) = StrictJsonSamples.Disallowed(kind);
+
+        RejectedBecauseOfType(value, type);
+    }
+
+    [Fact]
+    public void DisallowedBackingType_AsRoot_Rejected422() =>
+        Should.Throw<NachosValidationException>(() =>
+            FilterParser.Parse(JsonValue.Create(new List<int> { 1 }), ResourceKind.Workspace));
+    [Fact]
+    public void TypedComposite_HoldingTheArrayThatHoldsIt_Rejected422AsAType()
+    {
+        // A typed list holding the array that holds it: rejected up front, not walked.
         var list = new List<JsonNode>();
         var array = new JsonArray(JsonValue.Create(list));
         list.Add(array);
 
-        Should.Throw<NachosValidationException>(() =>
+        var ex = Should.Throw<NachosValidationException>(() =>
             FilterParser.Parse(new JsonObject { ["unknown"] = array }, ResourceKind.Workspace));
+        ex.Message.ShouldContain(typeof(List<JsonNode>).ToString());
     }
 
     [Fact]
-    public void TypedDictionaryMetadata_BadKey_Rejected422()
+    public void LoneSurrogate_InStringCharAndKey_Rejected422()
     {
         Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, string> { ["\uD800"] = "v" }) },
-            ResourceKind.Workspace));
+            new JsonObject { ["content"] = JsonValue.Create<string>("a\uD800") }, ResourceKind.Message));
         Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject
-            {
-                ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["ok"] = new Dictionary<string, int> { ["\uDC00"] = 1 } }),
-            },
-            ResourceKind.Workspace));
+            new JsonObject { ["content"] = JsonValue.Create('\uDC00') }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["k\uD800"] = 1 } }, ResourceKind.Workspace));
     }
 
     [Fact]
-    public void TypedDictionaryMetadata_BadValue_Rejected422()
+    public void ArraysAndObjects_WithValidSurrogatesAndReplacementChars_Accepted()
     {
-        string[] lone = ["x\uD800"];
-
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, string> { ["k"] = "\uDC00" }) },
-            ResourceKind.Workspace));
-        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
-            new JsonObject { ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["k"] = lone }) },
-            ResourceKind.Workspace));
-    }
-
-    [Fact]
-    public void TypedArrayValue_Valid_Accepted()
-    {
-        string[] texts = ["a", "\U0001F600", "\uFFFD"];
-        int[] counts = [1, 2];
-
-        FilterParser.Parse(new JsonObject { ["content"] = JsonValue.Create(texts) }, ResourceKind.Message)
+        FilterParser.Parse(new JsonObject { ["content"] = new JsonArray("a", "\U0001F600", "\uFFFD") }, ResourceKind.Message)
             .ShouldBe(FilterParser.Parse("""{"content":["a","\uD83D\uDE00","\uFFFD"]}""", ResourceKind.Message));
-        FilterParser.Parse(new JsonObject { ["token_count"] = JsonValue.Create(counts) }, ResourceKind.Message)
+        FilterParser.Parse(new JsonObject { ["token_count"] = new JsonArray(1, 2) }, ResourceKind.Message)
             .ShouldBe(FilterParser.Parse("""{"token_count":[1,2]}""", ResourceKind.Message));
-    }
-
-    [Fact]
-    public void TypedDictionaryMetadata_Valid_Accepted()
-    {
-        string[] tags = ["a"];
-
         FilterParser.Parse(
-                new JsonObject
-                {
-                    ["metadata"] = JsonValue.Create(new Dictionary<string, object> { ["k"] = "v", ["\U0001F600"] = tags }),
-                },
+                new JsonObject { ["metadata"] = new JsonObject { ["k"] = "v", ["\U0001F600"] = new JsonArray("a") } },
                 ResourceKind.Workspace)
             .ShouldBe(FilterParser.Parse("""{"metadata":{"k":"v","\uD83D\uDE00":["a"]}}""", ResourceKind.Workspace));
     }
 
+    [Fact]
+    public void ArraysAndObjects_WithLoneSurrogates_Rejected422()
+    {
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = new JsonArray("ok", "\uD800") }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["content"] = new JsonObject { ["in"] = new JsonArray("ok", '\uD800') } }, ResourceKind.Message));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["ok"] = new JsonObject { ["\uDC00"] = 1 } } },
+            ResourceKind.Workspace));
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(
+            new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonArray("x\uD800") } }, ResourceKind.Workspace));
+    }
     [Fact]
     public void Parse_UndefinedResourceKind_ThrowsArgumentOutOfRange() =>
         Should.Throw<ArgumentOutOfRangeException>(() => FilterParser.Parse("""{"name":"a"}""", (ResourceKind)99));

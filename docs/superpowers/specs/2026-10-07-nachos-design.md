@@ -469,6 +469,8 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 **Filter compiler:** `FilterCompiler` translates Honcho's JSON filter DSL (field equality, `gt/gte/lt/lte/ne/in/contains/icontains`, nested `metadata`, `AND/OR/NOT`) into parameterized SQL. Each resource has its own field allowlist, and `source_ids` filtering on conclusions gets special handling. The in-memory provider evaluates the same AST.
 
+- **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. Any other CLR value (collections, POCOs, enums, `TimeSpan` and so on) is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Every provider and in-process client passes constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and stores or parses only its result. The HTTP path is unchanged.
+
 ### 9.4 Intentional deviations (Δ summary)
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
