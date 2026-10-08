@@ -839,6 +839,11 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
   - idempotent writes: `PUT`, get-or-create `POST` keyed by `id`, and `DELETE`.
   `GET H/test` and all chat calls are never auto-retried.
   Non-idempotent mutations (message batch create, upload, conclusion create, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically.
+  Retry policy details (Δ, recorded on PR #6):
+  - **Never auto-retried:** `501` (permanent "not implemented", §9.1); `POST /v3/keys` and `/v3/admin/grants`; adding peers to a session through a scope (`POST …/scopes/{id}/sessions`) until its `scope_backfill` enqueue (§14) is shown to be idempotent.
+  - **Status precedence:** once a response status is received, that status decides. A non-retryable status (`4xx` other than `408`/`429`, and `501`) is final even if reading its body then fails; the client surfaces it without resending. A transport failure while reading the body of a `2xx` or retryable status may be retried, but only for operations that are retryable under the rules above, so a lost successful response to a keyed mutation is replayed safely.
+  - **`Retry-After`:** honored as seconds or an HTTP-date. A delay longer than 30 s is not waited out; the error is surfaced to the caller with the requested delay.
+  - **Problem identity:** clients match problem `type` exactly against the constants in `ProblemTypes` (for example `ProblemTypes.IdempotencyKeyReused`), never by suffix.
 - Typed handles: `Workspace` → `Peer` / `Session`.
 - `GetOrCreateAsync`.
 - `IAsyncEnumerable<T>` auto-pagination.
