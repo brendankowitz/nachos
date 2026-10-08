@@ -181,4 +181,35 @@ public sealed class UnattendedAzureScannerTests
     {
         PlantedFileHits(path, content).ShouldNotBeEmpty(path);
     }
+
+    [Theory]
+    [InlineData("eng/x/README.md", "Covers offline Bicep validation, and SDK conformance/download producers.\n")]
+    [InlineData("eng/x/README.md", "Install the `az` CLI, then run az login by hand.\n")]
+    [InlineData("eng/x/NOTES.MD", "Run bicep teardown only after the az CLI is installed.\n")]
+    public void Markdown_OutsideGithubScripts_IsProse_AmbiguousVerbsAreNotCommands(string path, string content)
+    {
+        PlantedFileHits(path, content).ShouldBeEmpty(path);
+    }
+
+    [Theory]
+    [InlineData("eng/x/README.md", "```sh\nazd up\n```\n")]
+    [InlineData("eng/x/README.md", "```sh\ndocker push ghcr.io/x/api:1\n```\n")]
+    [InlineData("eng/x/README.md", "GET https://management.azure.com/subscriptions\n")]
+    [InlineData("eng/x/README.md", "```pwsh\nConnect-AzAccount -Identity\n```\n")]
+    [InlineData("eng/x/README.md", "image: nachos.azurecr.io/api:1\n")]
+    [InlineData("eng/x/NOTES.MD", "azd deploy\n")]
+    public void Markdown_OutsideGithubScripts_StillFlagsUnambiguousCommands(string path, string content)
+    {
+        PlantedFileHits(path, content).ShouldNotBeEmpty(path);
+    }
+
+    [Theory]
+    [InlineData("eng/x/run.sh", "bicep teardown x\n")]
+    [InlineData("eng/x/run.ps1", "bicep teardown x\n")]
+    [InlineData("eng/x/run.yml", "on: push\njobs:\n  j:\n    steps:\n      - run: bicep teardown x\n")]
+    [InlineData("eng/x/run.sh", "az login\n")]
+    public void NonMarkdownFiles_UnderEng_KeepEveryRule(string path, string content)
+    {
+        PlantedFileHits(path, content).ShouldNotBeEmpty(path);
+    }
 }

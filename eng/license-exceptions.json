@@ -9,5 +9,21 @@
     "review": "https://github.com/brendankowitz/nachos/pull/1",
     "licenseEvidence": ".github/scripts/node_modules/elkjs/LICENSE.md",
     "restriction": "Unmodified, non-distributed developer/CI tool only; never included in NuGet, CLI, or container outputs, or published docs-site assets."
+  },
+  {
+    "ecosystem": "nuget",
+    "package": "Microsoft.SqlServer.DacFx",
+    "version": "170.4.83",
+    "license": "LicenseRef-Microsoft-SQL-Server-DacFx-170.4.83",
+    "tier": "shipped",
+    "artifactScopes": ["api", "cli"],
+    "purpose": "In-app dacpac schema deployment in the Nachos API and CLI.",
+    "reviewers": ["repository-owner"],
+    "review": "https://github.com/brendankowitz/nachos/issues/2#issuecomment-6048060868",
+    "ownerApproval": "https://github.com/brendankowitz/nachos/issues/2#issuecomment-6048060868",
+    "evidenceUrl": "https://www.nuget.org/packages/Microsoft.SqlServer.DacFx/170.4.83/License",
+    "licenseEvidence": "eng/licenses/Microsoft.SqlServer.DacFx/170.4.83/license.txt",
+    "licenseSha256": "f6b3be3e53b8b6836b9c08fee9e9fb24e698df2ab2a7e4afd1f77ebf10c22a83",
+    "restriction": "Exact version and API/CLI scope only. Microsoft Distributable Code conditions, including protective downstream agreements and section 3(b)(iii) indemnification, remain release-owner obligations. Any version change requires fresh license-text review and authorization. No other proprietary package is covered."
   }
 ]

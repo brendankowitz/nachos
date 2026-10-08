@@ -28,6 +28,21 @@ internal sealed class InMemoryState(TimeProvider clock)
 
     public List<GrantRecord> Grants { get; } = [];
 
+    /// <summary>Rejects calls made from inside this store's <see cref="IdempotencyWrite.SerializeResponse"/> callbacks.</summary>
+    public SerializeResponseGuard SerializeResponseGuard { get; } = new();
+
+    /// <summary>
+    /// Runs one public store operation through <see cref="StoreTask"/>, first rejecting a call from inside a
+    /// <see cref="IdempotencyWrite.SerializeResponse"/> callback (before the cancellation check, any lock or any state).
+    /// Every public entry point goes through here.
+    /// </summary>
+    public Task<T> Run<T>(Func<T> operation, CancellationToken ct) =>
+        SerializeResponseGuard.Reject() is { } rejection ? Task.FromException<T>(rejection) : StoreTask.Run(operation, ct);
+
+    /// <inheritdoc cref="Run{T}(Func{T}, CancellationToken)"/>
+    public Task Run(Action operation, CancellationToken ct) =>
+        SerializeResponseGuard.Reject() is { } rejection ? Task.FromException(rejection) : StoreTask.Run(operation, ct);
+
     /// <summary>A monotonically increasing insertion number, the tiebreak for rows with equal <c>CreatedAt</c>.</summary>
     public long NextOrder() => Interlocked.Increment(ref _order);
 

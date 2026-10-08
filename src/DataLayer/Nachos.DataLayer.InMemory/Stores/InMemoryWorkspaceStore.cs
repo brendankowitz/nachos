@@ -12,7 +12,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
 {
     public Task<WorkspaceRecord> GetOrCreateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var ownedMetadata = JsonCopy.Own(metadata, "metadata");
@@ -33,7 +33,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
             ct);
 
     public Task<WorkspaceRecord?> GetAsync(string name, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 lock (state.Gate)
@@ -45,7 +45,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
 
     public Task<WorkspaceRecord> UpdateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var newMetadata = JsonCopy.OwnOptional(metadata, "metadata");
@@ -65,7 +65,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
             ct);
 
     public Task<Page<WorkspaceRecord>> ListAsync(FilterNode? filter, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 lock (state.Gate)

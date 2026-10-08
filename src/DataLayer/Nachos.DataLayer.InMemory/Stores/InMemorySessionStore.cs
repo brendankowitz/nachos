@@ -17,7 +17,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
         JsonObject? configuration,
         IReadOnlyDictionary<string, SessionPeerConfig>? peers,
         CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var ownedMetadata = JsonCopy.Own(metadata, "metadata");
@@ -45,7 +45,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
             ct);
 
     public Task<SessionRecord?> GetAsync(string workspaceName, string name, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 if (state.FindWorkspace(workspaceName) is not { } workspace)
@@ -62,7 +62,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task<SessionRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var newMetadata = JsonCopy.OwnOptional(metadata, "metadata");
@@ -83,7 +83,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task<Page<SessionRecord>> ListAsync(
         string workspaceName, FilterNode? filter, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
@@ -103,7 +103,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
         string sessionName,
         IReadOnlyDictionary<string, SessionPeerConfig> peers,
         CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () => WithSession(workspaceName, sessionName, (workspace, session, now) =>
                 ActivatePeers(workspace, session, peers, now)),
             ct);
@@ -113,7 +113,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
         string sessionName,
         IReadOnlyDictionary<string, SessionPeerConfig> peers,
         CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () => WithSession(workspaceName, sessionName, (workspace, session, now) =>
             {
                 // Ordinal, whatever comparer the caller's dictionary uses.
@@ -129,7 +129,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task RemovePeersAsync(
         string workspaceName, string sessionName, IReadOnlyList<string> peerNames, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () => WithSession(workspaceName, sessionName, (_, session, now) =>
             {
                 foreach (var peerName in peerNames)
@@ -141,7 +141,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task<Page<PeerRecord>> ListPeersAsync(
         string workspaceName, string sessionName, PageRequest page, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
@@ -158,7 +158,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task<SessionPeerConfig> GetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
@@ -171,14 +171,14 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
 
     public Task SetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, SessionPeerConfig config, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () => WithSession(workspaceName, sessionName, (_, session, _) =>
                 session.Members[peerName] = RequireActiveMember(session, peerName) with { Config = config }),
             ct);
 
     public Task<bool> IsActiveMemberAsync(
         string workspaceName, string sessionName, string peerName, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);

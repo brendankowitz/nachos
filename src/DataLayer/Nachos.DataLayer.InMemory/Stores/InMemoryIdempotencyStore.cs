@@ -7,7 +7,7 @@ namespace Nachos.DataLayer.InMemory.Stores;
 internal sealed class InMemoryIdempotencyStore(InMemoryState state) : IIdempotencyStore
 {
     public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct) =>
-        StoreTask.Run(
+        state.Run(
             () =>
             {
                 if (state.FindWorkspace(workspaceName) is not { } workspace)
