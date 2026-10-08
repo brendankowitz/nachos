@@ -85,6 +85,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
+                var prepared = InMemoryFilterEvaluator.Prepare(filter);
                 lock (workspace.Gate)
                 {
                     var rows = workspace.Peers.Values
@@ -94,7 +95,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
                             PeerKind.Scope => peer.Record.IsInternal,
                             _ => true,
                         })
-                        .Where(peer => InMemoryFilterEvaluator.Matches(filter, peer.Record))
+                        .Where(peer => InMemoryFilterEvaluator.Matches(prepared, peer.Record))
                         .OrderBy(peer => peer.Record.CreatedAt)
                         .ThenBy(peer => peer.Order);
                     return Paging.ToPage(rows, page, peer => JsonCopy.Out(peer.Record));
@@ -108,11 +109,12 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
+                var prepared = InMemoryFilterEvaluator.Prepare(filter);
                 lock (workspace.Gate)
                 {
                     workspace.RequirePeer(peerName);
                     var rows = workspace.Sessions.Values
-                        .Where(session => session.IsActiveMember(peerName) && session.Matches(filter))
+                        .Where(session => session.IsActiveMember(peerName) && session.Matches(prepared))
                         .OrderBy(session => session.Record.CreatedAt)
                         .ThenBy(session => session.Order);
                     return Paging.ToPage(rows, page, session => JsonCopy.Out(session.Record));

@@ -13,29 +13,64 @@ namespace Nachos.DataLayer.InMemory;
 /// <remarks>
 /// Operands are trusted to be in the parser's normalized form (see <see cref="FilterNode.Field.Value"/>). Every column
 /// of this provider is always set, except a session's <see cref="FilterColumns.PeerId"/>, which is an existential
-/// predicate over its active members.
+/// predicate over its active members. Store list calls <see cref="Prepare"/> once and match every row against the result.
 /// </remarks>
 internal static class InMemoryFilterEvaluator
 {
-    public static bool Matches(FilterNode? filter, WorkspaceRecord workspace) =>
-        filter is null || Evaluate(filter, new Row(workspace.Metadata, column => column switch
+    /// <summary>
+    /// Compiles <paramref name="filter"/> once, reading every node's column, operator, operand and path exactly once;
+    /// null for a null filter (which matches every row). Call it once per query, before the per-row loop and outside
+    /// any lock: it reads the caller's tree, which must never happen under a gate.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is validated against a record kind here: an unknown column throws when a row first reaches its node, so
+    /// an empty row set never throws.
+    /// </remarks>
+    public static PreparedFilter? Prepare(FilterNode? filter)
+    {
+        if (filter is null)
+        {
+            return null;
+        }
+
+        var reads = 0;
+        var predicate = Compile(filter, ref reads);
+        return new PreparedFilter(predicate, reads);
+    }
+
+    public static bool Matches(FilterNode? filter, WorkspaceRecord workspace) => Matches(Prepare(filter), workspace);
+
+    public static bool Matches(FilterNode? filter, PeerRecord peer) => Matches(Prepare(filter), peer);
+
+    /// <param name="filter">The filter.</param>
+    /// <param name="session">The session.</param>
+    /// <param name="activeMembers">The peer names of the session's active members (members who left excluded).</param>
+    public static bool Matches(FilterNode? filter, SessionRecord session, IReadOnlyCollection<string> activeMembers) =>
+        Matches(Prepare(filter), session, activeMembers);
+
+    public static bool Matches(FilterNode? filter, MessageRecord message) => Matches(Prepare(filter), message);
+
+    public static bool Matches(PreparedFilter? filter, WorkspaceRecord workspace) =>
+        filter is null || filter.Matches(new Row(workspace.Metadata, column => column switch
         {
             FilterColumns.Name => workspace.Name,
             FilterColumns.CreatedAt => workspace.CreatedAt,
             _ => throw UnknownColumn(column, ResourceKind.Workspace),
         }));
 
-    public static bool Matches(FilterNode? filter, PeerRecord peer) =>
-        filter is null || Evaluate(filter, new Row(peer.Metadata, column => column switch
+    public static bool Matches(PreparedFilter? filter, PeerRecord peer) =>
+        filter is null || filter.Matches(new Row(peer.Metadata, column => column switch
         {
             FilterColumns.Name => peer.Name,
             FilterColumns.CreatedAt => peer.CreatedAt,
             _ => throw UnknownColumn(column, ResourceKind.Peer),
         }));
 
+    /// <param name="filter">The prepared filter.</param>
+    /// <param name="session">The session.</param>
     /// <param name="activeMembers">The peer names of the session's active members (members who left excluded).</param>
-    public static bool Matches(FilterNode? filter, SessionRecord session, IReadOnlyCollection<string> activeMembers) =>
-        filter is null || Evaluate(filter, new Row(session.Metadata, column => column switch
+    public static bool Matches(PreparedFilter? filter, SessionRecord session, IReadOnlyCollection<string> activeMembers) =>
+        filter is null || filter.Matches(new Row(session.Metadata, column => column switch
         {
             FilterColumns.Name => session.Name,
             FilterColumns.CreatedAt => session.CreatedAt,
@@ -44,8 +79,8 @@ internal static class InMemoryFilterEvaluator
             _ => throw UnknownColumn(column, ResourceKind.Session),
         }));
 
-    public static bool Matches(FilterNode? filter, MessageRecord message) =>
-        filter is null || Evaluate(filter, new Row(message.Metadata, column => column switch
+    public static bool Matches(PreparedFilter? filter, MessageRecord message) =>
+        filter is null || filter.Matches(new Row(message.Metadata, column => column switch
         {
             FilterColumns.PublicId => message.PublicId,
             FilterColumns.SessionId => message.SessionName,
@@ -60,26 +95,106 @@ internal static class InMemoryFilterEvaluator
     /// A row as the evaluator sees it. A column value is a <see cref="string"/>, <see cref="decimal"/>,
     /// <see cref="DateTimeOffset"/>, <see cref="bool"/>, or an <see cref="AnyOf"/> for an existential column.
     /// </summary>
-    private sealed record Row(JsonObject Metadata, Func<string, object> Column);
+    internal sealed record Row(JsonObject Metadata, Func<string, object> Column);
 
     /// <summary>A multi-valued text column that matches when any of its values does.</summary>
     private sealed record AnyOf(IReadOnlyCollection<string> Values);
 
-    private static bool Evaluate(FilterNode node, Row row) => node switch
+    /// <summary>
+    /// Walks the tree once. Each leaf's operand is the single <c>Value</c> read, captured by its closure; the children of
+    /// a combinator are enumerated once. <paramref name="reads"/> counts the operand reads.
+    /// </summary>
+    private static Func<Row, bool> Compile(FilterNode node, ref int reads)
     {
-        FilterNode.And and => and.Children.All(child => Evaluate(child, row)),
-        FilterNode.Or or => or.Children.Any(child => Evaluate(child, row)),
-        FilterNode.Not not => !not.Children.Any(child => Evaluate(child, row)),
-        FilterNode.MatchAll => true,
-        FilterNode.MatchNone => false,
-        FilterNode.Field field => row.Column(field.Column) switch
+        switch (node)
         {
-            AnyOf anyOf => EvaluateAnyOf(anyOf, field.Op, field.Value),
-            var value => EvaluateColumn(value, field.Op, field.Value),
-        },
-        FilterNode.MetadataPath path => EvaluateMetadata(Resolve(row.Metadata, path.Path), path.Op, path.Value),
-        _ => throw new ArgumentOutOfRangeException(nameof(node), node, "Unknown filter node."),
-    };
+            case FilterNode.And and:
+            {
+                var children = CompileAll(and.Children, ref reads);
+                return row =>
+                {
+                    foreach (var child in children)
+                    {
+                        if (!child(row))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                };
+            }
+
+            case FilterNode.Or or:
+            {
+                var children = CompileAll(or.Children, ref reads);
+                return row => AnyMatches(children, row);
+            }
+
+            case FilterNode.Not not:
+            {
+                var children = CompileAll(not.Children, ref reads);
+                return row => !AnyMatches(children, row);
+            }
+
+            case FilterNode.MatchAll:
+                return static _ => true;
+
+            case FilterNode.MatchNone:
+                return static _ => false;
+
+            case FilterNode.Field field:
+            {
+                var column = field.Column;
+                var op = field.Op;
+                var operand = field.Value;
+                reads++;
+                return row => row.Column(column) switch
+                {
+                    AnyOf anyOf => EvaluateAnyOf(anyOf, op, operand),
+                    var value => EvaluateColumn(value, op, operand),
+                };
+            }
+
+            case FilterNode.MetadataPath path:
+            {
+                var keys = path.Path;
+                var op = path.Op;
+                var operand = path.Value;
+                reads++;
+                return row => EvaluateMetadata(Resolve(row.Metadata, keys), op, operand);
+            }
+
+            default:
+                // Unreachable for the closed hierarchy except a null child of a hand-built combinator, which has always
+                // failed when a row reaches it, not before; keep that timing.
+                return _ => throw new ArgumentOutOfRangeException(nameof(node), node, "Unknown filter node.");
+        }
+    }
+
+    private static Func<Row, bool>[] CompileAll(IReadOnlyList<FilterNode> nodes, ref int reads)
+    {
+        var compiled = new Func<Row, bool>[nodes.Count];
+        for (var i = 0; i < compiled.Length; i++)
+        {
+            compiled[i] = Compile(nodes[i], ref reads);
+        }
+
+        return compiled;
+    }
+
+    private static bool AnyMatches(Func<Row, bool>[] children, Row row)
+    {
+        foreach (var child in children)
+        {
+            if (child(row))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     // ------------------------------------------------------------------------------------------------ columns
 

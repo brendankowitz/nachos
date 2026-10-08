@@ -1,6 +1,5 @@
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
-using Nachos.Abstractions.Filtering;
 
 namespace Nachos.DataLayer.InMemory.Storage;
 
@@ -27,7 +26,7 @@ internal sealed class SessionEntry(SessionRecord record, long order)
 
     public IEnumerable<string> ActiveMemberNames => Members.Where(m => m.Value.IsActive).Select(m => m.Key);
 
-    public bool Matches(FilterNode? filter) =>
+    public bool Matches(PreparedFilter? filter) =>
         filter is null || InMemoryFilterEvaluator.Matches(filter, Record, [.. ActiveMemberNames]);
 
     public bool IsActiveMember(string peerName) => Members.GetValueOrDefault(peerName)?.IsActive == true;

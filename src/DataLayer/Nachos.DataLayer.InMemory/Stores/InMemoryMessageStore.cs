@@ -129,10 +129,11 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
+                var prepared = InMemoryFilterEvaluator.Prepare(filter);
                 lock (workspace.Gate)
                 {
                     var rows = workspace.RequireSession(sessionName).Messages
-                        .Where(message => InMemoryFilterEvaluator.Matches(filter, message));
+                        .Where(message => InMemoryFilterEvaluator.Matches(prepared, message));
                     return Paging.ToPage(rows, page, JsonCopy.Out);
                 }
             },

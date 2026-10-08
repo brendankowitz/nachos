@@ -68,10 +68,11 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
         state.Run(
             () =>
             {
+                var prepared = InMemoryFilterEvaluator.Prepare(filter);
                 lock (state.Gate)
                 {
                     var rows = state.Workspaces.Values
-                        .Where(entry => InMemoryFilterEvaluator.Matches(filter, entry.Record))
+                        .Where(entry => InMemoryFilterEvaluator.Matches(prepared, entry.Record))
                         .OrderBy(entry => entry.Record.CreatedAt)
                         .ThenBy(entry => entry.Order);
                     return Paging.ToPage(rows, page, entry => JsonCopy.Out(entry.Record));

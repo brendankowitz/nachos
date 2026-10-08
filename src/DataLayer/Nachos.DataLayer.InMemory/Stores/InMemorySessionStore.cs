@@ -87,10 +87,11 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
             () =>
             {
                 var workspace = state.RequireWorkspace(workspaceName);
+                var prepared = InMemoryFilterEvaluator.Prepare(filter);
                 lock (workspace.Gate)
                 {
                     var rows = workspace.Sessions.Values
-                        .Where(session => session.Matches(filter))
+                        .Where(session => session.Matches(prepared))
                         .OrderBy(session => session.Record.CreatedAt)
                         .ThenBy(session => session.Order);
                     return Paging.ToPage(rows, page, session => JsonCopy.Out(session.Record));
