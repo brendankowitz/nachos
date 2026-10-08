@@ -79,6 +79,7 @@ public sealed class NachosHttpClient : INachosClient
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         RespectNullableAnnotations = true,
         RespectRequiredConstructorParameters = true,
+        MaxDepth = WireJson.MaxDepth,
     };
 
     // Optional object members of the wire entities (absent in the manifest's "required"): an omitted or null value
