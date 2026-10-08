@@ -45,7 +45,10 @@ internal static class DeployReportClassifier
 
     private sealed record Operation(string Name, IReadOnlyList<Item> Items);
 
-    private sealed record ParsedReport(bool HasAlerts, IReadOnlyList<Operation> Operations);
+    private sealed record ParsedReport(bool HasAlerts, IReadOnlyList<string> DataLossIssues, IReadOnlyList<Operation> Operations);
+
+    // DacFx raises this alert for a column, table or type change that could lose data, whether or not the table has rows yet.
+    private const string DataIssueAlert = "DataIssue";
 
     /// <summary>
     /// Classifies the report. Never throws for bad input: anything that is not a recognisable report is
@@ -91,6 +94,12 @@ internal static class DeployReportClassifier
 
         return verdict;
     }
+
+    /// <summary>
+    /// The descriptions of the report's <c>DataIssue</c> alerts: changes DacFx says could lose data. Empty when there are none
+    /// or when the report cannot be read (which <see cref="Classify"/> already treats as unclassifiable).
+    /// </summary>
+    public static IReadOnlyList<string> DataLossIssues(string reportXml) => Parse(reportXml)?.DataLossIssues ?? [];
 
     /// <summary>True when the report lists any operation. A report that cannot be read counts as having some.</summary>
     public static bool HasOperations(string reportXml) => Parse(reportXml) is not { } report || report.Operations.Count > 0;
@@ -186,7 +195,13 @@ internal static class DeployReportClassifier
             operations.Add(new Operation(name, items));
         }
 
-        return new ParsedReport(alerts.Count > 0, operations);
+        var dataLossIssues = alerts
+            .Where(a => a.Attribute("Name")!.Value == DataIssueAlert)
+            .SelectMany(a => a.Elements())
+            .Select(issue => issue.Attribute("Value")?.Value ?? DataIssueAlert)
+            .ToList();
+
+        return new ParsedReport(alerts.Count > 0, dataLossIssues, operations);
     }
 
     private static bool OnlyChildren(XElement element, string localName) =>

@@ -1,7 +1,6 @@
 using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.SqlServer.Dac;
 using Nachos.Abstractions.Schema;
 using Nachos.DataLayer.SqlServer.Schema;
 
@@ -107,63 +106,40 @@ internal static class SchemaCommands
             return ExitCodes.Success;
         }
 
-        // The deployer refuses these two with an exception that does not tell a refusal from a failure, so name them here.
-        var status = await manager.GetStatusAsync(ct);
-        if (status.State == SchemaState.Ahead)
-        {
-            await io.Error.WriteLineAsync(
-                $"Refused: the database schema is version {status.Deployed}, newer than the version {status.Current} this build expects. " +
-                "Nachos never downgrades a database; use a newer Nachos.");
-            return ExitCodes.Refused;
-        }
-
-        if (status.State == SchemaState.Unstamped && !adoptUnstamped)
-        {
-            await io.Error.WriteLineAsync(
-                "Refused: the database has objects but no Nachos schema version, so it was not created by Nachos. " +
-                "Review 'nachos schema report', then run 'nachos schema upgrade --adopt-unstamped'.");
-            return ExitCodes.Refused;
-        }
-
-        SchemaReport report;
         try
         {
-            report = await manager.DeployAsync(approval, allowDataLoss, adoptUnstamped, ct);
+            var report = await manager.DeployAsync(approval, allowDataLoss, adoptUnstamped, ct);
+            await io.Output.WriteLineAsync(report.Applied ? "Schema upgraded." : "Schema is current; nothing to do.");
+            return ExitCodes.Success;
         }
-        catch (DacServicesException blocked) when (IsDataLossBlock(blocked))
+        catch (SchemaDeployRefusedException refused)
         {
-            await io.Error.WriteLineAsync($"Refused: {blocked.Message}");
-            await io.Error.WriteLineAsync("Nothing was dropped. If the data may be lost, add --allow-data-loss (with --approve-reviewed).");
+            // Only a typed refusal is exit 2. Anything else the deployer throws is a failure and falls through to exit 1.
+            await io.Error.WriteLineAsync($"Refused: {refused.Message}");
+            foreach (var reason in refused.Reasons)
+            {
+                await io.Error.WriteLineAsync($"  - {reason}");
+            }
+
+            if (Advice(refused.Reason, approval) is { } advice)
+            {
+                await io.Error.WriteLineAsync(advice);
+            }
+
             return ExitCodes.Refused;
         }
-
-        if (report.Applied)
-        {
-            await io.Output.WriteLineAsync("Schema upgraded.");
-            return ExitCodes.Success;
-        }
-
-        if (!report.HasPendingChanges)
-        {
-            await io.Output.WriteLineAsync("Schema is current; nothing to do.");
-            return ExitCodes.Success;
-        }
-
-        await io.Error.WriteLineAsync(
-            $"Refused: the pending schema changes are classified {report.Classification} and need review. " +
-            "Run 'nachos schema report --out <file>', read it, then run 'nachos schema upgrade --approve-reviewed'.");
-        foreach (var reason in report.Reasons)
-        {
-            await io.Error.WriteLineAsync($"  - {reason}");
-        }
-
-        return ExitCodes.Refused;
     }
 
-    // DacFx raises one exception type for every failure; its data-loss block is the only one that is a refusal.
-    private static bool IsDataLossBlock(DacServicesException failure) =>
-        failure.Message.Contains("data loss", StringComparison.OrdinalIgnoreCase);
-
+    // What to do next. Never names a flag the operator already passed. The deployer's own messages already say what to do
+    // for Ahead and Unstamped.
+    private static string? Advice(SchemaRefusalReason reason, DeployApproval approval) => reason switch
+    {
+        SchemaRefusalReason.NotAutoSafe =>
+            "Run 'nachos schema report --out <file>' and read it. If the changes are acceptable, re-run with --approve-reviewed.",
+        SchemaRefusalReason.DataLossBlocked =>
+            $"The deploy stopped before dropping data. If the data may be lost, re-run with {(approval == DeployApproval.OperatorReviewed ? "" : "--approve-reviewed ")}--allow-data-loss after reviewing.",
+        _ => null,
+    };
     private static async Task WriteReportAsync(TextWriter output, SchemaReport report, FileInfo? outFile, CancellationToken ct)
     {
         if (outFile is not null)

@@ -61,6 +61,28 @@ public sealed class DeployReportClassifierTests
         Classify(fixture).ShouldBe(DeployClassification.Unsafe);
     }
 
+    [Fact]
+    public void DataLossIssues_ListsTheDataIssueAlertDescriptions()
+    {
+        DeployReportClassifier.DataLossIssues(Fixtures.Read("report-extra-column-data-issue.xml"))
+            .ShouldBe(["The column [dbo].[Workspaces].[Extra] is being dropped, data loss could occur."]);
+    }
+
+    [Theory]
+    [InlineData("report-no-changes.xml")]
+    [InlineData("report-empty-database.xml")]
+    public void DataLossIssues_IsEmptyWithoutADataIssueAlert(string fixture)
+    {
+        DeployReportClassifier.DataLossIssues(Fixtures.Read(fixture)).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void DataLossIssues_OnlyCountsDataIssueAlerts_AndIsEmptyForAnUnreadableReport()
+    {
+        DeployReportClassifier.DataLossIssues(Report("""<Alerts><Alert Name="Other"><Issue Value="x" Id="1" /></Alert></Alerts>""")).ShouldBeEmpty();
+        DeployReportClassifier.DataLossIssues("not xml").ShouldBeEmpty();
+    }
+
     [Theory]
     [InlineData("report-drop-only.xml")]
     [InlineData("report-table-rebuild-only.xml")]

@@ -14,7 +14,7 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// across DacFx: it may change a database option, which disconnects every session in the database.</para>
 /// <para><b>Permissions on box SQL Server.</b> The lock is taken in <c>master</c>, so the login must be able to connect there:
 /// through the <c>guest</c> user, which is enabled in <c>master</c> by default. A contained-database user, or a server with
-/// <c>guest</c> disabled in <c>master</c>, cannot, and the deploy then fails with an <see cref="InvalidOperationException"/>
+/// <c>guest</c> disabled in <c>master</c>, cannot, and the deploy then fails with an <see cref="InvalidOperationException"/> (not a <see cref="SchemaDeployRefusedException"/>)
 /// that says so; nothing has been changed at that point. Run the upgrade with a login that can.</para>
 /// <para><b>Database options.</b> Reports and classification always script database options, so a difference between
 /// the database and the model (<c>PAGE_VERIFY</c>, <c>TARGET_RECOVERY_TIME</c>, <c>READ_COMMITTED_SNAPSHOT</c>, …) shows up as an
@@ -61,11 +61,13 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
         switch (observed.Status.State)
         {
             case SchemaState.Ahead:
-                throw new InvalidOperationException(
+                throw new SchemaDeployRefusedException(
+                    SchemaRefusalReason.Ahead,
                     $"The database schema is version {observed.Status.Deployed}, newer than the version {observed.Status.Current} this build expects. " +
                     "Nachos never downgrades a database; deploy a newer Nachos instead.");
             case SchemaState.Unstamped when !adoptUnstamped:
-                throw new InvalidOperationException(
+                throw new SchemaDeployRefusedException(
+                    SchemaRefusalReason.Unstamped,
                     "The database has objects but no Nachos schema version, so it was not created by Nachos and will not be changed. " +
                     "If it should be adopted, review 'nachos schema report', then run 'nachos schema upgrade --adopt-unstamped'.");
         }
@@ -83,7 +85,20 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
                        || report.Classification == DeployClassification.AutoSafe;
         if (!mayApply)
         {
-            return report;
+            throw new SchemaDeployRefusedException(
+                SchemaRefusalReason.NotAutoSafe,
+                $"The pending schema changes are classified {report.Classification} and have not been reviewed.",
+                report.Reasons);
+        }
+
+        // DacFx would block this too, but only once it reaches a table that has rows, and only with an error that cannot be told
+        // from a real failure. Refusing here is typed and happens before anything is changed.
+        if (!allowDataLoss && DeployReportClassifier.DataLossIssues(report.ReportXml) is { Count: > 0 } dataLoss)
+        {
+            throw new SchemaDeployRefusedException(
+                SchemaRefusalReason.DataLossBlocked,
+                "The deploy could lose data, and data loss was not allowed.",
+                dataLoss);
         }
 
         try
@@ -242,12 +257,12 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
         var name = new SqlConnectionStringBuilder(options.ConnectionString).InitialCatalog.Trim();
         if (name.Length == 0)
         {
-            throw new InvalidOperationException($"The connection string must name a database (Initial Catalog), at {SqlServerOptions.SectionName}:ConnectionString.");
+            throw new InvalidOperationException("The connection string must name a database (Initial Catalog).");
         }
 
         if (SystemDatabases.Contains(name, StringComparer.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException($"Nachos will not create its schema in the system database '{name}'. Name a dedicated database in {SqlServerOptions.SectionName}:ConnectionString.");
+            throw new InvalidOperationException($"The connection string reaches the system database '{name}'. Nachos will not create or change its schema there; name a dedicated database.");
         }
     }
 

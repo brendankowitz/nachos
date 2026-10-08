@@ -26,6 +26,14 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         await command.ExecuteNonQueryAsync();
     }
 
+    private static async Task<int> ColumnCountAsync(string connectionString, string column)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand($"SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.Workspaces') AND name = N'{column}'", connection);
+        return (int)(await command.ExecuteScalarAsync())!;
+    }
+
     private static async Task<int> TableCountAsync(string connectionString, string table)
     {
         await using var connection = new SqlConnection(connectionString);
@@ -126,6 +134,7 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
 
         run.ExitCode.ShouldBe(2);
         run.Error.ShouldContain("PAGE_VERIFY");
+        run.Error.ShouldContain("--approve-reviewed");
         run.Out.ShouldBeEmpty();
     }
 
@@ -176,7 +185,7 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
     }
 
     [Fact]
-    public async Task Upgrade_Reviewed_DataLossBlocked_Exit2_ThenAllowed_Exit0()
+    public async Task Upgrade_Reviewed_DataLossBlocked_Exit2_NothingDropped_ThenAllowed_Exit0()
     {
         var connectionString = await DeployedDatabaseAsync();
         await ExecuteAsync(connectionString, "INSERT dbo.Workspaces (Name, LifecycleState, CreatedAt) VALUES (N'w', 0, SYSDATETIMEOFFSET())");
@@ -185,10 +194,43 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         var blocked = await UpgradeAsync(connectionString, "--approve-reviewed");
 
         blocked.ExitCode.ShouldBe(2);
+        blocked.Out.ShouldBeEmpty();
+        blocked.Error.ShouldContain("NotInTheModel");
+        blocked.Error.ShouldContain("stopped before dropping data");
         blocked.Error.ShouldContain("--allow-data-loss");
+        // Never suggests a flag that was already passed.
+        blocked.Error.ShouldNotContain("--approve-reviewed");
+        (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(1);
 
         var allowed = await UpgradeAsync(connectionString, "--approve-reviewed", "--allow-data-loss");
 
         allowed.ExitCode.ShouldBe(0, allowed.Error);
+        (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Upgrade_GenuineFailure_WithAllowDataLoss_Exit1()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, "ALTER TABLE dbo.Workspaces ADD NotInTheModel int NULL");
+
+        // Another session holds an exclusive lock on the table the deploy must alter, so the deploy fails after DacFx has
+        // already reported a possible data loss. That is a failure, however much the message talks about data loss.
+        await using var holder = new SqlConnection(connectionString);
+        await holder.OpenAsync();
+        await using var transaction = (SqlTransaction)await holder.BeginTransactionAsync();
+        await using (var hold = new SqlCommand("SELECT TOP (1) 1 FROM dbo.Workspaces WITH (TABLOCKX)", holder, transaction))
+        {
+            await hold.ExecuteScalarAsync();
+        }
+
+        var run = await UpgradeAsync(connectionString, "--approve-reviewed", "--allow-data-loss");
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+        run.Error.ShouldNotContain("Refused");
+        run.Error.ShouldNotContain("re-run with");
+        await transaction.RollbackAsync();
+        (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(1);
     }
 }

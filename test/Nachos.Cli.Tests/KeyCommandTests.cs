@@ -104,28 +104,65 @@ public sealed class KeyCommandTests
         run.Error.ShouldContain("--expires");
     }
 
-    [Fact]
-    public async Task Expires_NotIso8601_Exit1()
+    [Theory]
+    [InlineData("next tuesday")]
+    [InlineData("01/02/2030")]
+    [InlineData("2030-13-45T00:00:00Z")]
+    [InlineData("")]
+    public async Task Expires_NotIso8601_Exit1(string expires)
     {
-        var run = await CreateAsync("--admin", "--signing-secret", Secret, "--expires", "next tuesday");
+        var run = await CreateAsync("--admin", "--signing-secret", Secret, "--expires", expires);
 
         run.ExitCode.ShouldBe(1);
         run.Out.ShouldBeEmpty();
+        run.Error.ShouldContain("--expires");
     }
 
     [Theory]
-    [InlineData("--peer", "p1")]
-    [InlineData("--session", "s1")]
-    public async Task PeerOrSession_WithoutWorkspace_Exit1(string flag, string value)
+    [InlineData("2099-01-02T03:04:05Z")]
+    [InlineData("2099-01-02T03:04:05+02:00")]
+    [InlineData("2099-01-02T03:04:05.123Z")]
+    [InlineData("2099-01-02T03:04:05")]
+    [InlineData("2099-01-02")]
+    public async Task Expires_Iso8601Forms_AreAccepted(string expires)
     {
-        var run = await CreateAsync(flag, value, "--signing-secret", Secret);
+        var run = await CreateAsync("--admin", "--signing-secret", Secret, "--expires", expires);
+
+        Issuer().Validate(Token(run)).ExpiresAt.ShouldNotBeNull();
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task EmptyKid_Exit1_WithAClearMessage(string kid)
+    {
+        var run = await CreateAsync("--admin", "--signing-secret", Secret, "--kid", kid);
 
         run.ExitCode.ShouldBe(1);
         run.Out.ShouldBeEmpty();
+        run.Error.ShouldContain("--kid");
     }
 
     [Fact]
     public async Task PeerWithoutWorkspace_Exit1()
+    {
+        var run = await CreateAsync("--peer", "p1", "--signing-secret", Secret);
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task SessionWithoutWorkspace_Exit1()
+    {
+        var run = await CreateAsync("--session", "s1", "--signing-secret", Secret);
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Admin_WithPeerButNoWorkspace_Exit1()
     {
         var run = await CreateAsync("--admin", "--peer", "p1", "--signing-secret", Secret);
 
@@ -233,19 +270,45 @@ public sealed class KeyCommandTests
             await CreateAsync("--workspace", "w1", "--peer", "p1", "--session", "s1", "--signing-secret", shortSecret),
             await CreateAsync("--workspace", "not a valid id!", "--signing-secret", Secret),
             await CreateAsync("--admin", "--signing-secret", Secret, "--expires", "2001-01-01T00:00:00Z"),
+            // The parser echoes values it cannot place: a response-file path, an unknown option's value, a stray word.
+            await CreateAsync("--admin", "--signing-secret", $"@{Secret}"),
+            await CreateAsync("--admin", "--signing-secret", Secret, "--bogus", Secret),
+            await CreateAsync("--admin", "--bogus", shortSecret),
+            await CreateAsync("--admin", "--signing-secret", "first-half-of-an-unquoted-secret", "second-half-of-an-unquoted-secret"),
+            await CreateAsync("--admin", "--signing-secret", Secret, "--expires", Secret),
+            await CreateAsync("--admin", "--signing-secret", Secret, Secret),
         };
 
         foreach (var run in runs)
         {
-            run.Out.ShouldNotContain(Secret);
-            run.Out.ShouldNotContain(shortSecret);
-            run.Error.ShouldNotContain(Secret);
-            run.Error.ShouldNotContain(shortSecret);
+            foreach (var secret in new[] { Secret, shortSecret, "first-half-of-an-unquoted-secret", "second-half-of-an-unquoted-secret" })
+            {
+                run.Error.ShouldNotContain(secret);
+            }
+        }
+
+        // A token on stdout is expected for a secret that is valid; only the secret itself must not be there.
+        foreach (var run in runs.Where(run => run.ExitCode != 0))
+        {
+            run.Out.ShouldBeEmpty();
         }
 
         // The too-short secret is rejected by the issuer, so it fails rather than mints a weak key.
         runs[1].ExitCode.ShouldBe(1);
         runs[1].Out.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task ParseErrors_AreRedacted_ButStillSayWhatIsWrong()
+    {
+        var unknown = await CreateAsync("--admin", "--signing-secret", Secret, "--bogus", Secret);
+        var stray = await CreateAsync("--admin", "--signing-secret", Secret, "stray-word");
+
+        unknown.ExitCode.ShouldBe(1);
+        unknown.Error.ShouldContain("redacted");
+        stray.ExitCode.ShouldBe(1);
+        stray.Error.ShouldContain("redacted");
+        stray.Error.ShouldNotContain("stray-word");
     }
 
     [Fact]

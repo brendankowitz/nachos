@@ -47,6 +47,12 @@ internal static class KeyCommands
                 return ExitCodes.Error;
             }
 
+            if (string.IsNullOrWhiteSpace(parse.GetValue(kid)))
+            {
+                await io.Error.WriteLineAsync("error: --kid must not be empty.");
+                return ExitCodes.Error;
+            }
+
             var keys = new SigningKeyOptions { Keys = [new SigningKey(parse.GetValue(kid)!, signingSecret)] };
             var issuer = new HmacKeyIssuer(Options.Create(keys), TimeProvider.System);
             var token = issuer.Issue(new NachosKeyClaims(
@@ -102,6 +108,13 @@ internal static class KeyCommands
         return string.IsNullOrEmpty(value) ? (null, $"The environment variable {variable} is missing or empty.") : (value, null);
     }
 
+    // ISO-8601 only: a culture-dependent parse would read 01/02/2030 as January or February depending on the machine.
+    private static readonly string[] Iso8601Formats =
+    [
+        "yyyy-MM-dd'T'HH:mm:ssK", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK", "yyyy-MM-dd'T'HH:mmK",
+        "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd",
+    ];
+
     private static (DateTimeOffset? Value, string? Error) ParseExpires(string? text, DateTimeOffset now)
     {
         if (text is null)
@@ -109,7 +122,7 @@ internal static class KeyCommands
             return (null, null);
         }
 
-        if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.RoundtripKind, out var value))
+        if (!DateTimeOffset.TryParseExact(text, Iso8601Formats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var value))
         {
             return (null, "--expires must be an ISO-8601 date and time, for example 2030-01-31T12:00:00Z.");
         }

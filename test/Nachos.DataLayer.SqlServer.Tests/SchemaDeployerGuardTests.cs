@@ -25,9 +25,11 @@ public sealed class SchemaDeployerGuardTests
     {
         var deployer = Deployer(connectionString);
 
-        await Should.ThrowAsync<InvalidOperationException>(() => deployer.GetStatusAsync(default));
-        await Should.ThrowAsync<InvalidOperationException>(() => deployer.ReportAsync(default));
-        await Should.ThrowAsync<InvalidOperationException>(() => deployer.DeployAsync(DeployApproval.OperatorReviewed, true, true, default));
+        // A bad connection string is a failure to fix, not a policy refusal: it must not be the typed exception.
+        (await Should.ThrowAsync<InvalidOperationException>(() => deployer.GetStatusAsync(default))).ShouldNotBeOfType<SchemaDeployRefusedException>();
+        (await Should.ThrowAsync<InvalidOperationException>(() => deployer.ReportAsync(default))).ShouldNotBeOfType<SchemaDeployRefusedException>();
+        (await Should.ThrowAsync<InvalidOperationException>(() => deployer.DeployAsync(DeployApproval.OperatorReviewed, true, true, default)))
+            .ShouldNotBeOfType<SchemaDeployRefusedException>();
     }
 
     [Fact]

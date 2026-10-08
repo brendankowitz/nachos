@@ -73,14 +73,20 @@ public sealed class SchemaGate(ISchemaManager schema, SqlServerOptions options)
                 throw Refuse($"The database schema is version {status.Deployed}, behind the version {status.Current} this build expects, and {SqlServerOptions.SectionName}:AutomaticSchemaDeploymentEnabled is false.");
         }
 
-        var deployed = await schema.DeployAsync(DeployApproval.AutoSafeOnly, allowDataLoss: false, adoptUnstamped: false, ct);
+        try
+        {
+            await schema.DeployAsync(DeployApproval.AutoSafeOnly, allowDataLoss: false, adoptUnstamped: false, ct);
+        }
+        catch (SchemaDeployRefusedException refused)
+        {
+            // The database changed under us (or the change is not auto-safe): the deployer's reason, plus how to proceed.
+            throw Refuse($"The change to version {status.Current} was refused: {refused.Message} {string.Join(' ', refused.Reasons)}".TrimEnd());
+        }
 
         var after = await schema.GetStatusAsync(ct);
         if (after.State != SchemaState.Current)
         {
-            throw Refuse(deployed.Applied
-                ? $"The schema is still {after.State} after deploying."
-                : $"The change to version {status.Current} is classified {deployed.Classification} and needs review. {string.Join(' ', deployed.Reasons)}");
+            throw Refuse($"The schema is still {after.State} after deploying.");
         }
 
         // Current is only a stamp; the report proves the schema really matches.

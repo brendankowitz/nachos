@@ -51,7 +51,7 @@ internal static class SchemaProbe
         {
             throw new InvalidOperationException(
                 $"The connection string reaches the system database '{databaseName}'. Nachos will not create or change its schema there; " +
-                $"name a dedicated database in {SqlServerOptions.SectionName}:ConnectionString.");
+                "name a dedicated database.");
         }
     }
 

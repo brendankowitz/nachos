@@ -21,6 +21,9 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
     private static Task<SchemaReport> AutoSafeDeployAsync(string connectionString) =>
         Deployer(connectionString).DeployAsync(DeployApproval.AutoSafeOnly, allowDataLoss: false, adoptUnstamped: false, default);
 
+    private static async Task<SchemaDeployRefusedException> AutoSafeRefusalAsync(string connectionString) =>
+        await Should.ThrowAsync<SchemaDeployRefusedException>(() => AutoSafeDeployAsync(connectionString));
+
     private static SchemaGate Gate(string connectionString, bool automatic)
     {
         var options = new SqlServerOptions { ConnectionString = connectionString, AutomaticSchemaDeploymentEnabled = automatic };
@@ -276,9 +279,10 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         await ExecuteAsync(connectionString, "ALTER TABLE dbo.SessionPeers DROP COLUMN LeftAt");
         await SetVersionAsync(connectionString, SchemaInfo.CurrentVersion + 1);
 
-        var failure = await Should.ThrowAsync<InvalidOperationException>(
+        var failure = await Should.ThrowAsync<SchemaDeployRefusedException>(
             () => Deployer(connectionString).DeployAsync(approval, allowDataLoss: false, adoptUnstamped: true, default));
 
+        failure.Reason.ShouldBe(SchemaRefusalReason.Ahead);
         failure.Message.ShouldContain("newer");
         (await StampedVersionAsync(connectionString)).ShouldBe(SchemaInfo.CurrentVersion + 1);
         (await ColumnCountAsync(connectionString, "dbo.SessionPeers", "LeftAt")).ShouldBe(0);
@@ -290,9 +294,10 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var connectionString = await fixture.CreateDatabaseAsync();
         await ExecuteAsync(connectionString, "CREATE TABLE dbo.SomeoneElses (Id int NOT NULL)");
 
-        var failure = await Should.ThrowAsync<InvalidOperationException>(
+        var failure = await Should.ThrowAsync<SchemaDeployRefusedException>(
             () => Deployer(connectionString).DeployAsync(DeployApproval.OperatorReviewed, allowDataLoss: false, adoptUnstamped: false, default));
 
+        failure.Reason.ShouldBe(SchemaRefusalReason.Unstamped);
         failure.Message.ShouldContain("--adopt-unstamped");
         (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM sys.tables WHERE name = N'Workspaces'")).ShouldBe(0);
     }
@@ -306,8 +311,9 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
 
         // ... but not while it would also switch READ_COMMITTED_SNAPSHOT on under whoever is connected.
         var untouched = await DatabaseOptionsAsync(additive);
-        var optionRefused = await Deployer(additive).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default);
-        optionRefused.Applied.ShouldBeFalse();
+        var optionRefused = await Should.ThrowAsync<SchemaDeployRefusedException>(
+            () => Deployer(additive).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default));
+        optionRefused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         optionRefused.Reasons.ShouldContain(reason => reason.Contains("READ_COMMITTED_SNAPSHOT", StringComparison.Ordinal));
         (await DatabaseOptionsAsync(additive)).ShouldBe(untouched);
         (await ScalarAsync<int>(additive, "SELECT COUNT(*) FROM sys.tables WHERE name = N'Workspaces'")).ShouldBe(0);
@@ -326,10 +332,11 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var clashing = await fixture.CreateDatabaseAsync();
         await ExecuteAsync(clashing, "CREATE TABLE dbo.Workspaces (Id int NOT NULL)");
 
-        var refused = await Deployer(clashing).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default);
+        var refused = await Should.ThrowAsync<SchemaDeployRefusedException>(
+            () => Deployer(clashing).DeployAsync(DeployApproval.AutoSafeOnly, false, adoptUnstamped: true, default));
 
-        refused.Applied.ShouldBeFalse();
-        refused.Classification.ShouldNotBe(DeployClassification.AutoSafe);
+        refused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
+        (await Deployer(clashing).ReportAsync(default)).Classification.ShouldNotBe(DeployClassification.AutoSafe);
         (await ScalarAsync<int>(clashing, "SELECT COUNT(*) FROM sys.tables WHERE name = N'Messages'")).ShouldBe(0);
     }
 
@@ -356,10 +363,10 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var connectionString = await DeployedDatabaseAsync();
         await ExecuteAsync(connectionString, "ALTER TABLE dbo.Workspaces ADD NotInTheModel int NULL");
 
-        var report = await AutoSafeDeployAsync(connectionString);
+        (await Deployer(connectionString).ReportAsync(default)).Classification.ShouldBe(DeployClassification.Unsafe);
+        var refused = await AutoSafeRefusalAsync(connectionString);
 
-        report.Classification.ShouldBe(DeployClassification.Unsafe);
-        report.Applied.ShouldBeFalse();
+        refused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ColumnCountAsync(connectionString, "dbo.Workspaces", "NotInTheModel")).ShouldBe(1);
     }
 
@@ -371,9 +378,11 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         await ExecuteAsync(connectionString, "ALTER TABLE dbo.Workspaces ADD NotInTheModel int NULL");
         var deployer = Deployer(connectionString);
 
-        // Reviewed means "I have read the report", not "I accept losing data".
-        await Should.ThrowAsync<DacServicesException>(
+        // Reviewed means "I have read the report", not "I accept losing data". The refusal comes before DacFx is called.
+        var blocked = await Should.ThrowAsync<SchemaDeployRefusedException>(
             () => deployer.DeployAsync(DeployApproval.OperatorReviewed, allowDataLoss: false, adoptUnstamped: false, default));
+        blocked.Reason.ShouldBe(SchemaRefusalReason.DataLossBlocked);
+        blocked.Reasons.ShouldContain(reason => reason.Contains("NotInTheModel", StringComparison.Ordinal));
         (await ColumnCountAsync(connectionString, "dbo.Workspaces", "NotInTheModel")).ShouldBe(1);
 
         var report = await deployer.DeployAsync(DeployApproval.OperatorReviewed, allowDataLoss: true, adoptUnstamped: false, default);
@@ -417,10 +426,8 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var connectionString = await DeployedDatabaseAsync();
         await ExecuteAsync(connectionString, "DROP INDEX IX_IdempotencyRecords_ExpiresAt ON dbo.IdempotencyRecords; ALTER TABLE dbo.IdempotencyRecords DROP COLUMN ExpiresAt");
 
-        var report = await AutoSafeDeployAsync(connectionString);
-
-        report.Classification.ShouldBe(DeployClassification.Unsafe);
-        report.Applied.ShouldBeFalse();
+        (await Deployer(connectionString).ReportAsync(default)).Classification.ShouldBe(DeployClassification.Unsafe);
+        (await AutoSafeRefusalAsync(connectionString)).Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ColumnCountAsync(connectionString, "dbo.IdempotencyRecords", "ExpiresAt")).ShouldBe(0);
     }
 
@@ -430,10 +437,8 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var connectionString = await DeployedDatabaseAsync();
         await ExecuteAsync(connectionString, "ALTER TABLE dbo.IdempotencyRecords ALTER COLUMN ResponseStatus bigint NOT NULL");
 
-        var report = await AutoSafeDeployAsync(connectionString);
-
-        report.Classification.ShouldBe(DeployClassification.Unsafe);
-        report.Applied.ShouldBeFalse();
+        (await Deployer(connectionString).ReportAsync(default)).Classification.ShouldBe(DeployClassification.Unsafe);
+        (await AutoSafeRefusalAsync(connectionString)).Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ScalarAsync<string>(connectionString, "SELECT TYPE_NAME(system_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.IdempotencyRecords') AND name = N'ResponseStatus'"))
             .ShouldBe("bigint");
     }
@@ -444,11 +449,9 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var connectionString = await DeployedDatabaseAsync();
         await ExecuteAsync(connectionString, "ALTER TABLE dbo.SessionPeers ALTER COLUMN LeftAt datetimeoffset(7) NOT NULL");
 
-        var report = await AutoSafeDeployAsync(connectionString);
-
         // DacFx raises no alert for this: only the generated script shows it is not an added column.
-        report.Classification.ShouldBe(DeployClassification.Unsafe);
-        report.Applied.ShouldBeFalse();
+        (await Deployer(connectionString).ReportAsync(default)).Classification.ShouldBe(DeployClassification.Unsafe);
+        (await AutoSafeRefusalAsync(connectionString)).Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ScalarAsync<bool>(connectionString, "SELECT is_nullable FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.SessionPeers') AND name = N'LeftAt'"))
             .ShouldBeFalse();
     }
@@ -469,9 +472,7 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var report = await Deployer(connectionString).ReportAsync(default);
         report.Classification.ShouldBe(DeployClassification.Unsafe);
 
-        var refused = await AutoSafeDeployAsync(connectionString);
-
-        refused.Applied.ShouldBeFalse();
+        (await AutoSafeRefusalAsync(connectionString)).Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM sys.check_constraints WHERE name = N'CK_Sessions_LifecycleState'")).ShouldBe(0);
         (await StampedVersionAsync(connectionString)).ShouldBe(0);
         var failure = await Should.ThrowAsync<InvalidOperationException>(() => Gate(connectionString, automatic: true).EnsureAsync(default));
@@ -522,10 +523,12 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var drifted = await DatabaseOptionsAsync(connectionString);
 
         // The repro: a lowered stamp used to be enough for the gate to flip the setting back, with ROLLBACK IMMEDIATE, unattended.
-        var report = await AutoSafeDeployAsync(connectionString);
+        var report = await Deployer(connectionString).ReportAsync(default);
+        var refused = await AutoSafeRefusalAsync(connectionString);
         var failure = await Should.ThrowAsync<InvalidOperationException>(() => Gate(connectionString, automatic: true).EnsureAsync(default));
 
-        report.Applied.ShouldBeFalse();
+        refused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
+        refused.Reasons.ShouldContain(reason => reason.Contains(option, StringComparison.Ordinal));
         report.Classification.ShouldBe(DeployClassification.Unsafe);
         report.HasPendingChanges.ShouldBeTrue();
         report.Reasons.ShouldContain(reason => reason.Contains(option, StringComparison.Ordinal));
@@ -548,11 +551,11 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         await SetDatabaseOptionAsync(connectionString, "PAGE_VERIFY NONE");
 
         var report = await Deployer(connectionString).ReportAsync(default);
-        var refused = await AutoSafeDeployAsync(connectionString);
+        var refused = await AutoSafeRefusalAsync(connectionString);
 
         report.HasPendingChanges.ShouldBeTrue();
         report.Classification.ShouldBe(DeployClassification.Unsafe);
-        refused.Applied.ShouldBeFalse();
+        refused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await DatabaseOptionsAsync(connectionString))["page_verify_option_desc"].ShouldBe("NONE");
     }
 
@@ -624,7 +627,7 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         report.Classification.ShouldBe(DeployClassification.Unsafe);
         report.Reasons.ShouldContain(reason => reason.Contains("READ_COMMITTED_SNAPSHOT", StringComparison.Ordinal));
 
-        (await AutoSafeDeployAsync(connectionString)).Applied.ShouldBeFalse();
+        (await AutoSafeRefusalAsync(connectionString)).Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
         (await ScalarAsync<bool>(connectionString, "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()")).ShouldBeFalse();
         var failure = await Should.ThrowAsync<InvalidOperationException>(() => Gate(connectionString, automatic: true).EnsureAsync(default));
         failure.Message.ShouldContain("READ_COMMITTED_SNAPSHOT");

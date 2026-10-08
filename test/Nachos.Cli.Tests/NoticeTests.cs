@@ -28,7 +28,6 @@ public sealed class NoticeTests
         throw new InvalidOperationException("Nachos.slnx was not found above the test output directory.");
     }
 
-
     private static string Sha256(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 
     [Fact]

@@ -47,9 +47,15 @@ public sealed class SchemaGateTests
             adoptUnstamped.ShouldBeFalse("the gate must never adopt a database");
             Deploys++;
 
-            // Mirrors the real deployer: only an auto-safe change is applied, anything else comes back unapplied.
-            _applied = classification == DeployClassification.AutoSafe;
-            return Task.FromResult(Report(_applied));
+            // Mirrors the real deployer: only an auto-safe change is applied, anything else is refused.
+            if (classification != DeployClassification.AutoSafe)
+            {
+                throw new SchemaDeployRefusedException(
+                    SchemaRefusalReason.NotAutoSafe, $"The pending schema changes are classified {classification} and have not been reviewed.", Reasons);
+            }
+
+            _applied = true;
+            return Task.FromResult(Report(applied: true));
         }
 
         private async Task<SchemaStatus> HoldAsync(TaskCompletionSource hold)
