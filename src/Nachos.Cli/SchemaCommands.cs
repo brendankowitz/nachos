@@ -121,7 +121,7 @@ internal static class SchemaCommands
                 await io.Error.WriteLineAsync($"  - {reason}");
             }
 
-            if (Advice(refused.Reason, approval) is { } advice)
+            if (Advice(refused, approval) is { } advice)
             {
                 await io.Error.WriteLineAsync(advice);
             }
@@ -132,14 +132,21 @@ internal static class SchemaCommands
 
     // What to do next. Never names a flag the operator already passed. The deployer's own messages already say what to do
     // for Ahead and Unstamped.
-    private static string? Advice(SchemaRefusalReason reason, DeployApproval approval) => reason switch
+    private static string? Advice(SchemaDeployRefusedException refused, DeployApproval approval)
     {
-        SchemaRefusalReason.NotAutoSafe =>
-            "Run 'nachos schema report --out <file>' and read it. If the changes are acceptable, re-run with --approve-reviewed.",
-        SchemaRefusalReason.DataLossBlocked =>
-            $"The deploy stopped before dropping data. If the data may be lost, re-run with {(approval == DeployApproval.OperatorReviewed ? "" : "--approve-reviewed ")}--allow-data-loss after reviewing.",
-        _ => null,
-    };
+        var reviewed = approval == DeployApproval.OperatorReviewed ? "" : "--approve-reviewed ";
+        return refused.Reason switch
+        {
+            SchemaRefusalReason.NotAutoSafe when refused.PossibleDataLoss =>
+                "Run 'nachos schema report --out <file>' and read it. The changes could lose data; if that is acceptable, " +
+                "re-run with --approve-reviewed --allow-data-loss.",
+            SchemaRefusalReason.NotAutoSafe =>
+                "Run 'nachos schema report --out <file>' and read it. If the changes are acceptable, re-run with --approve-reviewed.",
+            SchemaRefusalReason.DataLossBlocked =>
+                $"Nothing was changed. If the data may be lost, re-run with {reviewed}--allow-data-loss after reviewing.",
+            _ => null,
+        };
+    }
     private static async Task WriteReportAsync(TextWriter output, SchemaReport report, FileInfo? outFile, CancellationToken ct)
     {
         if (outFile is not null)

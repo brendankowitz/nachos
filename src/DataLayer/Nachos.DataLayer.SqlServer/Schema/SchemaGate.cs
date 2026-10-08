@@ -80,7 +80,7 @@ public sealed class SchemaGate(ISchemaManager schema, SqlServerOptions options)
         catch (SchemaDeployRefusedException refused)
         {
             // The database changed under us (or the change is not auto-safe): the deployer's reason, plus how to proceed.
-            throw Refuse($"The change to version {status.Current} was refused: {refused.Message} {string.Join(' ', refused.Reasons)}".TrimEnd());
+            throw Refuse($"The change to version {status.Current} was refused: {refused.Message} {string.Join(' ', refused.Reasons)}".TrimEnd(), refused);
         }
 
         var after = await schema.GetStatusAsync(ct);
@@ -97,5 +97,5 @@ public sealed class SchemaGate(ISchemaManager schema, SqlServerOptions options)
         }
     }
 
-    private static InvalidOperationException Refuse(string reason) => new($"{reason} {Remedy}");
+    private static InvalidOperationException Refuse(string reason, Exception? inner = null) => new($"{reason} {Remedy}", inner);
 }

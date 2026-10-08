@@ -24,6 +24,9 @@ public sealed class SchemaGateTests
 
         public string[] Reasons { get; set; } = [];
 
+        /// <summary>A refusal the deployer raises under its lock, after the status read said the change was allowed.</summary>
+        public SchemaDeployRefusedException? RefuseUnderLock { get; set; }
+
         public Task<SchemaStatus> GetStatusAsync(CancellationToken ct)
         {
             StatusCalls++;
@@ -46,6 +49,10 @@ public sealed class SchemaGateTests
             allowDataLoss.ShouldBeFalse("the gate must never allow data loss");
             adoptUnstamped.ShouldBeFalse("the gate must never adopt a database");
             Deploys++;
+            if (RefuseUnderLock is { } refusal)
+            {
+                throw refusal;
+            }
 
             // Mirrors the real deployer: only an auto-safe change is applied, anything else is refused.
             if (classification != DeployClassification.AutoSafe)
@@ -162,6 +169,32 @@ public sealed class SchemaGateTests
         schema.Deploys.ShouldBe(1);
     }
 
+    [Theory]
+    [InlineData(SchemaRefusalReason.Ahead)]
+    [InlineData(SchemaRefusalReason.Unstamped)]
+    [InlineData(SchemaRefusalReason.DataLossBlocked)]
+    [InlineData(SchemaRefusalReason.NotAutoSafe)]
+    public async Task RefusalUnderTheDeployersLock_FailsClosed_KeepsTheRefusalAsInner_AndIsNotCached(SchemaRefusalReason reason)
+    {
+        // The status read said Behind (so the gate went ahead), but by the time the deployer held its lock the database had
+        // moved on, or the change turned out to lose data.
+        var refusal = new SchemaDeployRefusedException(reason, "refused under the lock", ["a finding"], possibleDataLoss: reason == SchemaRefusalReason.DataLossBlocked);
+        var schema = new ScriptedSchema(SchemaState.Behind, DeployClassification.AutoSafe) { RefuseUnderLock = refusal };
+        var gate = Gate(schema, automatic: true);
+
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => gate.EnsureAsync(default));
+
+        failure.InnerException.ShouldBeSameAs(refusal);
+        failure.Message.ShouldContain("refused under the lock");
+        failure.Message.ShouldContain("a finding");
+        failure.Message.ShouldContain("nachos schema upgrade");
+        schema.Deploys.ShouldBe(1);
+
+        // Nothing was applied, and the refusal is not remembered as a success: the next caller checks again and is refused again.
+        await Should.ThrowAsync<InvalidOperationException>(() => gate.EnsureAsync(default));
+        schema.Deploys.ShouldBe(2);
+    }
+
     [Fact]
     public async Task Success_IsCached_FailureIsNot()
     {
@@ -199,6 +232,7 @@ public sealed class SchemaGateTests
         await gate.EnsureAsync(default);
         schema.StatusCalls.ShouldBe(2);
     }
+
     [Fact]
     public async Task ConcurrentCallers_ShareOneDeploy()
     {

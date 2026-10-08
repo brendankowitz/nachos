@@ -83,22 +83,25 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
         var mayApply = bootstrap
                        || approval == DeployApproval.OperatorReviewed
                        || report.Classification == DeployClassification.AutoSafe;
+        var dataLoss = DeployReportClassifier.DataLossIssues(report.ReportXml);
         if (!mayApply)
         {
             throw new SchemaDeployRefusedException(
                 SchemaRefusalReason.NotAutoSafe,
                 $"The pending schema changes are classified {report.Classification} and have not been reviewed.",
-                report.Reasons);
+                [.. report.Reasons, .. dataLoss],
+                possibleDataLoss: dataLoss.Count > 0);
         }
 
         // DacFx would block this too, but only once it reaches a table that has rows, and only with an error that cannot be told
         // from a real failure. Refusing here is typed and happens before anything is changed.
-        if (!allowDataLoss && DeployReportClassifier.DataLossIssues(report.ReportXml) is { Count: > 0 } dataLoss)
+        if (!allowDataLoss && dataLoss.Count > 0)
         {
             throw new SchemaDeployRefusedException(
                 SchemaRefusalReason.DataLossBlocked,
                 "The deploy could lose data, and data loss was not allowed.",
-                dataLoss);
+                dataLoss,
+                possibleDataLoss: true);
         }
 
         try

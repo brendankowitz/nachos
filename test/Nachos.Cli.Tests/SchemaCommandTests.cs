@@ -196,7 +196,7 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
         blocked.ExitCode.ShouldBe(2);
         blocked.Out.ShouldBeEmpty();
         blocked.Error.ShouldContain("NotInTheModel");
-        blocked.Error.ShouldContain("stopped before dropping data");
+        blocked.Error.ShouldContain("Nothing was changed.");
         blocked.Error.ShouldContain("--allow-data-loss");
         // Never suggests a flag that was already passed.
         blocked.Error.ShouldNotContain("--approve-reviewed");
@@ -206,6 +206,21 @@ public sealed class SchemaCommandTests(SqlServerFixture fixture)
 
         allowed.ExitCode.ShouldBe(0, allowed.Error);
         (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Upgrade_NotReviewed_WithPossibleDataLoss_AdvisesBothFlagsInOneStep()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, "ALTER TABLE dbo.Workspaces ADD NotInTheModel int NULL");
+
+        var refused = await UpgradeAsync(connectionString);
+
+        refused.ExitCode.ShouldBe(2);
+        refused.Out.ShouldBeEmpty();
+        refused.Error.ShouldContain("NotInTheModel");
+        refused.Error.ShouldContain("--approve-reviewed --allow-data-loss");
+        (await ColumnCountAsync(connectionString, "NotInTheModel")).ShouldBe(1);
     }
 
     [Fact]

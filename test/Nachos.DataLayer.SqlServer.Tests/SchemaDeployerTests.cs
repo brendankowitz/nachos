@@ -367,6 +367,8 @@ public sealed partial class SchemaDeployerTests(SqlServerFixture fixture)
         var refused = await AutoSafeRefusalAsync(connectionString);
 
         refused.Reason.ShouldBe(SchemaRefusalReason.NotAutoSafe);
+        refused.PossibleDataLoss.ShouldBeTrue();
+        refused.Reasons.ShouldContain(reason => reason.Contains("NotInTheModel", StringComparison.Ordinal));
         (await ColumnCountAsync(connectionString, "dbo.Workspaces", "NotInTheModel")).ShouldBe(1);
     }
 

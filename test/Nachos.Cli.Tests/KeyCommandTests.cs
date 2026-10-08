@@ -209,7 +209,9 @@ public sealed class KeyCommandTests
 
         run.ExitCode.ShouldBe(1);
         run.Out.ShouldBeEmpty();
-        run.Error.ShouldContain("NACHOS_TEST_KEYS_SECRET_DEFINITELY_UNSET");
+        // The name is whatever the operator typed, which may be the secret itself ("$NACHOS_SIGNING_SECRET" expanded), so it is never echoed.
+        run.Error.ShouldContain("--signing-secret-env");
+        run.Error.ShouldNotContain("NACHOS_TEST_KEYS_SECRET_DEFINITELY_UNSET");
     }
 
     [Fact]
@@ -277,6 +279,18 @@ public sealed class KeyCommandTests
             await CreateAsync("--admin", "--signing-secret", "first-half-of-an-unquoted-secret", "second-half-of-an-unquoted-secret"),
             await CreateAsync("--admin", "--signing-secret", Secret, "--expires", Secret),
             await CreateAsync("--admin", "--signing-secret", Secret, Secret),
+            // A secret typed where the variable's name belongs, which is what an unquoted expansion mistake produces.
+            await CreateAsync("--admin", "--signing-secret-env", Secret),
+            await CreateAsync("--admin", $"--signing-secret-env={Secret}"),
+            await CreateAsync("--admin", $"--signing-secret-env:{Secret}"),
+            await CreateAsync("--admin", "--signing-secret", Secret, "--kid", Secret, "--bogus"),
+            // '--opt=value' and '--opt:value' are one argument that the parser splits.
+            await CreateAsync($"--admin={Secret}", "--signing-secret", Secret),
+            await CreateAsync($"--admin:{Secret}", "--signing-secret", Secret),
+            await CreateAsync("--admin", $"--bogus={shortSecret}"),
+            await CliRun.RunAsync("schema", "upgrade", "--connection", "Server=x", $"--approve-reviewed={Secret}"),
+            await CliRun.RunAsync("schema", "upgrade", "--connection", "Server=x", $"--report-only:{Secret}"),
+            await CliRun.RunAsync("schema", "upgrade", $"--connection={Secret}", $"--allow-data-loss={shortSecret}"),
         };
 
         foreach (var run in runs)
@@ -309,6 +323,21 @@ public sealed class KeyCommandTests
         stray.ExitCode.ShouldBe(1);
         stray.Error.ShouldContain("redacted");
         stray.Error.ShouldNotContain("stray-word");
+    }
+
+    [Theory]
+    [InlineData("--workspace")]
+    [InlineData("--peer")]
+    [InlineData("--expires")]
+    public async Task OptionWithoutAValue_SaysSo_EvenWhenAnotherValueIsShort(string option)
+    {
+        // "a" is a short user token that occurs inside other words of the message; it must not turn the message into a redaction.
+        var run = await CreateAsync("--signing-secret", Secret, "--kid", "a", option);
+
+        run.ExitCode.ShouldBe(1);
+        run.Out.ShouldBeEmpty();
+        run.Error.ShouldContain($"Required argument missing for option: '{option}'");
+        run.Error.ShouldNotContain("redacted");
     }
 
     [Fact]

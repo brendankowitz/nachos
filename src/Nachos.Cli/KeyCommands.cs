@@ -105,7 +105,7 @@ internal static class KeyCommands
         }
 
         var value = Environment.GetEnvironmentVariable(variable!);
-        return string.IsNullOrEmpty(value) ? (null, $"The environment variable {variable} is missing or empty.") : (value, null);
+        return string.IsNullOrEmpty(value) ? (null, "The environment variable named by --signing-secret-env is missing or empty.") : (value, null);
     }
 
     // ISO-8601 only: a culture-dependent parse would read 01/02/2030 as January or February depending on the machine.
