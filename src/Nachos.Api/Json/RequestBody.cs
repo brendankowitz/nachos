@@ -30,6 +30,22 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
             document.Dispose();
             throw Invalid(["body"], "Body must be an object.", "model_type");
         }
+        if (requireObject)
+        {
+            try
+            {
+                // Property names decode lazily; validate every root name before order-dependent lookups.
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    _ = ReadPropertyName(property, ["body"]);
+                }
+            }
+            catch (RequestValidationException)
+            {
+                document.Dispose();
+                throw;
+            }
+        }
         return new(document);
     }
 
@@ -82,15 +98,7 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         Dictionary<string, SessionPeerConfig> peers = new(StringComparer.Ordinal);
         foreach (var peer in value.EnumerateObject())
         {
-            string name;
-            try
-            {
-                name = peer.Name;
-            }
-            catch (InvalidOperationException error)
-            {
-                throw new RequestValidationException([new(location, "Invalid JSON property name.", "json_invalid")], error);
-            }
+            var name = ReadPropertyName(peer, location);
             if (peer.Value.ValueKind != JsonValueKind.Object)
             {
                 throw Invalid([.. location, name], "Peer configuration must be an object.", "model_type");
@@ -127,6 +135,18 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
 
     public static RequestValidationException Invalid(object[] location, string message, string type) =>
         new([new ValidationError(location, message, type)]);
+
+    private static string ReadPropertyName(JsonProperty property, object[] location)
+    {
+        try
+        {
+            return property.Name;
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RequestValidationException([new(location, "Invalid JSON property name.", "json_invalid")], error);
+        }
+    }
 
     private static T ReadValue<T>(JsonElement value, JsonTypeInfo<T> typeInfo, object[] location)
     {
