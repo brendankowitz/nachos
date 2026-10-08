@@ -28,6 +28,7 @@
     <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Identity.Web" Version="4.16.0" />
     <PackageVersion Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.23.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
