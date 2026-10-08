@@ -285,19 +285,26 @@ public sealed class MessageServiceTests
         result[0].Metadata["value"]!.GetValue<string>().ShouldBe("original");
     }
 
-    [Fact]
-    public async Task NoKey_DoesNotUseReplayAndPreservesCreatedAtAndResponseShape()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("key")]
+    public async Task CreationAndReplay_PreserveNonDefaultCreatedAtAndResponseShape(string? key)
     {
         var f = new Fixture();
-        var createdAt = DateTimeOffset.UnixEpoch;
+        var createdAt = f.Clock.GetUtcNow().AddDays(-3).AddTicks(7);
 
-        var result = await f.Service.CreateMessagesAsync("W", "S", [new("", "P", CreatedAt: createdAt)]);
-        await f.Service.CreateMessagesAsync("W", "S", [new("", "P", CreatedAt: createdAt)]);
+        var result = await f.Service.CreateMessagesAsync("W", "S", [new("", "P", CreatedAt: createdAt)], key);
+        var second = await f.Service.CreateMessagesAsync("W", "S", [new("", "P", CreatedAt: createdAt)], key);
 
-        f.Commits.ShouldBe(2);
-        f.Write.ShouldBeNull();
-        f.Store.Idempotency.ReceivedCalls().ShouldBeEmpty();
+        f.Commits.ShouldBe(key is null ? 2 : 1);
+        if (key is null)
+        {
+            f.Write.ShouldBeNull();
+            f.Store.Idempotency.ReceivedCalls().ShouldBeEmpty();
+        }
+        f.Inputs[0].CreatedAt.ShouldBe(createdAt);
         result[0].CreatedAt.ShouldBe(createdAt);
+        second[0].CreatedAt.ShouldBe(createdAt);
         result[0].Content.ShouldBe("");
         result[0].TokenCount.ShouldBe(0);
         JsonSerializer.SerializeToElement(result[0]).EnumerateObject().Select(p => p.Name)
