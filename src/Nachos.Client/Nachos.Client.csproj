@@ -3,4 +3,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- RetryHandler's delay and jitter seams are internal so tests never sleep for real. -->
+    <InternalsVisibleTo Include="Nachos.Client.Tests" />
+  </ItemGroup>
 </Project>
