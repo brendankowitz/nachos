@@ -84,19 +84,11 @@ public abstract class FilterConformanceTests : IAsyncLifetime
     [Fact]
     public async Task HandBuiltOperandWithAConverter_EvaluatesLikeTheParsedFilter_AndNeverRunsTheConverter()
     {
-        var (filterCase, parsed, literal) = FilterCaseLibrary.All
-            .Where(c => !c.Error && c.Expect is { Count: > 0 })
-            .Select(c => (Case: c, Parsed: FilterParser.Parse(c.Filter, c.Resource)))
-            .Select(x => (x.Case, x.Parsed, Literal: (x.Parsed as FilterNode.MetadataPath)?.Value as JsonValue))
-            .Where(x => x.Parsed is FilterNode.MetadataPath { Op: FilterOp.Eq }
-                && x.Literal is not null
-                && x.Literal.GetValueKind() == JsonValueKind.String
-                && x.Literal.GetValue<string>().Any(char.IsLower))
-            .First();
-        var path = ((FilterNode.MetadataPath)parsed!).Path;
+        var (filterCase, parsed, literal) = EqualityOnAStringInMetadata();
+        var path = ((FilterNode.MetadataPath)parsed).Path;
         var converter = new CountingUppercaseConverter();
         var handBuilt = new FilterNode.MetadataPath(
-            path, FilterOp.Eq, StrictJsonSamples.UppercasedString(literal!.GetValue<string>(), converter));
+            path, FilterOp.Eq, StrictJsonSamples.UppercasedString(literal, converter));
 
         var expected = await QueryAsync(filterCase.Resource, parsed);
         var actual = await QueryAsync(filterCase.Resource, handBuilt);
@@ -104,6 +96,71 @@ public abstract class FilterConformanceTests : IAsyncLifetime
         actual.ShouldBe(expected, ignoreOrder: true);
         converter.Calls.ShouldBe(0);
     }
+
+    /// <summary>
+    /// The operand a node returns is a detached copy, so a caller cannot put a converter into the stored one by
+    /// changing what <c>Value</c> returned: the next evaluation, comparison and printout still run no caller code.
+    /// </summary>
+    [Fact]
+    public async Task ChangingTheOperandThatAHandBuiltNodeReturned_DoesNotChangeTheNode_OrRunAConverter()
+    {
+        var (filterCase, parsed) = FilterCaseLibrary.All
+            .Where(c => !c.Error && c.Expect is { Count: > 0 })
+            .Select(c => (Case: c, Parsed: FilterParser.Parse(c.Filter, c.Resource)!))
+            .First(x => x.Parsed is FilterNode.MetadataPath { Value: JsonArray or JsonObject });
+        var source = (FilterNode.MetadataPath)parsed;
+        var converter = new CountingUppercaseConverter();
+        var handBuilt = new FilterNode.MetadataPath(source.Path, source.Op, source.Value);
+
+        switch (handBuilt.Value)
+        {
+            case JsonArray array:
+                array.Add(StrictJsonSamples.UppercasedString("x", converter));
+                break;
+            case JsonObject obj:
+                obj["injected"] = StrictJsonSamples.UppercasedString("x", converter);
+                break;
+        }
+
+        var expected = await QueryAsync(filterCase.Resource, parsed);
+        var actual = await QueryAsync(filterCase.Resource, handBuilt);
+
+        actual.ShouldBe(expected, ignoreOrder: true);
+        handBuilt.Equals(parsed).ShouldBeTrue();
+        handBuilt.ToString().ShouldNotContain("injected");
+        converter.Calls.ShouldBe(0);
+    }
+    /// <summary>
+    /// Metadata is stored canonically, so a <see cref="DateTimeOffset"/> operand on a metadata path is its ISO string:
+    /// it evaluates exactly like the string-built node and does not throw.
+    /// </summary>
+    [Fact]
+    public async Task HandBuiltMetadataPathWithADateTimeOffset_EvaluatesLikeItsIsoString()
+    {
+        var instant = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        var typed = new FilterNode.MetadataPath(["when"], FilterOp.Eq, JsonValue.Create(instant));
+        var text = new FilterNode.MetadataPath(["when"], FilterOp.Eq, JsonValue.Create("2026-01-02T03:04:05+00:00"));
+
+        var viaTyped = await QueryAsync(ResourceKind.Workspace, typed);
+        var viaText = await QueryAsync(ResourceKind.Workspace, text);
+
+        typed.Value!.GetValue<string>().ShouldBe(text.Value!.GetValue<string>());
+        viaTyped.ShouldBe(viaText, ignoreOrder: true);
+    }
+
+    // The first equality case on a string in metadata that has matches, whose literal changes under upper-casing.
+    private static (FilterCase Case, FilterNode Parsed, string Literal) EqualityOnAStringInMetadata() =>
+        FilterCaseLibrary.All
+            .Where(c => !c.Error && c.Expect is { Count: > 0 })
+            .Select(c => (Case: c, Parsed: FilterParser.Parse(c.Filter, c.Resource)!))
+            .Select(x => (x.Case, x.Parsed, Literal: (x.Parsed as FilterNode.MetadataPath)?.Value as JsonValue))
+            .Where(x => x.Parsed is FilterNode.MetadataPath { Op: FilterOp.Eq }
+                && x.Literal is not null
+                && x.Literal.GetValueKind() == JsonValueKind.String
+                && x.Literal.GetValue<string>().Any(char.IsLower))
+            .Select(x => (x.Case, x.Parsed, x.Literal!.GetValue<string>()))
+            .First();
+
     private static HashSet<string> DatasetIds(FilterDataset dataset, ResourceKind kind) => (kind switch
     {
         ResourceKind.Workspace => dataset.Workspaces.Select(w => w.Name),

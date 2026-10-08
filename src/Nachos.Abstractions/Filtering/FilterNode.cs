@@ -19,12 +19,13 @@ namespace Nachos.Abstractions.Filtering;
 /// <b>Hand-built nodes are supported and validated.</b> A <see cref="Field"/> or <see cref="MetadataPath"/> checks its
 /// parts when it is constructed (and again on a <c>with</c> expression): a column name or path key must be well-formed
 /// UTF-16, and the operand must be strict JSON data (see <see cref="StrictJsonData"/>), or a
-/// <see cref="NachosValidationException"/> is thrown. The operand is stored as a detached canonical copy, never the
-/// caller's node, so no caller converter or serialization metadata can run when a provider evaluates, compares or
-/// prints the node, and later changes to the caller's node or path list have no effect. A
-/// <see cref="DateTimeOffset"/> operand stays a <see cref="DateTimeOffset"/>, because providers read it back as one.
-/// Whether the operand suits the column is not checked here: <see cref="FilterParser"/> normalizes it, and a
-/// hand-built node must follow the same operand types.
+/// <see cref="NachosValidationException"/> is thrown. The operand is stored as a canonical copy, never the caller's
+/// node, so no caller converter or serialization metadata can run when a provider evaluates, compares or prints the
+/// node, and later changes to the caller's node or path list have no effect. The <c>Value</c> property returns a
+/// detached copy of that stored operand each time it is read, so changing what it returns, or attaching it to another
+/// tree, does not change the node; read it once and reuse it rather than once per row. Whether the operand suits the
+/// column is not checked here: <see cref="FilterParser"/> normalizes it, and a hand-built node must follow the same
+/// operand types.
 /// </para>
 /// <para>
 /// <b>Semantics every provider must honour.</b> Positive conditions never match unset values;
@@ -90,10 +91,13 @@ public abstract record FilterNode
     /// <see cref="FilterColumns.CreatedAt"/> (read it with <c>Value.GetValue&lt;DateTimeOffset&gt;()</c>; a date-only
     /// input is UTC midnight). For <see cref="FilterOp.In"/> it is a non-empty <see cref="JsonArray"/> of such
     /// values (at most <see cref="FilterParser.MaxListItems"/>). It is null for <see cref="FilterOp.IsNull"/> and <see cref="FilterOp.NotNull"/>.
+    /// A <see cref="DateTimeOffset"/> operand stays a <see cref="DateTimeOffset"/>, because providers read it back as one,
+    /// so a hand-built <c>created_at</c> operand must be a <see cref="DateTimeOffset"/> value
+    /// (<c>JsonValue.Create(instant)</c>), not a string or parsed JSON text. The property returns a detached copy on each read.
     /// </param>
     public sealed record Field(string Column, FilterOp Op, JsonNode? Value) : FilterNode
     {
-        private readonly string _column = RequireText(Column);
+        private readonly string _column = RequireText(Column, nameof(Column));
 
         private readonly JsonNode? _value = StrictJsonData.ToCanonicalOperand(Value);
 
@@ -101,22 +105,26 @@ public abstract record FilterNode
         public string Column
         {
             get => _column;
-            init => _column = RequireText(value);
+            init => _column = RequireText(value, nameof(Column));
         }
 
-        /// <summary>The operand: a detached canonical copy of the node it was given.</summary>
+        /// <summary>
+        /// The operand: a canonical copy of the node it was given. Each read returns a new detached copy, so changing
+        /// it or attaching it elsewhere does not change this node.
+        /// </summary>
         public JsonNode? Value
         {
-            get => _value;
+            get => _value?.DeepClone();
             init => _value = StrictJsonData.ToCanonicalOperand(value);
         }
 
+        // The members below read the stored operand directly: it is canonical, so nothing in it can run caller code.
         public bool Equals(Field? other) =>
-            other is not null && Column == other.Column && Op == other.Op && JsonNode.DeepEquals(Value, other.Value);
+            other is not null && Column == other.Column && Op == other.Op && JsonNode.DeepEquals(_value, other._value);
 
         protected override bool PrintMembers(StringBuilder builder)
         {
-            builder.Append("Column = ").Append(Column).Append(", Op = ").Append(Op).Append(", Value = ").Append(Value);
+            builder.Append("Column = ").Append(Column).Append(", Op = ").Append(Op).Append(", Value = ").Append(_value);
             return true;
         }
 
@@ -144,33 +152,39 @@ public abstract record FilterNode
     /// </param>
     public sealed record MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value) : FilterNode
     {
-        private readonly IReadOnlyList<string> _path = SnapshotPath(Path);
+        private readonly IReadOnlyList<string> _path = SnapshotPath(Path, nameof(Path));
 
-        private readonly JsonNode? _value = StrictJsonData.ToCanonicalOperand(Value);
+        // The public canonical form, the one metadata is stored in: a DateTimeOffset becomes its ISO string.
+        private readonly JsonNode? _value = StrictJsonData.ToCanonical(Value);
 
         /// <summary>The object keys: an immutable copy of the list it was given, each key a well-formed string.</summary>
         public IReadOnlyList<string> Path
         {
             get => _path;
-            init => _path = SnapshotPath(value);
+            init => _path = SnapshotPath(value, nameof(Path));
         }
 
-        /// <summary>The operand: a detached canonical copy of the node it was given.</summary>
+        /// <summary>
+        /// The operand: a canonical copy of the node it was given, in the same form metadata is stored in (a
+        /// <see cref="DateTimeOffset"/> is its ISO 8601 string). Each read returns a new detached copy, so changing it
+        /// or attaching it elsewhere does not change this node.
+        /// </summary>
         public JsonNode? Value
         {
-            get => _value;
-            init => _value = StrictJsonData.ToCanonicalOperand(value);
+            get => _value?.DeepClone();
+            init => _value = StrictJsonData.ToCanonical(value);
         }
 
+        // The members below read the stored operand directly: it is canonical, so nothing in it can run caller code.
         public bool Equals(MetadataPath? other) =>
             other is not null
             && Op == other.Op
             && Path.SequenceEqual(other.Path, StringComparer.Ordinal)
-            && JsonNode.DeepEquals(Value, other.Value);
+            && JsonNode.DeepEquals(_value, other._value);
 
         protected override bool PrintMembers(StringBuilder builder)
         {
-            builder.Append("Path = [").AppendJoin(", ", Path).Append("], Op = ").Append(Op).Append(", Value = ").Append(Value?.ToJsonString());
+            builder.Append("Path = [").AppendJoin(", ", Path).Append("], Op = ").Append(Op).Append(", Value = ").Append(_value?.ToJsonString());
             return true;
         }
 
@@ -187,20 +201,20 @@ public abstract record FilterNode
         }
     }
 
-    private static string RequireText(string? text)
+    private static string RequireText(string? text, string paramName)
     {
-        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(text, paramName);
         StrictJsonData.RequireWellFormed(text);
         return text;
     }
 
-    private static ReadOnlyCollection<string> SnapshotPath(IReadOnlyList<string>? path)
+    private static ReadOnlyCollection<string> SnapshotPath(IReadOnlyList<string>? path, string paramName)
     {
-        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(path, paramName);
         var keys = new string[path.Count];
         for (var i = 0; i < keys.Length; i++)
         {
-            keys[i] = RequireText(path[i]);
+            keys[i] = RequireText(path[i], paramName);
         }
 
         return Array.AsReadOnly(keys);

@@ -145,6 +145,111 @@ public sealed class FilterNodeTests
         ((ICollection<string>)path.Path).IsReadOnly.ShouldBeTrue();
     }
 
+    // ------------------------------------------------------------------ the Value getter returns a detached copy
+
+    [Fact]
+    public void Field_ChangingTheReturnedOperand_DoesNotChangeTheNode_OrRunAConverter()
+    {
+        var converter = new CountingUppercaseConverter();
+        var field = new FilterNode.Field(FilterColumns.Name, FilterOp.In, new JsonArray("a", new JsonObject { ["k"] = 1 }));
+        var twin = new FilterNode.Field(FilterColumns.Name, FilterOp.In, new JsonArray("a", new JsonObject { ["k"] = 1 }));
+
+        var returned = field.Value!.AsArray();
+        returned.Add(WithConverter("added", converter));
+        returned[0] = WithConverter("replaced", converter);
+        ((JsonObject)returned[1]!)["k"] = WithConverter("set", converter);
+
+        field.Value!.ToJsonString().ShouldBe("""["a",{"k":1}]""");
+        field.Equals(twin).ShouldBeTrue();
+        field.GetHashCode().ShouldBe(twin.GetHashCode());
+        field.ToString().ShouldNotContain("added");
+        field.ToString().ShouldNotContain("replaced");
+        converter.Calls.ShouldBe(0);
+    }
+
+    [Fact]
+    public void MetadataPath_ChangingTheReturnedOperand_DoesNotChangeTheNode_OrRunAConverter()
+    {
+        var converter = new CountingUppercaseConverter();
+        var path = new FilterNode.MetadataPath(["a"], FilterOp.Contains, new JsonObject { ["k"] = new JsonArray(1, 2) });
+        var twin = new FilterNode.MetadataPath(["a"], FilterOp.Contains, new JsonObject { ["k"] = new JsonArray(1, 2) });
+
+        var returned = path.Value!.AsObject();
+        returned["k"]!.AsArray().Add(WithConverter("added", converter));
+        returned["k"]!.AsArray()[0] = WithConverter("replaced", converter);
+        returned["other"] = WithConverter("set", converter);
+
+        path.Value!.ToJsonString().ShouldBe("""{"k":[1,2]}""");
+        path.Equals(twin).ShouldBeTrue();
+        path.GetHashCode().ShouldBe(twin.GetHashCode());
+        path.ToString().ShouldContain("""{"k":[1,2]}""");
+        converter.Calls.ShouldBe(0);
+    }
+
+    [Fact]
+    public void EachRead_ReturnsANewParentlessCopy_ThatCanBeAttachedElsewhere()
+    {
+        var field = new FilterNode.Field(FilterColumns.Name, FilterOp.In, new JsonArray("a"));
+
+        var first = field.Value!;
+        var second = field.Value!;
+        var tree = new JsonObject { ["x"] = first, ["y"] = second, ["z"] = field.Value };
+
+        first.ShouldNotBeSameAs(second);
+        tree.ToJsonString().ShouldBe("""{"x":["a"],"y":["a"],"z":["a"]}""");
+        field.Value!.ToJsonString().ShouldBe("""["a"]""");
+    }
+
+    [Fact]
+    public void WithCopies_AreIndependent()
+    {
+        var field = new FilterNode.Field(FilterColumns.Name, FilterOp.In, new JsonArray("a"));
+        var path = new FilterNode.MetadataPath(["k"], FilterOp.JsonContains, new JsonArray("a"));
+
+        var fieldCopy = field with { Op = FilterOp.Eq };
+        var pathCopy = path with { Op = FilterOp.Eq };
+        fieldCopy.Value!.AsArray().Add("changed");
+        pathCopy.Value!.AsArray().Add("changed");
+
+        field.Value!.ToJsonString().ShouldBe("""["a"]""");
+        path.Value!.ToJsonString().ShouldBe("""["a"]""");
+        fieldCopy.Value!.ToJsonString().ShouldBe("""["a"]""");
+        pathCopy.Value!.ToJsonString().ShouldBe("""["a"]""");
+        fieldCopy.Value.ShouldNotBeSameAs(field.Value);
+    }
+
+    // ------------------------------------------------------------------ metadata operands use the stored form
+
+    [Fact]
+    public void MetadataPath_DateTimeOffsetOperand_IsItsIsoString_AndEqualsTheStringBuiltNode()
+    {
+        var instant = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.FromHours(2));
+        var typed = new FilterNode.MetadataPath(["when"], FilterOp.Eq, JsonValue.Create(instant));
+        var text = new FilterNode.MetadataPath(["when"], FilterOp.Eq, JsonValue.Create("2026-01-02T03:04:05+02:00"));
+
+        typed.Value!.GetValue<string>().ShouldBe("2026-01-02T03:04:05+02:00");
+        typed.ShouldBe(text);
+        typed.GetHashCode().ShouldBe(text.GetHashCode());
+    }
+
+    [Fact]
+    public void Field_DateTimeOffsetOperand_StaysTyped_ButNotOnAMetadataPath()
+    {
+        var instant = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+        new FilterNode.Field(FilterColumns.CreatedAt, FilterOp.Eq, JsonValue.Create(instant)).Value!
+            .GetValue<DateTimeOffset>().ShouldBe(instant);
+        Should.Throw<InvalidOperationException>(() =>
+            new FilterNode.MetadataPath(["when"], FilterOp.Eq, JsonValue.Create(instant)).Value!.GetValue<DateTimeOffset>());
+    }
+
+    [Fact]
+    public void NullParts_CarryTheParameterName()
+    {
+        Should.Throw<ArgumentNullException>(() => new FilterNode.Field(null!, FilterOp.Eq, "x")).ParamName.ShouldBe("Column");
+        Should.Throw<ArgumentNullException>(() => new FilterNode.MetadataPath(null!, FilterOp.Eq, "x")).ParamName.ShouldBe("Path");
+        Should.Throw<ArgumentNullException>(() => new FilterNode.MetadataPath(["a", null!], FilterOp.Eq, "x")).ParamName.ShouldBe("Path");
+    }
     // ------------------------------------------------------------------ with expressions
 
     [Fact]
