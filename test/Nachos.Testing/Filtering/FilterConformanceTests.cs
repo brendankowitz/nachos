@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Filtering;
+using Nachos.Testing.Json;
 using Shouldly;
 using Xunit;
 
@@ -74,6 +77,33 @@ public abstract class FilterConformanceTests : IAsyncLifetime
         inDataset.Distinct().Count().ShouldBe(inDataset.Count, "duplicate ids");
     }
 
+    /// <summary>
+    /// A filter node built by hand, with an operand that carries a caller converter, must evaluate like the parsed one:
+    /// the node itself stores a canonical copy, so no provider ever runs the converter (for instance while it holds a lock).
+    /// </summary>
+    [Fact]
+    public async Task HandBuiltOperandWithAConverter_EvaluatesLikeTheParsedFilter_AndNeverRunsTheConverter()
+    {
+        var (filterCase, parsed, literal) = FilterCaseLibrary.All
+            .Where(c => !c.Error && c.Expect is { Count: > 0 })
+            .Select(c => (Case: c, Parsed: FilterParser.Parse(c.Filter, c.Resource)))
+            .Select(x => (x.Case, x.Parsed, Literal: (x.Parsed as FilterNode.MetadataPath)?.Value as JsonValue))
+            .Where(x => x.Parsed is FilterNode.MetadataPath { Op: FilterOp.Eq }
+                && x.Literal is not null
+                && x.Literal.GetValueKind() == JsonValueKind.String
+                && x.Literal.GetValue<string>().Any(char.IsLower))
+            .First();
+        var path = ((FilterNode.MetadataPath)parsed!).Path;
+        var converter = new CountingUppercaseConverter();
+        var handBuilt = new FilterNode.MetadataPath(
+            path, FilterOp.Eq, StrictJsonSamples.UppercasedString(literal!.GetValue<string>(), converter));
+
+        var expected = await QueryAsync(filterCase.Resource, parsed);
+        var actual = await QueryAsync(filterCase.Resource, handBuilt);
+
+        actual.ShouldBe(expected, ignoreOrder: true);
+        converter.Calls.ShouldBe(0);
+    }
     private static HashSet<string> DatasetIds(FilterDataset dataset, ResourceKind kind) => (kind switch
     {
         ResourceKind.Workspace => dataset.Workspaces.Select(w => w.Name),

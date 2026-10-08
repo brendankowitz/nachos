@@ -100,14 +100,25 @@ public static class StrictJsonData
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxDepth"/> is less than 1 or more than <see cref="MaxAllowedDepth"/>.</exception>
     /// <exception cref="ObjectDisposedException">A <see cref="JsonElement"/> in the input belongs to a disposed document (a programming error).</exception>
-    public static JsonNode? ToCanonical(JsonNode? value, int maxDepth = DefaultMaxDepth)
+    public static JsonNode? ToCanonical(JsonNode? value, int maxDepth = DefaultMaxDepth) =>
+        ToCanonicalCore(value, maxDepth, keepInstants: false);
+
+    /// <summary>
+    /// The same, for the operand of a filter node, which providers read back with <c>GetValue&lt;DateTimeOffset&gt;()</c>:
+    /// a <see cref="DateTimeOffset"/> stays a <see cref="DateTimeOffset"/> instead of becoming its ISO string. Every
+    /// other rule, the default depth limit included, is unchanged.
+    /// </summary>
+    internal static JsonNode? ToCanonicalOperand(JsonNode? value) =>
+        ToCanonicalCore(value, DefaultMaxDepth, keepInstants: true);
+
+    private static JsonNode? ToCanonicalCore(JsonNode? value, int maxDepth, bool keepInstants)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxDepth, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxDepth, MaxAllowedDepth);
 
         try
         {
-            return Canonicalize(value, maxDepth);
+            return Canonicalize(value, maxDepth, keepInstants);
         }
         catch (Exception ex) when (ex is (InvalidOperationException or ArgumentException) and not ObjectDisposedException)
         {
@@ -143,19 +154,20 @@ public static class StrictJsonData
     }
 
     // Iterative on purpose: the open containers live in this stack, not on the native one, so depth costs heap only.
-    private static JsonNode? Canonicalize(JsonNode? root, int maxDepth)
+    private static JsonNode? Canonicalize(JsonNode? root, int maxDepth, bool keepInstants)
     {
-        var open = new Stack<Frame>();
+        // Created on the first container, so a scalar or null root costs no stack.
+        Stack<Frame>? open = null;
         try
         {
-            if (TryRead(new Item(null, root, default, false), open, maxDepth, out var rootLeaf))
+            if (TryRead(new Item(null, root, default, false), ref open, maxDepth, keepInstants, out var rootLeaf))
             {
                 return rootLeaf;
             }
 
             while (true)
             {
-                var frame = open.Peek();
+                var frame = open!.Peek();
                 if (frame.Children.MoveNext())
                 {
                     var child = frame.Children.Current;
@@ -171,7 +183,7 @@ public static class StrictJsonData
                     }
 
                     frame.PendingKey = child.Key;
-                    if (TryRead(child, open, maxDepth, out var leaf))
+                    if (TryRead(child, ref open, maxDepth, keepInstants, out var leaf))
                     {
                         frame.Attach(leaf);
                     }
@@ -191,20 +203,23 @@ public static class StrictJsonData
         }
         finally
         {
-            foreach (var frame in open)
+            if (open is not null)
             {
-                frame.Children.Dispose();
+                foreach (var frame in open)
+                {
+                    frame.Children.Dispose();
+                }
             }
         }
     }
 
     // Reads a scalar or null into `leaf` and returns true; for an object or array opens a frame and returns false.
-    private static bool TryRead(Item item, Stack<Frame> open, int maxDepth, out JsonNode? leaf)
+    private static bool TryRead(Item item, ref Stack<Frame>? open, int maxDepth, bool keepInstants, out JsonNode? leaf)
     {
         leaf = null;
         if (item.IsElement)
         {
-            return TryReadElement(item.Element, open, maxDepth, out leaf);
+            return TryReadElement(item.Element, ref open, maxDepth, out leaf);
         }
 
         switch (item.Node)
@@ -212,10 +227,10 @@ public static class StrictJsonData
             case null:
                 return true;
             case JsonObject obj:
-                Open(open, maxDepth, new JsonObject(), ObjectChildren(obj));
+                Open(ref open, maxDepth, new JsonObject(), ObjectChildren(obj));
                 return false;
             case JsonArray array:
-                Open(open, maxDepth, new JsonArray(), ArrayChildren(array));
+                Open(ref open, maxDepth, new JsonArray(), ArrayChildren(array));
                 return false;
             default:
                 var value = (JsonValue)item.Node;
@@ -223,17 +238,17 @@ public static class StrictJsonData
                 // JsonElement first: TryGetValue<T> converts a JSON-backed value, so it would also satisfy the checks below.
                 if (value.TryGetValue(out JsonElement element))
                 {
-                    return TryReadElement(element, open, maxDepth, out leaf);
+                    return TryReadElement(element, ref open, maxDepth, out leaf);
                 }
 
-                leaf = CanonicalizeScalar(value);
+                leaf = CanonicalizeScalar(value, keepInstants);
                 return true;
         }
     }
 
     // A JsonValue can hold an object or array element when it was created with a JsonTypeInfo
     // (Create<JsonElement>(element, typeInfo) or Create<object>), so the element is read like any JSON data.
-    private static bool TryReadElement(JsonElement element, Stack<Frame> open, int maxDepth, out JsonNode? leaf)
+    private static bool TryReadElement(JsonElement element, ref Stack<Frame>? open, int maxDepth, out JsonNode? leaf)
     {
         leaf = null;
         switch (element.ValueKind)
@@ -256,10 +271,10 @@ public static class StrictJsonData
             case JsonValueKind.Null:
                 return true;
             case JsonValueKind.Object:
-                Open(open, maxDepth, new JsonObject(), ElementProperties(element));
+                Open(ref open, maxDepth, new JsonObject(), ElementProperties(element));
                 return false;
             case JsonValueKind.Array:
-                Open(open, maxDepth, new JsonArray(), ElementItems(element));
+                Open(ref open, maxDepth, new JsonArray(), ElementItems(element));
                 return false;
             default:
                 throw new NachosValidationException("The value is an undefined JSON element.");
@@ -267,8 +282,9 @@ public static class StrictJsonData
     }
 
     // Constructed and element levels share the one stack, so they count toward the same limit.
-    private static void Open(Stack<Frame> open, int maxDepth, JsonNode result, IEnumerable<Item> children)
+    private static void Open(ref Stack<Frame>? open, int maxDepth, JsonNode result, IEnumerable<Item> children)
     {
+        open ??= new Stack<Frame>();
         RequireDepth(open.Count + 1, maxDepth);
         open.Push(new Frame(result, children.GetEnumerator()));
     }
@@ -307,7 +323,7 @@ public static class StrictJsonData
     }
 
     // The scalar allowlist, in the order its checks must run. A JsonElement-backed value never reaches here.
-    private static JsonValue? CanonicalizeScalar(JsonValue value)
+    private static JsonValue? CanonicalizeScalar(JsonValue value, bool keepInstants)
     {
         if (value.TryGetValue(out string? text))
         {
@@ -391,7 +407,9 @@ public static class StrictJsonData
 
         if (value.TryGetValue(out DateTimeOffset dateTimeOffset))
         {
-            return JsonValue.Create(WrittenAsString(writer => writer.WriteStringValue(dateTimeOffset)));
+            return keepInstants
+                ? JsonValue.Create(dateTimeOffset)
+                : JsonValue.Create(WrittenAsString(writer => writer.WriteStringValue(dateTimeOffset)));
         }
 
         if (value.TryGetValue(out Guid guid))
@@ -420,7 +438,9 @@ public static class StrictJsonData
         }
     }
 
-    private static void RequireWellFormed(string text)
+    /// <summary>Throws when <paramref name="text"/> holds an unpaired surrogate.</summary>
+    /// <exception cref="NachosValidationException">The text is not well-formed UTF-16.</exception>
+    internal static void RequireWellFormed(string text)
     {
         for (var i = 0; i < text.Length; i++)
         {

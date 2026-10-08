@@ -1,6 +1,8 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json.Nodes;
+using Nachos.Abstractions.Json;
 
 namespace Nachos.Abstractions.Filtering;
 
@@ -11,8 +13,18 @@ namespace Nachos.Abstractions.Filtering;
 /// <remarks>
 /// <para>
 /// The hierarchy is closed: the subtypes below are the only ones. All are sealed with <b>structural</b> equality,
-/// so two trees built from the same filter compare equal. Operand <see cref="JsonNode"/>s are parser-owned and must
-/// not be mutated.
+/// so two trees built from the same filter compare equal.
+/// </para>
+/// <para>
+/// <b>Hand-built nodes are supported and validated.</b> A <see cref="Field"/> or <see cref="MetadataPath"/> checks its
+/// parts when it is constructed (and again on a <c>with</c> expression): a column name or path key must be well-formed
+/// UTF-16, and the operand must be strict JSON data (see <see cref="StrictJsonData"/>), or a
+/// <see cref="NachosValidationException"/> is thrown. The operand is stored as a detached canonical copy, never the
+/// caller's node, so no caller converter or serialization metadata can run when a provider evaluates, compares or
+/// prints the node, and later changes to the caller's node or path list have no effect. A
+/// <see cref="DateTimeOffset"/> operand stays a <see cref="DateTimeOffset"/>, because providers read it back as one.
+/// Whether the operand suits the column is not checked here: <see cref="FilterParser"/> normalizes it, and a
+/// hand-built node must follow the same operand types.
 /// </para>
 /// <para>
 /// <b>Semantics every provider must honour.</b> Positive conditions never match unset values;
@@ -81,8 +93,32 @@ public abstract record FilterNode
     /// </param>
     public sealed record Field(string Column, FilterOp Op, JsonNode? Value) : FilterNode
     {
+        private readonly string _column = RequireText(Column);
+
+        private readonly JsonNode? _value = StrictJsonData.ToCanonicalOperand(Value);
+
+        /// <summary>The canonical column name; a well-formed string.</summary>
+        public string Column
+        {
+            get => _column;
+            init => _column = RequireText(value);
+        }
+
+        /// <summary>The operand: a detached canonical copy of the node it was given.</summary>
+        public JsonNode? Value
+        {
+            get => _value;
+            init => _value = StrictJsonData.ToCanonicalOperand(value);
+        }
+
         public bool Equals(Field? other) =>
             other is not null && Column == other.Column && Op == other.Op && JsonNode.DeepEquals(Value, other.Value);
+
+        protected override bool PrintMembers(StringBuilder builder)
+        {
+            builder.Append("Column = ").Append(Column).Append(", Op = ").Append(Op).Append(", Value = ").Append(Value);
+            return true;
+        }
 
         // Deliberately ignores Value: numerically equal JSON numbers can serialize differently.
         public override int GetHashCode() => HashCode.Combine(Column, Op);
@@ -108,6 +144,24 @@ public abstract record FilterNode
     /// </param>
     public sealed record MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value) : FilterNode
     {
+        private readonly IReadOnlyList<string> _path = SnapshotPath(Path);
+
+        private readonly JsonNode? _value = StrictJsonData.ToCanonicalOperand(Value);
+
+        /// <summary>The object keys: an immutable copy of the list it was given, each key a well-formed string.</summary>
+        public IReadOnlyList<string> Path
+        {
+            get => _path;
+            init => _path = SnapshotPath(value);
+        }
+
+        /// <summary>The operand: a detached canonical copy of the node it was given.</summary>
+        public JsonNode? Value
+        {
+            get => _value;
+            init => _value = StrictJsonData.ToCanonicalOperand(value);
+        }
+
         public bool Equals(MetadataPath? other) =>
             other is not null
             && Op == other.Op
@@ -131,6 +185,25 @@ public abstract record FilterNode
 
             return hash.ToHashCode();
         }
+    }
+
+    private static string RequireText(string? text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        StrictJsonData.RequireWellFormed(text);
+        return text;
+    }
+
+    private static ReadOnlyCollection<string> SnapshotPath(IReadOnlyList<string>? path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        var keys = new string[path.Count];
+        for (var i = 0; i < keys.Length; i++)
+        {
+            keys[i] = RequireText(path[i]);
+        }
+
+        return Array.AsReadOnly(keys);
     }
 
     private static bool PrintChildren(StringBuilder builder, IReadOnlyList<FilterNode> children)
