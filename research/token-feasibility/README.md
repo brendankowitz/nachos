@@ -44,3 +44,6 @@ Exact command lines used are in the PR #6 comment and in `out/*.txt` headers. Th
 - A durable contract for Unicode classification across .NET servicing/runtime versions is NOT provided; cancellation is checked in the merge loop (every 1,024 heap pops) and per 256 pieces, not through every stage (UTF-8 conversion, setup, scanning of one very long piece).
 - Thread-safety was not stress-tested; the residual batch cost (100 x 25k characters) is linear but not constant.
 - Build warning (harness only): NU1903 for `Microsoft.Bcl.Memory` 9.0.4, a transitive dependency of the pinned Microsoft package.
+
+## Notices added after publication
+`notices/UNICODE-PROVENANCE.md` and `notices/UNICODE-LICENSE-V3.txt` (this directory, outside the frozen tarball) give the provenance and the Unicode License v3 permission notice for the one UCD file in `data/ucd/`. The tarball and its hash are unchanged.
