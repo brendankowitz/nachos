@@ -12,7 +12,7 @@ public sealed class SqlFilterCompilerTests
 {
     private const string Marker = "zqxj";
 
-    /// <summary><see cref="Marker"/> as UTF-16LE hex, the form string <c>in</c> lists are packed in.</summary>
+    /// <summary><see cref="Marker"/> as UTF-16LE hex, the form short strings of an <c>in</c> list are packed in.</summary>
     private static readonly string MarkerHex = string.Concat(Marker.Select(c => $"{c & 0xFF:X2}{c >> 8:X2}"));
 
     /// <summary>Values that would break out of a string literal, an identifier, a comment or a LIKE pattern.</summary>
@@ -77,6 +77,8 @@ public sealed class SqlFilterCompilerTests
         var compiled = 0;
         foreach (var value in Hostile)
         {
+            // Longer strings of an `in` list are packed as their SHA-256 digest.
+            var digest = SqlDigest.OfString(value);
             foreach (var (filter, kind) in FiltersCarrying(value))
             {
                 var (sql, parameters) = Compile(filter, kind);
@@ -91,10 +93,11 @@ public sealed class SqlFilterCompilerTests
                     sql.ShouldContain(parameter.ParameterName);
                 }
 
-                // The value travels in a parameter (possibly escaped, folded into a LIKE pattern, inside a JSON list, or as
-                // the hex of its UTF-16 code units packed for an `in` list).
+                // The value travels in a parameter (possibly escaped, folded into a LIKE pattern, inside a JSON list, or
+                // packed for an `in` list as the hex of its UTF-16 code units or as its digest).
                 sql.ShouldNotContain(MarkerHex, Case.Insensitive, $"a user value leaked into the SQL of {filter.ToJsonString()}");
-                parameters.Any(p => p.Value is string value && (value.Contains(Marker, StringComparison.Ordinal) || value.Contains(MarkerHex, StringComparison.Ordinal)))
+                sql.ShouldNotContain(digest, Case.Insensitive, $"a user value leaked into the SQL of {filter.ToJsonString()}");
+                parameters.Any(p => p.Value is string text && (text.Contains(Marker, StringComparison.Ordinal) || text.Contains(MarkerHex, StringComparison.Ordinal) || text.Contains(digest, StringComparison.Ordinal)))
                     .ShouldBeTrue($"the value of {filter.ToJsonString()} is not in any parameter");
             }
         }
@@ -163,16 +166,23 @@ public sealed class SqlFilterCompilerTests
     }
 
     [Fact]
-    public void MetadataInList_IsOneListParameter()
+    public void MetadataInList_IsPackedInChunks_NotOneParameterPerElement()
     {
-        // The parser turns a metadata "in" into OR-ed equalities; the compiler regroups them into one list.
+        // The parser turns a metadata "in" into OR-ed equalities; the compiler regroups them into packed chunks, each
+        // passed with its first and last entry.
         var values = new JsonArray([.. Enumerable.Range(0, FilterParser.MaxListItems).Select(i => (JsonNode)$"v{i}")]);
+        var longValues = new JsonArray([.. Enumerable.Range(0, FilterParser.MaxListItems).Select(i => (JsonNode)(new string('v', 1990) + i))]);
 
-        var (sql, parameters) = Compile(
-            new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["in"] = values } } }, ResourceKind.Peer);
+        foreach (var list in new[] { values, longValues })
+        {
+            var (sql, parameters) = Compile(
+                new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["in"] = list } } }, ResourceKind.Peer);
 
-        parameters.Count.ShouldBeLessThan(5);
-        sql.Length.ShouldBeLessThan(4000);
+            parameters.Count.ShouldBeLessThan(40);
+            parameters.ShouldAllBe(p => ((string)p.Value).Length <= 8000);
+            sql.Length.ShouldBeLessThan(12_000);
+            sql.ShouldContain("CHARINDEX");
+        }
     }
 
     [Fact]
@@ -199,7 +209,7 @@ public sealed class SqlFilterCompilerTests
         var (sql, parameters) = Compile(
             new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["in"] = numbers } } }, ResourceKind.Peer);
 
-        parameters.Count.ShouldBeLessThan(10);
+        parameters.Count.ShouldBeLessThan(20);
         sql.ShouldContain("CHARINDEX");
         sql.Split("dbo.JsonNumberOrderKey(").Length.ShouldBe(2, "the stored value's key is computed in exactly one place");
     }

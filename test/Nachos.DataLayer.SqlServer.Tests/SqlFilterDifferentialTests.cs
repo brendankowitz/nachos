@@ -247,14 +247,28 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         }
 
         list.AddRange([new string('9', 500), "-" + new string('9', 500)]);
+
+        // Order keys of 7996 to 8001 characters (13 + digits positive, 14 + digits negative) and 9000-digit numbers.
+        for (var digits = 7982; digits <= 7988; digits++)
+        {
+            list.AddRange([Mantissa(digits), "-" + Mantissa(digits)]);
+        }
+
+        list.AddRange([Mantissa(9000), "-" + Mantissa(9000)]);
         return list;
     }
 
-    /// <summary>Strings around the packed-length limit (1999 UTF-16 units) and with characters the packing must not confuse.</summary>
+    /// <summary>
+    /// Strings around the raw/digest limit (16 UTF-16 units, with surrogate pairs straddling it), around 1990 to 2010
+    /// units, and with characters the packing must not confuse.
+    /// </summary>
     private static readonly string[] ListStrings =
     [
         "", " ", "a", "a ", "A", "|", "x|y", "||", "😀", "\uFFFF", "\u0000", "1", "-0", new string('s', 1998) + "t",
         new string('s', 1999), new string('s', 2000), new string('s', 1999) + " ", new string('s', 4100),
+        new string('p', 15), new string('p', 16), new string('p', 17), new string('p', 15) + " ", new string('p', 16) + " ",
+        new string('p', 14) + "😀", new string('p', 15) + "😀", new string('p', 13) + "😀|", "\u0000" + new string('p', 16),
+        new string('p', 16) + "\u0000", new string('q', 1990), new string('q', 2001), new string('q', 2010), new string('q', 1995) + "😀",
     ];
 
     private static readonly string[] ListOtherValues =
@@ -325,6 +339,37 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('s', 1999) + " "), Q(new string('s', 4100)), Q("|"), "true"]) + "}}}");
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q("x"), Q("y|"), Q("a  "), Q("😀"), Q("\uFFFF"), Q("\u0000"), Q("A")]) + "}}}");
         data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([.. Enumerable.Range(0, 997).Select(i => Q("f" + i.ToString(CultureInfo.InvariantCulture))), Q("a "), Q("||"), "1"]) + "}}}}");
+
+        // Raw/digest boundary: near misses of the 15 to 17-unit strings and the stored ones, by kind and nested.
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('p', 16)), Q(new string('p', 17) + " "), Q(new string('p', 14) + "😀"), Q(new string('p', 14) + "😁"), Q(new string('p', 13) + "😀|"), Q("\u0000" + new string('p', 16))]) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('p', 15)), Q(new string('p', 17)), Q(new string('p', 15) + "😀"), Q(new string('q', 2001))]) + "}}}]}");
+        data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([Q(new string('p', 16) + " "), Q(new string('p', 16) + "\u0000"), Q(new string('q', 2010)), Q(new string('q', 1995) + "😀"), Q(new string('q', 1995) + "😁")]) + "}}}}");
+
+        // Digest chunks: 990 long strings and 990 long numbers (every chunk range gated) with the stored values spread
+        // across them, so matches fall in first, middle and last chunks.
+        var longStrings = Enumerable.Range(0, 990).Select(i => Q(new string('q', 1990) + i.ToString("D4", CultureInfo.InvariantCulture))).ToList();
+        string[] storedLong = [Q(new string('q', 1990)), Q(new string('q', 2001)), Q(new string('q', 2010)), Q(new string('p', 17)), Q(new string('s', 4100)), Q(new string('p', 15) + "😀")];
+        for (var r = 0; r < storedLong.Length; r++)
+        {
+            longStrings.Insert(r * 173 % longStrings.Count, storedLong[r]);
+        }
+
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L(longStrings) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"o\":{\"x\":{\"in\":" + L(longStrings) + "}}}}]}");
+        var longNumbers = Enumerable.Range(0, 990).Select(i => "1." + new string('4', 120) + i.ToString("D4", CultureInfo.InvariantCulture) + "1").ToList();
+        string[] storedNumbers = [Mantissa(88), "-" + Mantissa(89, '8'), Mantissa(7985), "-" + Mantissa(7987), Mantissa(9000), new string('9', 500), "1", "-1.23"];
+        for (var r = 0; r < storedNumbers.Length; r++)
+        {
+            longNumbers.Insert(r * 131 % longNumbers.Count, storedNumbers[r]);
+        }
+
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L(longNumbers) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"o\":{\"x\":{\"in\":" + L(longNumbers) + "}}}}]}");
+
+        // Long numbers: the stored values with near misses (one digit off, sign flipped, another length).
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Mantissa(7983), Mantissa(7984, '8'), "-" + Mantissa(7986), "-" + Mantissa(7988, '8'), Mantissa(9000, '8'), "-" + Mantissa(9000), Mantissa(7989)]) + "}}}");
+        data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([Mantissa(7982), "-" + Mantissa(7982), Mantissa(9000), Mantissa(8999)]) + "}}}}");
+        data.Add("{\"metadata\":{\"k\":{\"gt\":" + Mantissa(7985) + ",\"lt\":" + Mantissa(9000) + "}}}");
         return data;
     }
 

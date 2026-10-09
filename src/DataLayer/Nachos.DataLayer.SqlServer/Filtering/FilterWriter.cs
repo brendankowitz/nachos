@@ -340,6 +340,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     private sealed class MetadataRow(FilterWriter writer, string row, StringBuilder from)
     {
         private string? _numberKey;
+        private string? _numberDigest;
+        private string? _stringDigest;
 
         public string Value => $"{row}.[value]";
 
@@ -347,6 +349,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
         /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed (once per row).</summary>
         public string NumberKey => _numberKey ??= writer.NumberKey(Value, Type, from);
+
+        /// <summary>The digest of a number key longer than <see cref="ShortKey"/> (else NULL), computed once per row.</summary>
+        public string NumberDigest => _numberDigest ??= writer.Digest(
+            $"CASE WHEN LEN({NumberKey}) > {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.Sql(NumberKey)} END", from);
+
+        /// <summary>The digest of a string longer than <see cref="RawString"/> code units (else NULL), computed once per row.</summary>
+        public string StringDigest => _stringDigest ??= writer.Digest(
+            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.Sql(Value)} END", from);
 
         /// <summary>The number keys of the elements of <paramref name="array"/>, joined into the row's FROM clause.</summary>
         public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(array, from);
@@ -498,7 +508,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         var strings = operands.Where(o => o.GetValueKind() == JsonValueKind.String).Select(o => o.GetValue<string>()).ToList();
         if (strings.Count > 0)
         {
-            parts.Add($"({row.Type} = 1 AND {StringIn(row.Value, strings)})");
+            parts.Add($"({row.Type} = 1 AND {StringIn(row, strings)})");
         }
 
         foreach (var flag in operands.Select(o => o.GetValueKind()).Where(k => k is JsonValueKind.True or JsonValueKind.False).Distinct())
@@ -509,56 +519,41 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         var numbers = NumberKeys(operands);
         if (numbers.Count > 0)
         {
-            parts.Add($"({row.Type} = 2 AND {KeyIn(row.NumberKey, numbers)})");
+            parts.Add($"({row.Type} = 2 AND {KeyIn(row, numbers)})");
         }
 
         return parts.Count == 0 ? False : $"({string.Join(" OR ", parts)})";
     }
 
-    /// <summary>The longest string, in UTF-16 code units, whose hex fits one packed entry (<c>|</c> + 4 per unit + <c>|</c>).</summary>
-    private const int PackedString = (ChunkLength - 2) / 4;
+    /// <summary>
+    /// The longest string, in UTF-16 code units, packed as its own hex (4 characters per unit) rather than as a digest:
+    /// such an entry is no longer than a digest's.
+    /// </summary>
+    private const int RawString = 16;
 
     /// <summary>
-    /// Whether the string <paramref name="value"/> is exactly (code unit for code unit, trailing spaces included) one of
-    /// <paramref name="strings"/>, without parsing a list per row. Strings of up to <see cref="PackedString"/> code units are
-    /// written as the hex of their UTF-16LE code units and packed (<see cref="PackedIn"/>); the stored value's hex
-    /// (<c>CAST(… AS varbinary)</c>, style 2) is found with <c>CHARINDEX</c>. Hex holds no <c>|</c>, so a match between
-    /// delimiters is exact equality. Longer strings take an exact <c>OPENJSON</c> list, gated on the stored value's own
-    /// length so it is parsed only for rows that could match (measured: 1000 strings over 10,000 rows, 8.1 s -> 1.9 s).
+    /// Whether the string value of <paramref name="row"/> is exactly (code unit for code unit, trailing spaces included)
+    /// one of <paramref name="strings"/>, without parsing a list per row and at a per-row cost independent of the
+    /// operands' number and length. Strings of up to <see cref="RawString"/> code units are packed (<see cref="PackedIn"/>)
+    /// as the hex of their UTF-16LE code units; longer ones as their SHA-256 digest (<see cref="SqlDigest"/>), against the
+    /// row's digest computed once (<see cref="MetadataRow.StringDigest"/>). The two tiers apply to disjoint rows (by the
+    /// value's length), so a raw entry is never compared with a digest. Digest equality is accepted as exact for SHA-256
+    /// (review round 3).
     /// </summary>
-    private string StringIn(string value, IReadOnlyList<string> strings)
+    private string StringIn(MetadataRow row, IReadOnlyList<string> strings)
     {
-        var bytes = (PackedString * 2).ToString(CultureInfo.InvariantCulture);
-        var needle = $"CASE WHEN DATALENGTH({value}) <= {bytes} THEN '|' + CONVERT(varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)}), CAST({value} AS varbinary({bytes})), 2) + '|' END COLLATE {Bin2}";
-        var parts = PackedIn(needle, strings.Where(s => s.Length <= PackedString).Distinct(StringComparer.Ordinal).Select(Utf16Hex));
-
-        var longStrings = strings.Where(s => s.Length > PackedString).ToList();
-        if (longStrings.Count > 0)
+        var rawBytes = (RawString * 2).ToString(CultureInfo.InvariantCulture);
+        var distinct = strings.Distinct(StringComparer.Ordinal).ToList();
+        var parts = PackedIn(
+            $"CASE WHEN DATALENGTH({row.Value}) <= {rawBytes} THEN CONVERT(varchar({(RawString * 4).ToString(CultureInfo.InvariantCulture)}), CAST({row.Value} AS varbinary({rawBytes})), 2) END COLLATE {Bin2}",
+            distinct.Where(s => s.Length <= RawString).Select(SqlDigest.Utf16Hex));
+        if (distinct.Any(s => s.Length > RawString))
         {
-            var wanted = Alias();
-            parts.Add($"(CASE WHEN DATALENGTH({value}) > {bytes} THEN CASE WHEN EXISTS (SELECT 1 FROM OPENJSON({StringList(longStrings)}) AS {wanted} WHERE {wanted}.[value] COLLATE {Bin2} = {value} COLLATE {Bin2} AND DATALENGTH({wanted}.[value]) = DATALENGTH({value})) THEN 1 ELSE 0 END ELSE 0 END = 1)");
+            parts.AddRange(PackedIn(row.StringDigest, distinct.Where(s => s.Length > RawString).Select(SqlDigest.OfString)));
         }
 
         return $"({string.Join(" OR ", parts)})";
     }
-
-    /// <summary>
-    /// Upper-case hex of the UTF-16LE code units of <paramref name="value"/>, as SQL Server's
-    /// <c>CONVERT(varchar, CAST(nvarchar AS varbinary), 2)</c> writes it. Built per code unit, so a lone surrogate is kept
-    /// as is (an encoder would replace it with U+FFFD).
-    /// </summary>
-    private static string Utf16Hex(string value)
-    {
-        const string Digits = "0123456789ABCDEF";
-        var hex = new StringBuilder(value.Length * 4);
-        foreach (var unit in value)
-        {
-            hex.Append(Digits[(unit >> 4) & 0xF]).Append(Digits[unit & 0xF]).Append(Digits[(unit >> 12) & 0xF]).Append(Digits[(unit >> 8) & 0xF]);
-        }
-
-        return hex.ToString();
-    }
-
     private string StringList(IEnumerable<string> strings) =>
         Parameter(SqlDbType.NVarChar, new JsonArray([.. strings.Select(s => (JsonNode)s)]).ToJsonString(), SqlParameters.LongText);
 
@@ -577,17 +572,13 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     // ------------------------------------------------------------------------------------------------ numbers
 
     /// <summary>
-    /// The longest key in the short tier of <see cref="KeyIn"/> (every number of up to about 85 significant digits). Longer
-    /// keys are packed separately, so a row with a short key never scans them.
+    /// The longest order key packed as itself in <see cref="KeyIn"/> (every number of up to about 85 significant digits);
+    /// longer keys are packed as their SHA-256 digest.
     /// </summary>
     private const int ShortKey = 100;
 
-    /// <summary>The longest key that fits one packed entry (<c>|key|</c>) of a chunk.</summary>
-    private const int PackedKey = ChunkLength - 2;
-
     /// <summary>The longest <c>varchar</c> value that is not <c>max</c>, where <c>CHARINDEX</c> is about twice as fast.</summary>
     private const int ChunkLength = 8000;
-
     /// <summary>
     /// Appends to <paramref name="from"/> the order key of a stored JSON number and returns the key column, which may be
     /// referenced any number of times: <c>dbo.JsonNumberOrderKey</c> runs <b>once per row</b>. The key is exact for any
@@ -636,59 +627,84 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     }
 
     /// <summary>
-    /// Whether the key column <paramref name="key"/> is one of <paramref name="keys"/>, without parsing a list per row.
-    /// Keys hold only digits and <c>:</c>, so they are packed (<see cref="PackedIn"/>) and a <c>CHARINDEX</c> match between
-    /// delimiters is exact equality. Keys of up to <see cref="ShortKey"/> characters and longer ones are packed in separate
-    /// tiers, each tested only for rows whose own key is in that tier (review round 2, I-1: 1000 long keys over 10,000
-    /// short-key rows went from the 30 s timeout to well under a second). Keys over <see cref="PackedKey"/> characters
-    /// (numbers of about 8000 digits) take an exact <c>OPENJSON</c> list, gated the same way.
+    /// Whether the number value of <paramref name="row"/> is one of the numbers whose order keys are
+    /// <paramref name="keys"/>, without parsing a list per row and at a per-row cost independent of the operands' number
+    /// and length. Keys of up to <see cref="ShortKey"/> characters are packed (<see cref="PackedIn"/>) as themselves (they
+    /// hold only digits and <c>:</c>); longer ones as their SHA-256 digest (<see cref="SqlDigest"/>), against the row's key
+    /// digest computed once (<see cref="MetadataRow.NumberDigest"/>). Keys are canonical, so equal digests mean equal
+    /// numbers (accepted as exact, review round 3). The two tiers apply to disjoint rows (by the key's length).
     /// </summary>
-    private string KeyIn(string key, IReadOnlyList<string> keys)
+    private string KeyIn(MetadataRow row, IReadOnlyList<string> keys)
     {
-        string Needle(string condition) => $"CASE WHEN {condition} THEN CAST('|' + {key} + '|' AS varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)})) END COLLATE {Bin2}";
-        var shortKey = ShortKey.ToString(CultureInfo.InvariantCulture);
-        var packedKey = PackedKey.ToString(CultureInfo.InvariantCulture);
-        var parts = PackedIn(Needle($"LEN({key}) <= {shortKey}"), keys.Where(k => k.Length <= ShortKey));
-        parts.AddRange(PackedIn(Needle($"LEN({key}) > {shortKey} AND LEN({key}) <= {packedKey}"), keys.Where(k => k.Length > ShortKey && k.Length <= PackedKey)));
-
-        var hugeKeys = keys.Where(k => k.Length > PackedKey).ToList();
-        if (hugeKeys.Count > 0)
+        var key = row.NumberKey;
+        var parts = PackedIn(
+            $"CASE WHEN LEN({key}) <= {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN CAST({key} AS varchar({ShortKey.ToString(CultureInfo.InvariantCulture)})) END COLLATE {Bin2}",
+            keys.Where(k => k.Length <= ShortKey));
+        if (keys.Any(k => k.Length > ShortKey))
         {
-            var wanted = Alias();
-            parts.Add($"(CASE WHEN LEN({key}) > {packedKey} THEN CASE WHEN {key} IN (SELECT {wanted}.k COLLATE {Bin2} FROM OPENJSON({KeyList(hugeKeys)}) WITH (k varchar(max) '$') AS {wanted}) THEN 1 ELSE 0 END ELSE 0 END = 1)");
+            parts.AddRange(PackedIn(row.NumberDigest, keys.Where(k => k.Length > ShortKey).Select(SqlDigest.OfKey)));
         }
 
         return $"({string.Join(" OR ", parts)})";
     }
 
     /// <summary>
-    /// <c>CHARINDEX</c> tests of <paramref name="needle"/> (<c>|entry|</c>, or NULL for a row that cannot match) against
-    /// <paramref name="entries"/> packed as <c>|e1|e2|…|</c> into <c>varchar(8000)</c> parameters. Entries must not contain
-    /// <c>|</c> and each must fit a chunk. One chunk is scanned per row instead of one list being parsed per row.
+    /// Appends to <paramref name="from"/> the value of <paramref name="expression"/> (a digest, or NULL) and returns it as
+    /// a column, evaluated once per row: the argument of a table-valued function, like <see cref="NumberKey"/>, rather than
+    /// an expression the optimizer copies into every reference.
     /// </summary>
-    private List<string> PackedIn(string needle, IEnumerable<string> entries)
+    private string Digest(string expression, StringBuilder from)
+    {
+        var digest = Alias();
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY({expression})) WITH (d varchar(64) '$') AS {digest}");
+        return $"{digest}.d COLLATE {Bin2}";
+    }
+
+    /// <summary>
+    /// Whether the per-row <paramref name="entry"/> (NULL for a row that cannot match) is one of
+    /// <paramref name="entries"/>, which must not contain <c>|</c> and are at most a few hundred characters. The entries
+    /// are sorted (ordinal, which is binary-collation order for them) and packed as <c>|e1|e2|…|</c> into
+    /// <c>varchar(8000)</c> chunks, each passed with its first and last entry. A row scans only the chunk whose range holds
+    /// its entry (at most one, since the ranges are disjoint), so its cost does not grow with the list: one
+    /// <c>CHARINDEX</c> over at most 8000 characters plus two comparisons per chunk.
+    /// </summary>
+    private List<string> PackedIn(string entry, IEnumerable<string> entries)
     {
         var parts = new List<string>();
         var chunk = new StringBuilder("|");
-        foreach (var entry in entries)
+        string? first = null;
+        string? last = null;
+
+        void Flush()
         {
-            if (chunk.Length + entry.Length + 1 > ChunkLength)
+            if (first is null)
             {
-                parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
-                chunk.Clear().Append('|');
+                return;
             }
 
-            chunk.Append(entry).Append('|');
+            var low = Parameter(SqlDbType.VarChar, first, SqlParameters.Ascii);
+            var high = Parameter(SqlDbType.VarChar, last!, SqlParameters.Ascii);
+            var packed = Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii);
+            parts.Add($"(CASE WHEN {entry} >= {low} AND {entry} <= {high} THEN CHARINDEX('|' + {entry} + '|', {packed}) END > 0)");
+            chunk.Clear().Append('|');
+            first = null;
         }
 
-        if (chunk.Length > 1)
+        foreach (var value in entries.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
         {
-            parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
+            if (chunk.Length + value.Length + 1 > ChunkLength)
+            {
+                Flush();
+            }
+
+            first ??= value;
+            last = value;
+            chunk.Append(value).Append('|');
         }
 
+        Flush();
         return parts;
     }
-
     // ------------------------------------------------------------------------------------------------ names
 
     private string Alias() => $"fa{_aliases++}";
