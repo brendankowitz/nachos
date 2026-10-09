@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.OpenApi;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.OpenApi;
 using Nachos.Abstractions.Contracts;
 
@@ -47,6 +48,25 @@ internal static class NachosOpenApi
     public static async Task DescribeErrorsAsync(OpenApiOperation operation, OpenApiOperationTransformerContext context,
         CancellationToken cancellationToken)
     {
+        var relativePath = context.Description.RelativePath
+            ?? throw new InvalidOperationException("An OpenAPI operation must have a route template.");
+        var sharedParameters = context.Document?.Paths?.GetValueOrDefault("/" + relativePath.TrimStart('/'))?.Parameters;
+        foreach (var parameter in RoutePatternFactory.Parse(relativePath).Parameters)
+        {
+            if ((operation.Parameters ?? []).Concat(sharedParameters ?? [])
+                .Any(existing => existing.In == ParameterLocation.Path && existing.Name == parameter.Name))
+            {
+                continue;
+            }
+            operation.Parameters ??= [];
+            operation.Parameters.Add(new OpenApiParameter
+            {
+                Name = parameter.Name,
+                In = ParameterLocation.Path,
+                Required = true,
+                Schema = new OpenApiSchema { Type = JsonSchemaType.String },
+            });
+        }
         operation.Responses ??= new OpenApiResponses();
         if (operation.Responses.Count == 1 && operation.Responses.ContainsKey("501"))
         {
