@@ -93,6 +93,32 @@ internal sealed class RedactionSecrets
             ? Of([.. values.Select(StripScheme).Where(v => v.Length >= MinHeaderNameMatchLength)])
             : None;
 
+    /// <summary>
+    /// The length of the shortest bearer value <see cref="ForHeaderNames"/> would match, or null when it would match
+    /// none. A header name shorter than this cannot hold the value (its hex forms are longer still), so the caller can
+    /// skip building the secrets, which cost several times the value's length, unless such a name arrived. Allocates
+    /// nothing.
+    /// </summary>
+    public static int? ShortestHeaderNameMatch(HttpRequestMessage request)
+    {
+        if (!request.Headers.NonValidated.TryGetValues("Authorization", out var values))
+        {
+            return null;
+        }
+
+        int? shortest = null;
+        foreach (var value in values)
+        {
+            var length = StripScheme(value.AsSpan()).Length;
+            if (length >= MinHeaderNameMatchLength && length < (shortest ?? int.MaxValue))
+            {
+                shortest = length;
+            }
+        }
+
+        return shortest;
+    }
+
     /// <summary>True when any form of any secret occurs in <paramref name="text"/> outside existing markers.</summary>
     public bool OccursIn(string text) =>
         !IsEmpty && text.Split(ErrorMapper.Redacted).Any(segment => _forms.Any(f => segment.Contains(f.Form, f.Comparison)));
@@ -147,7 +173,9 @@ internal sealed class RedactionSecrets
         return result.ToString();
     }
 
-    private static string StripScheme(string value)
+    private static string StripScheme(string value) => StripScheme(value.AsSpan()).ToString();
+
+    private static ReadOnlySpan<char> StripScheme(ReadOnlySpan<char> value)
     {
         var trimmed = value.Trim();
         return trimmed.StartsWith(BearerScheme, StringComparison.OrdinalIgnoreCase) ? trimmed[BearerScheme.Length..].Trim() : trimmed;

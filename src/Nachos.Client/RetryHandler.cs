@@ -202,15 +202,15 @@ public sealed class RetryHandler : DelegatingHandler
         ArgumentNullException.ThrowIfNull(request);
 
         // Whatever surfaces from here (raw transport failures included) never carries the request's bearer value, so
-        // handlers and loggers above this one cannot leak it either.
-        var secrets = RedactionSecrets.FromAuthorization(request);
+        // handlers and loggers above this one cannot leak it either. The secrets (the value plus two hex forms) are
+        // built on the failure path only; a successful call allocates nothing for them.
         try
         {
             return await SendCoreAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            var safe = SecretRedaction.Sanitize(ex, secrets);
+            var safe = SecretRedaction.Sanitize(ex, RedactionSecrets.FromAuthorization(request));
             if (ReferenceEquals(safe, ex))
             {
                 throw;

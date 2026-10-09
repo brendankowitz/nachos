@@ -19,6 +19,10 @@ namespace Nachos.Client;
 /// Failures while a caller later reads a response body do not pass through any handler; <see cref="RetryHandler"/> and
 /// <see cref="NachosHttpClient"/> apply the same rule to those.
 /// </para>
+/// <para>
+/// Cost: the secrets are built on the failure path, and for header names only when a name is at least as long as the
+/// shortest matchable bearer value; the success path of a call with a JWT allocates nothing for them.
+/// </para>
 /// </remarks>
 internal sealed class TransportRedactionHandler : DelegatingHandler
 {
@@ -40,22 +44,39 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
             throw safe;
         }
 
-        var secrets = RedactionSecrets.ForHeaderNames(request);
-        RemoveEchoedHeaders(response.Headers, secrets);
-        RemoveEchoedHeaders(response.Content.Headers, secrets);
+        RemoveEchoedHeaders(request, response);
         return response;
     }
 
-    private static void RemoveEchoedHeaders(HttpHeaders headers, RedactionSecrets secrets)
+    // A header name can hold the bearer value only when it is at least as long, so the secrets (the value and its hex
+    // forms, several times its length) are built only once such a name arrives: a successful call with a JWT, whose
+    // names are all shorter, allocates nothing here.
+    private static void RemoveEchoedHeaders(HttpRequestMessage request, HttpResponseMessage response)
     {
-        if (secrets.IsEmpty)
+        if (RedactionSecrets.ShortestHeaderNameMatch(request) is not { } minLength)
         {
             return;
         }
 
-        foreach (var name in headers.NonValidated.Select(header => header.Key).Where(secrets.OccursIn).ToList())
+        RedactionSecrets? secrets = null;
+        Remove(response.Headers);
+        Remove(response.Content.Headers);
+
+        void Remove(HttpHeaders headers)
         {
-            headers.Remove(name);
+            List<string>? echoed = null;
+            foreach (var header in headers.NonValidated)
+            {
+                if (header.Key.Length >= minLength && (secrets ??= RedactionSecrets.ForHeaderNames(request)).OccursIn(header.Key))
+                {
+                    (echoed ??= []).Add(header.Key);
+                }
+            }
+
+            foreach (var name in echoed ?? [])
+            {
+                headers.Remove(name);
+            }
         }
     }
 }

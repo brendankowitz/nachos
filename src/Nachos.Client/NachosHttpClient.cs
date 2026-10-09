@@ -374,8 +374,7 @@ public sealed class NachosHttpClient : INachosClient
         // header, trailer or chunk line), so SecretRedaction replaces them with fixed text unless they are known-safe.
         // That covers failures raised outside the handler pipeline too, such as HttpClient buffering the body of a
         // never-retried request. The bearer value is the only secret this call sends (with a credential, the API key
-        // never leaves the process).
-        var secrets = RedactionSecrets.Of(bearer);
+        // never leaves the process). Its redaction forms are built only on the failure and error-mapping paths.
         HttpResponseMessage? response = null;
         string text;
         try
@@ -386,7 +385,7 @@ public sealed class NachosHttpClient : INachosClient
         catch (Exception ex)
         {
             response?.Dispose();
-            var safe = SecretRedaction.Sanitize(ex, secrets);
+            var safe = SecretRedaction.Sanitize(ex, RedactionSecrets.Of(bearer));
             if (ReferenceEquals(safe, ex))
             {
                 throw;
@@ -401,7 +400,7 @@ public sealed class NachosHttpClient : INachosClient
         {
             return response.IsSuccessStatusCode
                 ? text
-                : throw ErrorMapper.Map(response, text, $"{method} {template}", secrets, _timeProvider);
+                : throw ErrorMapper.Map(response, text, $"{method} {template}", RedactionSecrets.Of(bearer), _timeProvider);
         }
     }
 
