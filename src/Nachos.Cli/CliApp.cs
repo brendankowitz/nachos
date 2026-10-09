@@ -3,7 +3,7 @@ using System.CommandLine.Parsing;
 
 namespace Nachos.Cli;
 
-/// <summary>The <c>nachos</c> bootstrap command line: schema management and offline key minting.</summary>
+/// <summary>The <c>nachos</c> bootstrap command line: schema management, role grants and offline key minting.</summary>
 public static class CliApp
 {
     /// <summary>
@@ -14,9 +14,10 @@ public static class CliApp
     /// </summary>
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken ct)
     {
-        var root = new RootCommand("Nachos bootstrap tool: database schema management and offline key minting.")
+        var root = new RootCommand("Nachos bootstrap tool: database schema management, role grants and offline key minting.")
         {
             SchemaCommands.Create(),
+            GrantCommands.Create(),
             KeyCommands.Create(),
         };
 
@@ -83,7 +84,7 @@ public static class CliApp
     // must not turn "Required argument missing" into a redaction.
     private static string Redacted(ParseError error, HashSet<string> userTokens)
     {
-        if (!userTokens.Any(token => Redaction.Echoes(error.Message, token)))
+        if (UsageErrors.IsOwn(error.Message) || !userTokens.Any(token => Redaction.Echoes(error.Message, token)))
         {
             return error.Message;
         }

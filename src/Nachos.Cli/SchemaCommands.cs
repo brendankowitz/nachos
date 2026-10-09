@@ -26,7 +26,7 @@ internal static class SchemaCommands
         UpgradeCommand(),
     };
 
-    private static Option<string> ConnectionOption() => new("--connection")
+    internal static Option<string> ConnectionOption() => new("--connection")
     {
         Description = "SQL Server connection string of the Nachos database (passed to SqlClient unchanged).",
         Required = true,
@@ -45,7 +45,7 @@ internal static class SchemaCommands
     /// the connection rejects. A string they reject gets a fixed message, because their errors quote its pieces. Only this check calls
     /// a string malformed: anything thrown later is a runtime failure and has the string's sensitive tokens scrubbed instead.
     /// </summary>
-    private static Task<int> GuardAsync(ParseResult parse, Option<string> connection, Func<SchemaDeployer, Task<int>> body)
+    internal static Task<int> GuardAsync(ParseResult parse, Option<string> connection, Func<SchemaDeployer, Task<int>> body)
     {
         var connectionString = parse.GetRequiredValue(connection);
         var error = parse.InvocationConfiguration.Error;
