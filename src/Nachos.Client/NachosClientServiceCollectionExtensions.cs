@@ -94,7 +94,7 @@ public static class NachosClientServiceCollectionExtensions
     /// </description></item>
     /// <item><description>
     /// server text the client shows on purpose (error bodies and reason phrases mapped to exceptions): the bearer value
-    /// is redacted as plain text and as hex.
+    /// is redacted as plain text (in any letter case, for a value of at least 8 characters) and as hex.
     /// </description></item>
     /// </list>
     /// Not covered:
@@ -119,10 +119,11 @@ public static class NachosClientServiceCollectionExtensions
     /// </description></item>
     /// <item><description>what your own handlers and loggers log;</description></item>
     /// <item><description>
-    /// in mapped server text, echoes in another encoding (percent-encoding, base64), another letter case, or only part of
-    /// the value, including a value the server splits by inserting the literal marker <c>[redacted]</c> into it (the
-    /// marker is never matched inside, so the pieces around it are shown); and non-string
-    /// <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>).
+    /// in mapped server text, echoes in another encoding (percent-encoding, base64), another letter case of a value
+    /// shorter than 8 characters (longer ones are matched in any case), or only part of the value, including a value
+    /// the server splits by inserting the literal marker <c>[redacted]</c> into it (the marker is never matched
+    /// inside, so the pieces around it are shown); and non-string <see cref="Exception.Data"/> values (a
+    /// <c>string[]</c>, a <see cref="Uri"/>).
     /// </description></item>
     /// </list>
     /// </para>

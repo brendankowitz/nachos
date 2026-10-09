@@ -3,9 +3,10 @@ using System.Text;
 namespace Nachos.Client;
 
 /// <summary>
-/// The bearer value of one call, as plain text (matched exactly) and as the hex of its UTF-8 bytes, dash-separated
-/// (<c>65-79-4A</c>) or contiguous (<c>65794A</c>), the hex forms matched in any letter case and only when they are at
-/// least <see cref="MinHexLength"/> characters long.
+/// The bearer value of one call, as plain text (matched in any letter case from <see cref="MinIgnoreCaseLength"/>
+/// characters, exactly below that) and as the hex of its UTF-8 bytes, dash-separated (<c>65-79-4A</c>) or contiguous
+/// (<c>65794A</c>), the hex forms matched in any letter case and only when they are at least
+/// <see cref="MinHexLength"/> characters long.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -20,8 +21,9 @@ namespace Nachos.Client;
 /// changes nothing and the marker cannot grow (a secret such as <c>redact</c> leaves <c>[redacted]</c> intact).
 /// </para>
 /// <para>
-/// Matching is by substring, so an echo that holds the whole secret (or the whole hex of it) is caught wherever it sits.
-/// Not caught: a partial echo, one split across lines, a different case of the plain text, or another encoding.
+/// Matching is by substring, so an echo that holds the whole secret (or the whole hex of it) is caught wherever it sits,
+/// in any letter case unless the secret is very short. Not caught: a partial echo, one split across lines, another
+/// case of a secret shorter than <see cref="MinIgnoreCaseLength"/>, or another encoding.
 /// </para>
 /// </remarks>
 internal sealed class RedactionSecrets
@@ -33,6 +35,14 @@ internal sealed class RedactionSecrets
     /// such as a status code and corrupt unrelated text; plain matching has no minimum.
     /// </summary>
     public const int MinHexLength = 8;
+
+    /// <summary>
+    /// Shortest plain secret that is matched in any letter case: a server echoing the value lower-cased in a mapped
+    /// <c>detail</c> is caught. A very short secret (a key of <c>ab</c>) matched that way would also hit ordinary words
+    /// in server text and garble them, so below this length the plain form is matched exactly. The same length as
+    /// <see cref="MinHexLength"/>, for the same reason.
+    /// </summary>
+    public const int MinIgnoreCaseLength = MinHexLength;
 
     /// <summary>
     /// The run of characters a response header <em>name</em> must share with the bearer value to count as an echo of
@@ -63,7 +73,7 @@ internal sealed class RedactionSecrets
         foreach (var secret in values.OfType<string>().Where(v => v.Length > 0).Distinct(StringComparer.Ordinal))
         {
             var bytes = Encoding.UTF8.GetBytes(secret);
-            forms.Add((secret, StringComparison.Ordinal));
+            forms.Add((secret, secret.Length >= MinIgnoreCaseLength ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
             foreach (var hex in new[] { BitConverter.ToString(bytes), Convert.ToHexString(bytes) })
             {
                 if (hex.Length >= MinHexLength)

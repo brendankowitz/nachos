@@ -43,9 +43,41 @@ public sealed class SecretRedactionTests
     }
 
     [Fact]
-    public void PlainText_IsMatchedExactly_NotInAnotherCase()
+    public void PlainText_IsMatchedInAnyCase_FromEightCharacters()
     {
-        Secrets.Redact(Secret.ToUpperInvariant()).ShouldBe(Secret.ToUpperInvariant());
+        Secrets.Redact("detail: " + Secret.ToUpperInvariant() + " / " + Secret.ToLowerInvariant()).ShouldBe($"detail: {ErrorMapper.Redacted} / {ErrorMapper.Redacted}");
+        RedactionSecrets.Of("nk-ab-12").Redact("NK-AB-12").ShouldBe(ErrorMapper.Redacted);
+    }
+
+    /// <summary>
+    /// Below eight characters the plain form stays exact: matched in any case, a key of <c>Retry</c> would garble every
+    /// "retry" in server text, so only the key's own case is redacted (the hex forms have the same minimum).
+    /// </summary>
+    [Theory]
+    [InlineData("Nk-Ab-1")]
+    [InlineData("Retry")]
+    [InlineData("aB")]
+    public void ShortPlainText_IsMatchedExactly_SoOtherCasesAreLeftAlone(string key)
+    {
+        var secrets = RedactionSecrets.Of(key);
+
+        secrets.Redact($"{key.ToUpperInvariant()} {key.ToLowerInvariant()} {key}").ShouldBe($"{key.ToUpperInvariant()} {key.ToLowerInvariant()} {ErrorMapper.Redacted}");
+    }
+
+    /// <summary>A 4xx whose <c>detail</c> echoes the key in another case: the mapped exception text is redacted.</summary>
+    [Theory]
+    [InlineData("nk-MiXeD-CaSe-0042", true)]
+    [InlineData("nK-aB", false)]
+    public async Task RecasedEchoInAMappedDetail_IsRedacted_FromEightCharacters(string apiKey, bool redacted)
+    {
+        var stub = new StubHandler((_, _) =>
+            StubHandler.Json(HttpStatusCode.BadRequest, $$"""{"detail":"rejected {{apiKey.ToLowerInvariant()}} and {{apiKey}}"}"""));
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => Client(stub, apiKey).GetMessageAsync("w1", "s1", "m1"));
+
+        ex.Message.Contains(apiKey, StringComparison.Ordinal).ShouldBeFalse("the key's own case is always redacted");
+        ex.Message.ShouldContain(ErrorMapper.Redacted);
+        ex.Message.Contains(apiKey.ToLowerInvariant(), StringComparison.Ordinal).ShouldBe(!redacted);
     }
 
     [Fact]
