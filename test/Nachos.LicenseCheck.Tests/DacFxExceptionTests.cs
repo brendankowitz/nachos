@@ -171,6 +171,27 @@ public sealed class DacFxExceptionTests
         report.Packages.Single(package => package.Package == Package).SelectedLicense.ShouldBe(License + " AND MIT");
     }
 
+    [Theory]
+    [InlineData("EPL-2.0")]
+    [InlineData("MPL-2.0")]
+    public void ApprovedPrimaryDoesNotWaiveRecognizedSupplementalDistributedTier(string supplementalLicense)
+    {
+        using var fixture = Fixture(scope: "both");
+        fixture.Check().Errors.ShouldBeEmpty();
+        // DacFx has no whole-archive pin, so this reaches the shared license-tier gate.
+        fixture.NugetEntry(Package, "THIRD-PARTY-NOTICES.txt",
+            ReviewRegressionTests.CompleteLicense(supplementalLicense), Version);
+
+        var report = fixture.Check();
+
+        report.Errors.ShouldBe(new[]
+        {
+            $"nuget:{Package}@{Version} ({fixture.Full("nuget.json")}): license {supplementalLicense} is not allowed in distributed tier."
+        });
+        report.Packages.ShouldNotContain(package =>
+            package.Ecosystem == "nuget" && package.Package == Package && package.Version == Version);
+    }
+
     [Fact]
     public void GenericEvidenceOverrideCannotRelabelApprovedPrimary()
     {
