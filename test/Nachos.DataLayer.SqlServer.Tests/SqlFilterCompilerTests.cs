@@ -188,29 +188,21 @@ public sealed class SqlFilterCompilerTests
         }
     }
 
-    [Theory]
-    [InlineData(40, false)]
-    [InlineData(80, true)]
-    public void TooManyParameters_IsAValidationError(int keys, bool rejected)
+    [Fact]
+    public void TooManyDistinctValues_IsAValidationError()
     {
-        // Each `in` list of 1,000 long distinct strings packs into about 30 parameters, so
-        // 80 of them pass SQL Server's 2,100-parameter limit: the filter is rejected (422) instead of failing at execution.
+        // Each AND-ed key brings its own value: past SQL Server's 2,100-parameter limit the filter is rejected (422)
+        // instead of failing at execution time. (The keys themselves are packed into a few parameters, so it takes more
+        // keys than values allowed.)
         var metadata = new JsonObject();
-        for (var k = 0; k < keys; k++)
+        for (var i = 0; i < 2100; i++)
         {
-            metadata[$"key{k}"] = new JsonObject { ["in"] = new JsonArray([.. Enumerable.Range(0, FilterParser.MaxListItems).Select(i => (JsonNode)$"{k}-{i}-{new string('v', 20)}")]) };
+            metadata[$"key{i}"] = $"value{i}";
         }
 
-        var filter = new JsonObject { ["metadata"] = metadata };
-        if (rejected)
-        {
-            Should.Throw<NachosValidationException>(() => Compile(filter, ResourceKind.Peer))
-                .Detail.ShouldBe(SqlFilterCompiler.TooManyValues);
-        }
-        else
-        {
-            Compile(filter, ResourceKind.Peer).Parameters.Count.ShouldBeLessThanOrEqualTo(SqlFilterCompiler.MaxParameters);
-        }
+        Should.Throw<NachosValidationException>(
+            () => Compile(new JsonObject { ["metadata"] = metadata }, ResourceKind.Peer))
+            .Detail.ShouldBe("The filter needs more distinct values than the SQL Server provider can send in one statement.");
     }
 
     [Fact]
