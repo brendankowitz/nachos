@@ -429,6 +429,39 @@ public sealed class RoundTripTests
         b.Entries.Single().ShouldContain("\"content\":\"see id-B\"");
     }
 
+    /// <summary>
+    /// Aliasing stops at the record's own <c>id</c>: a metadata <c>id</c> that happens to equal the message's generated
+    /// id is caller data, so two messages differing only there stay different (a replacement reaching nested values
+    /// would alias both and make them equal), while their own ids are aliased; in a page and a list too.
+    /// </summary>
+    [Theory]
+    [InlineData("entity")]
+    [InlineData("list")]
+    [InlineData("page")]
+    public void Normalization_LeavesANestedIdEqualToTheGeneratedIdAlone(string shape)
+    {
+        var a = new Steps(null!);
+        var b = new Steps(null!);
+        var left = Sample with { Metadata = Obj("""{"id":"id-A"}""") };
+        var right = Sample with { Id = "id-B", Metadata = Obj("""{"id":"id-B"}""") };
+
+        a.Record("m", Shape(left));
+        b.Record("m", Shape(right));
+
+        a.Entries.ShouldNotBe(b.Entries);
+        a.Entries.Single().ShouldContain("\"id\":\"<message#0>\"");
+        a.Entries.Single().ShouldContain("\"metadata\":{\"id\":\"id-A\"}");
+        b.Entries.Single().ShouldContain("\"id\":\"<message#0>\"");
+        b.Entries.Single().ShouldContain("\"metadata\":{\"id\":\"id-B\"}");
+
+        object Shape(Message message) => shape switch
+        {
+            "list" => new[] { message },
+            "page" => new Page<Message>([message], 1, 1, 1, 1),
+            _ => message,
+        };
+    }
+
     [Theory]
     [MemberData(nameof(DeterministicChanges))]
     public void Normalization_DoesNotHideADeterministicField(string _, object left, object right)
@@ -613,6 +646,7 @@ public sealed class RoundTripTests
             Entries.Add($"{label} => {Normalize(JsonSerializer.Serialize(result, Compare))}");
         }
 
+        // Exceptions are recorded as they are: no exception text of either client names a generated message id.
         public void RecordError(string label, Exception ex)
         {
             var detail = ex switch
@@ -622,7 +656,7 @@ public sealed class RoundTripTests
                 HttpRequestException http => $"{(int?)http.StatusCode} {http.HttpRequestError} {http.Message}",
                 _ => ex.Message,
             };
-            Entries.Add($"{label} !! {ex.GetType().Name}: {Normalize(detail)}");
+            Entries.Add($"{label} !! {ex.GetType().Name}: {detail}");
         }
 
         // Message ids are server-generated: each new one gets the next alias, in order of first appearance.
@@ -641,10 +675,47 @@ public sealed class RoundTripTests
             }
         }
 
-        // Only an "id" property holding a generated id is aliased (a message's own, or a listed message's); the same
-        // characters inside content, metadata or any other string stay what they are, so they still compare.
-        private string Normalize(string text) =>
-            _messageIds.Aggregate(text, (current, id) => current.Replace($"\"id\":{JsonSerializer.Serialize(id.Key, Compare)}", $"\"id\":\"{id.Value}\"", StringComparison.Ordinal));
+        // Only each record's own top-level "id" is aliased: the record itself, each record of a list, or each record
+        // of a page's "items". The tree is walked no deeper, so a generated id repeated anywhere else (content, a
+        // metadata "id", any nested value) is never touched and still compares as the deterministic data it is.
+        private string Normalize(string json)
+        {
+            var root = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { MaxDepth = Compare.MaxDepth })!;
+            switch (root)
+            {
+                case JsonObject page when page["items"] is JsonArray items:
+                    foreach (var item in items)
+                    {
+                        AliasOwnId(item);
+                    }
+
+                    break;
+                case JsonArray records:
+                    foreach (var record in records)
+                    {
+                        AliasOwnId(record);
+                    }
+
+                    break;
+                default:
+                    AliasOwnId(root);
+                    break;
+            }
+
+            // Relaxed escaping keeps the alias readable ("<message#0>", not "<message#0>"); both sides are
+            // written the same way, so entries still compare.
+            return root.ToJsonString(Readable);
+        }
+
+        private static readonly JsonSerializerOptions Readable = new(Compare) { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+        private void AliasOwnId(JsonNode? record)
+        {
+            if (record is JsonObject entity && entity["id"] is JsonValue value && value.TryGetValue<string>(out var id) && _messageIds.TryGetValue(id, out var alias))
+            {
+                entity["id"] = alias;
+            }
+        }
     }
 
     /// <summary>Forwards every call to the wrapped client and records the operation's name.</summary>
