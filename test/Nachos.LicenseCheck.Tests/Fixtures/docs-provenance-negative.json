@@ -1,6 +1,7 @@
 [
   {
     "name": "extra-output",
+    "expect": "Exact output closure differs",
     "mutations": [
       {
         "action": "write",
@@ -11,6 +12,7 @@
   },
   {
     "name": "missing-output",
+    "expect": "Exact output closure differs",
     "mutations": [
       {
         "action": "remove",
@@ -20,6 +22,7 @@
   },
   {
     "name": "changed-output",
+    "expect": "Exact output closure differs",
     "mutations": [
       {
         "action": "write",
@@ -30,6 +33,7 @@
   },
   {
     "name": "changed-lock",
+    "expect": "Exact input closure differs",
     "mutations": [
       {
         "action": "write",
@@ -40,6 +44,7 @@
   },
   {
     "name": "missing-source",
+    "expect": "Required tree is empty: ",
     "mutations": [
       {
         "action": "remove",
@@ -49,6 +54,7 @@
   },
   {
     "name": "missing-package-manifest",
+    "expect": "Package owner manifest missing: npm/node_modules/fixture-content/client.js",
     "mutations": [
       {
         "action": "remove",
@@ -58,6 +64,7 @@
   },
   {
     "name": "flat-omission",
+    "expect": "Legacy flat package union differs from complete output evidence.",
     "mutations": [
       {
         "action": "write",
@@ -68,6 +75,7 @@
   },
   {
     "name": "case-duplicate",
+    "expect": "Unsorted, duplicate or case-aliased outputs.",
     "mutations": [
       {
         "action": "write",
@@ -78,6 +86,7 @@
   },
   {
     "name": "unsafe-path",
+    "expect": "Unsafe path segment: ../escape.js",
     "mutations": [
       {
         "action": "write",
@@ -88,6 +97,7 @@
   },
   {
     "name": "incomplete-list",
+    "expect": "Exact output closure differs",
     "mutations": [
       {
         "action": "write",
@@ -98,6 +108,7 @@
   },
   {
     "name": "unknown-producer",
+    "expect": "Unknown producer role: invented",
     "mutations": [
       {
         "action": "write",
@@ -108,6 +119,7 @@
   },
   {
     "name": "conflicting-copy-hash",
+    "expect": "Output-bound evidence hash differs: copy/client.js",
     "mutations": [
       {
         "action": "write",
@@ -118,6 +130,7 @@
   },
   {
     "name": "unreferenced-source",
+    "expect": "Evidence source references are empty.",
     "mutations": [
       {
         "action": "write",
@@ -128,6 +141,7 @@
   },
   {
     "name": "unsupported-version",
+    "expect": "Unsupported schemaVersion; expected integer 1.",
     "mutations": [
       {
         "action": "write",
@@ -138,6 +152,7 @@
   },
   {
     "name": "stale-settings",
+    "expect": "Build settings differ from externally selected site/base.",
     "mutations": [
       {
         "action": "write",
@@ -148,6 +163,7 @@
   },
   {
     "name": "stylesheet-evidence-hash",
+    "expect": "Output-bound evidence hash differs: expressive-stylesheet/styles.css",
     "base": "stylesheet",
     "mutations": [
       {
@@ -159,6 +175,7 @@
   },
   {
     "name": "stylesheet-spoofs-inline",
+    "expect": "Invalid rendering/output-bound evidence context: styles.css",
     "base": "stylesheet",
     "mutations": [
       {
@@ -170,6 +187,7 @@
   },
   {
     "name": "old-ambiguous-style-role",
+    "expect": "Unknown producer role: expressive-style",
     "base": "stylesheet",
     "mutations": [
       {
@@ -181,6 +199,7 @@
   },
   {
     "name": "inline-html-missing-anchor",
+    "expect": "Invalid rendering/output-bound evidence context: index.html",
     "base": "inline",
     "mutations": [
       {
@@ -192,6 +211,7 @@
   },
   {
     "name": "derived-pagefind-missing-anchor",
+    "expect": "Invalid rendering/output-bound evidence context: client.js",
     "base": "inline",
     "mutations": [
       {
@@ -203,6 +223,7 @@
   },
   {
     "name": "css-masquerades-as-html",
+    "expect": "Invalid rendering/output-bound evidence context: styles.css",
     "base": "inline",
     "mutations": [
       {
@@ -214,6 +235,7 @@
   },
   {
     "name": "multiple-output-bound-producers",
+    "expect": "Invalid rendering/output-bound evidence context: styles.css",
     "base": "stylesheet",
     "mutations": [
       {

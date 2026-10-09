@@ -233,8 +233,14 @@ uniqueness do. Windows uses its normal file API. Linux uses a nonblocking open
 followed by the fixed `statx` ABI's regular-file check: seekability alone cannot
 distinguish a regular file from a device. Missing `statx` and other operating
 systems fail explicitly rather than silently accepting unproven file types.
-The delivered execution evidence is Windows-only; Linux execution remains an
-integration validation requirement, not a claimed platform proof.
+Linux-only tests (reported as skipped elsewhere) run each special-file case
+under a 20 s hard timeout: a FIFO with no writer as a fixed input, the manifest
+and an output; read-only nonblocking opens of `/dev/null` and `/dev/zero`; a
+directory, a socket and a symlink to a FIFO. A no-GC-region check counts
+`/proc/self/fd` entries on the rejected objects to prove every rejected
+descriptor is closed without finalizers. Device nodes minted with `mknod`
+inside the test directory need CAP_MKNOD and run only with
+`NACHOS_LINUX_DEVICE_FIXTURES=1`; otherwise they report as not executed.
 
 Closed output-bound roles: `copy`, `vite-chunk`, `vite-asset`,
 `expressive-stylesheet`, `expressive-script`, `sitemap`, `pagefind`.

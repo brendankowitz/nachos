@@ -35,7 +35,9 @@ public sealed class DocsProvenanceTests
             if (change["action"]!.GetValue<string>() == "remove") { File.Delete(path); }
             else { Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllText(path, change["text"]!.GetValue<string>()); }
         }
-        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("Docs provenance");
+        // Each record names the diagnostic of its own check; the shared prefix alone also matches a broken reader.
+        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message
+            .ShouldContain("Docs provenance: " + mutation["expect"]!.GetValue<string>(), Case.Sensitive);
     }
 
     [Theory]
@@ -142,7 +144,8 @@ public sealed class DocsProvenanceTests
     {
         using var fixture = new ProtocolFixture();
         Directory.Move(fixture.Full("site/node_modules"), fixture.Full("node_modules"));
-        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("Docs provenance");
+        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message
+            .ShouldContain("Docs provenance: Missing or case-aliased evidence path: node_modules/fixture-content/client.js", Case.Sensitive);
     }
 
     [Fact]
@@ -178,7 +181,8 @@ public sealed class DocsProvenanceTests
     {
         using var fixture = new ProtocolFixture();
         fixture.Edit(document => document["sources"]![0]!["path"] = "npm/node_modules/fixture-content/CLIENT.js");
-        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("Docs provenance");
+        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message
+            .ShouldContain("Docs provenance: Missing or case-aliased evidence path: node_modules/fixture-content/CLIENT.js", Case.Sensitive);
     }
 
     [Fact]
@@ -192,13 +196,13 @@ public sealed class DocsProvenanceTests
     }
 
     [Theory]
-    [InlineData("package-union")]
-    [InlineData("lock-name")]
-    [InlineData("lock-version")]
-    [InlineData("manifest-name")]
-    [InlineData("manifest-hash")]
-    [InlineData("source-hash")]
-    public void OwnershipAndDerivedUnionsCannotBeReplacedByClaims(string change)
+    [InlineData("package-union", "Output package union differs from referenced sources: client.js")]
+    [InlineData("lock-name", Identity)]
+    [InlineData("lock-version", Identity)]
+    [InlineData("manifest-name", Identity)]
+    [InlineData("manifest-hash", Identity)]
+    [InlineData("source-hash", "Source hash differs: npm/node_modules/fixture-content/client.js")]
+    public void OwnershipAndDerivedUnionsCannotBeReplacedByClaims(string change, string expected)
     {
         using var fixture = new ProtocolFixture();
         if (change is "lock-name" or "lock-version")
@@ -226,7 +230,7 @@ public sealed class DocsProvenanceTests
             if (change == "package-union") document["outputs"]![0]!["packages"] = new JsonArray();
             else document["sources"]![0]![change == "source-hash" ? "sha256" : "packageJsonSha256"] = new string('0', 64);
         });
-        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("Docs provenance");
+        Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("Docs provenance: " + expected, Case.Sensitive);
     }
 
     [Theory]
@@ -257,6 +261,8 @@ public sealed class DocsProvenanceTests
         Directory.CreateDirectory(fixture.Full(relative));
         Should.Throw<InvalidDataException>(() => fixture.Verify()).Message.ShouldContain("empty");
     }
+
+    private const string Identity = "Package source/nearest manifest/lock identity differs: npm/node_modules/fixture-content/client.js";
 
     private static string Hash(string path) => Convert.ToHexString(
         System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();

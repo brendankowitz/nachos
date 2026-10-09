@@ -276,7 +276,11 @@ public static class DocsProvenance
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
-    private static FileStream OpenRegular(string path)
+    /// <summary>Opens an evidence file for reading only when it is a regular file; on Linux a FIFO never blocks the open.</summary>
+    /// <exception cref="InvalidDataException">The opened object is not a regular file.</exception>
+    /// <exception cref="IOException">The path cannot be opened (for example a socket).</exception>
+    /// <remarks>Every rejected descriptor is closed before the exception propagates.</remarks>
+    public static FileStream OpenRegular(string path)
     {
         FileStream stream;
         if (OperatingSystem.IsWindows()) stream = System.IO.File.OpenRead(path);
