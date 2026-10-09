@@ -361,9 +361,10 @@ public sealed class RetryHandler : DelegatingHandler
     // raised below it, surfaces as OperationCanceledException while the caller's token is still live. HttpClient.Timeout
     // is different: it covers the whole call including every retry, cancels the token this handler receives, and so is
     // never retried. A configured limit (such as the response buffer cap) fails the same way on every attempt, so it
-    // never retries. A failure the primary-handler wrapper replaced by fixed text is classified by the type it replaced
-    // (an InvalidOperationException from a handler is a bug, not a transient failure), so the wrapper never changes
-    // what is retried.
+    // never retries. A failure the primary-handler wrapper replaced by fixed text, or rebuilt as an IOException from a
+    // kept SocketException or ObjectDisposedException, is classified by the type it stood for (an
+    // InvalidOperationException from a handler is a bug, not a transient failure), so the wrapper never changes what
+    // is retried.
     private static bool IsTransient(Exception ex, CancellationToken callerToken) =>
         !callerToken.IsCancellationRequested &&
         ex is not HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded } &&

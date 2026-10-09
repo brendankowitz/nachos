@@ -28,7 +28,8 @@ namespace Nachos.Client;
 /// refused" and timeouts stay informative. <see cref="Sanitize"/> returns the same instance when nothing in the chain
 /// mentions a secret and no level is an <see cref="HttpRequestException"/>. A level that mentions a secret is rebuilt
 /// with it redacted (the same type for cancellations and timeouts, keeping the token; any other type becomes an
-/// <see cref="IOException"/> whose message starts with the original type name), with string <see cref="Exception.Data"/>
+/// <see cref="IOException"/> whose message starts with the original type name and which reads as that type through
+/// <see cref="ReplacedType"/>), with string <see cref="Exception.Data"/>
 /// keys and values redacted except <c>Nachos.</c> entries. An <see cref="HttpRequestException"/> level is always
 /// rebuilt, keeping its error, status and (redacted) inner chain but with the fixed text of
 /// <see cref="ConnectionMessage"/>: .NET's own text names the target host and port, and a followed redirect lets the
@@ -68,9 +69,11 @@ internal static class SecretRedaction
 
     /// <summary>
     /// The type of the failure that <paramref name="exception"/> replaced (see the type remarks), or null when it is
-    /// not a replacement. A replacement is an <see cref="HttpRequestException"/> whatever it stood for, so a decision
-    /// made by type, such as <see cref="RetryHandler"/>'s retry classification, uses the original type instead:
-    /// sanitizing a failure must not make it retryable when the original was not.
+    /// not a replacement. A replacement is an <see cref="HttpRequestException"/> whatever it stood for, and a kept
+    /// <see cref="SocketException"/> or <see cref="ObjectDisposedException"/> that mentioned a secret is rebuilt as an
+    /// <see cref="IOException"/>, so a decision made by type, such as <see cref="RetryHandler"/>'s retry
+    /// classification, uses the original type instead: sanitizing a failure must not make it retryable when the
+    /// original was not.
     /// </summary>
     public static Type? ReplacedType(Exception exception) => ReplacedTypes.TryGetValue(exception, out var type) ? type : null;
 
@@ -197,7 +200,7 @@ internal static class SecretRedaction
             TaskCanceledException canceled => new TaskCanceledException(message, inner, canceled.CancellationToken),
             OperationCanceledException canceled => new OperationCanceledException(message, inner, canceled.CancellationToken),
             TimeoutException => new TimeoutException(message, inner),
-            _ => new IOException($"{exception.GetType().FullName}: {message}", inner),
+            _ => RebuiltAsIO(exception, message, inner),
         };
 
         foreach (DictionaryEntry entry in exception.Data)
@@ -213,6 +216,16 @@ internal static class SecretRedaction
         }
 
         return MarkSanitized(copy);
+    }
+
+    // A SocketException or ObjectDisposedException cannot be rebuilt with a message of this code's choosing, so the
+    // copy is an IOException naming the type; it reads as the original through ReplacedType, so RetryHandler does not
+    // retry it when it would not have retried the original.
+    private static IOException RebuiltAsIO(Exception original, string message, Exception? inner)
+    {
+        var copy = new IOException($"{original.GetType().FullName}: {message}", inner);
+        ReplacedTypes.AddOrUpdate(copy, original.GetType());
+        return copy;
     }
 
     private static bool NeedsRebuild(Exception exception, RedactionSecrets secrets) =>

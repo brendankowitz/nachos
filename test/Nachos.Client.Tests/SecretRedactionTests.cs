@@ -453,12 +453,25 @@ public sealed class SecretRedactionTests
     }
 
     [Fact]
-    public void OtherKeptTypes_BecomeIOException_NamingTheOriginalType()
+    public void OtherKeptTypes_BecomeIOException_NamingTheOriginalType_AndReadingAsIt()
     {
         var redacted = SecretRedaction.Sanitize(new ObjectDisposedException(Secret), Secrets);
 
         redacted.ShouldBeOfType<IOException>().Message.ShouldStartWith("System.ObjectDisposedException: ");
         redacted.Message.ShouldNotContain(Secret);
+        SecretRedaction.ReplacedType(redacted).ShouldBe(typeof(ObjectDisposedException));
+    }
+
+    [Fact]
+    public void SocketExceptionWithASecretInItsData_BecomesIOException_ReadingAsASocketException()
+    {
+        var socket = new SocketException(10054);
+        socket.Data["echo"] = Secret;
+
+        var redacted = SecretRedaction.Sanitize(socket, Secrets);
+
+        redacted.ShouldBeOfType<IOException>().Data["echo"].ShouldBe(ErrorMapper.Redacted);
+        SecretRedaction.ReplacedType(redacted).ShouldBe(typeof(SocketException));
     }
 
     [Fact]
