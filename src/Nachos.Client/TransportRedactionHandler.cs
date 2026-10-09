@@ -11,8 +11,9 @@ namespace Nachos.Client;
 /// <para>
 /// A failure goes through <see cref="SecretRedaction.Sanitize"/>: known-safe connection failures are kept, everything
 /// else is replaced by fixed text. A successful response passes through, except that a response header whose name holds
-/// the request's bearer value (plain or hex, <see cref="RedactionSecrets"/>) is removed: such a name is valid HTTP when
-/// the value is a bare JWT, and the factory would otherwise log it.
+/// the request's bearer value (plain or hex, <see cref="RedactionSecrets.ForHeaderNames"/>, so only a value of at least
+/// <see cref="RedactionSecrets.MinHeaderNameMatchLength"/> characters) is removed: such a name is valid HTTP when the
+/// value is a bare JWT, and the factory would otherwise log it.
 /// </para>
 /// <para>
 /// Failures while a caller later reads a response body do not pass through any handler; <see cref="RetryHandler"/> and
@@ -23,7 +24,6 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
 {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var secrets = RedactionSecrets.FromAuthorization(request);
         HttpResponseMessage response;
         try
         {
@@ -31,7 +31,7 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
         }
         catch (Exception ex)
         {
-            var safe = SecretRedaction.Sanitize(ex, secrets);
+            var safe = SecretRedaction.Sanitize(ex, RedactionSecrets.FromAuthorization(request));
             if (ReferenceEquals(safe, ex))
             {
                 throw;
@@ -40,6 +40,7 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
             throw safe;
         }
 
+        var secrets = RedactionSecrets.ForHeaderNames(request);
         RemoveEchoedHeaders(response.Headers, secrets);
         RemoveEchoedHeaders(response.Content.Headers, secrets);
         return response;

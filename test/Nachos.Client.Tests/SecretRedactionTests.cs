@@ -106,6 +106,24 @@ public sealed class SecretRedactionTests
         RedactionSecrets.FromAuthorization(request).Redact("echo nk-tok-123456!").ShouldBe("echo " + ErrorMapper.Redacted + "!");
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(15, true)]
+    [InlineData(16, false)]
+    [InlineData(1555, false)]
+    public void ForHeaderNames_IgnoresBearerValuesShorterThanTheMinimum(int length, bool ignored)
+    {
+        var value = new string('k', length);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + value);
+
+        var secrets = RedactionSecrets.ForHeaderNames(request);
+
+        secrets.IsEmpty.ShouldBe(ignored);
+        secrets.OccursIn("X-" + value).ShouldBe(!ignored);
+        RedactionSecrets.FromAuthorization(request).OccursIn("X-" + value).ShouldBeTrue("mapped text keeps plain matching at any length");
+    }
+
     [Fact]
     public void OccursIn_IgnoresTheMarkerItself()
     {

@@ -34,6 +34,16 @@ internal sealed class RedactionSecrets
     /// </summary>
     public const int MinHexLength = 8;
 
+    /// <summary>
+    /// Shortest bearer value that is matched against response header <em>names</em> (<see cref="ForHeaderNames"/>).
+    /// A header name holding the value is removed before the <see cref="IHttpClientFactory"/> loggers see it, so a
+    /// short value that is a substring of an ordinary name (a key of <c>e</c>, <c>ry</c> or <c>After</c> is inside
+    /// <c>Retry-After</c>) would strip real headers and change retry behaviour. Real keys are JWTs, hundreds of
+    /// characters long, so values shorter than this are never matched against names; mapped text keeps plain matching
+    /// at any length.
+    /// </summary>
+    public const int MinHeaderNameMatchLength = 16;
+
     private const string BearerScheme = "Bearer ";
 
     private readonly (string Form, StringComparison Comparison)[] _forms;
@@ -72,6 +82,15 @@ internal sealed class RedactionSecrets
     public static RedactionSecrets FromAuthorization(HttpRequestMessage request) =>
         request.Headers.NonValidated.TryGetValues("Authorization", out var values)
             ? Of([.. values.Select(StripScheme)])
+            : None;
+
+    /// <summary>
+    /// The bearer values of <paramref name="request"/> that are matched against response header names: those at least
+    /// <see cref="MinHeaderNameMatchLength"/> long (see its remarks), in all their forms.
+    /// </summary>
+    public static RedactionSecrets ForHeaderNames(HttpRequestMessage request) =>
+        request.Headers.NonValidated.TryGetValues("Authorization", out var values)
+            ? Of([.. values.Select(StripScheme).Where(v => v.Length >= MinHeaderNameMatchLength)])
             : None;
 
     /// <summary>True when any form of any secret occurs in <paramref name="text"/> outside existing markers.</summary>

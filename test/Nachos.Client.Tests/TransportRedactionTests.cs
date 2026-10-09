@@ -460,6 +460,38 @@ public sealed class TransportRedactionTests
         SecretScan.FindLeak(logs.TextOf(".ClientHandler"), Secret(auth), window: 12).ShouldNotBeNull();
     }
 
+    /// <summary>
+    /// A short API key is a substring of ordinary header names (<c>e</c>, <c>ry</c> and <c>After</c> are inside
+    /// <c>Retry-After</c>). Matching it against names would strip the server's <c>Retry-After</c> from a 503, so the
+    /// over-cap delay would not surface and the call would be retried three times instead of once. Names are matched
+    /// only against values of at least <see cref="RedactionSecrets.MinHeaderNameMatchLength"/> characters.
+    /// </summary>
+    [Theory]
+    [InlineData("e")]
+    [InlineData("ry")]
+    [InlineData("After")]
+    public async Task ShortApiKey_DoesNotStripResponseHeaders_SoRetryAfterStillSurfaces(string key)
+    {
+        await using var server = new EchoingServer(_ =>
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 40\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"detail\":\"busy\"}");
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o =>
+        {
+            o.BaseAddress = server.BaseAddress;
+            o.ApiKey = key;
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        server.Requests.ShouldBe(1);
+        ex.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        NachosExceptionData.TryGetRetryAfter(ex, out var delay).ShouldBeTrue();
+        delay.ShouldBe(TimeSpan.FromSeconds(40));
+        ex.Message.ShouldEndWith(" Retry-After: 40s.");
+    }
+
     [Fact]
     public void HexHost_SpellsTheSecret_AndTheScanSeesThroughTheDots()
     {
