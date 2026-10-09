@@ -490,6 +490,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 9. The optional `Idempotency-Key` header on non-idempotent mutations (§9.1).
 10. `POST /v3/keys` rejects `peer_id` together with `session_id` (422). Honcho's public docs don't forbid the combination; Nachos keeps keys to a single narrowest scope.
 11. A JSON request body that is not valid UTF-8 is rejected as a whole, before JSON parsing, with `422` and `[{"loc":["body"],"type":"json_invalid",…}]`. This applies even when the invalid bytes are in a field Nachos would otherwise ignore. **Inference, not measured:** FastAPI, which Honcho uses, most likely returns `400` for an undecodable body. Nachos keeps its existing `422 json_invalid` family. ASCII-escaped surrogates (`\uD800`) are valid UTF-8 and follow the strict JSON-data rules (#9), not this rule.
+12. The `Idempotency-Key` header (§9.1) is taken exactly as sent. Nachos does not trim, split on commas, fold case or otherwise normalize it. A single value that contains a comma is one literal key. Core's existing rule (1–255 ASCII characters) is the only validation applied, and no new rule for whitespace, control characters or printable characters is added. If the header appears more than once, Nachos rejects the request after authorization with `422` and `loc ["header","idempotency-key"]`; it does not join the values into a different key. CR/LF can never reach the application, because Kestrel rejects them at the transport.
 
 ---
 
