@@ -1080,6 +1080,34 @@ public sealed class FilterParserTests
         Should.Throw<NachosValidationException>(() => Parse($$$"""{"name":["*",{{{items}}}]}"""));
     }
 
+    /// <summary>Filters of exactly <paramref name="leaves"/> conditions, built from the counting rule under test.</summary>
+    public static TheoryData<string, Func<int, string>> LeafShapes() => new()
+    {
+        // Nested metadata containment: each path is a condition.
+        { "nested metadata paths", n => "{\"metadata\":{\"o\":{" + string.Join(",", Enumerable.Range(0, n).Select(i => $"\"k{i}\":{i}")) + "}}}" },
+        // Root "contains" on metadata counts its keys.
+        { "metadata contains", n => "{\"metadata\":{\"contains\":{" + string.Join(",", Enumerable.Range(0, n).Select(i => $"\"k{i}\":\"*\"")) + "}}}" },
+        // Each operator of an operator object, null and "*" values, and lists (one each, whatever their length).
+        { "operators, null, wildcard, lists", n => "{\"AND\":[" + string.Join(",", Enumerable.Range(0, n).Select(i => (i % 4) switch
+        {
+            0 => $"{{\"metadata\":{{\"k{i}\":null}}}}",
+            1 => $"{{\"metadata\":{{\"k{i}\":[1,2,3]}}}}",
+            2 => "{\"name\":\"*\"}",
+            _ => "{\"name\":[\"a\",\"b\"]}",
+        })) + "]}" },
+        // Unknown keys are ignored, so they count nothing.
+        { "unknown keys count nothing", n => "{" + string.Join(",", Enumerable.Range(0, 500).Select(i => $"\"bogus{i}\":{i}")) + ",\"OR\":[" + string.Join(",", Enumerable.Range(0, n).Select(_ => "{\"name\":\"x\"}")) + "]}" },
+    };
+
+    [Theory]
+    [MemberData(nameof(LeafShapes))]
+    public void FilterOverMaxLeaves_Rejected(string shape, Func<int, string> filter)
+    {
+        Should.NotThrow(() => FilterParser.Parse(filter(FilterParser.MaxLeaves), ResourceKind.Workspace), shape);
+        Should.Throw<NachosValidationException>(() => FilterParser.Parse(filter(FilterParser.MaxLeaves + 1), ResourceKind.Workspace), shape)
+            .Detail.ShouldBe($"The filter has {FilterParser.MaxLeaves + 1} conditions; the limit is {FilterParser.MaxLeaves}.");
+    }
+
     [Theory]
     [InlineData("2026-01-01\n")]
     [InlineData("2026-01-01T00:00:00Z\n")]

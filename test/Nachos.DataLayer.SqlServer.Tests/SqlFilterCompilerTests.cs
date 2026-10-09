@@ -130,27 +130,29 @@ public sealed class SqlFilterCompilerTests
         parameters.ShouldNotBeEmpty();
     }
 
-    [Fact]
-    public void EscapesLikeWildcards()
+    [Theory]
+    [InlineData("content", "contains", "50%_off[x]\\y", ResourceKind.Message)]
+    [InlineData("id", "icontains", "a_b%", ResourceKind.Peer)]
+    public void Contains_SearchesTheOperandAsIs_WithCharIndex_NotLike(string field, string op, string operand, ResourceKind kind)
     {
-        var (sql, parameters) = Compile(
-            new JsonObject { ["content"] = new JsonObject { ["contains"] = "50%_off[x]\\y" } }, ResourceKind.Message);
+        // CHARINDEX has no wildcards, so LIKE metacharacters need no escaping, and repetitive text costs linear time
+        // (partner review I3). The results are pinned by the shared cases and SqlFilterDifferentialTests.
+        var (sql, parameters) = Compile(new JsonObject { [field] = new JsonObject { [op] = operand } }, kind);
 
-        sql.ShouldContain("LIKE");
-        sql.ShouldContain("ESCAPE N'\\'");
-        parameters.Select(p => p.Value).ShouldContain("%50\\%\\_off\\[x]\\\\y%");
+        sql.ShouldContain("CHARINDEX");
+        sql.ShouldNotContain("LIKE");
+        parameters.Select(p => p.Value).ShouldContain(operand);
     }
 
     [Fact]
-    public void EscapesLikeWildcards_InIContainsAndMetadata()
+    public void MetadataContains_SearchesTheOperandAsIs_AndItsHexInArrays()
     {
-        var (_, icontains) = Compile(
-            new JsonObject { ["id"] = new JsonObject { ["icontains"] = "a_b%" } }, ResourceKind.Peer);
-        icontains.Select(p => p.Value).ShouldContain("%a\\_b\\%%");
-
-        var (_, metadata) = Compile(
+        var (sql, parameters) = Compile(
             new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["contains"] = "[%]" } } }, ResourceKind.Peer);
-        metadata.Select(p => p.Value).ShouldContain("%\\[\\%]%");
+
+        sql.ShouldNotContain("LIKE");
+        parameters.Select(p => p.Value).ShouldContain("[%]");
+        parameters.Select(p => p.Value).ShouldContain(SqlDigest.Utf16Hex("[%]"));
     }
 
     [Fact]
@@ -186,20 +188,29 @@ public sealed class SqlFilterCompilerTests
         }
     }
 
-    [Fact]
-    public void TooManyDistinctValues_IsAValidationError()
+    [Theory]
+    [InlineData(40, false)]
+    [InlineData(80, true)]
+    public void TooManyParameters_IsAValidationError(int keys, bool rejected)
     {
-        // Each AND-ed key brings its own value: past SQL Server's 2,100-parameter limit the filter is rejected (422)
-        // instead of failing at execution time.
+        // Within the parser's condition cap, each `in` list of 1,000 long distinct strings packs into about 30 parameters, so
+        // 80 of them pass SQL Server's 2,100-parameter limit: the filter is rejected (422) instead of failing at execution.
         var metadata = new JsonObject();
-        for (var i = 0; i < 1500; i++)
+        for (var k = 0; k < keys; k++)
         {
-            metadata[$"key{i}"] = $"value{i}";
+            metadata[$"key{k}"] = new JsonObject { ["in"] = new JsonArray([.. Enumerable.Range(0, FilterParser.MaxListItems).Select(i => (JsonNode)$"{k}-{i}-{new string('v', 20)}")]) };
         }
 
-        Should.Throw<NachosValidationException>(
-            () => Compile(new JsonObject { ["metadata"] = metadata }, ResourceKind.Peer))
-            .Detail.ShouldBe("The filter needs more distinct values than the SQL Server provider can send in one statement.");
+        var filter = new JsonObject { ["metadata"] = metadata };
+        if (rejected)
+        {
+            Should.Throw<NachosValidationException>(() => Compile(filter, ResourceKind.Peer))
+                .Detail.ShouldBe(SqlFilterCompiler.TooManyValues);
+        }
+        else
+        {
+            Compile(filter, ResourceKind.Peer).Parameters.Count.ShouldBeLessThanOrEqualTo(SqlFilterCompiler.MaxParameters);
+        }
     }
 
     [Fact]

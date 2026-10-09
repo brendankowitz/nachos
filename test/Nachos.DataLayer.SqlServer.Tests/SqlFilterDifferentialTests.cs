@@ -279,6 +279,9 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
     [
         "\"a\"", "true", "false", "null", "{\"x\":1}", "[]", "[1,2,3]", "[-1,1.0,\"a\",true]", "[" + Mantissa(88) + ",-5]",
         "[\"1\",1]", "[[1]]", "[3,4,5,-5]",
+
+        // Arrays whose string elements test the delimited form contains uses: empty, "|", trailing spaces, NUL, case.
+        "[\"\",\"x|y\",\"a \",\"|\"]", "[\"A\",\"\\u0000\",\"|x\",\"x|\"]", "[\"\\uD83D\\uDE00\",\"ss\"]",
     ];
 
     public static TheoryData<string> ListFilters()
@@ -343,6 +346,23 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('s', 1999) + " "), Q(new string('s', 4100)), Q("|"), "true"]) + "}}}");
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q("x"), Q("y|"), Q("a  "), Q("😀"), Q("\uFFFF"), Q("\u0000"), Q("A")]) + "}}}");
         data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([.. Enumerable.Range(0, 997).Select(i => Q("f" + i.ToString(CultureInfo.InvariantCulture))), Q("a "), Q("||"), "1"]) + "}}}}");
+
+        foreach (var filter in MultiPathFilters)
+        {
+            data.Add(filter);
+        }
+
+        // Metadata contains/icontains on arrays: whole-element equality in the delimited hex, against each edge.
+        foreach (var operand in new[] { "", "|", "x|y", "x", "y", "a", "a ", "A", "\u0000", "|x", "x|", "😀", "s", "SS" })
+        {
+            data.Add("{\"metadata\":{\"k\":{\"contains\":" + Q(operand) + "}}}");
+            data.Add("{\"metadata\":{\"k\":{\"icontains\":" + Q(operand) + "}}}");
+        }
+
+        string[] anyOf = ["", "|", "a ", "A", "zz"];
+        string[] noneOf = ["|", "x|y", "a"];
+        data.Add("{\"OR\":[" + string.Join(",", anyOf.Select(o => "{\"metadata\":{\"k\":{\"contains\":" + Q(o) + "}}}")) + "]}");
+        data.Add("{\"NOT\":[" + string.Join(",", noneOf.Select(o => "{\"metadata\":{\"k\":{\"icontains\":" + Q(o) + "}}}")) + "]}");
 
         // Raw/digest boundary: near misses of the 15 to 17-unit strings and the stored ones, by kind and nested.
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('p', 16)), Q(new string('p', 17) + " "), Q(new string('p', 14) + "😀"), Q(new string('p', 14) + "😁"), Q(new string('p', 13) + "😀|"), Q("\u0000" + new string('p', 16))]) + "}}}");
@@ -434,7 +454,41 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         }
 
         await PeerAsync(new JsonObject { ["other"] = 1 });
+
+        // Several keys per object, for filters with conditions on more than one path (read once per row as flags).
+        foreach (var metadata in MultiKeyMetadata)
+        {
+            await PeerAsync(JsonNode.Parse(metadata)!.AsObject());
+        }
     }
+
+    private static readonly string[] MultiKeyMetadata =
+    [
+        "{}", "{\"a\":10,\"b\":\"x\"}", "{\"a\":1,\"b\":10}", "{\"a\":\"10\",\"b\":[10,\"x\"]}", "{\"b\":null}", "{\"a\":null,\"b\":\"y\"}",
+        "{\"a\":5,\"o\":{\"x\":5,\"y\":\"x\"}}", "{\"o\":{\"x\":\"5\"},\"b\":5}", "{\"a\":[1,5],\"b\":{\"x\":1}}", "{\"a \":10,\"a\":2}",
+    ];
+
+    /// <summary>Filters with conditions on several paths: each is evaluated as a per-row flag over one read of the metadata.</summary>
+    private static readonly string[] MultiPathFilters =
+    [
+        "{\"OR\":[{\"metadata\":{\"a\":{\"gt\":5}}},{\"metadata\":{\"b\":\"x\"}}]}",
+        "{\"OR\":[{\"metadata\":{\"a\":{\"gt\":5}}},{\"metadata\":{\"b\":{\"gt\":5}}}]}",
+        "{\"metadata\":{\"a\":{\"ne\":10},\"b\":{\"ne\":\"x\"}}}",
+        "{\"NOT\":[{\"metadata\":{\"a\":{\"gt\":5}}},{\"metadata\":{\"b\":{\"contains\":\"x\"}}}]}",
+        "{\"metadata\":{\"a\":null,\"b\":\"*\"}}",
+        "{\"OR\":[{\"metadata\":{\"a\":null}},{\"metadata\":{\"b\":null}}]}",
+        "{\"AND\":[{\"metadata\":{\"a\":{\"gte\":1}}},{\"NOT\":[{\"metadata\":{\"b\":[10]}}]}]}",
+        "{\"OR\":[{\"metadata\":{\"a\":1}},{\"metadata\":{\"o\":{\"x\":5}}}]}",
+        "{\"metadata\":{\"o\":{\"x\":{\"ne\":5}},\"a\":{\"ne\":5}}}",
+        "{\"OR\":[{\"metadata\":{\"o\":{\"y\":{\"icontains\":\"X\"}}}},{\"metadata\":{\"b\":{\"in\":[5,\"y\",10]}}}]}",
+        "{\"OR\":[{\"metadata\":{\"a\":{\"in\":[10,\"10\",2]}}},{\"metadata\":{\"b\":{\"lt\":\"y\"}}}]}",
+        "{\"AND\":[{\"metadata\":{\"a\":[1]}},{\"metadata\":{\"b\":{\"x\":1}}}]}",
+        "{\"OR\":[{\"metadata\":{\"a\":{\"gt\":5,\"lt\":20}}},{\"metadata\":{\"a\":\"10\"}},{\"metadata\":{\"o\":{\"x\":\"*\"}}}]}",
+        "{\"NOT\":[{\"metadata\":{\"a\":\"*\"}},{\"metadata\":{\"o\":\"*\"}}]}",
+        "{\"OR\":[{\"metadata\":{\"a \":10}},{\"metadata\":{\"a\":10}}]}",
+        "{\"AND\":[{\"metadata\":{\"k\":{\"ne\":1}}},{\"metadata\":{\"o\":{\"x\":{\"ne\":1}}}},{\"metadata\":{\"other\":null}}]}",
+        "{\"OR\":[{\"metadata\":{\"a\":{\"contains\":\"x\"}}},{\"metadata\":{\"b\":{\"contains\":\"x\"}}},{\"metadata\":{\"k\":{\"icontains\":\"A\"}}}]}",
+    ];
 
     private static async Task<List<string>> ListAsync(IMemoryStore store, ResourceKind kind, FilterNode? filter, string workspace = Workspace)
     {

@@ -26,8 +26,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// <summary>Non-supplementary binary collation: compares, measures and slices text by UTF-16 code unit.</summary>
     private const string Bin2 = "Latin1_General_100_BIN2";
 
-    /// <summary>The longest <c>LIKE</c> pattern SQL Server accepts (8000 bytes of <c>nvarchar</c>).</summary>
-    private const int MaxLikePattern = 4000;
+    /// <summary>The longest <c>nvarchar</c> text <c>CHARINDEX</c> searches for (8000 bytes).</summary>
+    private const int MaxCharIndexOperand = 4000;
 
     private readonly List<SqlParameter> _parameters = [];
     private readonly Dictionary<(SqlDbType Type, string Value), string> _shared = [];
@@ -36,6 +36,87 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     public IReadOnlyList<SqlParameter> Parameters => _parameters;
 
     private int DigestHexLength => digestHexLength;
+
+    /// <summary>While <see cref="WriteFilter"/> collects them, the metadata conditions of the filter, each a per-row flag.</summary>
+    private List<MetadataFlag>? _flags;
+
+    /// <summary>The alias of the derived table holding the flags (<c>l0</c>, <c>l1</c>, …).</summary>
+    private string _flagsAlias = "";
+
+    /// <summary>A metadata condition <c>EXISTS</c> over the value at <see cref="Path"/>, evaluated as a flag (see <see cref="WriteWithFlags"/>).</summary>
+    private sealed record MetadataFlag(IReadOnlyList<string> Path, Func<MetadataRow, string> Condition);
+
+    /// <summary>
+    /// The predicate for a whole filter. A filter with one metadata condition (after merging conditions on one path) is
+    /// written directly: an <c>EXISTS</c> over its path. With more, the metadata is read once per row for all of them
+    /// (<see cref="WriteWithFlags"/>), so the cost of a row grows with the number of its metadata entries, not with the
+    /// number of conditions times entries (partner review I2: 128 conditions as separate <c>EXISTS</c> took minutes over
+    /// 10,000 rows).
+    /// </summary>
+    public string WriteFilter(FilterNode node)
+    {
+        var parameters = _parameters.Count;
+        _flags = [];
+        _flagsAlias = Alias();
+        string formula;
+        List<MetadataFlag> flags;
+        try
+        {
+            formula = Write(node);
+            flags = _flags;
+        }
+        finally
+        {
+            _flags = null;
+        }
+
+        if (flags.Count > 1)
+        {
+            return WriteWithFlags(formula, flags);
+        }
+
+        // Write again without flags; drop what the first pass added so every parameter is used.
+        foreach (var stale in _shared.Where(pair => int.Parse(pair.Value.AsSpan(2), CultureInfo.InvariantCulture) >= parameters).Select(pair => pair.Key).ToList())
+        {
+            _shared.Remove(stale);
+        }
+
+        _parameters.RemoveRange(parameters, _parameters.Count - parameters);
+        return Write(node);
+    }
+
+    /// <summary>
+    /// <paramref name="formula"/> (the filter's AND/OR/NOT over column conditions and the flags <c>l0</c>, <c>l1</c>, …)
+    /// over one aggregate per row: <c>l<i>i</i></c> is 1 when some entry of the metadata satisfies flag <i>i</i>, which is
+    /// exactly the <c>EXISTS</c> it replaces. The metadata is opened once; each entry is tested only against the flags
+    /// under its own key (nested <c>CASE</c>, so a condition never runs on another key's entry), and derived columns
+    /// (number keys, digests) are computed once per entry, only for keys that need them. A condition deeper than the first
+    /// key is an <c>EXISTS</c> over the rest of its path, opened only for the entry under its first key.
+    /// </summary>
+    private string WriteWithFlags(string formula, IReadOnlyList<MetadataFlag> flags)
+    {
+        var root = Alias();
+        var from = new StringBuilder($"FROM OPENJSON({table}.Metadata) AS {root}");
+        var keys = flags.Select(flag => flag.Path[0]).Distinct(StringComparer.Ordinal).ToDictionary(key => key, Text, StringComparer.Ordinal);
+        var endingHere = flags.Where(flag => flag.Path.Count == 1).Select(flag => keys[flag.Path[0]]).Distinct().Select(key => $"({KeyMatches(root, key)})").ToList();
+        var row = new MetadataRow(this, root, from, endingHere.Count == 0 ? "1 = 0" : string.Join(" OR ", endingHere));
+
+        var definitions = new List<string>(flags.Count);
+        for (var i = 0; i < flags.Count; i++)
+        {
+            var flag = flags[i];
+            var key = KeyMatches(root, keys[flag.Path[0]]);
+            var holds = flag.Path.Count == 1
+                ? flag.Condition(row)
+                : MetadataExists([.. flag.Path.Skip(1)], flag.Condition, $"CASE WHEN {root}.[type] = 5 AND {key} THEN {root}.[value] END");
+            definitions.Add(string.Create(CultureInfo.InvariantCulture, $"CASE WHEN {key} THEN CASE WHEN {holds} THEN 1 ELSE 0 END ELSE 0 END AS f{i}"));
+        }
+
+        var element = Alias();
+        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT {string.Join(", ", definitions)}) AS {element}");
+        var columns = string.Join(", ", Enumerable.Range(0, flags.Count).Select(i => string.Create(CultureInfo.InvariantCulture, $"ISNULL(MAX({element}.f{i}), 0) AS l{i}")));
+        return $"EXISTS (SELECT 1 FROM (SELECT {columns} {from}) AS {_flagsAlias} WHERE {formula})";
+    }
 
     public string Write(FilterNode node) => node switch
     {
@@ -256,75 +337,46 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
 
     // ------------------------------------------------------------------------------------------------ text helpers
 
-    /// <summary>Ordinal substring (or, with <paramref name="fold"/>, <c>UPPER</c>-folded substring) of non-null text.</summary>
+    /// <summary>
+    /// Ordinal substring (or, with <paramref name="fold"/>, <c>UPPER</c>-folded substring) of non-null text: <c>CHARINDEX</c>
+    /// under a binary collation, which compares code units exactly (trailing spaces, NUL and surrogates included) and, unlike
+    /// <c>LIKE '%…%'</c>, does not slow down quadratically on repetitive text (partner review I3: a 1990-character operand
+    /// over 10,000 rows of <c>'s'</c> x 1990 took 81 s with <c>LIKE</c>, 33 ms with <c>CHARINDEX</c>). Text shorter than the
+    /// operand is ruled out by its length first (<c>CASE</c> fixes the order, and <c>UPPER</c> keeps lengths). Every string
+    /// contains the empty string, which <c>CHARINDEX</c> would not find.
+    /// </summary>
     private string Contains(string text, string operand, bool fold)
     {
-        var escaped = EscapeLike(operand);
-        if (escaped.Length + 2 <= MaxLikePattern)
+        if (operand.Length == 0)
         {
-            var pattern = Text($"%{escaped}%");
-            return fold
-                ? $"(UPPER({text} COLLATE {Bin2}) LIKE UPPER({pattern}) ESCAPE N'\\')"
-                : $"({text} COLLATE {Bin2} LIKE {pattern} ESCAPE N'\\')";
+            return True;
         }
 
-        // Too long for a LIKE pattern. A LIKE on the longest prefix that fits picks the candidates cheaply (containing the
-        // operand implies containing its prefix, folded or not); only those are scanned exactly, comparing the operand with
-        // every substring of its length, positions numbered by OPENJSON over an array of that many elements. CASE fixes
-        // the order of evaluation, so the scan never runs for a row the prefix rules out.
-        var prefixPattern = Text($"%{LongestLikePrefix(operand)}%");
-        var candidate = fold
-            ? $"UPPER({text} COLLATE {Bin2}) LIKE UPPER({prefixPattern}) ESCAPE N'\\'"
-            : $"{text} COLLATE {Bin2} LIKE {prefixPattern} ESCAPE N'\\'";
+        var longEnough = $"DATALENGTH({text}) >= {(2L * operand.Length).ToString(CultureInfo.InvariantCulture)}";
+        if (operand.Length <= MaxCharIndexOperand)
+        {
+            return $"(CASE WHEN {longEnough} THEN CASE WHEN {Find(text, Text(operand), fold)} > 0 THEN 1 ELSE 0 END ELSE 0 END = 1)";
+        }
+
+        // Too long for CHARINDEX to search for. Finding the longest prefix it can search for picks the candidates cheaply
+        // (containing the operand implies containing its prefix, folded or not); only those are scanned exactly, comparing
+        // the operand with every substring of its length, positions numbered by OPENJSON over an array of that many
+        // elements. CASE fixes the order of evaluation, so the scan never runs for a row the length or prefix rules out.
+        var prefix = operand[..(char.IsHighSurrogate(operand[MaxCharIndexOperand - 1]) ? MaxCharIndexOperand - 1 : MaxCharIndexOperand)];
+        var candidate = $"{Find(text, Text(prefix), fold)} > 0";
         var value = Text(operand);
         var length = Parameter(SqlDbType.Int, operand.Length.ToString(CultureInfo.InvariantCulture), (name, _) => SqlParameters.Int(name, operand.Length));
         var position = Alias();
         var slice = $"SUBSTRING({text} COLLATE {Bin2}, CAST({position}.[key] AS int) + 1, {length})";
         var match = fold ? $"UPPER({slice}) = UPPER({value} COLLATE {Bin2})" : $"{slice} = {value} COLLATE {Bin2}";
         var scan = $"EXISTS (SELECT 1 FROM OPENJSON(N'[' + REPLICATE(CAST(N'0,' AS nvarchar(max)), DATALENGTH({text}) / 2 - {length}) + N'0]') AS {position} WHERE {match})";
-        return $"(CASE WHEN {candidate} THEN CASE WHEN {scan} THEN 1 ELSE 0 END ELSE 0 END = 1)";
+        return $"(CASE WHEN {longEnough} THEN CASE WHEN {candidate} THEN CASE WHEN {scan} THEN 1 ELSE 0 END ELSE 0 END ELSE 0 END = 1)";
     }
 
-    /// <summary>
-    /// The escaped form of the longest prefix of <paramref name="operand"/> that fits a <c>LIKE</c> pattern with a
-    /// <c>%</c> on each side. It never ends inside a surrogate pair.
-    /// </summary>
-    private static string LongestLikePrefix(string operand)
-    {
-        var escaped = new StringBuilder(MaxLikePattern);
-        for (var i = 0; i < operand.Length; i++)
-        {
-            var take = char.IsHighSurrogate(operand[i]) && i + 1 < operand.Length ? 2 : 1;
-            var piece = EscapeLike(operand.Substring(i, take));
-            if (escaped.Length + piece.Length + 2 > MaxLikePattern)
-            {
-                break;
-            }
-
-            escaped.Append(piece);
-            i += take - 1;
-        }
-
-        return escaped.ToString();
-    }
-
-    /// <summary>Escapes the <c>LIKE</c> metacharacters <c>%</c>, <c>_</c>, <c>[</c> and the escape character <c>\</c>.</summary>
-    private static string EscapeLike(string text)
-    {
-        var escaped = new StringBuilder(text.Length + 8);
-        foreach (var character in text)
-        {
-            if (character is '\\' or '%' or '_' or '[')
-            {
-                escaped.Append('\\');
-            }
-
-            escaped.Append(character);
-        }
-
-        return escaped.ToString();
-    }
-
+    /// <summary>The 1-based position of <paramref name="operand"/> in <paramref name="text"/> (0 when absent), code unit for code unit.</summary>
+    private static string Find(string text, string operand, bool fold) => fold
+        ? $"CHARINDEX(UPPER({operand} COLLATE {Bin2}), UPPER({text} COLLATE {Bin2}))"
+        : $"CHARINDEX({operand} COLLATE {Bin2}, {text} COLLATE {Bin2})";
     /// <summary>
     /// Ordinal comparison of non-null text with an operand as -1, 0 or 1. Equal-length prefixes compare exactly (no
     /// space padding applies), and a proper prefix orders first, as in <see cref="string.CompareOrdinal(string, string)"/>.
@@ -343,7 +395,11 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     // ------------------------------------------------------------------------------------------------ metadata
 
     /// <summary>The value at a path inside the metadata: the final <c>OPENJSON</c> row, plus derived key columns on demand.</summary>
-    private sealed class MetadataRow(FilterWriter writer, string row, StringBuilder from)
+    /// <param name="gate">
+    /// For a row source shared by several keys (<see cref="WriteWithFlags"/>), the condition that the row is under one of
+    /// the keys whose conditions use it: derived columns are computed only for such rows.
+    /// </param>
+    private sealed class MetadataRow(FilterWriter writer, string row, StringBuilder from, string? gate = null)
     {
         private string? _numberKey;
         private string? _numberDigest;
@@ -354,7 +410,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         public string Type => $"{row}.[type]";
 
         /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed (once per row).</summary>
-        public string NumberKey => _numberKey ??= writer.NumberKey(Value, Type, from);
+        public string NumberKey => _numberKey ??= writer.NumberKey(Value, Gated($"{Type} = 2"), from);
 
         /// <summary>
         /// The <c>len:SHA256</c> entry (<see cref="SqlDigest.KeySql"/>) of a number key longer than <see cref="ShortKey"/>
@@ -368,10 +424,23 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         /// code units (else NULL), computed once per row.
         /// </summary>
         public string StringDigest => _stringDigest ??= writer.Digest(
-            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.StringSql(Value, writer.DigestHexLength)} END", from);
+            $"CASE WHEN {Gated($"{Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)}")} THEN {SqlDigest.StringSql(Value, writer.DigestHexLength)} END", from);
 
         /// <summary>The number keys of the elements of <paramref name="array"/>, joined into the row's FROM clause.</summary>
-        public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(array, from);
+        public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(gate is null ? array : $"CASE WHEN {gate} THEN {array} END", from);
+
+        private string? _arrayStrings;
+        private string? _foldedArrayStrings;
+
+        /// <summary>
+        /// For an array value, its string elements as <c>|hex|hex|…|</c> (UTF-16LE code units, upper-cased first when
+        /// <paramref name="fold"/>), NULL otherwise or when it has none; joined into the row's FROM clause once per row.
+        /// </summary>
+        public string ArrayStrings(bool fold) => fold
+            ? _foldedArrayStrings ??= writer.ArrayStrings(Value, Gated($"{Type} = 4"), fold: true, from)
+            : _arrayStrings ??= writer.ArrayStrings(Value, Gated($"{Type} = 4"), fold: false, from);
+
+        private string Gated(string condition) => gate is null ? condition : $"{condition} AND ({gate})";
     }
 
     /// <summary>False when a key is longer than any stored key can be (see <see cref="SqlJson.MaxKeyLength"/>).</summary>
@@ -420,6 +489,17 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// </summary>
     private string MetadataExists(IReadOnlyList<string> path, Func<MetadataRow, string> condition)
     {
+        if (_flags is not null)
+        {
+            _flags.Add(new MetadataFlag(path, condition));
+            return $"({_flagsAlias}.l{(_flags.Count - 1).ToString(CultureInfo.InvariantCulture)} = 1)";
+        }
+
+        return MetadataExists(path, condition, $"{table}.Metadata");
+    }
+
+    private string MetadataExists(IReadOnlyList<string> path, Func<MetadataRow, string> condition, string source)
+    {
         var from = new StringBuilder();
         var where = new List<string>(path.Count + 1);
         string? previous = null;
@@ -429,7 +509,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
             var step = Alias();
             var keyParameter = Text(key);
             from.Append(previous is null
-                ? $"FROM OPENJSON({table}.Metadata) AS {step}"
+                ? $"FROM OPENJSON({source}) AS {step}"
                 : $" CROSS APPLY OPENJSON(CASE WHEN {previous}.[type] = 5 AND {KeyMatches(previous, previousKey!)} THEN {previous}.[value] END) AS {step}");
             where.Add(KeyMatches(step, keyParameter));
             previous = step;
@@ -462,15 +542,40 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         var other => throw new NotSupportedException($"A metadata operand of kind {other} cannot be ordered."),
     };
 
-    /// <summary>A string containing the text, or an array with a string element equal to it (both under the same folding).</summary>
+    /// <summary>
+    /// A string containing the text, or an array with a string element equal to it (both under the same folding). The
+    /// array test is a <c>CHARINDEX</c> of the operand's delimited hex in the row's <see cref="MetadataRow.ArrayStrings"/>,
+    /// not a subquery per condition: hex holds no <c>|</c>, so a match between delimiters is a whole element, equal code
+    /// unit for code unit (trailing spaces included). Folded, both sides are <c>UPPER</c>-ed under the binary collation
+    /// first, which keeps their lengths. An operand whose delimited hex is longer than <c>CHARINDEX</c> may search for
+    /// (8000 characters, so over 1999 code units) is compared with the array's elements by a subquery instead.
+    /// </summary>
     private string MetadataContains(MetadataRow row, string operand, bool fold)
     {
+        if (operand.Length > (ChunkLength - 2) / 4)
+        {
+            var element = Alias();
+            var value = Text(operand);
+            var equal = fold
+                ? $"UPPER({element}.[value] COLLATE {Bin2}) = UPPER({value} COLLATE {Bin2})"
+                : $"{element}.[value] COLLATE {Bin2} = {value}";
+            return $"(({row.Type} = 1 AND {Contains(row.Value, operand, fold)}) OR ({row.Type} = 4 AND EXISTS (SELECT 1 FROM OPENJSON(CASE WHEN {row.Type} = 4 THEN {row.Value} END) AS {element} WHERE {element}.[type] = 1 AND {equal} AND DATALENGTH({element}.[value]) = DATALENGTH({value}))))";
+        }
+
+        var wanted = fold
+            ? $"CONVERT(varchar(max), CAST(UPPER({Text(operand)} COLLATE {Bin2}) AS varbinary(max)), 2)"
+            : Parameter(SqlDbType.VarChar, SqlDigest.Utf16Hex(operand), SqlParameters.Ascii);
+        return $"(({row.Type} = 1 AND {Contains(row.Value, operand, fold)}) OR ({row.Type} = 4 AND CHARINDEX('|' + {wanted} + '|' COLLATE {Bin2}, {row.ArrayStrings(fold)}) > 0))";
+    }
+
+    /// <summary>Joins <see cref="MetadataRow.ArrayStrings"/> into <paramref name="from"/>: one aggregate per row, over arrays only.</summary>
+    private string ArrayStrings(string value, string when, bool fold, StringBuilder from)
+    {
+        var strings = Alias();
         var element = Alias();
-        var value = Text(operand);
-        var equal = fold
-            ? $"UPPER({element}.[value] COLLATE {Bin2}) = UPPER({value} COLLATE {Bin2})"
-            : $"{element}.[value] COLLATE {Bin2} = {value}";
-        return $"(({row.Type} = 1 AND {Contains(row.Value, operand, fold)}) OR ({row.Type} = 4 AND EXISTS (SELECT 1 FROM OPENJSON(CASE WHEN {row.Type} = 4 THEN {row.Value} END) AS {element} WHERE {element}.[type] = 1 AND {equal} AND DATALENGTH({element}.[value]) = DATALENGTH({value}))))";
+        var text = fold ? $"UPPER({element}.[value] COLLATE {Bin2})" : $"{element}.[value]";
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY (SELECT '|' + STRING_AGG(CONVERT(varchar(max), CAST({text} AS varbinary(max)), 2), '|') + '|' AS s FROM OPENJSON(CASE WHEN {when} THEN {value} END) AS {element} WHERE {element}.[type] = 1) AS {strings}");
+        return $"{strings}.s";
     }
 
     /// <summary>
@@ -615,10 +720,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// padding makes a proper prefix sort first, as the key requires.
     /// </para>
     /// </remarks>
-    private string NumberKey(string value, string type, StringBuilder from)
+    private string NumberKey(string value, string when, StringBuilder from)
     {
         var key = Alias();
-        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY(dbo.JsonNumberOrderKey(CASE WHEN {type} = 2 THEN {value} END))) WITH (k varchar(max) '$') AS {key}");
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY(dbo.JsonNumberOrderKey(CASE WHEN {when} THEN {value} END))) WITH (k varchar(max) '$') AS {key}");
         return $"{key}.k COLLATE {Bin2}";
     }
 

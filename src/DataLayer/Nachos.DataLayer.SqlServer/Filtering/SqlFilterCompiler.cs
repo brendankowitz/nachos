@@ -27,9 +27,10 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// <b>Text</b> compares by UTF-16 code unit under <c>Latin1_General_100_BIN2</c> (a non-supplementary binary collation,
 /// whose order is .NET's ordinal order). SQL pads with spaces before <c>=</c> and <c>&lt;</c>, so equality also compares
 /// <c>DATALENGTH</c>, and ordering compares the common-length prefixes and then the lengths. <c>contains</c> is
-/// <c>LIKE</c> with <c>%</c>, <c>_</c>, <c>[</c> and the escape character escaped; an operand too long for a
-/// <c>LIKE</c> pattern (4000 characters) is matched by comparing it with every substring of its length.
-/// <c>icontains</c> applies <c>UPPER</c> to both sides under the same binary collation.
+/// <c>CHARINDEX</c> under the same collation, after a length check (<c>LIKE '%…%'</c> is quadratic on repetitive text);
+/// an operand too long for <c>CHARINDEX</c> to search for (4000 code units) is found by its prefix and confirmed by
+/// comparing it with every substring of its length. <c>icontains</c> applies <c>UPPER</c> to both sides under the same
+/// binary collation.
 /// </para>
 /// <para>
 /// <b>Metadata</b> is walked key by key with <c>OPENJSON</c> (each step must be an object), and values compare only
@@ -39,6 +40,13 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// exponent of the first significant digit as an arbitrary-size integer, then the significant digits) that sorts like the
 /// value; the operand's key is computed in C# by the same algorithm (<c>Storage.ExactDecimal.ToOrderKey</c>). So
 /// <c>1e2</c> equals <c>100</c>, and <c>1E400</c>, <c>5E-324</c> or 2^96 + 1 compare exactly.
+/// </para>
+/// <para>
+/// <b>Many conditions.</b> A filter with one metadata condition (after conditions on one path are merged) is an
+/// <c>EXISTS</c> over its path. With more, each condition is a flag over a single read of the row's metadata: one
+/// aggregate per row computes, for every entry, the conditions under that entry's key, and the filter's AND/OR/NOT is
+/// evaluated over the flags, so a row's cost grows with its entries rather than with entries times conditions. The parser
+/// caps a filter at <see cref="FilterParser.MaxLeaves"/> conditions.
 /// </para>
 /// <para>
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
@@ -81,7 +89,7 @@ internal static partial class SqlFilterCompiler
         }
 
         var writer = new FilterWriter(kind, tableAlias, digestHexLength);
-        var sql = writer.Write(filter);
+        var sql = writer.WriteFilter(filter);
         return writer.Parameters.Count <= MaxParameters
             ? (sql, writer.Parameters)
             : throw new NachosValidationException(TooManyValues);
