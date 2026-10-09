@@ -103,8 +103,12 @@ public static class NachosClientServiceCollectionExtensions
     /// <c>System.Net.Http</c> diagnostics raised by the framework itself, before any of this code runs: the
     /// <c>System.Net.Http</c> EventSource (for example <c>RequestFailedDetailed</c>, which carries the raw exception text,
     /// including a body that <see cref="HttpClient"/> buffers for a never-retried request), and activity exception
-    /// events recorded by tracing, which carry the raw text of a failure in the header phase. Do not enable them at
-    /// verbose levels against a server you do not trust;
+    /// events recorded by tracing, which carry the raw text of a failure in the header phase: the .NET 10
+    /// <c>System.Net.Http</c> Activity records an <c>exception.message</c> event with the transport's own text for a
+    /// malformed response (a bad header line, say), which an HttpClient tracing setup such as a service-defaults
+    /// project's exports as it is. Do not enable them at verbose levels against a server you do not trust, and for
+    /// this client restrict or filter that instrumentation yourself: configure the OpenTelemetry HTTP client
+    /// instrumentation not to record exception details, or filter out the activities for this client's base address;
     /// </description></item>
     /// <item><description>
     /// diagnostics that carry the outgoing request itself, whatever the server does: the <c>DiagnosticSource</c>
