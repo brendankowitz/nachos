@@ -136,6 +136,8 @@ public sealed class LicenseCheckTests
         using var fixture = new AuditFixture();
         fixture.Elk();
         fixture.Docs(new { package = "elkjs", version = "0.9.3" });
+        fixture.Npm("elkjs", "EPL-2.0", AuditFixture.Epl, "0.9.3", location: "docs/site");
+        DocsFixtureBuilder.Seal(fixture, new DocsPackage("elkjs", "0.9.3"));
         fixture.Check().Errors.ShouldContain(error => error.Contains("excepted package", StringComparison.Ordinal));
     }
 
@@ -224,8 +226,9 @@ public sealed class LicenseCheckTests
     public void DevFlag_DoesNotControlDistribution()
     {
         using var fixture = new AuditFixture();
-        fixture.Npm("permissive", "MIT", AuditFixture.Mit, dev: true);
+        fixture.Npm("permissive", "MIT", AuditFixture.Mit, dev: true, location: "docs/site");
         fixture.Docs(new { package = "permissive", version = "1.0.0" });
+        DocsFixtureBuilder.Seal(fixture, new DocsPackage("permissive", "1.0.0"));
         fixture.Check().Packages.Single(package => package.Package == "permissive").Tier.ShouldBe("distributed");
     }
 

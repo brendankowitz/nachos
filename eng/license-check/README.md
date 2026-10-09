@@ -69,18 +69,18 @@ errors are explicit in `license-report.json` and stderr.
   are matched by bytes against **all** resolved NuGet archives (including
   tooling); unknown content provenance fails. First-party project outputs,
   generated host/config files, and unchanged project appsettings are recognized.
-- Docs: if `docs/site` has a package manifest/lock, its producer must emit
-  `docs/site/dist/.nachos/bundle-modules.json`: a JSON array of **unique**
-  `{ "package": "...", "version": "..." }` pairs, sorted ordinally by package,
-  then version. Every package represented in a client chunk or copied asset must
-  appear. `[]` is valid only for a producer that emitted no third-party assets.
-  The checker consumes this provenance; it does not forge it, infer it from dev
-  flags, or assume another workflow's filesystem exists.
+- Docs: an existing `docs/site` requires the complete reviewed v1 output
+  provenance and compatible flat union described below. Missing/invalid
+  evidence, an empty site, or files omitted from its closure fail explicitly.
+  The checker independently checks actual inputs, outputs and source ownership;
+  absence from a flat list, a dev flag or a `complete` label is not permission.
 
 The allowlist is spec §3. EPL/MPL require an exact reviewed tooling exception;
 a tooling-excepted package found in **any** emitted artifact fails. The exact
 owner-authorized Microsoft-primary shipped records below are separate. GPL/AGPL/LGPL/SSPL
-in metadata or license text fail before any override or SPDX choice is applied.
+in metadata or license text fail before any override or SPDX choice is applied
+outside the separately owner-approved, proved non-distributed docs-generation
+scope below. That scope exempts license-tier policy, not evidence validation.
 License text recognition consumes **complete normalized canonical documents**,
 not identifying fragments, titles, SPDX tags or URLs. Templates and full offline
 fixtures come from SPDX `license-list-data` release `v3.27.0`.
@@ -126,6 +126,166 @@ and `review` (HTTPS); `selectedLicense` records an OR choice. Duplicate or
 unreviewed entries fail. Overrides can supply missing text or resolve metadata
 disagreement, but cannot erase observed components, declared AND obligations or
 prohibited licenses. **The checker never writes reviews or exceptions.**
+
+## Complete docs-output v1 consumer and docs-generation policy
+
+The [owner decision](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6084081762)
+permits genuinely non-distributed docs-generation libraries without the normal
+license-tier blocks, including GPL/LGPL tiers. It does not exempt other
+development/build/CI origins or any emitted code, fonts, icons, assets or embedded
+content. All optional/non-host Sharp/libvips records remain inventoried; this
+checker does not execute them. Passthrough rendering does not remove them.
+
+`DocsProvenance.Verify(DocsProvenanceInputs)` implements the reviewed v1 contract
+identified by SHA-256
+`953628297e4d602300d2fe715a185733121e2cafcee55fd797c8224a1af55960`.
+It returns counts, a sorted exact package union and the complete evidence-file
+SHA-256, or throws an explicit `InvalidDataException` prefixed `Docs provenance`.
+The audit calls it automatically for `docs/site`. Standalone protocol proof:
+
+```powershell
+dotnet eng\license-check\bin\Release\net10.0\Nachos.LicenseCheck.dll verify-docs `
+  --site-root path\to\repo\docs\site --asset-root path\to\repo\docs\assets `
+  --npm-root path\to\repo\docs\site --output-root path\to\immutable\dist `
+  --site https://brendankowitz.github.io --base /nachos --report protocol.json
+```
+
+`npm-root` is the directory **containing** lock-relative `node_modules/...`
+paths, not an ancestor-search starting point. Sources cannot fall back to
+machine/parent packages. The audit selects site/npm roots as
+`<repo>/docs/site` and asset root as `<repo>/docs/assets`; JSON never supplies
+roots or grants eligibility. The audit's optional `--docs-output`, `--docs-site`
+and `--docs-base` arguments select the exact output tree and current build
+settings; defaults are `docs/site/dist`, `https://brendankowitz.github.io` and
+`/nachos`. Environment variables are not silently substituted by the checker.
+Call the checker directly for nondefault settings; no workflow or wrapper
+changes are delivered here.
+
+### Report destinations preserve the verified closure
+
+Both `verify-docs` and the full audit validate `--report` **before verification
+or audit and before any directory/file write**, and recheck it before writing.
+A report cannot be the root of, or lie anywhere inside, the selected site,
+asset, npm or output roots. Protecting these entire roots is deliberately
+stricter than enumerating only today's authenticated files; put reports outside
+them. The full audit also protects API/CLI publish trees, caches/archive roots,
+repository `src`, `test`, `.github`, `eng/licenses`, inventory and fixed audit
+configuration/evidence files. The ordinary `eng/license-check/artifacts` report
+directory remains supported. Prefix siblings such as `site-results` are not
+mistaken for descendants.
+Collected dependency locations (`node_modules`) and dependency/lock/restore
+input filenames are also reserved for the audit, including other source
+origins outside the conventional `src`/`.github` trees.
+
+Dot segments are normalized, case aliases are conservatively compared, and
+Windows existing paths are resolved to final volume paths to cover filesystem
+aliases. Linked/reparse targets or ancestors, unsafe path segments remaining
+after full-path normalization (including device/trailing-dot/space forms), and
+paths that cannot be resolved safely fail with exit 2 before writes.
+No report path or trusted root is taken from manifest JSON.
+
+Existing external reports may still be overwritten. The writer creates a new
+same-directory file and atomically replaces the destination entry, never
+truncating an existing target in place. Thus an external hardlink to an
+authenticated file is replaced without changing the authenticated file's bytes;
+symlinks are rejected rather than followed. Failure cleans the temporary file.
+This does not promise resistance to a hostile concurrent writer replacing
+directories between checks: retain the immutable/quiescent pipeline requirement.
+Fetch/inventory commands are unchanged by this docs report-write boundary.
+
+The output directory must contain both regular metadata files:
+`.nachos/output-provenance.v1.json` and `.nachos/bundle-modules.json`.
+Only those exact paths are excluded from the output closure. Hidden files
+elsewhere still count. The v1 object has exactly `schemaVersion: 1`, `build`
+(`site`, `base`), `inputs`, `sources` and `outputs`. Each input contains `path`
+and `sha256`. First-party sources add `kind: "first-party"`; package sources
+have `kind: "package"`, `package`, `version`, `packagePath` and
+`packageJsonSha256`. Each output has `path`, `sha256`, `evidence` and `packages`.
+Evidence has exactly `producer`, `sources`, `sha256`; package pairs have exactly
+`package`, `version`. Duplicate JSON keys and unknown fields at any v1 record
+level fail. No `scope`, `eligible`, `distributed` or `complete` flag exists.
+
+The consumer independently enumerates the required site files `package.json`,
+`package-lock.json`, `astro.config.mjs`, `tsconfig.json`, `.npmrc`; all files in
+nonempty `src`, `public`, `integrations`, `scripts`; and the nonempty assets tree.
+It compares exact input/output path and byte-hash closures, verifies every
+source and its nearest package manifest against the exact lock entry, requires
+every source to be used, and derives each output's package union and the legacy
+flat union. V1 currently requires the docs npm package-lock; a pnpm docs
+producer is not silently treated as compatible. Existing other collectors and
+their archive/integrity checks still run.
+
+Protocol paths are portable relative `/` paths. Unsafe segments, case aliases,
+Windows device stems/trailing-dot-or-space names, links/reparse points (including
+ancestors), nonregular files and empty/manifest-only outputs fail.
+**Initial Unicode compatibility is deliberately restricted:** non-ASCII
+protocol paths fail explicitly rather than claiming that .NET and JavaScript
+case equivalence agree. Actual delivered paths are ASCII. External root path
+strings are not protocol paths. JSON property order and evidence presentation
+order do not matter; source/path/package ordering and semantic evidence
+uniqueness do. Windows uses its normal file API. Linux uses a nonblocking open
+followed by the fixed `statx` ABI's regular-file check: seekability alone cannot
+distinguish a regular file from a device. Missing `statx` and other operating
+systems fail explicitly rather than silently accepting unproven file types.
+The delivered execution evidence is Windows-only; Linux execution remains an
+integration validation requirement, not a claimed platform proof.
+
+Closed output-bound roles: `copy`, `vite-chunk`, `vite-asset`,
+`expressive-stylesheet`, `expressive-script`, `sitemap`, `pagefind`.
+Every such hash equals the output hash; `copy` also requires one identical
+source. Intermediate roles: `astro-render`, `expressive-html`,
+`expressive-inline-style`, `mermaid-svg`.
+With no intermediates there must be exactly one output-bound record. With
+intermediates there must be exactly one `astro-render` anchor and either no
+output-bound record on a literal `.html` path, or one output-bound `pagefind`.
+All other contexts fail; the obsolete ambiguous `expressive-style` is unknown.
+Intermediate hashes do not claim to be literal substrings of serialized HTML.
+
+### Eligibility and reporting
+
+Eligibility is decided only after **all** collection and relevant artifact
+producer checks succeed. The artifact inventory carries an explicit completion
+result; an empty scope set after an error is never proof of non-distribution.
+Every occurrence of a canonical identity must come exclusively from
+`docs/site/package-lock.json`, and the identity must be absent from every
+validated emitted scope. Mixed-origin and emitted identities keep normal policy.
+
+The report retains `packages` for ordinary licensed package decisions and
+`errors` for blocking diagnostics. New `docsTooling` entries are **not** added
+to the accepted package count. Each records ecosystem/package/version/origin,
+`declaredLicense`, any successfully evaluated `selectedLicense`, documentary
+`evidence`, `evidenceErrors`, `tierPolicy: "exempt-docs-generation"` and the
+actual owner reference. Evidence errors remain blocking even when tier policy
+is nonblocking: e.g. libvips LGPL metadata without a required primary document
+is visible as exempt tooling **with** a missing-text error, not a fake licensed
+acceptance. Unrecognized complete-text variants remain evidence work.
+Existing explicit exact-version evidence reviews retain their own checks; no
+automatic metadata-only acceptance was added.
+
+`inputErrors` separately classifies `collection`, `provenance` and
+`configuration` failures, while retaining them in `errors`. `docsProvenance`
+contains a successful docs closure summary when available. A successful docs
+summary alone does not make API/CLI or collection errors harmless.
+Generic evidence overrides still cannot discard observed components or AND
+obligations; OR choices still require complete recorded selection.
+Microsoft/DacFx/Types exact approval records, root notices, copy contracts,
+I1 supplemental-tier guards and manual release qualifications are unchanged.
+
+### Pipeline boundary (handoff, not delivered CI)
+
+The caller must use trusted/current producer source, its authorized successful
+build invocation, the same external settings/roots, and the **same immutable
+closure** for final verify, audit and upload. Never regenerate provenance to
+make changed artifacts pass. The consumer does not authenticate a JSON issuer,
+prove callback execution from a label, or resist a writer controlling the
+source/audit host. Successful `verify-docs` is protocol correspondence, not a
+license audit or release clearance. Source/package fingerprinting is not
+publisher authentication or a substitute for supplemental-license review.
+
+Worker-owned Node/DocsGen/site and CI must wire final verified build evidence
+and verify/audit/upload ordering. This change edits none of those surfaces and
+does not assert that pipeline integration already exists. The previous frozen
+4-accepted/958-finding audit is not rerun or relabelled by the protocol tests.
 
 ## Exact DacFx approval and notice-copy contract
 

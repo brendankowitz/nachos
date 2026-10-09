@@ -7,34 +7,28 @@ namespace Nachos.LicenseCheck;
 
 internal static class Artifacts
 {
-    public static Dictionary<string, HashSet<string>> Collect(AuditInputs inputs, List<PackageEvidence> packages, List<string> errors)
+    internal sealed record Inventory(Dictionary<string, HashSet<string>> Scopes, bool Complete, DocsProvenanceReport? Docs);
+
+    public static Inventory Collect(AuditInputs inputs, List<PackageEvidence> packages, List<string> errors)
     {
+        var initialErrors = errors.Count;
         var shipped = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        DocsProvenanceReport? docs = null;
         Collectors.Capture(() => Publish(inputs, inputs.ApiPublish, "Nachos.Api", "api", packages, shipped), inputs.ApiPublish, errors);
         Collectors.Capture(() => Publish(inputs, inputs.CliPublish, "Nachos.Cli", "cli", packages, shipped), inputs.CliPublish, errors);
         var site = Path.Combine(inputs.Root, "docs", "site");
-        if (File.Exists(Path.Combine(site, "package.json")) || File.Exists(Path.Combine(site, "package-lock.json")))
+        if (Directory.Exists(site) || inputs.DocsOutputRoot is not null)
         {
-            var manifest = Path.Combine(site, "dist", ".nachos", "bundle-modules.json");
             Collectors.Capture(() =>
             {
-                using var document = JsonDocument.Parse(File.ReadAllText(manifest));
-                string? previous = null;
-                foreach (var entry in document.RootElement.EnumerateArray())
-                {
-                    var name = Collectors.RequiredString(entry, "package");
-                    var version = Collectors.RequiredString(entry, "version");
-                    var order = name + "\0" + version;
-                    if (previous is not null && string.CompareOrdinal(previous, order) >= 0)
-                    {
-                        throw new InvalidDataException("Docs bundle manifest must be sorted by package/version, with no duplicate pairs.");
-                    }
-                    previous = order;
-                    Add("npm", name, version, "docs", packages, shipped);
-                }
-            }, manifest, errors);
+                var verified = DocsProvenance.Verify(new DocsProvenanceInputs(site, Path.Combine(inputs.Root, "docs", "assets"),
+                    site, inputs.DocsOutputRoot ?? Path.Combine(site, "dist"), inputs.DocsSite, inputs.DocsBase));
+                foreach (var entry in verified.Packages)
+                    Add("npm", entry.Package, entry.Version, "docs", packages, shipped);
+                docs = verified;
+            }, "docs output provenance (including .nachos/bundle-modules.json)", errors);
         }
-        return shipped;
+        return new Inventory(shipped, errors.Count == initialErrors, docs);
     }
 
     private static void Publish(AuditInputs inputs, string root, string application, string scope,

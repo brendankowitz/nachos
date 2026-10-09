@@ -15,6 +15,9 @@
           Link="MicrosoftPrimaryEvidence\owner-ms-license-6083936795.json"
           CopyToOutputDirectory="Always" CopyToPublishDirectory="Never" Pack="false" />
     <None Include="Fixtures\complete-licenses.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\docs-provenance-positive.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\docs-provenance-negative.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\docs-libvips-evidence.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="DacFxEvidence\license.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="DacFxEvidence\THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\eng\license-exceptions.json" Link="DacFxEvidence\license-exceptions.json" CopyToOutputDirectory="PreserveNewest" />

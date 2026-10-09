@@ -3,9 +3,23 @@ using System.Text.RegularExpressions;
 
 namespace Nachos.LicenseCheck;
 
-public sealed record AuditInputs(string Root, string NugetInventory, string NugetCache, string ApiPublish, string CliPublish, string? PythonArchives = null, string? NpmArchives = null);
+public sealed record AuditInputs(string Root, string NugetInventory, string NugetCache, string ApiPublish, string CliPublish,
+    string? PythonArchives = null, string? NpmArchives = null, string? DocsOutputRoot = null,
+    string DocsSite = "https://brendankowitz.github.io", string DocsBase = "/nachos");
 public sealed record PackageDecision(string Ecosystem, string Package, string Version, string Tier, string SelectedLicense, IReadOnlyList<string> Evidence);
-public sealed record AuditReport(IReadOnlyList<PackageDecision> Packages, IReadOnlyList<string> Errors);
+public sealed record DocsToolingDecision(string Ecosystem, string Package, string Version, string Origin,
+    string? DeclaredLicense, string? SelectedLicense, IReadOnlyList<string> Evidence, IReadOnlyList<string> EvidenceErrors)
+{
+    public string TierPolicy { get; } = "exempt-docs-generation";
+    public string OwnerApproval { get; } = "https://github.com/brendankowitz/nachos/pull/6#issuecomment-6084081762";
+}
+public sealed record AuditInputError(string Stage, string Message);
+public sealed record AuditReport(IReadOnlyList<PackageDecision> Packages, IReadOnlyList<string> Errors)
+{
+    public IReadOnlyList<DocsToolingDecision> DocsTooling { get; init; } = [];
+    public IReadOnlyList<AuditInputError> InputErrors { get; init; } = [];
+    public DocsProvenanceReport? DocsProvenance { get; init; }
+}
 
 public static class LicenseAudit
 {
@@ -13,35 +27,60 @@ public static class LicenseAudit
     {
         var errors = new List<string>();
         var decisions = new List<PackageDecision>();
+        var tooling = new List<DocsToolingDecision>();
+        var inputErrors = new List<AuditInputError>();
+        DocsProvenanceReport? docs = null;
         try
         {
             var allowed = JsonSerializer.Deserialize<string[]>(File.ReadAllText(Path.Combine(inputs.Root, "eng", "license-check", "allowlist.json")))
                 ?? throw new InvalidDataException("Missing allowlist.");
             var exceptions = Reviews.Read(Path.Combine(inputs.Root, "eng", "license-exceptions.json"), required: true);
             var overrides = Reviews.Read(Path.Combine(inputs.Root, "eng", "license-overrides.json"), required: false);
-            var packages = Collectors.Collect(inputs, errors);
-            var shipped = Artifacts.Collect(inputs, packages, errors);
+            var collectionErrors = new List<string>();
+            var packages = Collectors.Collect(inputs, collectionErrors);
+            errors.AddRange(collectionErrors);
+            inputErrors.AddRange(collectionErrors.Select(error => new AuditInputError("collection", error)));
+            var provenanceErrors = new List<string>();
+            var artifacts = Artifacts.Collect(inputs, packages, provenanceErrors);
+            errors.AddRange(provenanceErrors);
+            inputErrors.AddRange(provenanceErrors.Select(error => new AuditInputError("provenance", error)));
+            docs = artifacts.Docs;
+            var docsOnly = packages.GroupBy(package => package.Key).Where(group =>
+                group.All(package => package.Ecosystem == "npm" && package.Origin == "docs/site/package-lock.json"))
+                .Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
             foreach (var package in packages)
             {
+                var scopes = artifacts.Scopes.GetValueOrDefault(package.Key) ?? [];
+                var exempt = collectionErrors.Count == 0 && artifacts.Complete && docs is not null
+                    && scopes.Count == 0 && docsOnly.Contains(package.Key);
+                PackageDecision? decision = null;
+                string? evidenceError = null;
                 try
                 {
-                    decisions.Add(Evaluate(inputs, package, shipped.GetValueOrDefault(package.Key) ?? [], allowed, exceptions, overrides));
+                    decision = Evaluate(inputs, package, scopes, allowed, exceptions, overrides, exempt);
+                    if (!exempt) decisions.Add(decision);
                 }
                 catch (InvalidDataException exception)
                 {
                     errors.Add($"{package.Ecosystem}:{package.Name}@{package.Version} ({package.Origin}): {exception.Message}");
+                    evidenceError = exception.Message;
                 }
+                if (exempt)
+                    tooling.Add(new DocsToolingDecision(package.Ecosystem, package.Name, package.Version, package.Origin, package.Metadata,
+                        decision?.SelectedLicense, decision?.Evidence ?? package.Texts.Select(text => text.Path).ToArray(),
+                        evidenceError is null ? [] : [evidenceError]));
             }
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
             errors.Add(exception.Message);
+            inputErrors.Add(new AuditInputError("configuration", exception.Message));
         }
-        return new AuditReport(decisions, errors);
+        return new AuditReport(decisions, errors) { DocsTooling = tooling, InputErrors = inputErrors, DocsProvenance = docs };
     }
 
     private static PackageDecision Evaluate(AuditInputs inputs, PackageEvidence package, HashSet<string> scopes,
-        string[] allowed, Reviews[] exceptions, Reviews[] overrides)
+        string[] allowed, Reviews[] exceptions, Reviews[] overrides, bool docsOnly)
     {
         var distributed = scopes.Count > 0;
         var review = overrides.SingleOrDefault(entry => entry.Matches(package));
@@ -51,7 +90,7 @@ public static class LicenseAudit
             throw new InvalidDataException("excepted package appears in a distributed artifact.");
         }
         var texts = package.Texts.Select(text => LicenseText.Identify(text.Text)).ToArray();
-        if (LicenseText.Prohibited(package.Metadata ?? "") || texts.Any(text => text.Prohibited))
+        if (!docsOnly && (LicenseText.Prohibited(package.Metadata ?? "") || texts.Any(text => text.Prohibited)))
         {
             throw new InvalidDataException("prohibited GPL/AGPL/LGPL/SSPL license in metadata or observed text; overrides cannot relabel it.");
         }
@@ -133,7 +172,7 @@ public static class LicenseAudit
             }
         }
         expression ??= Spdx.Parse(string.Join(" AND ", observed.Order(StringComparer.Ordinal)));
-        if (expression.AllLicenses.Any(LicenseText.Prohibited))
+        if (!docsOnly && expression.AllLicenses.Any(LicenseText.Prohibited))
         {
             throw new InvalidDataException("prohibited license in evidence override.");
         }
@@ -162,6 +201,10 @@ public static class LicenseAudit
         selected.UnionWith(supplemental);
         foreach (var license in selected)
         {
+            if (docsOnly)
+            {
+                continue;
+            }
             if (license == approvedPrimary)
             {
                 continue;
