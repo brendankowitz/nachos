@@ -1,4 +1,8 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Nachos.Core.Configuration;
+using Nachos.Core.Tokens;
 using Shouldly;
 
 namespace Nachos.Api.Tests;
@@ -14,7 +18,14 @@ public sealed class ErrorShapeTests : ApiTest
     [Fact]
     public async Task Domain_Is422DetailString()
     {
-        Problem(await Post("/v3/workspaces", """{"id":"not allowed"}""", 422), 422, JsonValueKind.String);
+        var instructions = string.Concat(Enumerable.Repeat(" hello", 3000));
+        var counter = Factory.Services.GetRequiredService<ITokenCounter>();
+        var limit = Factory.Services.GetRequiredService<IOptions<NachosOptions>>().Value.Deriver.MaxCustomInstructionsTokens;
+        counter.Count(instructions).ShouldBeGreaterThan(limit);
+        Problem(await Post("/v3/workspaces",
+            JsonSerializer.Serialize(new { id = "w", configuration = new { custom_instructions = instructions } }), 422),
+            422, JsonValueKind.String);
+        Ids(await Post("/v3/workspaces/list")).ShouldBeEmpty();
     }
 
     [Theory]

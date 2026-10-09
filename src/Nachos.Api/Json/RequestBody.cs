@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
@@ -59,7 +60,29 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         {
             throw Invalid(["body", "id"], "Input should be a string.", "string_type");
         }
-        return ReadValue(value, NachosJsonContext.Default.String, ["body", "id"]);
+        var id = ReadValue(value, NachosJsonContext.Default.String, ["body", "id"]);
+        if (id.Length == 0)
+        {
+            throw Invalid(["body", "id"], "String must have at least 1 character.", "string_too_short");
+        }
+        // JSON Schema counts Unicode code points, not UTF-16 code units.
+        var length = 0;
+        foreach (var _ in id.EnumerateRunes())
+        {
+            if (++length > 512)
+            {
+                throw Invalid(["body", "id"], "String must have at most 512 characters.", "string_too_long");
+            }
+        }
+        foreach (var character in id)
+        {
+            if (character is not (>= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-'))
+            {
+                throw Invalid(["body", "id"], "String must contain only ASCII letters, digits, '_' or '-'.",
+                    "string_pattern_mismatch");
+            }
+        }
+        return id;
     }
 
     public JsonObject? Object(string property) => Optional(property, NachosJsonContext.Default.JsonObject);
