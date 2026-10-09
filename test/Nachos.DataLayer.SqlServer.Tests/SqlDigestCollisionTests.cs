@@ -39,6 +39,10 @@ public sealed class SqlDigestCollisionTests(SqlServerFixture fixture)
     private static readonly string T21 = new string('t', 21);
     private static readonly string N5 = "1." + new string('3', 96) + "1";
 
+    /// <summary>A 20-unit string and a number of N1's key length that nothing stored equals.</summary>
+    private static readonly string S6 = new string('s', 19) + "6";
+    private static readonly string N6 = "1." + new string('3', 95) + "6";
+
     /// <remarks>
     /// Every list has at least two operands: the parser turns a one-element <c>in</c> into an equality, which never uses
     /// the prefilter. Under the seam, entries hold only lengths, so operands of different lengths take the packed path
@@ -60,6 +64,16 @@ public sealed class SqlDigestCollisionTests(SqlServerFixture fixture)
             { In(N1, N5), ["n1"] },
             { In(N3, N5), [] },
             { In(N4, N2), ["n4", "n2"] },
+
+            // Collision buckets (addendum 3): three operands share one entry; a stored value equal to the second or third
+            // matches, and a stored non-member of the same length (s1, s4 / n1) does not. A lookup that confirmed only the
+            // first operand of a bucket would miss them.
+            { In(Q(S3), Q(S2), Q(S5)), ["s2", "s5"] },
+            { In(Q(S3), Q(S6), Q(S4)), ["s4"] },
+            { In(Q(S6), Q(S5), Q(S3)), ["s5"] },
+            { In(N3, N1, N2), ["n1", "n2"] },
+            { In(N3, N6, N2), ["n2"] },
+            { In(N6, N2, N3), ["n2"] },
 
             // Collision groups: several operands of one length share one entry.
             { In(Q(S1), Q(S3)), ["s1"] },
@@ -90,6 +104,18 @@ public sealed class SqlDigestCollisionTests(SqlServerFixture fixture)
         // The store (full digest) agrees.
         var page = await database.CreateStore(TimeProvider.System).Peers.ListAsync(Workspace, PeerKind.All, filter, new PageRequest(1, 100), Ct);
         page.Items.Select(p => p.Name).ShouldBe(expected, ignoreOrder: true);
+    }
+
+    [Fact]
+    public void Seam_ForcesThreeOperandBuckets()
+    {
+        // The buckets the cases above rely on really form: at 0 hex digits the three operands of each share one entry,
+        // as do the stored non-members of their length.
+        new[] { S3, S2, S5, S6, S4, S1 }.Select(s => SqlDigest.OfString(s, 0)).Distinct().ShouldHaveSingleItem();
+        new[] { N3, N1, N2, N6 }.Select(n => SqlDigest.OfKey(Key(n), 0)).Distinct().ShouldHaveSingleItem();
+        new[] { S3, S2, S5 }.Select(s => SqlDigest.OfString(s)).Distinct().Count().ShouldBe(3);
+
+        static string Key(string number) => Storage.ExactDecimal.Parse(number).ToOrderKey();
     }
 
     [Fact]
