@@ -46,10 +46,20 @@ public sealed class AppHostSmokeTests
             .WithEnvironment("Nachos__Auth__Enabled", "false");
 
         await using var app = await appHost.BuildAsync(cts.Token);
-        await app.StartAsync(cts.Token);
-        // The API waits for the database, so a database or API that never comes up is reported by name instead of as a bare timeout.
-        await WaitHealthyAsync(app, "nachos", DatabaseTimeout, cts.Token);
-        await WaitHealthyAsync(app, "api", ApiTimeout, cts.Token);
+        // StartAsync returns only once every resource has started, and the API starts only after the database is healthy,
+        // so it is awaited alongside the bounded, named database wait rather than before it.
+        var starting = app.StartAsync(cts.Token);
+        try
+        {
+            await WaitHealthyAsync(app, "nachos", DatabaseTimeout, cts.Token);
+        }
+        catch
+        {
+            await cts.CancelAsync();
+            await starting.ContinueWith(_ => { }, TaskScheduler.Default);
+            throw;
+        }
+        await starting;        await WaitHealthyAsync(app, "api", ApiTimeout, cts.Token);
 
         using var client = app.CreateHttpClient("api");
         using var ready = await client.GetAsync("/health/ready", cts.Token);

@@ -104,6 +104,26 @@ public sealed class DependencyRuleTests
         }
     }
 
+    private static readonly string[] SourceFolders = ["src", "test", "eng"];
+
+    [Fact]
+    public void OnlyAppHostTests_Reference_AppHost()
+    {
+        var root = RepoRoot();
+        var projects = SourceFolders
+            .SelectMany(folder => Directory.EnumerateFiles(Path.Combine(root, folder), "*.csproj", SearchOption.AllDirectories))
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .ToArray();
+
+        projects.ShouldContain(path => Path.GetFileName(path) == "Nachos.AppHost.Tests.csproj",
+            "the project allowed to reference the AppHost was not found, so this rule would pass without checking anything");
+        foreach (var project in projects.Where(path => Path.GetFileNameWithoutExtension(path) != "Nachos.AppHost.Tests"))
+        {
+            XDocument.Load(project).Descendants("ProjectReference")
+                .Select(reference => Path.GetFileNameWithoutExtension(((string)reference.Attribute("Include")!).Replace('\\', '/')))
+                .ShouldNotContain("Nachos.AppHost", $"{Path.GetFileName(project)} references the AppHost; only Nachos.AppHost.Tests may");
+        }
+    }
     // True when the assembly is one of the given names or lives under it (Nachos.DataLayer covers Nachos.DataLayer.InMemory).
     private static bool IsAny(string assembly, params string[] names) =>
         names.Any(n => assembly == n || assembly.StartsWith(n + ".", StringComparison.Ordinal));
