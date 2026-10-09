@@ -115,8 +115,11 @@ public sealed class RetryHandler : DelegatingHandler
 
     /// <summary>
     /// Default bound on one attempt (send plus, for a retryable request, buffering the body). Three timed-out attempts
-    /// and the largest backoffs (0.5 s + 1 s) fit inside <see cref="HttpClient"/>'s default 100 s
-    /// <see cref="HttpClient.Timeout"/>.
+    /// with jittered backoff (at most 0.5 s + 1 s) fit inside <see cref="HttpClient"/>'s default 100 s
+    /// <see cref="HttpClient.Timeout"/>, but honoured <c>Retry-After</c> waits do not always: the worst case is three
+    /// 30 s attempts plus two 30 s waits, 150 s. When <see cref="HttpClient.Timeout"/> runs out first, the call ends
+    /// as <see cref="HttpClient"/>'s <see cref="TaskCanceledException"/> (inner <see cref="TimeoutException"/>), without
+    /// the status or the requested delay. Raise <see cref="HttpClient.Timeout"/> if every honoured wait must complete.
     /// </summary>
     public static readonly TimeSpan DefaultAttemptTimeout = TimeSpan.FromSeconds(30);
 

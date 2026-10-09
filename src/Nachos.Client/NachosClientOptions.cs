@@ -48,7 +48,8 @@ public sealed class NachosClientOptions
     /// <see cref="RetryHandler"/>. Default <see cref="RetryHandler.DefaultAttemptTimeout"/> (30 s);
     /// <see cref="Timeout.InfiniteTimeSpan"/> disables it. Otherwise positive and at most <see cref="int.MaxValue"/>
     /// milliseconds. The overall bound stays <see cref="HttpClient.Timeout"/> (100 s by default), which covers every
-    /// attempt and backoff of a call. A <see cref="NachosHttpClient"/> constructed by hand does not use it: pass the
+    /// attempt and wait of a call and can end it before retries that honour <c>Retry-After</c> finish (see
+    /// <see cref="RetryHandler.DefaultAttemptTimeout"/>). A <see cref="NachosHttpClient"/> constructed by hand does not use it: pass the
     /// timeout to the <see cref="RetryHandler"/> you build.
     /// </summary>
     public TimeSpan AttemptTimeout { get; set; } = RetryHandler.DefaultAttemptTimeout;

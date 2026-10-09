@@ -31,8 +31,11 @@ public static class NachosClientServiceCollectionExtensions
     /// <para>
     /// <b>Pipeline.</b> The client's <see cref="HttpClient.BaseAddress"/> is <see cref="NachosClientOptions.BaseAddress"/>.
     /// <see cref="RetryHandler"/> gets <see cref="NachosClientOptions.AttemptTimeout"/>. <see cref="HttpClient.Timeout"/>
-    /// keeps its default of 100 s and stays the overall bound of a call, retries and backoff included; change it with
-    /// <c>ConfigureHttpClient</c> on the returned builder.
+    /// keeps its default of 100 s and stays the overall bound of a call, retries and waits included; change it with
+    /// <c>ConfigureHttpClient</c> on the returned builder. With the default 30 s attempt timeout, a call whose retries
+    /// honour <c>Retry-After</c> can need up to 150 s (three attempts and two 30 s waits); at 100 s it is cut off and
+    /// surfaces as a <see cref="TaskCanceledException"/> without the status or the requested delay, so raise the timeout
+    /// to at least 150 s if every honoured wait must complete.
     /// </para>
     /// <para>
     /// <b>Secrets in logs and exceptions.</b> The bearer value (token or API key) is kept out of:
