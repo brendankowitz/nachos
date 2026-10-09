@@ -43,6 +43,9 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.12" />
     <PackageVersion Include="Microsoft.SqlServer.DacFx" Version="170.4.83" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
+    <!-- Local orchestration (Nachos.AppHost) and its tests. Aspire.AppHost.Sdk is pinned in the AppHost project's Sdk attribute. -->
+    <PackageVersion Include="Aspire.Hosting.SqlServer" Version="13.6.1" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.1" />
     <!-- Bootstrap CLI (Nachos.Cli) -->
     <PackageVersion Include="System.CommandLine" Version="2.0.12" />
     <!-- Tooling only (eng/license-check); never a product dependency -->

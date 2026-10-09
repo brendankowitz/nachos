@@ -3,6 +3,7 @@
     <Project Path="src/DataLayer/Nachos.DataLayer.InMemory/Nachos.DataLayer.InMemory.csproj" />
     <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer/Nachos.DataLayer.SqlServer.csproj" />
     <Project Path="src/Nachos.Abstractions/Nachos.Abstractions.csproj" />
+    <Project Path="src/Nachos.AppHost/Nachos.AppHost.csproj" />
     <Project Path="src/Nachos.Api/Nachos.Api.csproj" />
     <Project Path="src/Nachos.Cli/Nachos.Cli.csproj" />
     <Project Path="src/Nachos.Client/Nachos.Client.csproj" />
@@ -17,6 +18,7 @@
   <Folder Name="/test/">
     <Project Path="test/Nachos.Abstractions.Tests/Nachos.Abstractions.Tests.csproj" />
     <Project Path="test/Nachos.Api.Tests/Nachos.Api.Tests.csproj" />
+    <Project Path="test/Nachos.AppHost.Tests/Nachos.AppHost.Tests.csproj" />
     <Project Path="test/Nachos.Architecture.Tests/Nachos.Architecture.Tests.csproj" />
     <Project Path="test/Nachos.Cli.Tests/Nachos.Cli.Tests.csproj" />
     <Project Path="test/Nachos.Client.Tests/Nachos.Client.Tests.csproj" />

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The test drives the real AppHost; this is the one project allowed to reference it. -->
+    <ProjectReference Include="..\..\src\Nachos.AppHost\Nachos.AppHost.csproj" />
+  </ItemGroup>
+</Project>

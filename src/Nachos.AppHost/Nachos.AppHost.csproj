@@ -1,0 +1,19 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.1">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- The package-based dashboard and DCP are used; the Aspire CLI bundle is not required for the AppHost or its tests. -->
+    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+    <UserSecretsId>5d6f2b0e-3c1a-4f3e-9c55-2a7c1f0e8b14</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.SqlServer" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Nachos.Api\Nachos.Api.csproj" />
+  </ItemGroup>
+</Project>
+
