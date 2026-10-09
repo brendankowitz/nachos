@@ -32,9 +32,32 @@ public static class NachosClientServiceCollectionExtensions
     /// <b>Pipeline.</b> The client's <see cref="HttpClient.BaseAddress"/> is <see cref="NachosClientOptions.BaseAddress"/>.
     /// <see cref="RetryHandler"/> gets <see cref="NachosClientOptions.AttemptTimeout"/>. <see cref="HttpClient.Timeout"/>
     /// keeps its default of 100 s and stays the overall bound of a call, retries and backoff included; change it with
-    /// <c>ConfigureHttpClient</c> on the returned builder. <see cref="IHttpClientFactory"/> logging redacts header
-    /// values by default, so the <c>Authorization</c> value never reaches the logs; do not turn that redaction off for
-    /// this client. Handlers added to every client by <c>ConfigureHttpClientDefaults</c>
+    /// <c>ConfigureHttpClient</c> on the returned builder.
+    /// </para>
+    /// <para>
+    /// <b>Secrets in logs and exceptions.</b> The bearer value (token or API key) is kept out of:
+    /// <list type="bullet">
+    /// <item><description>
+    /// logged header values: <see cref="IHttpClientFactory"/> logging redacts every header value by default; do not turn
+    /// that off for this client;
+    /// </description></item>
+    /// <item><description>
+    /// logged transport failures: the primary <see cref="SocketsHttpHandler"/> is wrapped in a handler that redacts a
+    /// failure whose text echoes the bearer value (for example a server reflecting it into a malformed header line or
+    /// trailer) before the factory's <c>ClientHandler</c> logger and <see cref="RetryHandler"/> see it.
+    /// <c>ConfigurePrimaryHttpMessageHandler</c> on the returned builder replaces that wrapper too, so the
+    /// <c>ClientHandler</c> log of such a failure is then no longer covered;
+    /// </description></item>
+    /// <item><description>
+    /// exception text: <see cref="RetryHandler"/> and <see cref="NachosHttpClient"/> redact every exception they raise
+    /// or let through (message, inner chain, string data), whatever the primary handler.
+    /// </description></item>
+    /// </list>
+    /// Not covered: what your own handlers log, and diagnostics emitted inside the primary handler before any of this
+    /// runs (for example HttpClient <c>DiagnosticSource</c> or activity exception events picked up by tracing).
+    /// </para>
+    /// <para>
+    /// Handlers added to every client by <c>ConfigureHttpClientDefaults</c>
     /// sit above <see cref="RetryHandler"/>; a resilience handler there (for example
     /// <c>AddStandardResilienceHandler</c>) would retry requests this client deliberately sends once, such as message
     /// creation without an <c>Idempotency-Key</c>, so remove it from this client.
@@ -75,7 +98,7 @@ public static class NachosClientServiceCollectionExtensions
         if (!services.Any(d => d.ServiceType == typeof(NachosHttpClient)))
         {
             http.ConfigureHttpClient((provider, client) => client.BaseAddress = Options(provider).BaseAddress)
-                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler())
+                .ConfigurePrimaryHttpMessageHandler(() => new TransportRedactionHandler { InnerHandler = new SocketsHttpHandler() })
                 .AddHttpMessageHandler(provider =>
                     new RetryHandler(provider.GetRequiredService<TimeProvider>(), Options(provider).AttemptTimeout));
             services.AddTransient(provider => new NachosHttpClient(

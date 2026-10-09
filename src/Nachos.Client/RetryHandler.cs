@@ -190,6 +190,22 @@ public sealed class RetryHandler : DelegatingHandler
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // Whatever surfaces from here (raw transport failures included) never carries the request's bearer value, so
+        // handlers and loggers above this one cannot leak it either.
+        var secrets = SecretRedaction.Secrets(request);
+        try
+        {
+            return await SendCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (SecretRedaction.Mentions(ex, secrets))
+        {
+            throw SecretRedaction.Redact(ex, secrets);
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendCoreAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
         if (!IsRetryable(request))
         {
             // Sent once, as is: the attempt timeout bounds the time to response headers only, because the body is
@@ -280,6 +296,8 @@ public sealed class RetryHandler : DelegatingHandler
 
             if (ex is HttpRequestException or IOException)
             {
+                // If the read failure's text echoes the bearer value (a malformed trailer, say), SendAsync redacts this
+                // whole exception, message and inner chain, before it leaves the handler.
                 var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
                 var message = retryAfter is { } delay ? ex.Message + RetryAfterHeader.Suffix(delay) : ex.Message;
                 throw RetryAfterHeader.WithDelay(new HttpRequestException(error, message, ex, status), retryAfter);

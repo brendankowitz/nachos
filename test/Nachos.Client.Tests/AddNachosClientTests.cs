@@ -380,15 +380,6 @@ public sealed class AddNachosClientTests
         }
     }
 
-    /// <summary>The system clock, except that every timer fires at once, so backoff never sleeps for real.</summary>
-    private sealed class ZeroDelayTimeProvider : TimeProvider
-    {
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
-            dueTime == Timeout.InfiniteTimeSpan || dueTime > TimeSpan.FromSeconds(10)
-                ? System.CreateTimer(callback, state, dueTime, period)
-                : System.CreateTimer(callback, state, TimeSpan.Zero, period);
-    }
-
     private sealed class StaticCredential(string token) : TokenCredential
     {
         public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
@@ -445,59 +436,5 @@ public sealed class AddNachosClientTests
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
-
-    private sealed class CapturingLoggerProvider : ILoggerProvider
-    {
-        private readonly StringBuilder _text = new();
-
-        public string Text
-        {
-            get
-            {
-                lock (_text)
-                {
-                    return _text.ToString();
-                }
-            }
-        }
-
-        public ILogger CreateLogger(string categoryName) => new Logger(this);
-
-        public void Dispose()
-        {
-        }
-
-        private sealed class Logger(CapturingLoggerProvider owner) : ILogger
-        {
-            public IDisposable? BeginScope<TState>(TState state)
-                where TState : notnull
-            {
-                owner.Append($"scope: {state}");
-                return null;
-            }
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            {
-                owner.Append($"{logLevel}: {formatter(state, exception)} {exception}");
-                if (state is IEnumerable<KeyValuePair<string, object?>> values)
-                {
-                    foreach (var (key, value) in values)
-                    {
-                        owner.Append($"  {key}={value}");
-                    }
-                }
-            }
-        }
-
-        private void Append(string line)
-        {
-            lock (_text)
-            {
-                _text.AppendLine(line);
-            }
-        }
     }
 }

@@ -75,7 +75,8 @@ internal static class ErrorMapper
         return RetryAfterHeader.WithDelay(exception, retryAfter);
     }
 
-    private static string Sanitize(string text, string? secret, int maxLength = MaxMessageLength)
+    /// <summary><paramref name="text"/> with <paramref name="secret"/> redacted, then cut to <paramref name="maxLength"/>.</summary>
+    internal static string Sanitize(string text, string? secret, int maxLength = MaxMessageLength)
     {
         var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
         if (redacted.Length <= maxLength)

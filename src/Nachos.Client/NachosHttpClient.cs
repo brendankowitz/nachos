@@ -370,14 +370,29 @@ public sealed class NachosHttpClient : INachosClient
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         }
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        // Transport failures can echo the bearer value (a server reflecting it into a malformed header or trailer);
+        // they are redacted like mapped server text. Exceptions that never mention it pass through unchanged.
+        string[] secrets = [.. new[] { bearer, _apiKey }.OfType<string>().Distinct(StringComparer.Ordinal)];
+        HttpResponseMessage? response = null;
+        try
         {
-            throw ErrorMapper.Map(response, text, $"{method} {template}", bearer, _timeProvider);
-        }
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw ErrorMapper.Map(response, text, $"{method} {template}", bearer, _timeProvider);
+            }
 
-        return text;
+            return text;
+        }
+        catch (Exception ex) when (SecretRedaction.Mentions(ex, secrets))
+        {
+            throw SecretRedaction.Redact(ex, secrets);
+        }
+        finally
+        {
+            response?.Dispose();
+        }
     }
 
     /// <summary>
