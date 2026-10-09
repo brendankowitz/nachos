@@ -13,7 +13,9 @@ public sealed class LinuxDescriptorTests
     private const int Rounds = 250;
 
     // Inside a no-GC region finalizers cannot close a leaked SafeFileHandle, so only explicit disposal keeps the
-    // count of descriptors open on the rejected objects flat.
+    // count of descriptors open on the rejected objects flat. This is the one test using the internal open boundary:
+    // through the verifier only a FIFO reaches reject-after-open (directories are refused before opening), and host
+    // /dev/null and /dev/zero cannot be placed in an evidence tree without mount or mknod.
     [LinuxFact]
     public async Task RejectedOpensCloseTheirDescriptorsWithoutFinalizers()
     {
@@ -23,7 +25,7 @@ public sealed class LinuxDescriptorTests
             var fifo = Path.Combine(root, "fifo");
             LinuxNodes.MakeFifo(fifo);
             var directory = Directory.CreateDirectory(Path.Combine(root, "directory")).FullName;
-            string[] rejected = [fifo, directory, "/dev/null", "/dev/zero"];
+            string[] rejected = ["/dev/null", "/dev/zero", directory, fifo];
             var before = OpenOn(rejected);
             var after = -1;
             await LinuxEvidenceTests.Bounded(() =>

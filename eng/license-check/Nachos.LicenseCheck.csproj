@@ -6,5 +6,6 @@
   <ItemGroup>
     <PackageReference Include="YamlDotNet" />
     <EmbeddedResource Include="license-templates.json" />
+    <InternalsVisibleTo Include="Nachos.LicenseCheck.Tests" />
   </ItemGroup>
 </Project>

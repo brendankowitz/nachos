@@ -234,11 +234,15 @@ followed by the fixed `statx` ABI's regular-file check: seekability alone cannot
 distinguish a regular file from a device. Missing `statx` and other operating
 systems fail explicitly rather than silently accepting unproven file types.
 Linux-only tests (reported as skipped elsewhere) run each special-file case
-under a 20 s hard timeout: a FIFO with no writer as a fixed input, the manifest
-and an output; read-only nonblocking opens of `/dev/null` and `/dev/zero`; a
-directory, a socket and a symlink to a FIFO. A no-GC-region check counts
-`/proc/self/fd` entries on the rejected objects to prove every rejected
-descriptor is closed without finalizers. Device nodes minted with `mknod`
+under a 20 s hard timeout. Through the public verifier: a FIFO with no writer
+as a fixed input, the manifest and an output; a directory, a socket and a
+symlink to a FIFO as inputs. A no-GC-region check opens a FIFO, a directory and
+(read-only, nonblocking) `/dev/null` and `/dev/zero` through the internal
+evidence-open boundary, requires each to fail the type check, and counts
+`/proc/self/fd` entries on them to prove every rejected descriptor is closed
+without finalizers. Host devices cannot be placed in an evidence tree without
+mount or mknod, so only this test uses that boundary (test-friend access via
+`InternalsVisibleTo`). Device nodes minted with `mknod`
 inside the test directory need CAP_MKNOD and run only with
 `NACHOS_LINUX_DEVICE_FIXTURES=1`; otherwise they report as not executed.
 

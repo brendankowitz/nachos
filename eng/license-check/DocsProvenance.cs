@@ -279,8 +279,9 @@ public static class DocsProvenance
     /// <summary>Opens an evidence file for reading only when it is a regular file; on Linux a FIFO never blocks the open.</summary>
     /// <exception cref="InvalidDataException">The opened object is not a regular file.</exception>
     /// <exception cref="IOException">The path cannot be opened (for example a socket).</exception>
-    /// <remarks>Every rejected descriptor is closed before the exception propagates.</remarks>
-    public static FileStream OpenRegular(string path)
+    /// <remarks>Every rejected descriptor is closed before the exception propagates. Internal (test friend only): the
+    /// descriptor test must open devices and directories that the verifier cannot be handed without mount/mknod.</remarks>
+    internal static FileStream OpenRegular(string path)
     {
         FileStream stream;
         if (OperatingSystem.IsWindows()) stream = System.IO.File.OpenRead(path);

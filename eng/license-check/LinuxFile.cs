@@ -4,7 +4,7 @@ namespace Nachos.LicenseCheck;
 
 // Linux file-type primitives shared by evidence reads and report destinations. .NET never sets
 // FileAttributes.Device on Unix, so FIFOs, sockets and device nodes are only visible through statx.
-public static class LinuxFile
+internal static class LinuxFile
 {
     public const int TypeMask = 0xf000;
     public const int Regular = 0x8000;

@@ -40,38 +40,31 @@ public sealed class LinuxEvidenceTests
         error.ShouldBeOfType<InvalidDataException>().Message.ShouldContain("Docs provenance: " + Nonregular, Case.Sensitive);
     }
 
-    [LinuxTheory]
-    [InlineData("/dev/null")]
-    [InlineData("/dev/zero")]
-    public async Task HostCharacterDevicesAreRejectedAsEvidence(string device)
-    {
-        var error = await Rejection(() => DocsProvenance.OpenRegular(device).Dispose());
-        error.ShouldBeOfType<InvalidDataException>().Message.ShouldContain(Nonregular, Case.Sensitive);
-    }
-
+    // /dev/null and /dev/zero cannot be handed to the verifier without mount or mknod; LinuxDescriptorTests
+    // type-checks them (and an opened directory) through the internal open boundary.
     [LinuxDeviceTheory]
     [InlineData(LinuxNodes.Block, 1u, 0u)]
     [InlineData(LinuxNodes.Character, 1u, 3u)]
     public async Task MintedDeviceNodesAreRejectedAsEvidence(int type, uint major, uint minor)
     {
         using var fixture = new ProtocolFixture();
-        var node = fixture.Full("device");
+        var node = fixture.Full("site/tsconfig.json");
+        File.Delete(node);
         LinuxNodes.MakeDevice(node, type, major, minor);
-        var error = await Rejection(() => DocsProvenance.OpenRegular(node).Dispose());
+        var message = (await Rejection(() => fixture.Verify())).ShouldBeOfType<InvalidDataException>().Message;
         // A node without a bound driver fails to open; one that opens must fail the type check.
-        (error is IOException || error is InvalidDataException { Message: var message } && message.Contains(Nonregular, StringComparison.Ordinal))
-            .ShouldBeTrue(error.ToString());
+        (message.Contains("Docs provenance: Cannot open evidence file", StringComparison.Ordinal)
+            || message.Contains("Docs provenance: " + Nonregular, StringComparison.Ordinal)).ShouldBeTrue(message);
     }
 
     [LinuxFact]
-    public async Task DirectoryIsRejectedByTypeEvenThoughItOpens()
+    public async Task DirectoryInputIsRejectedBeforeOpening()
     {
         using var fixture = new ProtocolFixture();
-        var error = await Rejection(() => DocsProvenance.OpenRegular(fixture.Full("site/src")).Dispose());
-        error.ShouldBeOfType<InvalidDataException>().Message.ShouldContain(Nonregular, Case.Sensitive);
         File.Delete(fixture.Full("site/tsconfig.json"));
         Directory.CreateDirectory(fixture.Full("site/tsconfig.json"));
-        (await Rejection(() => fixture.Verify())).Message.ShouldContain("Docs provenance: Expected regular file", Case.Sensitive);
+        (await Rejection(() => fixture.Verify())).ShouldBeOfType<InvalidDataException>().Message
+            .ShouldContain("Docs provenance: Expected regular file", Case.Sensitive);
     }
 
     [LinuxFact]
@@ -81,7 +74,6 @@ public sealed class LinuxEvidenceTests
         var socket = fixture.Full("site/tsconfig.json");
         File.Delete(socket);
         LinuxNodes.MakeSocket(socket);
-        (await Rejection(() => DocsProvenance.OpenRegular(socket).Dispose())).ShouldBeOfType<IOException>();
         (await Rejection(() => fixture.Verify())).ShouldBeOfType<InvalidDataException>().Message
             .ShouldContain("Docs provenance: Cannot open evidence file", Case.Sensitive);
     }
