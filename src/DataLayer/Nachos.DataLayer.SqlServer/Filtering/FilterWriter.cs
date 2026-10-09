@@ -43,15 +43,27 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// <summary>The alias of the derived table holding the flags (<c>l0</c>, <c>l1</c>, …).</summary>
     private string _flagsAlias = "";
 
-    /// <summary>A metadata condition <c>EXISTS</c> over the value at <see cref="Path"/>, evaluated as a flag (see <see cref="WriteWithFlags"/>).</summary>
-    private sealed record MetadataFlag(IReadOnlyList<string> Path, Func<MetadataRow, string> Condition);
+    /// <summary>
+    /// The most members one flag holds (<see cref="AnyExists"/>). Measured over 10,000 rows, cold: one flag of 128
+    /// members compiled in 0.8 s and of 400 in 10.6 s, while the flags themselves run in about 0.2 s.
+    /// </summary>
+    private const int FlagMembers = 32;
+
+    /// <summary>A condition on the value at <see cref="Path"/>.</summary>
+    private sealed record FlagMember(IReadOnlyList<string> Path, Func<MetadataRow, string> Condition);
 
     /// <summary>
-    /// The predicate for a whole filter. A filter with one metadata condition (after merging conditions on one path) is
-    /// written directly: an <c>EXISTS</c> over its path. With more, the metadata is read once per row for all of them
-    /// (<see cref="WriteWithFlags"/>), so the cost of a row grows with the number of its metadata entries, not with the
-    /// number of conditions times entries (partner review I2: 128 conditions as separate <c>EXISTS</c> took minutes over
-    /// 10,000 rows).
+    /// A flag (see <see cref="WriteWithFlags"/>): some entry of the metadata satisfies one of <see cref="Members"/>, that is the
+    /// OR of their <c>EXISTS</c>.
+    /// </summary>
+    private sealed record MetadataFlag(IReadOnlyList<FlagMember> Members);
+
+    /// <summary>
+    /// The predicate for a whole filter. A filter with one metadata condition (after merging) is written directly: an
+    /// <c>EXISTS</c> over its path. With more, the metadata is read once per row for all of them (<see cref="WriteWithFlags"/>),
+    /// so a row costs one pass over its entries, not one per condition (partner review I2: 128 conditions as separate
+    /// <c>EXISTS</c> took minutes over 10,000 rows; measured with flags, cold cache, 10,000 rows: 1000 conditions in
+    /// 0.4-4.7 s, and 1990 <c>contains</c> on distinct keys in 5.6 s, almost all of it compilation).
     /// </summary>
     public string WriteFilter(FilterNode node)
     {
@@ -68,9 +80,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         finally
         {
             _flags = null;
+            _sharedFlags.Clear();
         }
 
-        if (flags.Count > 1)
+        if (flags.Count > 1 || flags.Any(flag => flag.Members.Count > 1))
         {
             return WriteWithFlags(formula, flags);
         }
@@ -88,36 +101,105 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// <summary>
     /// <paramref name="formula"/> (the filter's AND/OR/NOT over column conditions and the flags <c>l0</c>, <c>l1</c>, …)
     /// over one aggregate per row: <c>l<i>i</i></c> is 1 when some entry of the metadata satisfies flag <i>i</i>, which is
-    /// exactly the <c>EXISTS</c> it replaces. The metadata is opened once; each entry is tested only against the flags
-    /// under its own key (nested <c>CASE</c>, so a condition never runs on another key's entry), and derived columns
-    /// (number keys, digests) are computed once per entry, only for keys that need them. A condition deeper than the first
-    /// key is an <c>EXISTS</c> over the rest of its path, opened only for the entry under its first key.
+    /// exactly the <c>EXISTS</c> it replaces. The metadata is opened once. Each entry's key is looked up once among the keys
+    /// the flags name (<see cref="KeyIndex"/>); entries under other keys cannot set a flag, so they are not aggregated, and
+    /// an entry is tested only against the flags under its own key (nested <c>CASE</c> on the key's index, so a condition
+    /// never runs on another key's entry). Derived columns (number keys, digests) are computed once per entry, only under
+    /// named keys. A condition deeper than the first key is an <c>EXISTS</c> over the rest of its path, opened only for the
+    /// entry under its first key.
     /// </summary>
     private string WriteWithFlags(string formula, IReadOnlyList<MetadataFlag> flags)
     {
         var root = Alias();
         var from = new StringBuilder($"FROM OPENJSON({table}.Metadata) AS {root}");
-        var keys = flags.Select(flag => flag.Path[0]).Distinct(StringComparer.Ordinal).ToDictionary(key => key, Text, StringComparer.Ordinal);
-        var endingHere = flags.Where(flag => flag.Path.Count == 1).Select(flag => keys[flag.Path[0]]).Distinct().Select(key => $"({KeyMatches(root, key)})").ToList();
-        var row = new MetadataRow(this, root, from, endingHere.Count == 0 ? "1 = 0" : string.Join(" OR ", endingHere));
+        var keys = flags.SelectMany(flag => flag.Members).Select(member => member.Path[0]).Distinct(StringComparer.Ordinal).Select((key, index) => (key, index)).ToDictionary(pair => pair.key, pair => pair.index, StringComparer.Ordinal);
+        var index = KeyIndex(root, keys, from);
+        var row = new MetadataRow(this, root, from, $"{index} IS NOT NULL");
 
         var definitions = new List<string>(flags.Count);
         for (var i = 0; i < flags.Count; i++)
         {
-            var flag = flags[i];
-            var key = KeyMatches(root, keys[flag.Path[0]]);
-            var holds = flag.Path.Count == 1
-                ? flag.Condition(row)
-                : MetadataExists([.. flag.Path.Skip(1)], flag.Condition, $"CASE WHEN {root}.[type] = 5 AND {key} THEN {root}.[value] END");
-            definitions.Add(string.Create(CultureInfo.InvariantCulture, $"CASE WHEN {key} THEN CASE WHEN {holds} THEN 1 ELSE 0 END ELSE 0 END AS f{i}"));
+            // One branch per first key, so a member's condition only ever runs on the entry under its own key.
+            var branches = new StringBuilder();
+            foreach (var group in flags[i].Members.GroupBy(member => member.Path[0], StringComparer.Ordinal))
+            {
+                var key = keys[group.Key].ToString(CultureInfo.InvariantCulture);
+                var holds = string.Join(" OR ", group.Select(member => member.Path.Count == 1
+                    ? member.Condition(row)
+                    : MetadataExists([.. member.Path.Skip(1)], member.Condition, $"CASE WHEN {root}.[type] = 5 AND {index} = {key} THEN {root}.[value] END")));
+                branches.Append(CultureInfo.InvariantCulture, $" WHEN {index} = {key} THEN CASE WHEN {holds} THEN 1 ELSE 0 END");
+            }
+
+            definitions.Add(string.Create(CultureInfo.InvariantCulture, $"CASE{branches} ELSE 0 END AS f{i}"));
         }
 
         var element = Alias();
         from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT {string.Join(", ", definitions)}) AS {element}");
         var columns = string.Join(", ", Enumerable.Range(0, flags.Count).Select(i => string.Create(CultureInfo.InvariantCulture, $"ISNULL(MAX({element}.f{i}), 0) AS l{i}")));
-        return $"EXISTS (SELECT 1 FROM (SELECT {columns} {from}) AS {_flagsAlias} WHERE {formula})";
+        return $"EXISTS (SELECT 1 FROM (SELECT {columns} {from} WHERE {index} IS NOT NULL) AS {_flagsAlias} WHERE {formula})";
     }
 
+    /// <summary>
+    /// Appends to <paramref name="from"/> the index in <paramref name="keys"/> of the key of the entry <paramref name="row"/>
+    /// (NULL for any other key), computed once per entry, and returns that column. Keys of up to <see cref="PackedKeyUnits"/>
+    /// code units are packed as <c>hex:index</c> (hex of the UTF-16 code units, so the match is exact, trailing spaces
+    /// included) in sorted, range-gated chunks as in <see cref="PackedIn"/>; one <c>CHARINDEX</c> finds the entry's key and
+    /// the index beside it. Longer keys are compared directly.
+    /// </summary>
+    private string KeyIndex(string row, IReadOnlyDictionary<string, int> keys, StringBuilder from)
+    {
+        var bytes = (PackedKeyUnits * 2).ToString(CultureInfo.InvariantCulture);
+        var hex = $"CASE WHEN DATALENGTH({row}.[key]) <= {bytes} THEN CONVERT(varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)}), CAST({row}.[key] AS varbinary({bytes})), 2) END COLLATE {Bin2}";
+        var lookups = new List<string>();
+        var chunk = new StringBuilder("|");
+        string? first = null;
+        string? last = null;
+
+        void Flush()
+        {
+            if (first is null)
+            {
+                return;
+            }
+
+            var low = Parameter(SqlDbType.VarChar, first, SqlParameters.Ascii);
+            var high = Parameter(SqlDbType.VarChar, last!, SqlParameters.Ascii);
+            var packed = Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii);
+            lookups.Add($"CASE WHEN {hex} >= {low} AND {hex} <= {high} THEN CAST(SUBSTRING({packed}, NULLIF(CHARINDEX('|' + {hex} + ':', {packed}), 0) + DATALENGTH({hex}) + 2, {IndexDigits.ToString(CultureInfo.InvariantCulture)}) AS int) END");
+            chunk.Clear().Append('|');
+            first = null;
+        }
+
+        foreach (var (key, keyIndex) in keys.Where(pair => pair.Key.Length <= PackedKeyUnits).Select(pair => (SqlDigest.Utf16Hex(pair.Key), pair.Value)).OrderBy(pair => pair.Item1, StringComparer.Ordinal))
+        {
+            var item = string.Create(CultureInfo.InvariantCulture, $"{key}:{keyIndex.ToString(new string('0', IndexDigits), CultureInfo.InvariantCulture)}");
+            if (chunk.Length + item.Length + 1 > ChunkLength)
+            {
+                Flush();
+            }
+
+            first ??= key;
+            last = key;
+            chunk.Append(item).Append('|');
+        }
+
+        Flush();
+        foreach (var (key, keyIndex) in keys.Where(pair => pair.Key.Length > PackedKeyUnits))
+        {
+            lookups.Add($"CASE WHEN {KeyMatches(row, Text(key))} THEN {keyIndex.ToString(CultureInfo.InvariantCulture)} END");
+        }
+
+        var column = Alias();
+        var lookup = lookups.Count == 1 ? lookups[0] : $"COALESCE({string.Join(", ", lookups)})";
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY({lookup})) WITH (i int '$') AS {column}");
+        return $"{column}.i";
+    }
+
+    /// <summary>The longest key packed by <see cref="KeyIndex"/>: its hex, a colon and the index fit one chunk.</summary>
+    private const int PackedKeyUnits = (ChunkLength - 2 - 1 - IndexDigits) / 4;
+
+    /// <summary>The digits of a key's index in a <see cref="KeyIndex"/> entry.</summary>
+    private const int IndexDigits = 5;
     public string Write(FilterNode node) => node switch
     {
         FilterNode.And and => and.Children.Count == 0 ? True : Join(Conjuncts(and.Children), " AND "),
@@ -139,21 +221,29 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// The children of an AND, with positive metadata conditions on one path merged into a single <c>EXISTS</c>: a stored
     /// object never repeats a key (stored JSON is canonical), so <c>EXISTS(p, a) AND EXISTS(p, b)</c> is
     /// <c>EXISTS(p, a AND b)</c>, and the merged form resolves the path, and computes a number's key, once instead of per
-    /// condition (a range such as <c>{"gte": 1, "lt": 2}</c> is two conditions).
+    /// condition (a range such as <c>{"gte": 1, "lt": 2}</c> is two conditions). Unset and <c>ne</c> conditions merge too,
+    /// on any paths and without that assumption: <c>NOT EXISTS(a) AND NOT EXISTS(b)</c> is <c>NOT (EXISTS(a) OR EXISTS(b))</c>,
+    /// one <see cref="AnyExists"/>; on one path their equalities become one list match.
     /// </summary>
     private IEnumerable<string> Conjuncts(IReadOnlyList<FilterNode> children)
     {
-        var groups = children
-            .OfType<FilterNode.MetadataPath>()
-            .Where(path => IsPositive(path.Op) && Reachable(path.Path))
-            .GroupBy(path => new JsonArray([.. path.Path.Select(key => (JsonNode)key)]).ToJsonString(), StringComparer.Ordinal)
-            .Where(group => group.Count() > 1)
-            .ToList();
-        var merged = groups.SelectMany(group => group).ToHashSet(ReferenceEqualityComparer.Instance);
+        var groups = SamePath(children, IsPositive, minimum: 2);
+        var negatives = SamePath(children, op => !IsPositive(op), minimum: 1);
+        if (negatives.Count == 1 && negatives[0].Count == 1)
+        {
+            negatives.Clear();
+        }
+
+        var merged = groups.Concat(negatives).SelectMany(group => group).ToHashSet<FilterNode>(ReferenceEqualityComparer.Instance);
 
         foreach (var group in groups)
         {
-            yield return MetadataExists(group.First().Path, row => string.Join(" AND ", group.Select(path => PositiveCondition(row, path))));
+            yield return MetadataExists(group[0].Path, row => string.Join(" AND ", group.Select(path => PositiveCondition(row, path))));
+        }
+
+        if (negatives.Count > 0)
+        {
+            yield return $"(NOT {AnyExists([.. negatives.Select(group => new FlagMember(group[0].Path, row => AnyOf(row, group)))])})";
         }
 
         foreach (var child in children.Where(child => !merged.Contains(child)))
@@ -163,28 +253,68 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     }
 
     /// <summary>
-    /// The children of an OR (or NOT), with metadata equalities on one path merged into a single list match: the parser
-    /// turns a metadata <c>in</c> into such equalities, and one list parameter keeps a 1,000-value list cheap.
+    /// The children of an OR (or NOT), with every positive metadata condition merged into one <see cref="AnyExists"/>:
+    /// <c>EXISTS(a) OR EXISTS(b)</c> is one existence test, and on one path <c>EXISTS(p, a OR b)</c>. Equalities on one path
+    /// become one list match: the parser turns a metadata <c>in</c> into such equalities, and a packed list keeps a
+    /// 1,000-value list cheap.
     /// </summary>
     private IEnumerable<string> Alternatives(IReadOnlyList<FilterNode> children)
     {
-        var equalities = children
-            .OfType<FilterNode.MetadataPath>()
-            .Where(path => path.Op == FilterOp.Eq && Reachable(path.Path))
-            .GroupBy(path => new JsonArray([.. path.Path.Select(key => (JsonNode)key)]).ToJsonString(), StringComparer.Ordinal)
-            .Where(group => group.Count() > 1)
-            .ToList();
-        var merged = equalities.SelectMany(group => group).ToHashSet(ReferenceEqualityComparer.Instance);
-
-        foreach (var group in equalities)
+        var groups = SamePath(children, IsPositive, minimum: 1);
+        if (groups.Count == 1 && groups[0].Count == 1)
         {
-            yield return MetadataExists(group.First().Path, row => ListMatch(row, [.. group.Select(path => path.Value!)]));
+            groups.Clear();
+        }
+
+        var merged = groups.SelectMany(group => group).ToHashSet<FilterNode>(ReferenceEqualityComparer.Instance);
+        if (groups.Count > 0)
+        {
+            yield return AnyExists([.. groups.Select(group => new FlagMember(group[0].Path, row => AnyOf(row, group)))]);
         }
 
         foreach (var child in children.Where(child => !merged.Contains(child)))
         {
             yield return Write(child);
         }
+    }
+
+    /// <summary>The reachable metadata conditions among <paramref name="children"/> whose operator passes <paramref name="op"/>, grouped by path, in groups of at least <paramref name="minimum"/>.</summary>
+    private static List<List<FilterNode.MetadataPath>> SamePath(IReadOnlyList<FilterNode> children, Func<FilterOp, bool> op, int minimum) =>
+    [
+        .. children
+            .OfType<FilterNode.MetadataPath>()
+            .Where(path => op(path.Op) && Reachable(path.Path))
+            .GroupBy(path => new JsonArray([.. path.Path.Select(key => (JsonNode)key)]).ToJsonString(), StringComparer.Ordinal)
+            .Select(group => group.ToList())
+            .Where(group => group.Count >= minimum),
+    ];
+
+    /// <summary>
+    /// The value at the row satisfies one of <paramref name="paths"/> (all on that path): a positive operator as itself,
+    /// <c>ne</c> as the equality it negates and "unset" as "set" (for a caller that negates the whole). Equalities become one
+    /// list match.
+    /// </summary>
+    private string AnyOf(MetadataRow row, IReadOnlyList<FilterNode.MetadataPath> paths)
+    {
+        // By reference: records compare their JSON operands by value, which can throw for an extreme exponent.
+        var equalities = paths.Where(path => path.Op is FilterOp.Eq or FilterOp.Ne).ToHashSet<FilterNode.MetadataPath>(ReferenceEqualityComparer.Instance);
+        var parts = new List<string>();
+        if (equalities.Count > 1)
+        {
+            parts.Add(ListMatch(row, [.. paths.Where(equalities.Contains).Select(path => path.Value!)]));
+        }
+
+        foreach (var path in paths.Where(path => equalities.Count <= 1 || !equalities.Contains(path)))
+        {
+            parts.Add(path.Op switch
+            {
+                FilterOp.Ne => ScalarEquals(row, path.Value!),
+                FilterOp.IsNull => $"{row.Type} <> 0",
+                _ => PositiveCondition(row, path),
+            });
+        }
+
+        return $"({string.Join(" OR ", parts)})";
     }
 
     // ------------------------------------------------------------------------------------------------ columns
@@ -457,10 +587,37 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         var operand = path.Value;
         return path.Op switch
         {
-            FilterOp.IsNull => $"(NOT {MetadataExists(path.Path, row => $"{row.Type} <> 0")})",
-            FilterOp.Ne => $"(NOT {MetadataExists(path.Path, row => ScalarEquals(row, operand!))})",
-            _ => MetadataExists(path.Path, row => PositiveCondition(row, path)),
+            FilterOp.IsNull => $"(NOT {SharedExists(path, "set", row => $"{row.Type} <> 0")})",
+            FilterOp.NotNull => SharedExists(path, "set", row => $"{row.Type} <> 0"),
+            FilterOp.Ne => $"(NOT {SharedExists(path, "eq", row => ScalarEquals(row, operand!))})",
+            FilterOp.Eq => SharedExists(path, "eq", row => ScalarEquals(row, operand!)),
+            _ => SharedExists(path, path.Op.ToString(), row => PositiveCondition(row, path)),
         };
+    }
+
+    /// <summary>While flags are collected, the flag already made for an identical condition (path, test and operand text).</summary>
+    private readonly Dictionary<string, string> _sharedFlags = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// <see cref="MetadataExists(IReadOnlyList{string}, Func{MetadataRow, string})"/> of one condition; while flags are
+    /// collected, identical conditions anywhere in the filter (such as one repeated in every branch of an OR) share one
+    /// flag. <paramref name="test"/> names the condition so that <c>eq</c>/<c>ne</c> and set/unset share theirs.
+    /// </summary>
+    private string SharedExists(FilterNode.MetadataPath path, string test, Func<MetadataRow, string> condition)
+    {
+        if (_flags is null)
+        {
+            return MetadataExists(path.Path, condition);
+        }
+
+        var identity = string.Concat(test, "|", new JsonArray([.. path.Path.Select(key => (JsonNode)key)]).ToJsonString(), "|", path.Value?.ToJsonString());
+        if (!_sharedFlags.TryGetValue(identity, out var flag))
+        {
+            flag = MetadataExists(path.Path, condition);
+            _sharedFlags.Add(identity, flag);
+        }
+
+        return flag;
     }
 
     /// <summary>The condition a positive operator puts on the value at its path (see <see cref="IsPositive"/>).</summary>
@@ -489,13 +646,31 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// </summary>
     private string MetadataExists(IReadOnlyList<string> path, Func<MetadataRow, string> condition)
     {
+        return AnyExists([new FlagMember(path, condition)]);
+    }
+
+    /// <summary>
+    /// Some entry satisfies one of <paramref name="members"/> (the OR of their <see cref="MetadataExists(IReadOnlyList{string}, Func{MetadataRow, string})"/>):
+    /// while <see cref="WriteFilter"/> collects flags, one flag for all of them; otherwise one <c>EXISTS</c> each.
+    /// </summary>
+    private string AnyExists(IReadOnlyList<FlagMember> members)
+    {
         if (_flags is not null)
         {
-            _flags.Add(new MetadataFlag(path, condition));
-            return $"({_flagsAlias}.l{(_flags.Count - 1).ToString(CultureInfo.InvariantCulture)} = 1)";
+            // A flag tests its members in one CASE, whose compile time grows faster than linearly with its branches, so
+            // a large OR is split into several flags of at most FlagMembers members each.
+            var references = new List<string>();
+            foreach (var chunk in members.Chunk(FlagMembers))
+            {
+                _flags.Add(new MetadataFlag(chunk));
+                references.Add($"({_flagsAlias}.l{(_flags.Count - 1).ToString(CultureInfo.InvariantCulture)} = 1)");
+            }
+
+            return references.Count == 1 ? references[0] : $"({string.Join(" OR ", references)})";
         }
 
-        return MetadataExists(path, condition, $"{table}.Metadata");
+        var exists = members.Select(member => MetadataExists(member.Path, member.Condition, $"{table}.Metadata")).ToList();
+        return exists.Count == 1 ? exists[0] : $"({string.Join(" OR ", exists)})";
     }
 
     private string MetadataExists(IReadOnlyList<string> path, Func<MetadataRow, string> condition, string source)

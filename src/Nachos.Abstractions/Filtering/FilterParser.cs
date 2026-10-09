@@ -28,7 +28,7 @@ namespace Nachos.Abstractions.Filtering;
 /// <see cref="FilterOp.NotNull"/>. <c>null</c> is only accepted as a plain value, as the operand of <c>ne</c>, and as
 /// an <c>in</c> element; the other operators reject it. The operand of <c>ne</c> is a literal even when it is
 /// <c>"*"</c>. Lists (<c>in</c>, bare lists, metadata containment lists) hold at most <see cref="MaxListItems"/>
-/// elements, and a filter holds at most <see cref="MaxLeaves"/> conditions.</para>
+/// elements.</para>
 /// <para><b>Types.</b> Text takes strings. <c>token_count</c> takes any JSON number with an integral value
 /// (<c>5</c>, <c>5.0</c>, <c>1e2</c>, integers of any size) or an integer string, and is normalized to a
 /// <see cref="decimal"/>; a non-integral number is rejected. A number beyond the <see cref="decimal"/> range can never
@@ -57,17 +57,6 @@ public static partial class FilterParser
     /// 2,100-parameter limit.
     /// </remarks>
     public const int MaxListItems = 1000;
-
-    /// <summary>The most conditions (leaves) one filter may hold, wherever they are; more is a validation error.</summary>
-    /// <remarks>
-    /// Counted on the filter as written: each field or metadata path given a scalar, <c>null</c>, <c>"*"</c> or a list
-    /// counts one (an <c>in</c> list or containment list is one condition, whatever its length), and so does each operator
-    /// in an operator object; <c>AND</c>, <c>OR</c> and <c>NOT</c> add their children's conditions, and keys that are not a
-    /// field of the resource count nothing. The cap is shared so every provider accepts the same filters: a SQL provider
-    /// compiles each condition into its own subquery, and planning a statement of many hundreds of them takes longer than
-    /// a request may.
-    /// </remarks>
-    public const int MaxLeaves = 128;
 
     private const int MaxDepth = StrictJsonData.DefaultMaxDepth;
 
@@ -149,52 +138,10 @@ public static partial class FilterParser
         {
             null => null,
             JsonObject { Count: 0 } => null,
-            JsonObject obj => ParseObject(RequireLeafCount(obj, fields), fields),
+            JsonObject obj => ParseObject(obj, fields),
             _ => throw Invalid("Filters must be a JSON object."),
         };
     }
-
-    private static JsonObject RequireLeafCount(JsonObject filter, IReadOnlyDictionary<string, FieldDefinition> fields)
-    {
-        var leaves = Leaves(filter, fields);
-        return leaves <= MaxLeaves
-            ? filter
-            : throw Invalid($"The filter has {leaves} conditions; the limit is {MaxLeaves}.");
-    }
-
-    /// <summary>The conditions of a filter object as <see cref="MaxLeaves"/> counts them; malformed parts count as one and are rejected by the parse.</summary>
-    private static long Leaves(JsonObject filter, IReadOnlyDictionary<string, FieldDefinition> fields)
-    {
-        long leaves = 0;
-        foreach (var (key, value) in filter)
-        {
-            if (key is "AND" or "OR" or "NOT")
-            {
-                leaves += value is JsonArray children ? children.OfType<JsonObject>().Sum(child => Leaves(child, fields)) : 1;
-            }
-            else if (fields.TryGetValue(key, out var field))
-            {
-                leaves += field.Type == FieldType.Metadata
-                    ? MetadataRootLeaves(value)
-                    : value is JsonObject { Count: > 0 } operators ? operators.Count : 1;
-            }
-        }
-
-        return leaves;
-    }
-
-    private static long MetadataRootLeaves(JsonNode? value) =>
-        value is JsonObject root
-            ? root.Sum(pair => pair is { Key: "contains", Value: JsonObject contained } ? contained.Sum(inner => MetadataLeaves(inner.Value)) : MetadataLeaves(pair.Value))
-            : 1;
-
-    // A nested object without operators is containment per key; an object of operators applies each; anything else is one.
-    private static long MetadataLeaves(JsonNode? value) => value switch
-    {
-        JsonObject { Count: > 0 } obj when obj.All(pair => !OperatorKeys.Contains(pair.Key)) => obj.Sum(pair => MetadataLeaves(pair.Value)),
-        JsonObject { Count: > 0 } operators => operators.Count,
-        _ => 1,
-    };
 
     private static void DecodeAll(JsonNode? node)
     {

@@ -352,6 +352,22 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
             data.Add(filter);
         }
 
+        // Conditions on more keys than one flag holds (32): ORs and NOTs over 40 keys, the real ones among them, and ANDs of
+        // ne/unset over 40 keys; and one condition repeated in every branch (a shared flag).
+        static string Key(int i) => i switch { 7 => "a", 21 => "b", 33 => "k", _ => "z" + i.ToString(CultureInfo.InvariantCulture) };
+        var orGt = "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Key(i) + "\":{\"gt\":4}}}")) + "]}";
+        data.Add(orGt);
+        data.Add("{\"NOT\":[" + orGt[7..^1] + "}");
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Key(i) + "\":{\"contains\":\"x\"}}}")) + "]}");
+        data.Add("{\"AND\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Key(i) + "\":{\"ne\":10}}}")) + "]}");
+        data.Add("{\"AND\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => i % 2 == 0 ? "{\"metadata\":{\"" + Key(i) + "\":null}}" : "{\"metadata\":{\"" + Key(i) + "\":{\"ne\":\"x\"}}}")) + "]}");
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"a\":{\"gte\":1},\"" + (i == 7 ? "o" : Key(i)) + "\":\"*\"}}")) + "]}");
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"AND\":[{\"metadata\":{\"a\":10}},{\"metadata\":{\"" + Key(i) + "\":{\"ne\":\"x\"}}}]}")) + "]}");
+        data.Add("{\"OR\":[{\"AND\":[{\"metadata\":{\"a\":10}},{\"metadata\":{\"b\":\"x\"}}]},{\"AND\":[{\"metadata\":{\"a\":{\"ne\":10}}},{\"metadata\":{\"b\":\"x\"}}]},{\"metadata\":{\"a\":10.0}}]}");
+        data.Add("{\"OR\":[{\"AND\":[{\"metadata\":{\"a\":10}},{\"metadata\":{\"b\":\"x\"}}]},{\"AND\":[{\"metadata\":{\"a\":1}},{\"metadata\":{\"b\":10}}]}]}");
+        data.Add("{\"AND\":[{\"OR\":[{\"metadata\":{\"b\":{\"contains\":\"x\"}}},{\"metadata\":{\"a\":5}}]},{\"OR\":[{\"metadata\":{\"b\":{\"contains\":\"y\"}}},{\"metadata\":{\"a\":{\"ne\":2}}}]}]}");
+        data.Add("{\"OR\":[{\"AND\":[{\"metadata\":{\"o\":{\"x\":5}}},{\"metadata\":{\"a\":5}}]},{\"AND\":[{\"metadata\":{\"o\":{\"x\":\"5\"}}},{\"metadata\":{\"b\":5}}]}]}");
+
         // Metadata contains/icontains on arrays: whole-element equality in the delimited hex, against each edge.
         foreach (var operand in new[] { "", "|", "x|y", "x", "y", "a", "a ", "A", "\u0000", "|x", "x|", "😀", "s", "SS" })
         {

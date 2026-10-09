@@ -193,7 +193,7 @@ public sealed class SqlFilterCompilerTests
     [InlineData(80, true)]
     public void TooManyParameters_IsAValidationError(int keys, bool rejected)
     {
-        // Within the parser's condition cap, each `in` list of 1,000 long distinct strings packs into about 30 parameters, so
+        // Each `in` list of 1,000 long distinct strings packs into about 30 parameters, so
         // 80 of them pass SQL Server's 2,100-parameter limit: the filter is rejected (422) instead of failing at execution.
         var metadata = new JsonObject();
         for (var k = 0; k < keys; k++)

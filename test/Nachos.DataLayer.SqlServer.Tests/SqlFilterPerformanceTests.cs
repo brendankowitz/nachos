@@ -119,9 +119,9 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
 
     private static string Quote(string value) => JsonValue.Create(value)!.ToJsonString();
 
-    /// <summary><see cref="FilterParser.MaxLeaves"/> conditions from <paramref name="leaf"/>, joined by <paramref name="combinator"/>.</summary>
-    private static string Leaves(string combinator, Func<int, string> leaf) =>
-        "{\"" + combinator + "\":[" + string.Join(",", Enumerable.Range(0, FilterParser.MaxLeaves).Select(leaf)) + "]}";
+    /// <summary><paramref name="count"/> conditions from <paramref name="leaf"/>, joined by <paramref name="combinator"/>.</summary>
+    private static string Leaves(string combinator, int count, Func<int, string> leaf) =>
+        "{\"" + combinator + "\":[" + string.Join(",", Enumerable.Range(0, count).Select(leaf)) + "]}";
 
     public static TheoryData<string, string, string, int, int, int> Filters()
     {
@@ -131,10 +131,17 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
         var ten = string.Join(",", Enumerable.Range(0, 10).Select(i => (i * 7).ToString(CultureInfo.InvariantCulture)));
         return new TheoryData<string, string, string, int, int, int>
         {
-            // The leaf cap (partner review I2): filters of the most conditions a filter may hold.
-            { "or-128-gt", Session, Leaves("OR", i => "{\"metadata\":{\"n\":{\"gt\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), 0, Rows, 6 },
-            { "and-128-ne", Session, Leaves("AND", i => "{\"metadata\":{\"n\":{\"ne\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), Rows, Rows, 8 },
-            { "or-128-contains-distinct-keys", Session, Leaves("OR", i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 5 },
+            // Many conditions (partner review I2): each row's metadata is read once for all of them. The 1000-condition cases
+            // are mostly compile time on a cold cache (measured 0.4-4.7 s, Salsa's 1990-condition repro 5.6 s; warm 0.2-3.5 s).
+            { "or-1000-gt", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"n\":{\"gt\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), 0, Rows, 12 },
+            { "and-1000-ne", Session, Leaves("AND", 1000, i => "{\"metadata\":{\"n\":{\"ne\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), Rows, Rows, 5 },
+            { "or-1000-contains-distinct-keys", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 12 },
+            { "or-1990-contains-distinct-keys", Session, Leaves("OR", 1990, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 25 },
+            { "or-1000-gt-distinct-keys", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"gt\":5}}}"), 0, 0, 5 },
+            { "or-500-and-pairs", Session, "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 500).Select(i => "{\"metadata\":{\"n\":{\"gte\":0},\"s\":{\"contains\":\"zz" + i.ToString(CultureInfo.InvariantCulture) + "\"}}}")) + "]}", 0, Rows, 25 },
+            { "or-128-gt", Session, Leaves("OR", 128, i => "{\"metadata\":{\"n\":{\"gt\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), 0, Rows, 6 },
+            { "and-128-ne", Session, Leaves("AND", 128, i => "{\"metadata\":{\"n\":{\"ne\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), Rows, Rows, 8 },
+            { "or-128-contains-distinct-keys", Session, Leaves("OR", 128, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 5 },
             // Repetitive text (partner review I3): CHARINDEX, and the length check before any search.
             { "contains-1990-repetitive", RepetitiveSession, "{\"content\":{\"contains\":" + Quote(new string('s', 1989) + "x") + "}}", 0, 0, 5 },
             { "contains-1990-repetitive-hit", RepetitiveSession, "{\"content\":{\"contains\":" + Quote(new string('s', 1985) + "00042") + "}}", 1, 0, 5 },
@@ -145,8 +152,8 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
 
             // Shapes the merges cannot collapse: an OR of ANDs (each AND a number and a string condition on two keys, the
             // first true for every row), and an AND of positive conditions on the keys every row has.
-            { "or-64-and-pairs", Session, "{\"OR\":[" + string.Join(",", Enumerable.Range(0, FilterParser.MaxLeaves / 2).Select(i => "{\"metadata\":{\"n\":{\"gte\":0},\"s\":{\"contains\":\"zz" + i.ToString(CultureInfo.InvariantCulture) + "\"}}}")) + "]}", 0, Rows, 6 },
-            { "and-128-positive-two-keys", Session, Leaves("AND", i => i % 2 == 0 ? "{\"metadata\":{\"n\":{\"gt\":" + (-1 - i).ToString(CultureInfo.InvariantCulture) + "}}}" : "{\"metadata\":{\"s\":{\"contains\":\"x\"}}}"), Rows, Rows, 5 },
+            { "or-64-and-pairs", Session, "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 64).Select(i => "{\"metadata\":{\"n\":{\"gte\":0},\"s\":{\"contains\":\"zz" + i.ToString(CultureInfo.InvariantCulture) + "\"}}}")) + "]}", 0, Rows, 6 },
+            { "and-128-positive-two-keys", Session, Leaves("AND", 128, i => i % 2 == 0 ? "{\"metadata\":{\"n\":{\"gt\":" + (-1 - i).ToString(CultureInfo.InvariantCulture) + "}}}" : "{\"metadata\":{\"s\":{\"contains\":\"x\"}}}"), Rows, Rows, 5 },
 
             // name, session, filter, expected matches, the most key-function calls one statement may make, and the time
             // bound in seconds through the store (at least 4x the time measured in review round 3)

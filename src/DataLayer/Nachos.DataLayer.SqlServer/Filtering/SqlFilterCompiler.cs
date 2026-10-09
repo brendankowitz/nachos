@@ -42,11 +42,12 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// <c>1e2</c> equals <c>100</c>, and <c>1E400</c>, <c>5E-324</c> or 2^96 + 1 compare exactly.
 /// </para>
 /// <para>
-/// <b>Many conditions.</b> A filter with one metadata condition (after conditions on one path are merged) is an
-/// <c>EXISTS</c> over its path. With more, each condition is a flag over a single read of the row's metadata: one
-/// aggregate per row computes, for every entry, the conditions under that entry's key, and the filter's AND/OR/NOT is
-/// evaluated over the flags, so a row's cost grows with its entries rather than with entries times conditions. The parser
-/// caps a filter at <see cref="FilterParser.MaxLeaves"/> conditions.
+/// <b>Many conditions.</b> A filter with one metadata condition (after merging) is an <c>EXISTS</c> over its path. With
+/// more, they become flags over a single read of the row's metadata: each entry's key is looked up once among the keys
+/// the filter names, entries under other keys are skipped, one aggregate per row computes each flag from the entries under
+/// its keys, and the filter's AND/OR/NOT is evaluated over the flags. Conditions OR-ed together (and unset/<c>ne</c>
+/// conditions AND-ed together) share flags of up to 32 conditions, and identical conditions share one flag. There is no
+/// cap on the number of conditions; the largest filters cost mostly compile time.
 /// </para>
 /// <para>
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
