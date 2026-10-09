@@ -73,14 +73,27 @@ public static class NachosClientServiceCollectionExtensions
     /// <item><description>
     /// <c>System.Net.Http</c> diagnostics raised by the framework itself, before any of this code runs: the
     /// <c>System.Net.Http</c> EventSource (for example <c>RequestFailedDetailed</c>, which carries the raw exception text,
-    /// including a body that <see cref="HttpClient"/> buffers for a never-retried request), <c>DiagnosticSource</c>
-    /// events and activity exception events recorded by tracing. Do not enable them at verbose levels against a server
-    /// you do not trust;
+    /// including a body that <see cref="HttpClient"/> buffers for a never-retried request), and activity exception
+    /// events recorded by tracing, which carry the raw text of a failure in the header phase. Do not enable them at
+    /// verbose levels against a server you do not trust;
+    /// </description></item>
+    /// <item><description>
+    /// diagnostics that carry the outgoing request itself, whatever the server does: the <c>DiagnosticSource</c>
+    /// events <c>System.Net.Http.HttpRequestOut.Start</c> and <c>System.Net.Http.Request</c> hand listeners the
+    /// <see cref="HttpRequestMessage"/>, whose <c>ToString</c> prints the <c>Authorization</c> value, and the
+    /// <c>Private.InternalDiagnostics.System.Net.Http</c> EventSource prints it the same way. A listener on those sees
+    /// the bearer value on every request;
+    /// </description></item>
+    /// <item><description>
+    /// <c>System.Net.NameResolution</c> events, which name the host being resolved: with your own primary handler that
+    /// follows redirects, that is the host the server chose (the default pipeline follows none, see Pipeline);
     /// </description></item>
     /// <item><description>what your own handlers log;</description></item>
     /// <item><description>
     /// in mapped server text, echoes in another encoding (percent-encoding, base64), another letter case, or only part of
-    /// the value; and non-string <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>).
+    /// the value, including a value the server splits by inserting the literal marker <c>[redacted]</c> into it (the
+    /// marker is never matched inside, so the pieces around it are shown); and non-string
+    /// <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>).
     /// </description></item>
     /// </list>
     /// </para>

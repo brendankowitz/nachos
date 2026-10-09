@@ -31,9 +31,12 @@ namespace Nachos.Client;
 /// is the received status, whose <see cref="HttpRequestException.HttpRequestError"/> is the read failure's, and whose
 /// message is fixed text with no inner exception: the read failure's own text describes server bytes and can repeat
 /// the request's credentials (see <see cref="SecretRedaction"/>). This handler's own attempt timeout (below) keeps the
-/// status too, with a <see cref="TimeoutException"/> as the inner exception. The caller's cancellation surfaces
-/// unchanged, without the status. Requests the route rules never replay (for example an unkeyed message create) are
-/// not affected: they are sent once and never reach this logic.
+/// status too, with a <see cref="TimeoutException"/> as the inner exception. The caller's cancellation surfaces as an
+/// <see cref="OperationCanceledException"/> carrying the caller's token, without the status; it is the transport's own
+/// instance when nothing in it can repeat server bytes, otherwise a rebuilt one of the same type and token (with a
+/// real socket, <see cref="HttpClient"/> reports a cancellation as a <see cref="TaskCanceledException"/> whose inner
+/// exception is the raw transport failure, so the rebuilt form is the usual one). Requests the route rules never replay
+/// (for example an unkeyed message create) are not affected: they are sent once and never reach this logic.
 /// </description></item>
 /// <item><description>
 /// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out; the error reaches the caller
@@ -85,8 +88,9 @@ namespace Nachos.Client;
 /// arrived, and which carries the <see cref="NachosExceptionData.RetryAfter"/> entry and message suffix when that
 /// response had a parseable <c>Retry-After</c>. A request that is never retried is sent as is, so its attempt timeout
 /// bounds only the time to response headers; its body is streamed to <see cref="HttpClient"/> after this handler
-/// returns. The caller's cancellation always wins: if the caller's token has fired, the cancellation surfaces
-/// untouched and is never retried or reported as a timeout.
+/// returns. The caller's cancellation always wins: if the caller's token has fired, the cancellation surfaces with
+/// that token (the same instance, or a rebuilt one of the same type when its cause had to be sanitized; see above) and
+/// is never retried or reported as a timeout.
 /// </para>
 /// <para>
 /// <b>Failure text.</b> Every exception that leaves this handler goes through <see cref="SecretRedaction.Sanitize"/>:
