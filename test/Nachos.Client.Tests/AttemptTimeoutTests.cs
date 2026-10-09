@@ -173,6 +173,33 @@ public sealed class AttemptTimeoutTests
     [Theory]
     [InlineData("/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}", "GET")]
     [InlineData("/v3/keys", "POST")]
+    public async Task CallerCancellation_WinsWhenTheAttemptTimeoutHasAlsoFired(string template, string method)
+    {
+        // Both tokens have fired by the time the attempt fails: the attempt timeout first, then the caller's.
+        using var cts = new CancellationTokenSource();
+        var attempts = 0;
+        var inner = new DelegateHandler((_, _) =>
+        {
+            attempts++;
+            _time.Advance(AttemptTimeout);
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        using var invoker = new HttpMessageInvoker(Retry(inner));
+        using var request = new HttpRequestMessage(new HttpMethod(method), new Uri(Base, "/v3/x"));
+        request.Options.Set(RetryHandler.RouteTemplate, template);
+
+        var caught = await CaptureAsync(invoker.SendAsync(request, cts.Token));
+
+        caught.ShouldBeAssignableTo<OperationCanceledException>();
+        caught.ShouldNotBeOfType<HttpRequestException>();
+        attempts.ShouldBe(1);
+        _delays.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}", "GET")]
+    [InlineData("/v3/keys", "POST")]
     public async Task CallerCancellation_AtTheHandler_IsACancellation_NotATimeout(string template, string method)
     {
         // Without HttpClient in between (it reports anything after the caller cancelled as a cancellation), the
@@ -418,6 +445,12 @@ public sealed class AttemptTimeoutTests
     /// A fake server whose attempts either answer at once or stall (when <c>respond</c> returns null) until the token
     /// the handler passed down is cancelled. A 10 s real-time safety net fails a stall that is never cancelled.
     /// </summary>
+    private sealed class DelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            send(request, cancellationToken);
+    }
+
     private sealed class StallServer(Func<int, HttpResponseMessage?> respond) : HttpMessageHandler
     {
         private readonly SemaphoreSlim _stalled = new(0);
