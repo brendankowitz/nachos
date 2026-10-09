@@ -20,10 +20,10 @@ namespace Nachos.Cli;
 internal static class GrantCommands
 {
     // The role names the domain knows (GrantRoles); case-sensitive, as stored.
-    private static readonly string[] KnownRoles = [GrantRoles.Admin, GrantRoles.Workspace];
+    internal static readonly string[] KnownRoles = [GrantRoles.Admin, GrantRoles.Workspace];
 
     // dbo.PrincipalGrants.ObjectId is NVARCHAR(64).
-    private const int MaxObjectIdLength = 64;
+    internal const int MaxObjectIdLength = 64;
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.Never };
 
@@ -57,17 +57,18 @@ internal static class GrantCommands
         var command = new Command(name, description + " Exit 0: done; 2: the schema is not current; 1: error.") { connection, objectId, role, workspace };
         command.Validators.Add(result =>
         {
-            RequireObjectId(result, result.GetValue(objectId));
-            RequireWorkspace(result, result.GetValue(workspace));
-            if (result.GetValue(role) is { } roleName)
+            var workspaceName = UsageErrors.SingleValue(result, workspace);
+            RequireObjectId(result, UsageErrors.SingleValue(result, objectId));
+            RequireWorkspace(result, workspaceName);
+            if (UsageErrors.SingleValue(result, role) is { } roleName)
             {
                 if (!KnownRoles.Contains(roleName, StringComparer.Ordinal))
                 {
-                    UsageErrors.Add(result, $"--role must be one of: {string.Join(", ", KnownRoles)}.");
+                    UsageErrors.Add(result, UsageError.RoleUnknown);
                 }
-                else if (roleName == GrantRoles.Admin && result.GetValue(workspace) is not null)
+                else if (roleName == GrantRoles.Admin && workspaceName is not null)
                 {
-                    UsageErrors.Add(result, $"--workspace applies only to the {GrantRoles.Workspace} role; {GrantRoles.Admin} is not scoped to a workspace.");
+                    UsageErrors.Add(result, UsageError.WorkspaceOnAdminRole);
                 }
             }
         });
@@ -98,7 +99,7 @@ internal static class GrantCommands
         {
             connection, objectId,
         };
-        command.Validators.Add(result => RequireObjectId(result, result.GetValue(objectId)));
+        command.Validators.Add(result => RequireObjectId(result, UsageErrors.SingleValue(result, objectId)));
         command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => WithStoreAsync(parse, connection, deployer, async grants =>
         {
             var listed = await grants.ListAsync(parse.GetValue(objectId), ct);
@@ -123,11 +124,16 @@ internal static class GrantCommands
 
         if (string.IsNullOrWhiteSpace(objectId))
         {
-            UsageErrors.Add(result, "--object-id must not be empty.");
+            UsageErrors.Add(result, UsageError.ObjectIdEmpty);
+        }
+        else if (objectId != objectId.Trim())
+        {
+            // Stored and compared exactly, so a padded id is a different id; it is almost always a copy-paste slip.
+            UsageErrors.Add(result, UsageError.ObjectIdPadded);
         }
         else if (objectId.Length > MaxObjectIdLength)
         {
-            UsageErrors.Add(result, $"--object-id must be at most {MaxObjectIdLength} characters.");
+            UsageErrors.Add(result, UsageError.ObjectIdTooLong);
         }
     }
 
@@ -142,9 +148,10 @@ internal static class GrantCommands
         {
             IdValidator.Validate(workspace, "--workspace");
         }
-        catch (NachosValidationException invalid)
+        catch (NachosValidationException)
         {
-            UsageErrors.Add(result, invalid.Detail);
+            // Not its text: the CLI's own message is fixed and cannot carry the value.
+            UsageErrors.Add(result, UsageError.WorkspaceInvalid);
         }
     }
 

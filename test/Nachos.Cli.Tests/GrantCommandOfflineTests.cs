@@ -63,6 +63,30 @@ public sealed class GrantCommandOfflineTests
         ShouldBeUsageError(await RunAsync("grants", "list", "--connection", Cs, "--object-id", objectId), "--object-id must not be empty");
     }
 
+    [Theory]
+    [InlineData(" o")]
+    [InlineData("o ")]
+    [InlineData("\to")]
+    [InlineData(" o ")]
+    public async Task ObjectIdWithLeadingOrTrailingWhitespace_Exit1_WithAFixedMessage(string objectId)
+    {
+        var message = "--object-id must not start or end with whitespace.";
+
+        ShouldBeUsageError(await RunAsync("grants", "add", "--connection", Cs, "--object-id", objectId, "--role", "Nachos.Admin"), message);
+        ShouldBeUsageError(await RunAsync("grants", "remove", "--connection", Cs, "--object-id", objectId, "--role", "Nachos.Admin"), message);
+        ShouldBeUsageError(await RunAsync("grants", "list", "--connection", Cs, "--object-id", objectId), message);
+    }
+
+    [Fact]
+    public async Task ObjectIdWithInnerWhitespace_IsAccepted()
+    {
+        // Only the ends are checked: the id is otherwise free-form. It reaches the (unreachable) server.
+        var run = await RunAsync("grants", "list", "--connection", Cs, "--object-id", "a b");
+
+        run.ExitCode.ShouldBe(1);
+        run.Error.ShouldNotContain("--object-id");
+    }
+
     [Fact]
     public async Task ObjectIdLongerThanTheColumn_Exit1_ButTheLimitItselfIsAccepted()
     {
@@ -97,6 +121,25 @@ public sealed class GrantCommandOfflineTests
         ShouldBeUsageError(
             await RunAsync("grants", "add", "--connection", Cs, "--object-id", "o", "--role", "Nachos.Admin", "--workspace", "ws1"),
             "--workspace applies only to the Nachos.Workspace role");
+    }
+
+    [Theory]
+    [InlineData("--role", "add", "--object-id", "o", "--role", "Nachos.Admin", "--role", "X")]
+    [InlineData("--object-id", "add", "--object-id", "o", "--object-id", "p", "--role", "Nachos.Admin")]
+    [InlineData("--workspace", "add", "--object-id", "o", "--role", "Nachos.Workspace", "--workspace", "a", "--workspace", "b")]
+    [InlineData("--role", "remove", "--object-id", "o", "--role", "Nachos.Admin", "--role", "Nachos.Admin")]
+    [InlineData("--object-id", "remove", "--object-id", "o", "--object-id", "o", "--role", "Nachos.Admin")]
+    [InlineData("--object-id", "list", "--object-id", "a", "--object-id", "b")]
+    public async Task RepeatedOption_Exit1_WithAUsageError_NotACrash(string option, params string[] args)
+    {
+        var run = await RunAsync(["grants", .. args, "--connection", Cs]);
+
+        // The parser's own error names the option; whether it says "expects a single argument" or the redacted form depends on
+        // whether a short value such as "a" occurs in that sentence, so only the option is checked.
+        ShouldBeUsageError(run, option);
+        run.Error.ShouldNotContain("Unhandled");
+        run.Error.ShouldNotContain("   at ");
+        run.Error.ShouldNotContain("Gr4ntSecret");
     }
 
     [Fact]

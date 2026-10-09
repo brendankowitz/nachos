@@ -125,9 +125,9 @@ internal static class SchemaCommands
         };
         command.Validators.Add(result =>
         {
-            if (result.GetValue(allowDataLoss) && !result.GetValue(approveReviewed))
+            if (UsageErrors.IsSet(result, allowDataLoss) && !UsageErrors.IsSet(result, approveReviewed))
             {
-                result.AddError("--allow-data-loss is only valid together with --approve-reviewed.");
+                UsageErrors.Add(result, UsageError.AllowDataLossNeedsReview);
             }
         });
         command.SetAction((parse, ct) => GuardAsync(parse, connection, deployer => UpgradeAsync(

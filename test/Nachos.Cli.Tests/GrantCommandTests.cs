@@ -51,12 +51,14 @@ public sealed class GrantCommandTests(SqlServerFixture fixture)
         await AddWorkspaceAsync(cs, "ws1");
         await AddWorkspaceAsync(cs, "ws2");
 
-        // Add: an admin grant, an all-workspaces grant, and workspace grants. Output is one JSON line.
+        // Add grants. The all-workspaces workspace grant of oid-b goes in before its admin grant, and both have no workspace, so only
+        // the role decides their order. Output is one JSON line.
         foreach (var args in new[]
                  {
-                     new[] { "--object-id", "oid-b", "--role", Admin },
+                     new[] { "--object-id", "oid-b", "--role", Workspace, "--workspace", "ws2" },
+                     ["--object-id", "oid-b", "--role", Workspace],
+                     ["--object-id", "oid-b", "--role", Admin],
                      ["--object-id", "oid-a", "--role", Workspace],
-                     ["--object-id", "oid-b", "--role", Workspace, "--workspace", "ws2"],
                      ["--object-id", "oid-b", "--role", Workspace, "--workspace", "ws1"],
                  })
         {
@@ -70,20 +72,25 @@ public sealed class GrantCommandTests(SqlServerFixture fixture)
         var again = await GrantsAsync(cs, "add", "--object-id", "oid-b", "--role", Workspace, "--workspace", "ws1");
         again.ExitCode.ShouldBe(0, again.Error);
 
-        // Sorted by object id, role, workspace (ordinal; no workspace first). Stable property order.
+        // Sorted by object id, then role, then workspace (ordinal; no workspace first), not by insertion. Stable property order.
         var all = await GrantsAsync(cs, "list");
         all.ExitCode.ShouldBe(0, all.Error);
         all.Out.ShouldBe(Rows(
             Row("oid-a", Workspace, null),
             Row("oid-b", Admin, null),
+            Row("oid-b", Workspace, null),
             Row("oid-b", Workspace, "ws1"),
             Row("oid-b", Workspace, "ws2")) + Environment.NewLine);
 
         var one = await GrantsAsync(cs, "list", "--object-id", "oid-b");
-        one.Out.ShouldBe(Rows(Row("oid-b", Admin, null), Row("oid-b", Workspace, "ws1"), Row("oid-b", Workspace, "ws2")) + Environment.NewLine);
+        one.Out.ShouldBe(Rows(
+            Row("oid-b", Admin, null),
+            Row("oid-b", Workspace, null),
+            Row("oid-b", Workspace, "ws1"),
+            Row("oid-b", Workspace, "ws2")) + Environment.NewLine);
 
         // The output is valid JSON with the documented shape, with an unknown object listing as an empty array.
-        JsonDocument.Parse(one.Out).RootElement.GetArrayLength().ShouldBe(3);
+        JsonDocument.Parse(one.Out).RootElement.GetArrayLength().ShouldBe(4);
         (await GrantsAsync(cs, "list", "--object-id", "nobody")).Out.ShouldBe($"[]{Environment.NewLine}");
 
         // Remove one grant, then again (a no-op), and one that never existed, including for a workspace that does not exist.
@@ -103,9 +110,9 @@ public sealed class GrantCommandTests(SqlServerFixture fixture)
         (await GrantsAsync(cs, "list")).Out.ShouldBe(Rows(
             Row("oid-a", Workspace, null),
             Row("oid-b", Admin, null),
+            Row("oid-b", Workspace, null),
             Row("oid-b", Workspace, "ws2")) + Environment.NewLine);
     }
-
     [Fact]
     public async Task AddToAMissingWorkspace_Exit1_NotFound()
     {

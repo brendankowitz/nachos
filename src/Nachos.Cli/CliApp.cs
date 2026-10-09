@@ -21,8 +21,27 @@ public static class CliApp
             KeyCommands.Create(),
         };
 
+        return await RunAsync(root, args, output, error, ct);
+    }
+
+    /// <summary>Runs <paramref name="root"/>; the public entry point passes the real command tree, a test may pass its own.</summary>
+    internal static async Task<int> RunAsync(RootCommand root, string[] args, TextWriter output, TextWriter error, CancellationToken ct)
+    {
         // A leading '@' is data here (a secret may start with one), not a response file whose path would be echoed when missing.
-        var parsed = root.Parse(args, new ParserConfiguration { ResponseFileTokenReplacer = null });
+        ParseResult parsed;
+        try
+        {
+            parsed = root.Parse(args, new ParserConfiguration { ResponseFileTokenReplacer = null });
+        }
+        catch (Exception)
+        {
+            // Validators run inside Parse. One that throws must not take the process down with a stack trace (which names build paths
+            // and may quote a value), so say only that the line was unusable. The exception text is deliberately not printed.
+            await error.WriteLineAsync("error: The command line could not be processed.");
+            await error.WriteLineAsync("Run with --help for usage.");
+            return ExitCodes.Error;
+        }
+
         if (parsed.Errors.Count > 0)
         {
             var userTokens = UserTokens(root, args, parsed);
