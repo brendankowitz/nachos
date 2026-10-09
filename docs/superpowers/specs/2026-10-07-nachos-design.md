@@ -79,6 +79,11 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
    - **Distributed artifacts** (NuGet packages, container images, CLI tools, the published docs site's assets, and any embedded third-party code) may use only: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, MS-PL, Unlicense, CC0-1.0, BlueOak-1.0.0, Zlib, PSF-2.0, or Python-2.0.
    - **Unmodified, non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0, through an explicitly reviewed, version-scoped exception recorded in `eng/license-exceptions.json` (package, version, license, purpose, reviewer). Example: `elkjs` used only by the docs Mermaid validator.
    - GPL, AGPL, LGPL, and SSPL are never allowed in either tier.
+   - **Owner-approved docs-tooling scope (2026-10-09, PR #6 comment 6084081762: "I don't think we need to worry about the libraries used for docs generation since we aren't 'distributing' them").** Build-time libraries used only to *generate* the docs site (for example Astro's optional Sharp/libvips image stack) are not distributed, so they are not blocked by this rule's license tiers, including the GPL/LGPL prohibition above. Conditions:
+     - they stay in the license inventory with their license evidence, for visibility; they are not hidden or reclassified;
+     - anything they **emit into the published site** (copied assets, fonts, icon sets, bundled scripts, generated images that embed third-party content) is a distributed artifact and stays fully gated;
+     - the scope is docs generation only; other development, build or CI dependencies keep the tiers above;
+     - the docs site still prefers no image optimizer (Astro `passthroughImageService()`), so Sharp/libvips are not executed.
    - **Owner-approved shipped-tier exception (2026-10-07):** `Microsoft.SqlServer.DacFx` (pinned version only, currently `170.4.83`) may ship in distributed artifacts (the API image and the CLI) under its **Microsoft Software License Terms, "Distributable Code"** section. It's required for the in-app dacpac schema deployment (§7.3). Conditions:
      - a version-scoped entry in `eng/license-exceptions.json` with `tier: "shipped"`, the license-text evidence path, and the owner approval reference;
      - its license terms reproduced or linked in `THIRD-PARTY-NOTICES.md`;
