@@ -182,11 +182,7 @@ public sealed class AddNachosClientTests
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // Backoff after the timeout also waits on the fake clock (at most 0.5 s with full jitter).
-        while (!call.IsCompleted)
-        {
-            time.Advance(TimeSpan.FromMilliseconds(100));
-            await Task.Delay(1);
-        }
+        await AdvanceUntilCompletedAsync(call, time);
 
         (await call).Id.ShouldBe("m1");
         attempts.ShouldBe(2);
@@ -482,21 +478,45 @@ public sealed class AddNachosClientTests
         using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<INachosClient>();
 
-        var busy = await Should.ThrowAsync<HttpRequestException>(() => client.CreateKeyAsync("w1"));
-        NachosExceptionData.TryGetRetryAfter(busy, out var delay).ShouldBeTrue();
-        delay.ShouldBe(TimeSpan.FromSeconds(40));
+        // Every call is bounded and cancelled on the way out: a resilience handler left in the chain would wait the
+        // 40 s out on the container's clock, and disposing the provider waits for its in-flight executions, so an
+        // unbounded or uncancelled call would hang the test instead of failing it.
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var busy = await Should.ThrowAsync<HttpRequestException>(
+                () => client.CreateKeyAsync("w1", ct: cts.Token).WaitAsync(TimeSpan.FromSeconds(10)),
+                "the key creation did not surface the 503 at once");
+            NachosExceptionData.TryGetRetryAfter(busy, out var delay).ShouldBeTrue();
+            delay.ShouldBe(TimeSpan.FromSeconds(40));
 
-        var call = client.GetMessageAsync("w1", "s1", "m1");
-        (await stalled.WaitAsync(TimeSpan.FromSeconds(10))).ShouldBeTrue();
-        time.Advance(TimeSpan.FromSeconds(5));
+            var call = client.GetMessageAsync("w1", "s1", "m1", cts.Token);
+            (await stalled.WaitAsync(TimeSpan.FromSeconds(10))).ShouldBeTrue();
+            time.Advance(TimeSpan.FromSeconds(5));
+            await AdvanceUntilCompletedAsync(call, time);
+
+            (await call).Id.ShouldBe("m1");
+            attempts.ShouldBe(2);
+        }
+        finally
+        {
+            await cts.CancelAsync();
+        }
+    }
+
+    /// <summary>
+    /// Advances the fake clock in small steps until <paramref name="call"/> completes, failing (not hanging) when it
+    /// has not within 10 s of real time: the attempt timeout, backoff or retry is then not running on this clock.
+    /// </summary>
+    private static async Task AdvanceUntilCompletedAsync(Task call, FakeTimeProvider time)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
         while (!call.IsCompleted)
         {
+            DateTime.UtcNow.ShouldBeLessThan(deadline, "the call did not complete on the container's clock");
             time.Advance(TimeSpan.FromMilliseconds(100));
             await Task.Delay(1);
         }
-
-        (await call).Id.ShouldBe("m1");
-        attempts.ShouldBe(2);
     }
 
     public static TheoryData<string> ResilienceHandlerTypeNames() => [.. TransportRedactionFilter.ResilienceHandlerTypeNames];
