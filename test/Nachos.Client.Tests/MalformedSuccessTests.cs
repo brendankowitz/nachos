@@ -260,6 +260,76 @@ public sealed class MalformedSuccessTests
         messages.ShouldAllBe(m => m != null && m.Metadata != null);
     }
 
+    /// <summary>A JWT-shaped canary, long enough that a 15-character piece of it is recognisable.</summary>
+    private const string Token = "eyJhbGciOiJQUzI1NiJ9.CANARY-DUPLICATE-PROPERTY-TOKEN-7e3a.sig";
+
+    private const string ApiKey = "nk-CANARY-DUPLICATE-PROPERTY-KEY-4c1f";
+
+    public static TheoryData<string, string> DuplicateSecretPropertyCases()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var auth in new[] { "credential", "api key" })
+        {
+            data.Add(auth, "top level");
+            data.Add(auth, "nested in metadata");
+            data.Add(auth, "nested in a page item's metadata");
+            data.Add(auth, "nested in a batch entry's metadata");
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// A 2xx body with a duplicate property whose name is the bearer value: the parser's own text would carry that name
+    /// ("Duplicate property 'eyJ…'"), raised where no transport sanitizing runs. The protocol error is still a
+    /// <see cref="JsonException"/>, with fixed text.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(DuplicateSecretPropertyCases))]
+    public async Task DuplicatePropertyNamedAfterTheBearer_ThrowsJsonException_WithFixedText(string auth, string placement)
+    {
+        var secret = auth == "credential" ? Token : ApiKey;
+        var duplicate = $$"""{"{{secret}}":1,"{{secret}}":2}""";
+        var (body, call) = placement switch
+        {
+            "top level" => (duplicate, (Func<INachosClient, Task>)(c => c.GetMessageAsync("w1", "s1", "m1"))),
+            "nested in metadata" => (MessageJson[..^1] + $$""","metadata":{{duplicate}}}""", c => c.GetMessageAsync("w1", "s1", "m1")),
+            "nested in a page item's metadata" => (
+                $$"""{"items":[{{MessageJson[..^1]}},"metadata":{{duplicate}}}],"total":1,"page":1,"size":50,"pages":1}""",
+                c => c.ListMessagesAsync("w1", "s1", null, new PageRequest())),
+            _ => ($"[{MessageJson[..^1]},\"metadata\":{duplicate}}}]", c => c.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")])),
+        };
+        var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.OK, body));
+        var options = new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/"), ApiKey = ApiKey };
+        if (auth == "credential")
+        {
+            options.Credential = new StaticCredential(Token);
+            options.Scopes = ["api://nachos/.default"];
+        }
+
+        var ex = await Should.ThrowAsync<JsonException>(() => call(new NachosHttpClient(new HttpClient(stub), options)));
+
+        stub.Requests.Single().Authorization.ShouldBe("Bearer " + secret);
+        ex.Message.ShouldBe(
+            "The response body is not valid JSON (malformed, a repeated property name, or nested past 80 levels). The parser's own description is withheld because it can repeat what the server sent.");
+        ex.InnerException.ShouldBeNull();
+        SecretScan.FindLeak(ex.ToString(), secret, window: 12).ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("""{"a":1,"a":2}""")]
+    [InlineData("""{"a":1""")]
+    [InlineData("not json")]
+    public void ParseError_HasFixedText_WithoutTheBodyOrAnInnerException(string body)
+    {
+        var ex = Should.Throw<JsonException>(() => WireJson.Parse(body));
+
+        ex.Message.ShouldBe(WireJson.InvalidBodyMessage);
+        ex.InnerException.ShouldBeNull();
+        ex.ToString().ShouldNotContain("'a'");
+        ex.ToString().ShouldNotContain("not json");
+    }
+
     private static async Task ShouldThrowJson(Func<INachosClient, Task> call, HttpStatusCode status, string body)
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(status, body));
@@ -271,4 +341,13 @@ public sealed class MalformedSuccessTests
 
     private static NachosHttpClient Client(StubHandler stub) =>
         new(new HttpClient(stub), new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/") });
+
+    private sealed class StaticCredential(string token) : Azure.Core.TokenCredential
+    {
+        public override Azure.Core.AccessToken GetToken(Azure.Core.TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            new(token, DateTimeOffset.UtcNow.AddHours(1));
+
+        public override ValueTask<Azure.Core.AccessToken> GetTokenAsync(Azure.Core.TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(GetToken(requestContext, cancellationToken));
+    }
 }
