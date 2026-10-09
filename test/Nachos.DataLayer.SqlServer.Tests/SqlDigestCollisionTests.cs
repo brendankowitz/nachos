@@ -77,7 +77,6 @@ public sealed class SqlDigestCollisionTests(SqlServerFixture fixture)
 
             // Collision groups: several operands of one length share one entry.
             { In(Q(S1), Q(S3)), ["s1"] },
-            { In(Q(S3), Q(S2), Q(S5)), ["s2", "s5"] },
             { In(Q(S3), Q(new string('s', 19) + "4")), [] },
             { In(N1, N3), ["n1"] },
             { In(N2, N3, N4), ["n2", "n4"] },

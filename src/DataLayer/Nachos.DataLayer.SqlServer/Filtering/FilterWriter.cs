@@ -785,9 +785,9 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// The operands' bytes are concatenated into one <c>varbinary(max)</c> parameter. Each operand is packed as
     /// <c>len:HEX:offset</c> (offset: <see cref="OffsetDigits"/> digits, 1-based, into those bytes) into sorted
     /// <c>varchar(8000)</c> chunks passed with their first and last entry, as in <see cref="PackedIn"/>. A row scans only
-    /// the chunk whose range holds its entry. Only when <c>CHARINDEX</c> finds the entry there, the offset beside it
-    /// selects the operand, and the row's bytes are compared with that operand's bytes: nested <c>CASE</c> guarantees the
-    /// order, so the exact comparison runs once per prefilter hit and never rescans the operands. Lengths are equal by then
+    /// the chunk whose range holds its entry, with one <c>CHARINDEX</c>. Only when it finds the entry there (otherwise its
+    /// position is NULL and so is everything derived from it), the offset beside it selects the operand, and the row's bytes
+    /// are compared with that operand's bytes: the exact comparison runs once per prefilter hit and never rescans the operands. Lengths are equal by then
     /// (the entry holds the length), so SQL's zero-padded <c>varbinary</c> comparison is exact. Operands sharing an entry
     /// (a digest collision; only forced ones in tests) cannot be told apart by position, so each such group is tested
     /// against all its members' bytes.
@@ -834,12 +834,12 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
             var low = Parameter(SqlDbType.VarChar, first, SqlParameters.Ascii);
             var high = Parameter(SqlDbType.VarChar, last!, SqlParameters.Ascii);
             var packed = Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii);
-            var offset = $"CAST(SUBSTRING({packed}, CHARINDEX({needle}, {packed}) + DATALENGTH({entry}) + 2, {OffsetDigits.ToString(CultureInfo.InvariantCulture)}) AS bigint)";
+            // One CHARINDEX: a miss is a NULL position, so the offset, the slice and the comparison are NULL (no match).
+            var offset = $"CAST(SUBSTRING({packed}, NULLIF(CHARINDEX({needle}, {packed}), 0) + DATALENGTH({entry}) + 2, {OffsetDigits.ToString(CultureInfo.InvariantCulture)}) AS bigint)";
             parts.Add(
                 $"(CASE WHEN {entry} >= {low} AND {entry} <= {high} THEN " +
-                $"CASE WHEN CHARINDEX({needle}, {packed}) > 0 THEN " +
                 $"CASE WHEN SUBSTRING({bytes}, {offset}, DATALENGTH({valueBytes})) = {valueBytes} THEN 1 ELSE 0 END " +
-                "ELSE 0 END ELSE 0 END = 1)");
+                "ELSE 0 END = 1)");
             chunk.Clear().Append('|');
             first = null;
         }
