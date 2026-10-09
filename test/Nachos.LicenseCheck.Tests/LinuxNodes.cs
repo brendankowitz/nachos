@@ -1,5 +1,5 @@
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 using Shouldly;
 
@@ -11,6 +11,7 @@ internal static class LinuxNodes
 {
     public const int Fifo = 0x1000, Character = 0x2000, Directory = 0x4000, Block = 0x6000, Regular = 0x8000, Socket = 0xc000;
     private const int WriteOnlyNonblocking = 0x1 | 0x800;
+    private const int DirectoryOnly = 0x10000 | 0x80000;
 
     public static void MakeFifo(string path) => Succeeded(CreateFifo(path, 0x180), "mkfifo", path);
 
@@ -18,19 +19,24 @@ internal static class LinuxNodes
         Succeeded(CreateNode(path, (uint)type | 0x180, (ulong)(major & 0xfff) << 8 | ((ulong)major & ~0xfffUL) << 32
             | (minor & 0xff) | ((ulong)minor & ~0xffUL) << 12), "mknod", path);
 
-    // sun_path is limited to 108 bytes, so bind under a short temporary directory and rename the node into place.
+    // sun_path holds 108 bytes and fixture paths are longer, so bind in place through the parent directory's
+    // /proc/self/fd link. A socket node is never moved: across filesystems File.Move copies, and opening a socket
+    // fails. Raw socket/bind/close keep the node once the descriptor closes (.NET's Socket unlinks it on dispose).
     public static void MakeSocket(string path)
     {
-        var shortDirectory = System.IO.Directory.CreateTempSubdirectory("nlc");
-        try
-        {
-            var bound = Path.Combine(shortDirectory.FullName, "s");
-            // .NET unlinks the bound path when the socket is disposed, so move the node first.
-            using var socket = new System.Net.Sockets.Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            socket.Bind(new UnixDomainSocketEndPoint(bound));
-            File.Move(bound, path);
-        }
-        finally { shortDirectory.Delete(recursive: true); }
+        var parent = Open(Path.GetDirectoryName(path)!, DirectoryOnly);
+        Succeeded(parent < 0 ? -1 : 0, "open", Path.GetDirectoryName(path)!);
+        using var directory = new SafeFileHandle(parent, ownsHandle: true);
+        var name = Encoding.UTF8.GetBytes($"/proc/self/fd/{parent}/{Path.GetFileName(path)}");
+        name.Length.ShouldBeLessThan(108, "sun_path is too long even through /proc/self/fd");
+        var address = new byte[2 + 108];
+        address[0] = 1; // sa_family AF_UNIX (host-order u16)
+        name.CopyTo(address, 2);
+        var descriptor = CreateSocket(1, 1, 0);
+        Succeeded(descriptor < 0 ? -1 : 0, "socket", path);
+        using var socket = new SafeFileHandle(descriptor, ownsHandle: true);
+        Succeeded(Bind(descriptor, address, address.Length), "bind", path);
+        Identity(path).Type.ShouldBe(Socket);
     }
 
     // A reader blocked in open() on a FIFO is released once a writer opens it; used only to clean up a hung mutant.
@@ -60,6 +66,14 @@ internal static class LinuxNodes
     [DllImport("libc", EntryPoint = "open", SetLastError = true, CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
     private static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "socket", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+    private static extern int CreateSocket(int domain, int type, int protocol);
+
+    [DllImport("libc", EntryPoint = "bind", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
+    private static extern int Bind(int descriptor, byte[] address, int length);
 
     [DllImport("libc", EntryPoint = "statx", SetLastError = true, CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.SafeDirectories)]
