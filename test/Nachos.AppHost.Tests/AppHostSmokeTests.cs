@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
+using Microsoft.Data.SqlClient;
 using Shouldly;
 
 namespace Nachos.AppHost.Tests;
@@ -16,12 +17,14 @@ public sealed class AppHostSmokeTests
 {
     private static readonly TimeSpan DatabaseTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromMinutes(2);
-    private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
+    // Covers the database wait, the API wait and the requests that follow, with margin.
+    private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(7);
 
     /// <summary>
-    /// The round trip runs against whichever provider the API selects. Until the API chooses SQL Server from the
-    /// <c>nachos</c> connection string, that is the in-memory provider, and the API's fail-closed auth gate is
-    /// switched off here (this test only, in Development) because the key-based authentication is not wired yet.
+    /// The API receives the <c>nachos</c> connection string from the AppHost, so it selects SQL Server: the first
+    /// readiness check deploys the schema (the AppHost enables automatic deployment in Development), and the workspace
+    /// written through the API is read back through the API and found in the database itself. The API's fail-closed
+    /// auth gate is switched off here (this test only, in Development) because the key-based authentication is not wired yet.
     /// The run is isolated from the developer's machine: it gets its own throwaway SQL data (the persistent volume
     /// the AppHost uses for <c>dotnet run</c> is dropped) and its own SA password (so nothing is written to user
     /// secrets and a volume left by an earlier run cannot reject the login).
@@ -52,8 +55,26 @@ public sealed class AppHostSmokeTests
         using var ready = await client.GetAsync("/health/ready", cts.Token);
         ready.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-        using var created = await client.PostAsJsonAsync("/v3/workspaces", new { id = $"smoke-{Guid.NewGuid():N}" }, cts.Token);
+        var id = $"smoke-{Guid.NewGuid():N}";
+        using var created = await client.PostAsJsonAsync("/v3/workspaces", new { id }, cts.Token);
         created.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // Read back through the API...
+        using var listed = await client.PostAsJsonAsync("/v3/workspaces/list", new { }, cts.Token);
+        listed.StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await listed.Content.ReadAsStringAsync(cts.Token)).ShouldContain($"\"{id}\"");
+
+        // ...and in the database, which also shows the schema was deployed and that the SQL provider served the request.
+        var connectionString = await app.GetConnectionStringAsync("nachos", cts.Token);
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cts.Token);
+        await using var command = new SqlCommand(
+            "SELECT (SELECT COUNT(*) FROM dbo.SchemaVersion), (SELECT COUNT(*) FROM dbo.Workspaces WHERE Name = @id)", connection);
+        command.Parameters.AddWithValue("@id", id);
+        await using var reader = await command.ExecuteReaderAsync(cts.Token);
+        (await reader.ReadAsync(cts.Token)).ShouldBeTrue();
+        reader.GetInt32(0).ShouldBe(1, "the schema version row of a deployed database");
+        reader.GetInt32(1).ShouldBe(1, "the workspace row written through the API");
     }
 
     private static async Task WaitHealthyAsync(DistributedApplication app, string resource, TimeSpan timeout, CancellationToken cancellationToken)

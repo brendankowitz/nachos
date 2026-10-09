@@ -3,12 +3,13 @@ using Nachos.Api.Endpoints;
 using Nachos.Api.Errors;
 using Nachos.Api.Health;
 using Nachos.Api.Json;
+using Nachos.Api.Providers;
 using Nachos.Core.Configuration;
 using Nachos.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
-builder.Services.AddNachos(nachos => nachos.UseInMemory());
+builder.Services.AddNachos(nachos => ProviderSelection.Use(nachos, builder.Configuration));
 builder.Services.Configure<NachosOptions>(builder.Configuration.GetSection("Nachos"));
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
