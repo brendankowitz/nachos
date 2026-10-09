@@ -73,7 +73,12 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
                 }
             }
 
-            foreach (var name in echoed ?? [])
+            if (echoed is null)
+            {
+                return;
+            }
+
+            foreach (var name in echoed)
             {
                 headers.Remove(name);
             }
