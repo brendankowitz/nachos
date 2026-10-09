@@ -56,8 +56,26 @@ public static class NachosClientServiceCollectionExtensions
     /// or let through (message, inner chain, string data), whatever the primary handler.
     /// </description></item>
     /// </list>
-    /// Not covered: what your own handlers log, and diagnostics emitted inside the primary handler before any of this
-    /// runs (for example HttpClient <c>DiagnosticSource</c> or activity exception events picked up by tracing).
+    /// The value is recognised as plain text (exact case) and as the hex of its bytes, dash-separated or contiguous, in
+    /// any case (how .NET dumps an invalid chunk extension); see <c>RedactionSecrets</c>. Not covered:
+    /// <list type="bullet">
+    /// <item><description>what your own handlers log;</description></item>
+    /// <item><description>
+    /// diagnostics emitted inside the primary handler before any of this runs (for example HttpClient
+    /// <c>DiagnosticSource</c> or activity exception events picked up by tracing);
+    /// </description></item>
+    /// <item><description>
+    /// a bare token echoed as a valid response header name (JWT characters are valid there, so the response parses and
+    /// the factory logs the header as <c>eyJ…sig: *</c>);
+    /// </description></item>
+    /// <item><description>
+    /// echoes in another encoding (percent-encoding, base64) or another letter case of the plain text, partial or
+    /// truncated echoes, and a value split across two lines: matching is by whole value;
+    /// </description></item>
+    /// <item><description>
+    /// non-string <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>) holding the value.
+    /// </description></item>
+    /// </list>
     /// </para>
     /// <para>
     /// Handlers added to every client by <c>ConfigureHttpClientDefaults</c>
