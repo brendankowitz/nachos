@@ -190,6 +190,36 @@ public sealed class SecretRedactionTests
         replaced.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.Unknown));
     }
 
+    [Theory]
+    [InlineData("invalid operation", typeof(InvalidOperationException))]
+    [InlineData("io", typeof(IOException))]
+    [InlineData("http", typeof(HttpRequestException))]
+    public void Replacement_RemembersTheTypeItReplaced(string kind, Type original)
+    {
+        Exception ex = kind switch
+        {
+            "invalid operation" => new InvalidOperationException("odd"),
+            "io" => new IOException("raw"),
+            _ => new HttpRequestException(HttpRequestError.InvalidResponse, "bad line"),
+        };
+
+        var replaced = SecretRedaction.Sanitize(ex, Secrets);
+
+        replaced.ShouldBeOfType<HttpRequestException>();
+        SecretRedaction.ReplacedType(replaced).ShouldBe(original);
+        SecretRedaction.ReplacedType(ex).ShouldBeNull();
+    }
+
+    [Fact]
+    public void KeptAndRebuiltFailures_AreNotReplacements()
+    {
+        var kept = new OperationCanceledException("canceled");
+        var rebuilt = SecretRedaction.Sanitize(new TimeoutException("slow " + Secret), Secrets);
+
+        SecretRedaction.ReplacedType(SecretRedaction.Sanitize(kept, Secrets)).ShouldBeNull();
+        SecretRedaction.ReplacedType(rebuilt).ShouldBeNull();
+    }
+
     [Fact]
     public void Replacement_KeepsOnlyLibraryData()
     {

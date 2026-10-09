@@ -337,6 +337,54 @@ public sealed class TransportRedactionTests
         SecretScan.FindLeak(logs.TextOf(".ClientHandler"), secret, window: 20).ShouldNotBeNull("the ClientHandler log is below the retry handler and is not covered here");
     }
 
+    public static TheoryData<string, bool, int> ClassificationCases() => new()
+    {
+        { "invalid operation", false, 1 },
+        { "invalid operation", true, 1 },
+        { "authentication", false, 1 },
+        { "authentication", true, 1 },
+        { "http invalid response", false, RetryHandler.MaxAttempts },
+        { "http invalid response", true, RetryHandler.MaxAttempts },
+        { "io", false, RetryHandler.MaxAttempts },
+        { "io", true, RetryHandler.MaxAttempts },
+    };
+
+    /// <summary>
+    /// The wrapper replaces a non-transport failure (a handler's <see cref="InvalidOperationException"/>, say) by an
+    /// <see cref="HttpRequestException"/> with fixed text, which the retry handler would otherwise take for a transient
+    /// failure and resend. The retry classification follows the original type: the same number of primary calls with
+    /// and without the wrapper, and the caller still gets fixed text.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ClassificationCases))]
+    public async Task ReplacedFailure_KeepsTheOriginalRetryClassification_WithAndWithoutTheWrapper(string kind, bool wrapped, int expectedAttempts)
+    {
+        var attempts = 0;
+        var stub = new StubHandler((request, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            throw kind switch
+            {
+                "invalid operation" => new InvalidOperationException($"a bug below the retry handler saw '{request.Authorization}'"),
+                "authentication" => new System.Security.Authentication.AuthenticationException($"handshake failed for '{request.Authorization}'"),
+                "http invalid response" => new HttpRequestException(HttpRequestError.InvalidResponse, $"bad line '{request.Authorization}'"),
+                _ => new IOException($"reset '{request.Authorization}'"),
+            };
+        });
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
+            .ConfigurePrimaryHttpMessageHandler(() => wrapped ? new TransportRedactionHandler { InnerHandler = stub } : stub);
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        attempts.ShouldBe(expectedAttempts);
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(kind == "http invalid response" ? HttpRequestError.InvalidResponse : HttpRequestError.Unknown));
+        ex.InnerException.ShouldBeNull();
+        AssertNoSecret(ex, "api key");
+    }
+
     [Fact]
     public async Task CallerCancellation_WithAnEchoingTransportError_IsSanitizedToo()
     {

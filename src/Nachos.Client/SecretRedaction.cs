@@ -41,9 +41,10 @@ namespace Nachos.Client;
 /// <see cref="IOException"/>s, an <see cref="HttpRequestException"/> with any other error, <see cref="FormatException"/>,
 /// …). It becomes an <see cref="HttpRequestException"/> with the <see cref="HttpRequestError"/> and status of the first
 /// <see cref="HttpRequestException"/> or <see cref="HttpIOException"/> in its chain, only the <c>Nachos.</c> entries of
-/// its <see cref="Exception.Data"/>, no inner exception, and the fixed text of <see cref="CannedMessage"/>. A
-/// cancellation, timeout or aggregate wrapped around such a chain keeps its own type, token and (redacted) message, and
-/// gets the replaced chain as its inner exception.
+/// its <see cref="Exception.Data"/>, no inner exception, and the fixed text of <see cref="CannedMessage"/>. The type it
+/// replaced stays readable through <see cref="ReplacedType"/>, so a replacement is never treated as more transient
+/// than the original. A cancellation, timeout or aggregate wrapped around such a chain keeps its own type, token and
+/// (redacted) message, and gets the replaced chain as its inner exception.
 /// </para>
 /// </remarks>
 internal static class SecretRedaction
@@ -55,6 +56,8 @@ internal static class SecretRedaction
 
     private static readonly ConditionalWeakTable<Exception, object> Sanitized = [];
 
+    private static readonly ConditionalWeakTable<Exception, Type> ReplacedTypes = [];
+
     /// <summary>Records that <paramref name="exception"/> was built from sanitized parts; returns it.</summary>
     public static TException MarkSanitized<TException>(TException exception)
         where TException : Exception
@@ -62,6 +65,14 @@ internal static class SecretRedaction
         Sanitized.AddOrUpdate(exception, Sanitized);
         return exception;
     }
+
+    /// <summary>
+    /// The type of the failure that <paramref name="exception"/> replaced (see the type remarks), or null when it is
+    /// not a replacement. A replacement is an <see cref="HttpRequestException"/> whatever it stood for, so a decision
+    /// made by type, such as <see cref="RetryHandler"/>'s retry classification, uses the original type instead:
+    /// sanitizing a failure must not make it retryable when the original was not.
+    /// </summary>
+    public static Type? ReplacedType(Exception exception) => ReplacedTypes.TryGetValue(exception, out var type) ? type : null;
 
     /// <summary>
     /// The exception to surface in place of <paramref name="exception"/>: the same instance when it may be shown as it
@@ -145,6 +156,7 @@ internal static class SecretRedaction
     {
         var (error, status) = Classify(exception);
         var replacement = Replace(error, status);
+        ReplacedTypes.AddOrUpdate(replacement, exception.GetType());
         foreach (DictionaryEntry entry in exception.Data)
         {
             if (IsLibraryKey(entry.Key))

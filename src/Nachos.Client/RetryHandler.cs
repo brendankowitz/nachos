@@ -92,7 +92,10 @@ namespace Nachos.Client;
 /// <b>Failure text.</b> Every exception that leaves this handler goes through <see cref="SecretRedaction.Sanitize"/>:
 /// known-safe connection failures, timeouts and cancellations are kept (with the request's bearer value redacted from
 /// them, and a connection failure's text rebuilt without the target host and port), anything that can carry server
-/// bytes is replaced by fixed text naming its <see cref="HttpRequestError"/>.
+/// bytes is replaced by fixed text naming its <see cref="HttpRequestError"/>. A failure already replaced below this
+/// handler (by the primary-handler wrapper of <c>AddNachosClient</c>) is retried only if its original type would have
+/// been: the replacement is an <see cref="HttpRequestException"/>, but a replaced <see cref="InvalidOperationException"/>
+/// from a handler is still sent once.
 /// </para>
 /// <para>
 /// <see cref="HttpClient.Timeout"/> (100 s unless changed) bounds the whole call, retries and backoff included, and
@@ -354,11 +357,19 @@ public sealed class RetryHandler : DelegatingHandler
     // raised below it, surfaces as OperationCanceledException while the caller's token is still live. HttpClient.Timeout
     // is different: it covers the whole call including every retry, cancels the token this handler receives, and so is
     // never retried. A configured limit (such as the response buffer cap) fails the same way on every attempt, so it
-    // never retries.
+    // never retries. A failure the primary-handler wrapper replaced by fixed text is classified by the type it replaced
+    // (an InvalidOperationException from a handler is a bug, not a transient failure), so the wrapper never changes
+    // what is retried.
     private static bool IsTransient(Exception ex, CancellationToken callerToken) =>
         !callerToken.IsCancellationRequested &&
         ex is not HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded } &&
-        ex is HttpRequestException or IOException or TimeoutException or OperationCanceledException;
+        IsTransientType(SecretRedaction.ReplacedType(ex) ?? ex.GetType());
+
+    private static bool IsTransientType(Type type) =>
+        type.IsAssignableTo(typeof(HttpRequestException)) ||
+        type.IsAssignableTo(typeof(IOException)) ||
+        type.IsAssignableTo(typeof(TimeoutException)) ||
+        type.IsAssignableTo(typeof(OperationCanceledException));
 
     // Spec §16: 408, 429 and 5xx other than 501. Every other status (2xx, 3xx, the rest of 4xx, 501) is final.
     private static bool IsRetryableStatus(HttpStatusCode status) =>
