@@ -85,7 +85,8 @@ internal static class Artifacts
         {
             var relative = Collectors.Relative(root, file);
             Collectors.Under(root, relative);
-            if (DacFxApproval.IsSourceNotice(inputs.Root, relative, fingerprints[file]))
+            if (DacFxApproval.IsSourceNotice(inputs.Root, relative, fingerprints[file])
+                || MicrosoftPrimaryApproval.IsSourceNotice(inputs.Root, relative, fingerprints[file]))
             {
                 sourceNotices.Add(file);
                 continue;

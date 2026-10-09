@@ -15,6 +15,10 @@ public sealed class NoticeTests
         ("THIRD-PARTY-NOTICES.md", "THIRD-PARTY-NOTICES.md"),
         (Path.Combine("eng", "licenses", "Microsoft.SqlServer.DacFx", "170.4.83", "license.txt"),
             Path.Combine("eng", "licenses", "Microsoft.SqlServer.DacFx", "170.4.83", "license.txt")),
+        (Path.Combine("eng", "licenses", "Microsoft.Data.SqlClient.SNI.runtime", "6.0.3", "LICENSE.txt"),
+            Path.Combine("eng", "licenses", "Microsoft.Data.SqlClient.SNI.runtime", "6.0.3", "LICENSE.txt")),
+        (Path.Combine("eng", "licenses", "Microsoft.SqlServer.Types", "170.1000.7", "license.md"),
+            Path.Combine("eng", "licenses", "Microsoft.SqlServer.Types", "170.1000.7", "license.md")),
     ];
 
     // Where the license used to be published, which no consumer of the contract looks at.

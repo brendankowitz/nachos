@@ -78,8 +78,8 @@ errors are explicit in `license-report.json` and stderr.
   flags, or assume another workflow's filesystem exists.
 
 The allowlist is spec §3. EPL/MPL require an exact reviewed tooling exception;
-a tooling-excepted package found in **any** emitted artifact fails. The one
-owner-authorized shipped exception below is separate. GPL/AGPL/LGPL/SSPL
+a tooling-excepted package found in **any** emitted artifact fails. The exact
+owner-authorized Microsoft-primary shipped records below are separate. GPL/AGPL/LGPL/SSPL
 in metadata or license text fail before any override or SPDX choice is applied.
 License text recognition consumes **complete normalized canonical documents**,
 not identifying fragments, titles, SPDX tags or URLs. Templates and full offline
@@ -95,7 +95,7 @@ templates therefore require genuine reviewed exact-version evidence.
 Truncation, modified grants and unexplained appended terms fail closed.
 Supplemental notices do not establish a package's primary license, and a
 missing explicitly declared license file cannot be replaced by an unrelated
-MIT file. Vendor software-license terms and unknown separately delimited
+MIT file. Unapproved vendor software-license terms and unknown separately delimited
 licensing sections remain disallowed evidence even when the same document
 also contains a permissive third-party notice. A wrapper or repository's MIT
 license does not relicense its dependencies or copied binaries.
@@ -107,10 +107,16 @@ For example, the published [DacFx 170.5.96 license file](https://www.nuget.org/p
 contains Microsoft SQL Server Data-Tier Application Framework software-license
 terms, not MIT. Microsoft.Build.Sql's wrapper license is not evidence that
 these terms are permissive. Its future exact dependency and publish inventory
-must be audited separately when that producer lands; no exception is implied.
+must be audited separately when that producer lands; no exact technical admission
+is implied by the owner policy.
 The owner [approved the scoped DacFx `170.4.83` shipped API/CLI exception](https://github.com/brendankowitz/nachos/issues/2#issuecomment-6048060868).
 The checker implements that exact engineering-policy exception, **not** a general
 proprietary permission or a finding of redistribution compliance.
+The owner's [later Microsoft-library policy acceptance](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6083936795)
+also accepts Microsoft primary library terms as engineering policy. It does not
+waive origin, identity, complete text, third-party obligations, required copies,
+or publisher governing terms. New Microsoft libraries need technical review of
+those facts, not another blanket policy question.
 
 SPDX `AND`, `OR` and parentheses are parsed strictly (`WITH` is unsupported and
 fails). Every selected AND obligation must qualify; OR requires a recorded
@@ -125,10 +131,12 @@ prohibited licenses. **The checker never writes reviews or exceptions.**
 
 `eng/license-exceptions.json` records the authoritative owner approval with
 `tier: "shipped"`, mapped explicitly to the audit's `distributed` classification.
-The shipped-record validator admits only NuGet `Microsoft.SqlServer.DacFx`
+The `approvalType: "dacfx"` validator admits only NuGet `Microsoft.SqlServer.DacFx`
 `170.4.83`, the recorded owner reference, the fixed primary-license fingerprint
 and API/CLI artifact scopes. `repository-owner` identifies the role in that
 approval reference; it is not an invented source-review author.
+The historical record without `approvalType` remains compatible only through
+this same exact DacFx validator; it is not a catch-all shipped approval.
 The corresponding amended spec is recorded at commit
 `b8f04881b8137cf87acb95c347a0d2a1dd487cce`.
 
@@ -154,29 +162,187 @@ source-backed files at these relative paths:
 | `THIRD-PARTY-NOTICES.md` | `THIRD-PARTY-NOTICES.md` |
 | `eng/licenses/Microsoft.SqlServer.DacFx/170.4.83/license.txt` | `eng/licenses/Microsoft.SqlServer.DacFx/170.4.83/license.txt` |
 
-The API project now copies both to build and publish output. **CLI handoff to
-Cortado:** add the same two content items in `src/Nachos.Cli/Nachos.Cli.csproj`,
-using `..\..\` source prefixes, the destinations above as `Link`/target paths,
-`CopyToOutputDirectory="PreserveNewest"` and
-`CopyToPublishDirectory="Always"`. The CLI project is not changed in this
-delivery. CLI package and API image producers must preserve that layout and
+API/CLI producer owners must retain the same two content items, using `..\..\`
+source prefixes, the destinations above as `Link`/target paths,
+`CopyToOutputDirectory="PreserveNewest"` and `CopyToPublishDirectory="Always"`.
+This policy delivery changes neither project; it does not reassert the older
+capture's CLI path defect as a current project defect. CLI package and API image
+producers must preserve that layout and
 verify their own final contents; a publish-directory check is not image or
 tool-package verification.
 
-Missing or changed copies fail. Only these two proved source paths receive
+Missing or changed copies fail. For DacFx, only these two proved source paths receive
 notice provenance; there is no general Markdown/text whitelist. The license
 fingerprint is byte-exact. The root notice's reviewed engineering copy-contract
 fingerprint permits only Markdown line-ending normalization; published bytes
 must still equal their source bytes. Notice-content changes require an
 intentional update to `DacFxApproval.NoticeHash` and review of the contract.
 Copied notice documents alone do not establish that DacFx binaries shipped.
+The coordinated notice integration adds the exact SNI/Types entries below to
+the root notice while retaining the DacFx conditions. Its normalized SHA-256
+copy-contract pin is now
+`d727a48b88eba908f2f52b0809277e3f55d27bb322641fb8dfb779b6b9034a04`.
+This changes only the reviewed root-notice content fingerprint, not the
+DacFx vendor license fingerprint or validator behavior. The root notice now
+links all three primary documents but remains an incomplete dependency inventory.
+The current SNI heading and links name 6.0.3; the complete SNI issuer terms,
+DacFx conditions and Types release qualification are unchanged.
 
 `THIRD-PARTY-NOTICES.md` includes the section 3(b)(ii) protective downstream
 agreement and 3(b)(iii) indemnification conditions. Required downstream terms,
 assent, indemnification and other redistribution obligations remain an explicit
 owner release gate. Neither file copying nor an audit records EULA acceptance
-or certifies legal compliance. The current API is still a skeleton: no integrated
-DacFx deployment, container distribution, or complete notice inventory is claimed.
+or certifies legal compliance. No integrated DacFx release assent, container
+distribution, or complete notice inventory is
+established by this policy check.
+
+## Microsoft primary library engineering policy
+
+The retained REST evidence in
+`eng/licenses/microsoft-library-policy/owner-ms-license-6083936795.json` binds the
+actual untagged instruction by `brendankowitz`, dated `2026-10-09T15:26:15Z`:
+“I'm ok accepting any of the Ms library licenses, no issues there”.
+Its full SHA-256 is
+`7a843523fecd8769a984ed13ca94f6daa891e90c5dda873da504bb9694736753`.
+`reviewers: ["brendankowitz"]` identifies that actual policy decision, **not**
+an independent technical review. Independent review of this implementation remains
+pending. No source-reviewer names or publisher permissions are invented.
+
+`approvalType: "microsoft-primary"` admits these current reviewed NuGet identities:
+
+| Package | Exact version | Primary entry | Reported license |
+| --- | --- | --- | --- |
+| Microsoft.Data.SqlClient.SNI.runtime | 6.0.3 | `LICENSE.txt` | `LicenseRef-Microsoft-SqlClient-SNI-6.0.3` |
+| Microsoft.SqlServer.Types | 170.1000.7 | `license.md` | `LicenseRef-Microsoft-SQL-Server-Types-170.1000.7` |
+
+Historical SNI 6.0.2 retains its own unchanged exact record, descriptor,
+documentary evidence and regression cases. It is not asserted to be the current
+runtime. Its primary license bytes equal 6.0.3, but its archive and nuspec do
+not: neither record authorizes the other version. Current 6.0.3 evidence binds
+the official archive SHA-256
+`b9df07c20101398f77cf16b209afefafcc7190d6ac0b6e244e81a2fed4c96f5f`
+and nuspec SHA-256
+`d5384233109efc8ca42e51d7e1f7f3d35d47eb5a878843e3002c77550babcd82`.
+The parent retrieved that official exact-version archive and verified equality
+with the restored artifact; the supplied bytes were rechecked in this stage.
+This is technical origin evidence under the existing owner decision, not a
+new publisher-signature verification or grant of rights.
+
+The exception records pin the source/entry path, complete raw primary SHA-256,
+reviewed nuspec path/SHA-256, **entire archive SHA-256**, actual owner reference
+and retained owner-evidence SHA-256. Adjacent `provenance.json` files explain the
+captured Microsoft-origin evidence and its limits. The fixed archive pin is
+checked on the same stream used to read the nuspec and primary entry. Altered
+payloads/repacking, metadata or duplicate/changed license entries cannot reuse an
+approval. Source license/nuspec/owner bytes use `-text` attributes; no license
+newline normalization is allowed. URLs are provenance, not audit-time downloads.
+This is not a new publisher-signature verification.
+
+There is no `Microsoft.*` or authors-string bypass. Missing/ambiguous primary
+text, another publisher/version, unknown approval type, an altered owner
+reference, scope or fingerprint fails closed. A primary admission changes only
+that primary document's identity to its explicit `LicenseRef`, never MIT.
+Generic overrides cannot be combined with it. Supplementary GPL/AGPL/LGPL/SSPL,
+unknown components, metadata AND obligations and OR selections retain their
+ordinary checks. Other Microsoft packages with MIT metadata but no primary text
+do not become accepted. This is separate from complete-document normalization.
+
+The initial records retain the shipped API/CLI boundary: actual distribution
+must be proved, and docs/tooling scope is not authorized by these records.
+Every containing API/CLI artifact must include the exact source-backed file:
+
+| Repository source and publish-relative destination | SHA-256 |
+| --- | --- |
+| `eng/licenses/Microsoft.Data.SqlClient.SNI.runtime/6.0.3/LICENSE.txt` | `9335e8bad875dd7be4eebd55d2335eb6433d1cea61aadb3817af7807bef8932a` |
+| `eng/licenses/Microsoft.SqlServer.Types/170.1000.7/license.md` | `e4b4088d14de78a57d485d0bc53f3250f3e1d2376993ddb2c5b165eca3d59d40` |
+
+**Current copy integration:** API and CLI target SNI 6.0.3 and Types 170.1000.7 with
+`..\..\` source prefixes, exact `Link` paths, `CopyToOutputDirectory="PreserveNewest"`
+and `CopyToPublishDirectory="Always"`. There are no `Exists` conditions.
+The [specific CLI partner amendment](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6086048102)
+authorizes replacing only the SNI source/link and existing notice tuple with
+6.0.3. All original DacFx/root-notice/old-path assertions and the actual publish
+harness remain intact; the Types item is unchanged. Evidence source files must
+land **before or in the same push** as consuming links, never afterward.
+
+Final image/tool-package producers must preserve this layout and verify bytes
+there separately; local publish directories are not that evidence. Notice-only
+copies never establish that package binaries shipped. Wrong/missing copies
+still fail even when policy is accepted. DacFx's primary fingerprint and
+two-copy behavior are unchanged; only its root-notice content pin was updated
+for the new linked entries. The SNI/Types license copies are additional, not
+replacements. No dependency/CPM/lock or CLI runtime change is part of this work.
+
+The actual API and CLI graphs resolve SqlClient 6.1.7 -> **SNI.runtime 6.0.3**.
+Its exact record/evidence and the authorized API/CLI item/tuple targets are now
+present. A copied historical 6.0.2 document does not satisfy the 6.0.3 path contract,
+despite identical primary bytes. Inspect actual API and CLI publishes
+independently. Types and DacFx release qualifications remain unchanged, and
+neither matching identities nor correct copies establish release clearance.
+
+**Governing terms remain release gates.** SNI's Microsoft Software License Terms
+retain their separate Distributable Code conditions, downstream agreements,
+indemnification, data duties and supplier notices. Types retains the full
+**MICROSOFT PRE-RELEASE SOFTWARE LICENSE TERMS / MICROSOFT SQL SERVER VNEXT
+COMMUNITY PREVIEW**, internal-evaluation restrictions and **TERM 09/30/2022**.
+Its `governingTerms: "unresolved-pre-release-2022"` qualification is required and
+reported in decision evidence. Owner engineering acceptance does **not**
+establish production/redistribution rights, supersede that document, resolve a
+possible publisher packaging mistake, or record EULA assent. Resolve governing
+terms before release; a passing fixture/audit is not that resolution.
+
+The original public064 + held48 captured graph used SqlClient 6.1.5 for SNI and
+DacFx 170.4.83 for Types. A later SqlClient 6.1.7 pin does not by itself prove
+the current resolved SNI version. Technical identity/notice checks use the
+supplied actual inventory; this policy delivery is not a fresh current71 audit.
+The frozen report's 4 accepted instances, 958 findings (920 evidence findings)
+remain unchanged. Sharp/libvips, DOMPurify choices, Unicode, missing evidence and
+other non-Microsoft gates are not waived.
+
+### Offline policy regression fixtures
+
+`MicrosoftPrimaryApprovalTests` uses three genuine nupkgs, not fabricated
+Microsoft metadata. Ordinary restore provisions them through exact-version
+`PackageDownload` items in the license-check test project: `[6.0.2];[6.0.3]` for
+`Microsoft.Data.SqlClient.SNI.runtime` and `[170.1000.7]` for
+`Microsoft.SqlServer.Types`. These are **test data downloads**, not
+`PackageReference` dependencies; their assemblies, native binaries and build
+targets are not used for compilation or runtime, and their dependency graphs
+are not added to the test or product graphs.
+
+Build copies the three restored cache archives and the already checked-in
+`eng/licenses/microsoft-library-policy/owner-ms-license-6083936795.json` into
+`MicrosoftPrimaryEvidence` beside the test assembly. No private session files,
+second owner copy, environment variable or test-time networking is required.
+Tests verify the pinned complete archive and owner SHA-256 values; missing or
+changed fixtures fail explicitly, never skip or fall back to other evidence.
+The content items are excluded from pack and publish, and the test project
+retains its existing `IsPackable=false`.
+
+Normal developer and CI entry points use their configured NuGet sources
+(normally nuget.org) during restore. For deterministic offline validation, use
+an explicitly configured local feed containing the exact existing packages;
+do not substitute same-name archives or disable fingerprint checks. An empty
+cache needs that configured source, not a prepopulated private fixture folder.
+Run from the source checkout (the repository-record and restore-graph tests
+also consume checked-in/generated evidence relative to ordinary test output):
+
+```powershell
+dotnet restore test\Nachos.LicenseCheck.Tests
+dotnet build test\Nachos.LicenseCheck.Tests -c Release --no-restore `
+  -p:TreatWarningsAsErrors=true -p:UseSharedCompilation=false -nr:false
+dotnet test test\Nachos.LicenseCheck.Tests -c Release --no-restore `
+  --no-build -p:TreatWarningsAsErrors=true -p:UseSharedCompilation=false -nr:false
+```
+
+`dotnet test test\Nachos.LicenseCheck.Tests -c Release` also performs the normal
+implicit restore and build. Existing CI test entry points need no separate
+fixture provisioning step. As usual, `--no-restore` requires a successful
+restore and `--no-build` requires a matching successful build.
+
+The fixture archives are not committed or made product dependencies. Restoring
+them as test data does not grant distribution rights, resolve Types' governing
+terms, wire API/CLI notices, or establish a green real-artifact audit.
 
 ## npm archive evidence and provisioning
 

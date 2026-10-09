@@ -25,5 +25,7 @@
   <ItemGroup>
     <Content Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <Content Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="..\..\eng\licenses\Microsoft.Data.SqlClient.SNI.runtime\6.0.3\LICENSE.txt" Link="eng\licenses\Microsoft.Data.SqlClient.SNI.runtime\6.0.3\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="..\..\eng\licenses\Microsoft.SqlServer.Types\170.1000.7\license.md" Link="eng\licenses\Microsoft.SqlServer.Types\170.1000.7\license.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 </Project>

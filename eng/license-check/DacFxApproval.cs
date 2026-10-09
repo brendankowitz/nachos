@@ -14,7 +14,7 @@ internal static class DacFxApproval
     public const string LicensePath = "eng/licenses/Microsoft.SqlServer.DacFx/170.4.83/license.txt";
     public const string LicenseHash = "f6b3be3e53b8b6836b9c08fee9e9fb24e698df2ab2a7e4afd1f77ebf10c22a83";
     private const string NoticePath = "THIRD-PARTY-NOTICES.md";
-    private const string NoticeHash = "132bbb5399eea73846368766085306e39555eb778896e05df12ed530b6b09f7c";
+    private const string NoticeHash = "d727a48b88eba908f2f52b0809277e3f55d27bb322641fb8dfb779b6b9034a04";
 
     public static void ValidateRecord(Reviews record)
     {

@@ -1,5 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageDownload Include="Microsoft.Data.SqlClient.SNI.runtime" Version="[6.0.2];[6.0.3]" />
+    <PackageDownload Include="Microsoft.SqlServer.Types" Version="[170.1000.7]" />
+    <None Include="$(NuGetPackageRoot)\microsoft.data.sqlclient.sni.runtime\6.0.2\microsoft.data.sqlclient.sni.runtime.6.0.2.nupkg"
+          Link="MicrosoftPrimaryEvidence\microsoft.data.sqlclient.sni.runtime.6.0.2.nupkg"
+          CopyToOutputDirectory="Always" CopyToPublishDirectory="Never" Pack="false" />
+    <None Include="$(NuGetPackageRoot)\microsoft.data.sqlclient.sni.runtime\6.0.3\microsoft.data.sqlclient.sni.runtime.6.0.3.nupkg"
+          Link="MicrosoftPrimaryEvidence\microsoft.data.sqlclient.sni.runtime.6.0.3.nupkg"
+          CopyToOutputDirectory="Always" CopyToPublishDirectory="Never" Pack="false" />
+    <None Include="$(NuGetPackageRoot)\microsoft.sqlserver.types\170.1000.7\microsoft.sqlserver.types.170.1000.7.nupkg"
+          Link="MicrosoftPrimaryEvidence\microsoft.sqlserver.types.170.1000.7.nupkg"
+          CopyToOutputDirectory="Always" CopyToPublishDirectory="Never" Pack="false" />
+    <None Include="..\..\eng\licenses\microsoft-library-policy\owner-ms-license-6083936795.json"
+          Link="MicrosoftPrimaryEvidence\owner-ms-license-6083936795.json"
+          CopyToOutputDirectory="Always" CopyToPublishDirectory="Never" Pack="false" />
     <None Include="Fixtures\complete-licenses.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="DacFxEvidence\license.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="DacFxEvidence\THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />

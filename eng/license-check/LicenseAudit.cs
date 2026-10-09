@@ -55,15 +55,27 @@ public static class LicenseAudit
         {
             throw new InvalidDataException("prohibited GPL/AGPL/LGPL/SSPL license in metadata or observed text; overrides cannot relabel it.");
         }
-        var approvedDacFx = exception?.Tier == "shipped";
-        if (approvedDacFx)
+        string? approvedPrimary = null;
+        string[] approvalEvidence = [];
+        if (exception?.Tier == "shipped")
         {
             if (review is not null)
             {
-                throw new InvalidDataException("The exact shipped DacFx approval cannot be combined with a generic license-evidence override.");
+                throw new InvalidDataException("An exact shipped primary approval cannot be combined with a generic license-evidence override.");
             }
-            var primary = DacFxApproval.Authorize(inputs, package, scopes);
-            texts[primary] = (new HashSet<string>([DacFxApproval.License], StringComparer.Ordinal), false);
+            int primary;
+            if (exception.ApprovalType == MicrosoftPrimaryApproval.Type)
+            {
+                (primary, approvedPrimary, approvalEvidence) = MicrosoftPrimaryApproval.Authorize(inputs, package, scopes);
+            }
+            else
+            {
+                primary = DacFxApproval.Authorize(inputs, package, scopes);
+                approvedPrimary = DacFxApproval.License;
+                approvalEvidence = [DacFxApproval.LicensePath, "sha256:" + DacFxApproval.LicenseHash,
+                    DacFxApproval.LicenseUrl, DacFxApproval.OwnerApproval];
+            }
+            texts[primary] = (new HashSet<string>([approvedPrimary], StringComparer.Ordinal), false);
         }
         var observed = texts.Where((_, index) => package.Texts[index].IsPrimary && !LicenseText.IsNoticeDocument(package.Texts[index].Text))
             .SelectMany(text => text.Licenses).ToHashSet(StringComparer.Ordinal);
@@ -150,7 +162,7 @@ public static class LicenseAudit
         selected.UnionWith(supplemental);
         foreach (var license in selected)
         {
-            if (approvedDacFx && license == DacFxApproval.License)
+            if (license == approvedPrimary)
             {
                 continue;
             }
@@ -185,10 +197,7 @@ public static class LicenseAudit
         {
             evidence.Add(review.EvidenceUrl!);
         }
-        if (approvedDacFx)
-        {
-            evidence.AddRange([DacFxApproval.LicensePath, "sha256:" + DacFxApproval.LicenseHash, DacFxApproval.LicenseUrl, DacFxApproval.OwnerApproval]);
-        }
+        evidence.AddRange(approvalEvidence);
         return new PackageDecision(package.Ecosystem, package.Name, package.Version, distributed ? "distributed" : "tooling",
             string.Join(" AND ", selected.Order(StringComparer.Ordinal)), evidence);
     }
@@ -205,7 +214,10 @@ internal sealed record PackageEvidence(string Ecosystem, string Name, string Ver
 
 internal sealed record Reviews(string Ecosystem, string Package, string Version, string License, string[] Reviewers,
     string Review, string? EvidenceUrl, string? SelectedLicense, string? Purpose, string? Restriction, string? LicenseEvidence,
-    string? Tier = null, string? OwnerApproval = null, string[]? ArtifactScopes = null, string? LicenseSha256 = null)
+    string? Tier = null, string? OwnerApproval = null, string[]? ArtifactScopes = null, string? LicenseSha256 = null,
+    string? ApprovalType = null, string? LicenseEntry = null, string? ArchiveSha256 = null,
+    string? OriginEvidence = null, string? OriginSha256 = null, string? OwnerEvidence = null,
+    string? OwnerEvidenceSha256 = null, string? GoverningTerms = null)
 {
     public bool Matches(PackageEvidence package) => PackageEvidence.Identity(Ecosystem, Package, Version) == package.Key;
 
@@ -229,13 +241,26 @@ internal sealed record Reviews(string Ecosystem, string Package, string Version,
             {
                 throw new InvalidDataException($"Invalid, unreviewed, or duplicate exact-version review: {path}");
             }
+            if (record.ApprovalType is not (null or "dacfx" or MicrosoftPrimaryApproval.Type)
+                || (record.ApprovalType is not null && record.Tier != "shipped"))
+            {
+                throw new InvalidDataException("Unknown approval type or approval type used outside its shipped tier.");
+            }
             if (record.Tier == "shipped")
             {
                 if (!required)
                 {
                     throw new InvalidDataException("Shipped approval belongs in license-exceptions.json, not a generic license override.");
                 }
-                DacFxApproval.ValidateRecord(record);
+                if (record.ApprovalType == MicrosoftPrimaryApproval.Type)
+                {
+                    MicrosoftPrimaryApproval.ValidateRecord(record);
+                }
+                else
+                {
+                    // Null remains compatible only with the historical exact DacFx record.
+                    DacFxApproval.ValidateRecord(record);
+                }
             }
         }
         return records;
