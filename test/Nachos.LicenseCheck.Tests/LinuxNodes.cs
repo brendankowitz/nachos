@@ -12,6 +12,7 @@ internal static class LinuxNodes
     public const int Fifo = 0x1000, Character = 0x2000, Directory = 0x4000, Block = 0x6000, Regular = 0x8000, Socket = 0xc000;
     private const int WriteOnlyNonblocking = 0x1 | 0x800;
     private const int DirectoryOnly = 0x10000 | 0x80000;
+    private const int ReadOnlyNonblocking = 0x800 | 0x80000;
 
     public static void MakeFifo(string path) => Succeeded(CreateFifo(path, 0x180), "mkfifo", path);
 
@@ -45,6 +46,18 @@ internal static class LinuxNodes
         var descriptor = Open(fifo, WriteOnlyNonblocking);
         if (descriptor >= 0) new SafeFileHandle(descriptor, ownsHandle: true).Dispose();
     }
+
+    // Opening nonblocking never waits for a FIFO writer; used to hold descriptors for a positive control.
+    public static SafeFileHandle OpenReadOnly(string path)
+    {
+        var descriptor = Open(path, ReadOnlyNonblocking);
+        Succeeded(descriptor < 0 ? -1 : 0, "open", path);
+        return new SafeFileHandle(descriptor, ownsHandle: true);
+    }
+
+    // The object a path resolves to, following links (so a /proc/self/fd entry names its open object), or null.
+    public static (uint Major, uint Minor, ulong Inode)? TryObject(string path) =>
+        Statx(-100, path, 0, 0x100, out var status) == 0 ? (status.DeviceMajor, status.DeviceMinor, status.Inode) : null;
 
     public static (int Type, uint Major, uint Minor, ulong Inode) Identity(string path)
     {

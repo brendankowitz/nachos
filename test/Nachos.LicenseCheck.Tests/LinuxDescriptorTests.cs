@@ -26,7 +26,14 @@ public sealed class LinuxDescriptorTests
             LinuxNodes.MakeFifo(fifo);
             var directory = Directory.CreateDirectory(Path.Combine(root, "directory")).FullName;
             string[] rejected = ["/dev/null", "/dev/zero", directory, fifo];
-            var before = OpenOn(rejected);
+            var objects = rejected.Select(path => LinuxNodes.TryObject(path) ?? throw new IOException($"statx {path}")).ToHashSet();
+            var before = OpenOn(objects);
+            // Positive control: the counter must see a descriptor held on each object, so a link in the temporary
+            // path (or any other path mismatch) cannot make the leak count vacuously zero.
+            var held = rejected.Select(LinuxNodes.OpenReadOnly).ToArray();
+            try { OpenOn(objects).ShouldBe(before + rejected.Length, "positive control: held descriptors must be counted"); }
+            finally { foreach (var handle in held) handle.Dispose(); }
+            OpenOn(objects).ShouldBe(before);
             var after = -1;
             await LinuxEvidenceTests.Bounded(() =>
             {
@@ -37,7 +44,7 @@ public sealed class LinuxDescriptorTests
                         foreach (var path in rejected)
                             Should.Throw<InvalidDataException>(() => DocsProvenance.OpenRegular(path).Dispose())
                                 .Message.ShouldContain(LinuxEvidenceTests.Nonregular, Case.Sensitive);
-                    after = OpenOn(rejected);
+                    after = OpenOn(objects);
                     GCSettings.LatencyMode.ShouldBe(GCLatencyMode.NoGCRegion, "a GC ran, so finalizers could hide a leak");
                 }
                 finally
@@ -50,8 +57,7 @@ public sealed class LinuxDescriptorTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    // Counts this process's descriptors whose /proc link names one of the rejected objects.
-    private static int OpenOn(string[] paths) => Directory.EnumerateFileSystemEntries("/proc/self/fd")
-        .Select(entry => { try { return new FileInfo(entry).LinkTarget; } catch (IOException) { return null; } })
-        .Count(target => target is not null && paths.Contains(target, StringComparer.Ordinal));
+    // Counts this process's descriptors open on one of the objects, by (device, inode) rather than link text.
+    private static int OpenOn(HashSet<(uint Major, uint Minor, ulong Inode)> objects) =>
+        Directory.EnumerateFileSystemEntries("/proc/self/fd").Count(entry => LinuxNodes.TryObject(entry) is { } open && objects.Contains(open));
 }
