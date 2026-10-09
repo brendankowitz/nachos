@@ -66,7 +66,7 @@ internal static class LicenseText
         // Only years vary mechanically. Deleting an arbitrary holder field can
         // also delete restrictions; unknown attribution variants require review.
         text = Regex.Replace(text,
-            @"(?im)^(copyright[\t ]*(?:\(c\)|©)?[\t ]*)(?:\d{4}(?:[-, ]+\d{4})*|<year>|\[year\]|\[yyyy\])(?=[\t ])",
+            @"(?im)^([\t ]*copyright[\t ]*(?:\(c\)|©)?[\t ]*)(?:\d{4}(?:[-, ]+\d{4})*|<year>|\[year\]|\[yyyy\])(?=[\t ])",
             "$1<year>");
         return Regex.Replace(text, @"\s+", " ").Trim().ToLowerInvariant();
     }

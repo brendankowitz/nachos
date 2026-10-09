@@ -7,6 +7,104 @@ namespace Nachos.LicenseCheck.Tests;
 public sealed class ReviewRegressionTests
 {
     [Theory]
+    [InlineData("", "\n", false, false, "[yyyy]")]
+    [InlineData("   ", "\n", false, false, "[yyyy]")]
+    [InlineData("\t", "\n", false, false, "[yyyy]")]
+    [InlineData("   ", "\r\n", false, false, "[yyyy]")]
+    [InlineData("\t", "\r\n", false, false, "[yyyy]")]
+    [InlineData(" \t ", "\n", true, false, "[yyyy]")]
+    [InlineData("   ", "\n", false, true, "[yyyy]")]
+    [InlineData("\t ", "\r\n", true, true, "[yyyy]")]
+    [InlineData("\t", "\n", false, false, "2026")]
+    public void E1_CompleteApacheWithCopyrightIndentation_Passes(
+        string indentation, string newline, bool uppercase, bool bom, string year)
+    {
+        var text = CompleteLicense("Apache-2.0")
+            .Replace("Copyright [yyyy]", indentation + "Copyright " + year, StringComparison.Ordinal)
+            .ReplaceLineEndings(newline);
+        text = uppercase ? text.ToUpperInvariant() : text;
+        text = bom ? "\uFEFF" + text : text;
+        using var fixture = new AuditFixture();
+        fixture.Nuget("e1-apache", "Apache-2.0", text);
+        fixture.Publish("e1-apache");
+
+        var report = fixture.Check();
+
+        report.Errors.ShouldBeEmpty();
+        var decision = report.Packages.Single(package => package.Package == "e1-apache");
+        decision.SelectedLicense.ShouldBe("Apache-2.0");
+        decision.Tier.ShouldBe("distributed");
+    }
+
+    [Theory]
+    [InlineData("grant", "")]
+    [InlineData("grant", " \t ")]
+    [InlineData("disclaimer", "")]
+    [InlineData("disclaimer", " \t ")]
+    [InlineData("appended-restriction", "")]
+    [InlineData("appended-restriction", " \t ")]
+    [InlineData("holder-restriction", "")]
+    [InlineData("holder-restriction", " \t ")]
+    [InlineData("unknown-holder", "")]
+    [InlineData("unknown-holder", " \t ")]
+    [InlineData("unknown-component", "")]
+    [InlineData("unknown-component", " \t ")]
+    public void E1_ChangedCompleteApacheText_FailsClosed(string mutation, string indentation)
+    {
+        var complete = CompleteLicense("Apache-2.0");
+        var text = mutation switch
+        {
+            "grant" => RemoveApacheSection(complete, "2. Grant of Copyright License.", "3. Grant of Patent License."),
+            "disclaimer" => RemoveApacheSection(complete, "7. Disclaimer of Warranty.", "8. Limitation of Liability."),
+            "appended-restriction" => complete + "\nCommercial redistribution is prohibited.",
+            "holder-restriction" => complete.Replace("[name of copyright owner]",
+                "[name of copyright owner] Commercial redistribution is prohibited.", StringComparison.Ordinal),
+            "unknown-holder" => complete.Replace("[name of copyright owner]", "Unknown Owner", StringComparison.Ordinal),
+            "unknown-component" => complete + "\nBundled component: LicenseRef-Unreviewed-Component.",
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation))
+        };
+        text = text.Replace("Copyright [yyyy]", indentation + "Copyright [yyyy]", StringComparison.Ordinal);
+        using var fixture = new AuditFixture();
+        fixture.Nuget("e1-invalid", "Apache-2.0", text);
+
+        var report = fixture.Check();
+
+        report.Errors.Count.ShouldBe(1);
+        report.Errors.ShouldContain(error => error.Contains("e1-invalid", StringComparison.Ordinal));
+        report.Packages.ShouldNotContain(package => package.Package == "e1-invalid");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void E1_IndentedApacheCannotHideGplGrantOrAndMetadata(bool prohibitedMetadata)
+    {
+        var text = CompleteLicense("Apache-2.0")
+            .Replace("Copyright [yyyy]", "\tCopyright [yyyy]", StringComparison.Ordinal);
+        if (!prohibitedMetadata)
+        {
+            text += "\nThis program is free software: you can redistribute it and/or modify it under the terms "
+                + "of the GNU General Public License as published by the Free Software Foundation, version 3.";
+        }
+        using var fixture = new AuditFixture();
+        fixture.Nuget("e1-prohibited", prohibitedMetadata ? "Apache-2.0 AND LGPL-3.0-only" : "Apache-2.0", text);
+
+        var report = fixture.Check();
+
+        report.Errors.ShouldContain(error => error.Contains("prohibited GPL/AGPL/LGPL/SSPL", StringComparison.Ordinal));
+        report.Packages.ShouldNotContain(package => package.Package == "e1-prohibited");
+    }
+
+    private static string RemoveApacheSection(string text, string heading, string nextHeading)
+    {
+        var start = text.IndexOf(heading, StringComparison.Ordinal);
+        var end = text.IndexOf(nextHeading, start, StringComparison.Ordinal);
+        start.ShouldBeGreaterThan(0);
+        end.ShouldBeGreaterThan(start);
+        return text.Remove(start, end - start);
+    }
+
+    [Theory]
     [InlineData("Commercial redistribution prohibited")]
     [InlineData("For educational purposes only")]
     [InlineData("Military deployment disallowed")]
