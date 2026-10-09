@@ -96,7 +96,17 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         if (strict)
         {
             // Check JSON-backed strings before typed deserialization can replace malformed Unicode.
-            _ = StrictJsonData.ToCanonical(JsonNode.Parse(value.GetRawText(), new JsonNodeOptions(),
+            string raw;
+            try
+            {
+                raw = value.GetRawText();
+            }
+            catch (InvalidOperationException error) when (error is not ObjectDisposedException)
+            {
+                throw new RequestValidationException(
+                    [new(["body", property], "Invalid JSON data.", "json_invalid")], error);
+            }
+            _ = StrictJsonData.ToCanonical(JsonNode.Parse(raw, new JsonNodeOptions(),
                 new JsonDocumentOptions { MaxDepth = int.MaxValue }));
         }
         return ReadValue(value, typeInfo, ["body", property]);
