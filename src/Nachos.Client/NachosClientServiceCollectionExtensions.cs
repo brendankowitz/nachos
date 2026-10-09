@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions;
 using Nachos.Client;
@@ -30,11 +31,28 @@ public static class NachosClientServiceCollectionExtensions
     /// </para>
     /// <para>
     /// <b>Pipeline.</b> The client's <see cref="HttpClient.BaseAddress"/> is <see cref="NachosClientOptions.BaseAddress"/>.
-    /// The primary <see cref="SocketsHttpHandler"/> does not follow redirects (<c>AllowAutoRedirect</c> is false): a 3xx
-    /// is a final status under spec §16 status precedence and surfaces as the mapped <see cref="HttpRequestException"/>
-    /// with that status, sent once. Following it would let the server pick the next hop's host, which .NET names in a
-    /// connection failure's text and in <c>System.Net.NameResolution</c> events; and .NET drops <c>Authorization</c> on
-    /// the redirected hop, so an authenticated API gains nothing from redirects.
+    /// The primary handler is a <see cref="SocketsHttpHandler"/>, and when the handler chain is built, after every
+    /// configuration of it on the returned builder has run, a filter of this client finishes it: a primary handler that
+    /// is a <see cref="SocketsHttpHandler"/> (this one, one of your own from <c>ConfigurePrimaryHttpMessageHandler</c>,
+    /// or the one <c>UseSocketsHttpHandler</c> keeps or creates) gets <c>AllowAutoRedirect</c> set to false, whatever
+    /// your configuration set it to; and the primary handler, whatever its type, is wrapped in the redaction handler
+    /// described below, once. So <c>UseSocketsHttpHandler((handler, services) => handler.PooledConnectionLifetime = ...)</c>
+    /// and <c>ConfigurePrimaryHttpMessageHandler((handler, services) => ((SocketsHttpHandler)handler).PooledConnectionLifetime = ...)</c>
+    /// tune the handler this method registered (the delegate receives the <see cref="SocketsHttpHandler"/>, not the
+    /// wrapper), and <c>ConfigurePrimaryHttpMessageHandler(() => ...)</c> replaces it under the same rules.
+    /// </para>
+    /// <para>
+    /// Redirects are never followed: a 3xx is a final status under spec §16 status precedence and surfaces as the
+    /// mapped <see cref="HttpRequestException"/> with that status, sent once. Following one would let the server pick
+    /// the next hop's host, which .NET names in a connection failure's text and in <c>System.Net.NameResolution</c>
+    /// events; and .NET drops <c>Authorization</c> on the redirected hop, so an authenticated API gains nothing from
+    /// redirects. The rule holds for a client without credentials too: an <c>http</c> base address that the server
+    /// answers with a 301 or 308 to <c>https</c> fails with that status instead of being upgraded, so configure the
+    /// <c>https</c> address. A caller who needs redirects must supply a primary handler that is not a
+    /// <see cref="SocketsHttpHandler"/> (an <see cref="HttpClientHandler"/>, or a handler of their own over one) and
+    /// accepts that its connection failures and resolution events name hosts the server chose.
+    /// </para>
+    /// <para>
     /// <see cref="RetryHandler"/> gets <see cref="NachosClientOptions.AttemptTimeout"/>. <see cref="HttpClient.Timeout"/>
     /// keeps its default of 100 s and stays the overall bound of a call, retries and waits included; change it with
     /// <c>ConfigureHttpClient</c> on the returned builder. With the default 30 s attempt timeout, a call whose retries
@@ -52,16 +70,21 @@ public static class NachosClientServiceCollectionExtensions
     /// <see cref="HttpRequestError"/>, keeping the status and the <c>Retry-After</c> data; known-safe connection failures,
     /// timeouts and cancellations are kept, with the bearer value redacted from them, and a connection failure's text is
     /// rebuilt without the target host and port (a primary handler of your own that follows redirects lets the server
-    /// choose that host). <see cref="RetryHandler"/> and <see cref="NachosHttpClient"/> apply this whatever the primary
-    /// handler (see <c>SecretRedaction</c>);
+    /// choose that host). A TLS failure is among the replaced ones: it surfaces as the fixed text naming
+    /// <see cref="HttpRequestError.SecureConnectionError"/>, without the reason (an untrusted root, a name mismatch),
+    /// which the <c>System.Net.Security</c> EventSource still reports. <see cref="RetryHandler"/> and
+    /// <see cref="NachosHttpClient"/> apply this whatever the primary handler (see <c>SecretRedaction</c>);
     /// </description></item>
     /// <item><description>
-    /// the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and <c>LogicalHandler</c> logs: the primary
-    /// <see cref="SocketsHttpHandler"/> is wrapped in a handler that applies the same rule before those loggers see a
-    /// failure, and removes a response header whose name holds the bearer value (a bare JWT is a valid header name, which
-    /// the factory would log). Header values are redacted by the factory's default; do not turn that off for this client.
-    /// <c>ConfigurePrimaryHttpMessageHandler</c> on the returned builder replaces the wrapper, so with your own primary
-    /// handler the <c>ClientHandler</c> log of such a failure is no longer covered (exception text still is);
+    /// the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and <c>LogicalHandler</c> logs: the primary handler,
+    /// whatever you made it (see Pipeline), is wrapped in a handler that applies the same rule before those loggers see
+    /// a failure, and removes a response header whose name shares 16 characters with the bearer value, in any letter
+    /// case (a bare JWT is a valid header name, which the factory would log; a server that reflects only part of the
+    /// value, or in another case, is caught the same way, at the cost of a real header whose name happens to share such
+    /// a run). Header values are redacted by the factory's default; do not turn that off for this client. The
+    /// <c>ClientHandler</c> logger sits directly above the wrapper, so it never sees a raw failure; a handler you add
+    /// sits above that logger and below <see cref="RetryHandler"/>, which cleans what it throws before the
+    /// <c>LogicalHandler</c> logs it;
     /// </description></item>
     /// <item><description>
     /// server text the client shows on purpose (error bodies and reason phrases mapped to exceptions): the bearer value
@@ -135,17 +158,15 @@ public static class NachosClientServiceCollectionExtensions
 
         var http = services.AddHttpClient(HttpClientName);
 
+        // The filter finishes the primary handler when the chain is built, after the caller's configuration of it:
+        // no redirects on a SocketsHttpHandler, and the redaction wrapper around whatever the primary handler is.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHttpMessageHandlerBuilderFilter, TransportRedactionFilter>());
+
         // The pipeline and the client are registered once: a second RetryHandler would nest the retries (9 attempts).
         if (!services.Any(d => d.ServiceType == typeof(NachosHttpClient)))
         {
             http.ConfigureHttpClient((provider, client) => client.BaseAddress = Options(provider).BaseAddress)
-                .ConfigurePrimaryHttpMessageHandler(() => new TransportRedactionHandler
-                {
-                    // Redirects are not followed: a 3xx is a final status (spec §16), and the redirected hop's failure
-                    // text would name a host the server chose. The API gives a redirect nothing anyway: .NET strips
-                    // Authorization on the redirected hop.
-                    InnerHandler = new SocketsHttpHandler { AllowAutoRedirect = false },
-                })
+                .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler())
                 .AddHttpMessageHandler(provider =>
                     new RetryHandler(provider.GetRequiredService<TimeProvider>(), Options(provider).AttemptTimeout));
             services.AddTransient(provider => new NachosHttpClient(

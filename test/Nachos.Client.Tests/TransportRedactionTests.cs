@@ -263,28 +263,33 @@ public sealed class TransportRedactionTests
         { "api key", "POST keys" },
     };
 
-    public static TheoryData<string, string, string> ReplacedPrimaryCases()
+    public static TheoryData<string, string, string, bool> ReplacedPrimaryCases()
     {
-        var data = new TheoryData<string, string, string>();
+        var data = new TheoryData<string, string, string, bool>();
         foreach (var (auth, route) in new[] { ("credential", "GET message"), ("credential", "POST keys"), ("api key", "GET message"), ("api key", "POST keys") })
         {
-            data.Add("invalid header name (replaced by fixed text)", auth, route);
-            data.Add("connection failure over a timeout naming the bearer (kept, redacted)", auth, route);
+            foreach (var wrapped in new[] { true, false })
+            {
+                data.Add("invalid header name (replaced by fixed text)", auth, route, wrapped);
+                data.Add("connection failure over a timeout naming the bearer (kept, redacted)", auth, route, wrapped);
+            }
         }
 
         return data;
     }
 
     /// <summary>
-    /// With the primary handler replaced there is no wrapper below the <c>ClientHandler</c> logger, so the raw failure
-    /// does reach that log (documented on <c>AddNachosClient</c>). What leaves <see cref="RetryHandler"/> must already be
-    /// clean, whatever <see cref="NachosHttpClient"/> does afterwards: the <c>LogicalHandler</c> log above it sees exactly
-    /// that (the factory logs an <see cref="HttpRequestException"/> with its whole chain), for a failure that is replaced
-    /// and for a kept chain whose inner level is only redacted.
+    /// A primary handler of the caller's own is wrapped like the default one, so the <c>ClientHandler</c> log below
+    /// the retry handler is clean too. With the wrapper taken out (what <see cref="RetryHandler"/> alone guarantees for
+    /// anything thrown between the primary handler and itself, a handler the caller adds for example) the raw failure
+    /// does reach that log, but what leaves <see cref="RetryHandler"/> must already be clean, whatever
+    /// <see cref="NachosHttpClient"/> does afterwards: the <c>LogicalHandler</c> log above it sees exactly that (the
+    /// factory logs an <see cref="HttpRequestException"/> with its whole chain), for a failure that is replaced and
+    /// for a kept chain whose inner level is only redacted.
     /// </summary>
     [Theory]
     [MemberData(nameof(ReplacedPrimaryCases))]
-    public async Task TransportFailureText_WithTheBearer_IsSanitized_WhenThePrimaryHandlerIsReplaced(string failure, string auth, string route)
+    public async Task TransportFailureText_WithTheBearer_IsSanitized_WhenThePrimaryHandlerIsReplaced(string failure, string auth, string route, bool wrapped)
     {
         var secret = Secret(auth);
         var replaced = failure.StartsWith("invalid", StringComparison.Ordinal);
@@ -312,6 +317,11 @@ public sealed class TransportRedactionTests
                 echo.Data["echo"] = $"data {secret}";
                 throw echo;
             }));
+        if (!wrapped)
+        {
+            RemoveTheWrapper(services);
+        }
+
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
@@ -334,7 +344,16 @@ public sealed class TransportRedactionTests
         var logical = logs.TextOf(".LogicalHandler");
         logical.ShouldContain("HTTP request failed");
         AssertNoSecretText(logical, "LogicalHandler logs");
-        SecretScan.FindLeak(logs.TextOf(".ClientHandler"), secret, window: 20).ShouldNotBeNull("the ClientHandler log is below the retry handler and is not covered here");
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain("HTTP request failed");
+        if (wrapped)
+        {
+            SecretScan.FindLeak(clientHandler, secret, window: 12).ShouldBeNull("the wrapper sits below the ClientHandler logger");
+        }
+        else
+        {
+            SecretScan.FindLeak(clientHandler, secret, window: 20).ShouldNotBeNull("without the wrapper the ClientHandler log is not covered");
+        }
     }
 
     public static TheoryData<string, bool, int> ClassificationCases() => new()
@@ -374,7 +393,12 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
         services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
-            .ConfigurePrimaryHttpMessageHandler(() => wrapped ? new TransportRedactionHandler { InnerHandler = stub } : stub);
+            .ConfigurePrimaryHttpMessageHandler(() => stub);
+        if (!wrapped)
+        {
+            RemoveTheWrapper(services);
+        }
+
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
@@ -384,6 +408,96 @@ public sealed class TransportRedactionTests
         ex.InnerException.ShouldBeNull();
         AssertNoSecret(ex, "api key");
     }
+
+    public static TheoryData<string, bool> KeptNonTransientCases() => new()
+    {
+        { "object disposed", false },
+        { "object disposed", true },
+        { "socket", false },
+        { "socket", true },
+    };
+
+    /// <summary>
+    /// A kept type that mentions the bearer is rebuilt as an <see cref="IOException"/>, which the retry handler would
+    /// take for a transient failure; the rebuilt one reads as the original type, so an
+    /// <see cref="ObjectDisposedException"/> or a <see cref="SocketException"/> is sent once with and without the
+    /// wrapper, as the raw one is.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(KeptNonTransientCases))]
+    public async Task KeptFailureOfANonTransientType_MentioningTheBearer_IsSentOnce_WithAndWithoutTheWrapper(string kind, bool wrapped)
+    {
+        var attempts = 0;
+        var stub = new StubHandler((request, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            // The constructor's object name is the message .NET prints: a stream named after what it was sending.
+            Exception disposed = new ObjectDisposedException($"stream of '{request.Authorization}'");
+            if (kind == "object disposed")
+            {
+                throw disposed;
+            }
+
+            var socket = new SocketException((int)SocketError.ConnectionReset);
+            socket.Data["echo"] = request.Authorization;
+            throw socket;
+        });
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
+            .ConfigurePrimaryHttpMessageHandler(() => stub);
+        if (!wrapped)
+        {
+            RemoveTheWrapper(services);
+        }
+
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<IOException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        attempts.ShouldBe(1);
+        SecretRedaction.ReplacedType(ex).ShouldBe(kind == "object disposed" ? typeof(ObjectDisposedException) : typeof(SocketException));
+        AssertNoSecret(ex, "api key");
+    }
+
+    /// <summary>
+    /// The wrapper redacts the request's own bearer value from a kept chain (a connection failure over a timeout
+    /// naming it, say) before the <c>ClientHandler</c> logger sees it; with no secrets to hand it would rebuild the
+    /// connection failure host-free but pass the raw timeout text through. (The factory logs an
+    /// <see cref="HttpRequestException"/> with its whole chain; a bare timeout is not logged.)
+    /// </summary>
+    [Theory]
+    [InlineData("credential")]
+    [InlineData("api key")]
+    public async Task KeptFailure_MentioningTheBearer_IsRedactedBeforeTheClientHandlerLog(string auth)
+    {
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), auth))
+            .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((request, _) =>
+                throw new HttpRequestException(
+                    HttpRequestError.ConnectionError,
+                    "connect failed (nachos.test:443)",
+                    new TimeoutException($"timed out sending '{request.Authorization}'"))));
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().CreateKeyAsync("w1"));
+
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain("HTTP request failed");
+        clientHandler.ShouldContain($"timed out sending 'Bearer {ErrorMapper.Redacted}'");
+        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+    }
+
+    /// <summary>
+    /// The pipeline without <see cref="TransportRedactionHandler"/>: the filter that wraps the primary handler is
+    /// taken out, so a stub primary handler's failures reach the <c>ClientHandler</c> logger raw. That is what a handler
+    /// the caller adds sees of its own failures, and what <see cref="RetryHandler"/>'s own sanitizing protects.
+    /// </summary>
+    private static void RemoveTheWrapper(ServiceCollection services) =>
+        services.Remove(services.Single(d => d.ImplementationType == typeof(TransportRedactionFilter))).ShouldBeTrue();
 
     [Fact]
     public async Task CallerCancellation_WithAnEchoingTransportError_IsSanitizedToo()
@@ -434,14 +548,42 @@ public sealed class TransportRedactionTests
         ex.InnerException.ShouldBeSameAs(socket);
     }
 
+    private const string MessageJson =
+        """{"id":"m1","content":"hi","peer_id":"alice","session_id":"s1","metadata":{},"created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":1}""";
+
+    /// <summary>The ways a caller configures the primary handler that leave a <see cref="SocketsHttpHandler"/> in place.</summary>
+    private static readonly string[] SocketsPrimaries =
+    [
+        "default",
+        "UseSocketsHttpHandler turning redirects on",
+        "ConfigurePrimaryHttpMessageHandler with a SocketsHttpHandler following redirects",
+    ];
+
+    public static TheoryData<string> SocketsPrimaryCases() => [.. SocketsPrimaries];
+
+    public static TheoryData<string, string, string> RedirectCases()
+    {
+        var data = new TheoryData<string, string, string>();
+        foreach (var primary in SocketsPrimaries)
+        {
+            foreach (var (auth, route) in new[] { ("credential", "GET message"), ("credential", "POST keys"), ("api key", "GET message"), ("api key", "POST keys") })
+            {
+                data.Add(primary, auth, route);
+            }
+        }
+
+        return data;
+    }
+
     /// <summary>
     /// A <c>Location</c> whose hostname spells the bearer value in hex, split into DNS labels. Following it would make
-    /// the redirected hop's name-resolution failure name that host, so the default pipeline does not follow: the 3xx is
-    /// final under spec §16 status precedence and surfaces as the mapped exception, once.
+    /// the redirected hop's name-resolution failure name that host, so the pipeline does not follow, whichever way the
+    /// caller configured its <see cref="SocketsHttpHandler"/>, redirects turned on included: the 3xx is final under
+    /// spec §16 status precedence and surfaces as the mapped exception, once.
     /// </summary>
     [Theory]
-    [MemberData(nameof(StubCases))]
-    public async Task RedirectToAHostSpellingTheBearer_IsNotFollowed_AndSurfacesAsTheFinalStatus(string auth, string route)
+    [MemberData(nameof(RedirectCases))]
+    public async Task RedirectToAHostSpellingTheBearer_IsNotFollowed_AndSurfacesAsTheFinalStatus(string primary, string auth, string route)
     {
         await using var server = new EchoingServer(authorization =>
             $"HTTP/1.1 302 Found\r\nLocation: http://{HexHost(Bare(authorization))}/\r\nContent-Length: 0\r\n\r\n");
@@ -449,7 +591,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, auth)), primary);
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
@@ -461,12 +603,59 @@ public sealed class TransportRedactionTests
         AssertNoSecretWindow(ex, logs.Text, Secret(auth));
     }
 
+    /// <summary>A 302 to another server that would answer 200: the call fails with the 302 and the other server is never asked.</summary>
+    [Theory]
+    [MemberData(nameof(SocketsPrimaryCases))]
+    public async Task RedirectToAnotherServer_IsNotFollowed_SoTheCallFailsWithTheStatus(string primary)
+    {
+        await using var target = new EchoingServer(_ =>
+            $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {MessageJson.Length}\r\n\r\n{MessageJson}");
+        await using var server = new EchoingServer(_ =>
+            $"HTTP/1.1 302 Found\r\nLocation: {target.BaseAddress}v3/workspaces/w1/sessions/s1/messages/m1\r\nContent-Length: 0\r\n\r\n");
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential")), primary);
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        ex.StatusCode.ShouldBe(HttpStatusCode.Found);
+        server.Requests.ShouldBe(1);
+        target.Requests.ShouldBe(0);
+    }
+
     /// <summary>
-    /// A primary handler of the caller's own that follows redirects: the redirected hop fails to resolve the hex
-    /// hostname (through the connect callback, so no DNS query is made), and .NET's own text names that host. The kept
-    /// connection failure is rebuilt without it, so neither the exception chain nor the <c>LogicalHandler</c> log
-    /// carries the value. The <c>ClientHandler</c> log sits between that handler and the retry handler and does (as
-    /// documented on <c>AddNachosClient</c>): only the default pipeline's wrapper covers it.
+    /// The wrapper stays below the <c>ClientHandler</c> logger whichever way the caller configured the primary
+    /// handler: the raw <c>Received an invalid header name: 'Bearer …'</c> never reaches that log.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(SocketsPrimaryCases))]
+    public async Task EchoedBearer_AsAHeaderLine_IsReplacedBeforeTheClientHandlerLog_WithACallerConfiguredPrimary(string primary)
+    {
+        await using var server = new EchoingServer(authorization => $"HTTP/1.1 200 OK\r\n{authorization}: x\r\nContent-Length: 2\r\n\r\n{{}}");
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential")), primary);
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        server.Requests.ShouldBe(RetryHandler.MaxAttempts);
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+        clientHandler.ShouldNotContain("Received an invalid header name");
+        AssertNoSecretWindow(ex, logs.Text, Token);
+    }
+
+    /// <summary>
+    /// A primary handler of the caller's own that is not a <see cref="SocketsHttpHandler"/> keeps following redirects
+    /// (documented on <c>AddNachosClient</c>): the redirected hop fails to resolve the hex hostname (through the
+    /// connect callback, so no DNS query is made), and .NET's own text names that host. The kept connection failure is
+    /// rebuilt without it, and the wrapper around that handler does so before the <c>ClientHandler</c> logger sees it,
+    /// so neither the exception chain nor either factory log carries the value.
     /// </summary>
     [Theory]
     [MemberData(nameof(StubCases))]
@@ -479,18 +668,21 @@ public sealed class TransportRedactionTests
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
         services.AddNachosClient(o => Configure(o, server.BaseAddress, auth))
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(() => new CallersHandler
             {
-                ConnectCallback = async (context, ct) =>
+                InnerHandler = new SocketsHttpHandler
                 {
-                    if (context.DnsEndPoint.Host != server.BaseAddress.Host)
+                    ConnectCallback = async (context, ct) =>
                     {
-                        throw new SocketException((int)SocketError.HostNotFound);
-                    }
+                        if (context.DnsEndPoint.Host != server.BaseAddress.Host)
+                        {
+                            throw new SocketException((int)SocketError.HostNotFound);
+                        }
 
-                    var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-                    await socket.ConnectAsync(context.DnsEndPoint, ct);
-                    return new NetworkStream(socket, ownsSocket: true);
+                        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                        await socket.ConnectAsync(context.DnsEndPoint, ct);
+                        return new NetworkStream(socket, ownsSocket: true);
+                    },
                 },
             });
         await using var provider = services.BuildServiceProvider();
@@ -501,11 +693,161 @@ public sealed class TransportRedactionTests
         ex.HttpRequestError.ShouldBe(HttpRequestError.NameResolutionError);
         ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
         ex.InnerException.ShouldBeOfType<SocketException>().SocketErrorCode.ShouldBe(SocketError.HostNotFound);
-        AssertNoSecretWindow(ex, logs.TextOf(".LogicalHandler"), Secret(auth));
         logs.TextOf(".LogicalHandler").ShouldContain("HTTP request failed");
+        logs.TextOf(".ClientHandler").ShouldContain(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
+        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+    }
 
-        // The raw .NET text of the redirected hop does name the host: that log is the caller's handler's to cover.
-        SecretScan.FindLeak(logs.TextOf(".ClientHandler"), Secret(auth), window: 12).ShouldNotBeNull();
+    /// <summary>A key whose letters alternate in case: no 16-character run of it survives a change of case.</summary>
+    private const string MixedCaseKey = "nK-mIxEd-CaSe-KeY-0a1B2c3D4e5F6g7H";
+
+    public static TheoryData<string, string> EchoedNameCases() => new()
+    {
+        { "the bare value minus its first character", "credential" },
+        { "the signature segment alone", "credential" },
+        { "the lower-cased value", "credential" },
+        { "the upper-cased value", "credential" },
+        { "the lower-cased value", "mixed-case api key" },
+        { "the upper-cased value", "mixed-case api key" },
+        { "the key minus its first character", "api key" },
+        { "the dash-separated hex of the value", "api key" },
+        { "the dash-separated hex of the value", "credential" },
+    };
+
+    /// <summary>
+    /// A response header whose name is only part of the bearer value, another case of it, or its hex, is removed
+    /// before the <c>ClientHandler</c> logs the response headers at Trace, as the whole value is; the call itself
+    /// succeeds.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EchoedNameCases))]
+    public async Task PartialOrRecasedEchoOfTheBearer_AsAHeaderName_NeverReachesTheClientHandlerLog(string shape, string auth)
+    {
+        string? name = null;
+        await using var server = new EchoingServer(authorization =>
+        {
+            var bare = Bare(authorization);
+            name = shape switch
+            {
+                "the bare value minus its first character" => bare[1..],
+                "the signature segment alone" => bare[(bare.LastIndexOf('.') + 1)..],
+                "the lower-cased value" => bare.ToLowerInvariant(),
+                "the upper-cased value" => bare.ToUpperInvariant(),
+                "the dash-separated hex of the value" => BitConverter.ToString(Encoding.ASCII.GetBytes(bare)),
+                _ => bare[1..],
+            };
+            return $"HTTP/1.1 200 OK\r\n{name}: x\r\nContent-Type: application/json\r\nContent-Length: {MessageJson.Length}\r\n\r\n{MessageJson}";
+        });
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o =>
+        {
+            Configure(o, server.BaseAddress, auth == "mixed-case api key" ? "api key" : auth);
+            if (auth == "mixed-case api key")
+            {
+                o.ApiKey = MixedCaseKey;
+            }
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        var message = await provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1");
+
+        var secret = auth == "mixed-case api key" ? MixedCaseKey : Secret(auth);
+        message.Id.ShouldBe("m1");
+        server.Requests.ShouldBe(1);
+        server.Authorizations.ShouldAllBe(a => a == "Bearer " + secret);
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain("Content-Type", Case.Insensitive);
+        clientHandler.Contains(name!, StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"the name ({shape}) reached the ClientHandler log");
+        SecretScan.FindLeak(logs.Text, secret, window: 12).ShouldBeNull("the logs leak the secret");
+        SecretScan.FindLeak(logs.Text.ToLowerInvariant(), secret.ToLowerInvariant(), window: 12).ShouldBeNull("the logs leak the secret in another case");
+    }
+
+    /// <summary>
+    /// A name that shares fewer than 16 characters with the bearer value is an ordinary header and is kept, as is the
+    /// <c>Retry-After</c> beside it, which still decides the retry.
+    /// </summary>
+    [Fact]
+    public async Task NameSharingOnly15Characters_IsKept_AndRetryAfterStillSurfaces()
+    {
+        string? name = null;
+        await using var server = new EchoingServer(authorization =>
+        {
+            name = "Echo~" + Bare(authorization)[100..115] + "~X";
+            return $"HTTP/1.1 503 Service Unavailable\r\n{name}: x\r\nRetry-After: 40\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{{\"detail\":\"busy\"}}";
+        });
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential"));
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        server.Requests.ShouldBe(1);
+        NachosExceptionData.TryGetRetryAfter(ex, out var delay).ShouldBeTrue();
+        delay.ShouldBe(TimeSpan.FromSeconds(40));
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain(name!);
+        clientHandler.ShouldContain("Retry-After");
+    }
+
+    /// <summary>
+    /// Names are matched against a bearer value of at least 16 characters: a 16-character key echoed as a name is
+    /// removed, a 15-character one is not (the shorter the value, the likelier an ordinary name holds it).
+    /// </summary>
+    [Theory]
+    [InlineData("k-0123456789abcd", true)]
+    [InlineData("k-0123456789abc", false)]
+    public async Task ApiKeyEchoedAsAHeaderName_IsRemovedFrom16Characters(string key, bool removed)
+    {
+        await using var server = new EchoingServer(authorization =>
+            $"HTTP/1.1 200 OK\r\n{Bare(authorization)}: x\r\nContent-Type: application/json\r\nContent-Length: {MessageJson.Length}\r\n\r\n{MessageJson}");
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o =>
+        {
+            o.BaseAddress = server.BaseAddress;
+            o.ApiKey = key;
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        await provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1");
+
+        var clientHandler = logs.TextOf(".ClientHandler");
+        clientHandler.ShouldContain("Content-Type", Case.Insensitive);
+        clientHandler.Contains(key + ":", StringComparison.Ordinal).ShouldBe(!removed);
+    }
+
+    private static void ConfigurePrimary(IHttpClientBuilder http, string primary)
+    {
+        switch (primary)
+        {
+            case "default":
+                break;
+            case "UseSocketsHttpHandler turning redirects on":
+                http.UseSocketsHttpHandler((handler, _) =>
+                {
+                    handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+                    handler.AllowAutoRedirect = true;
+                });
+                break;
+            case "ConfigurePrimaryHttpMessageHandler with a SocketsHttpHandler following redirects":
+                http.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = true });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(primary), primary, "unknown primary handler configuration");
+        }
+    }
+
+    /// <summary>A primary handler of the caller's own that is not a <see cref="SocketsHttpHandler"/>.</summary>
+    private sealed class CallersHandler : DelegatingHandler
+    {
     }
 
     /// <summary>
@@ -640,7 +982,7 @@ public sealed class TransportRedactionTests
     private static string Bare(string authorization) =>
         authorization.StartsWith("Bearer ", StringComparison.Ordinal) ? authorization["Bearer ".Length..] : authorization;
 
-    private static string JwtShaped(int length)
+    internal static string JwtShaped(int length)
     {
         const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         var text = new StringBuilder("eyJhbGciOiJSUzI1NiIsImtpZCI6IkNBTkFSWSJ9.");

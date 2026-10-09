@@ -294,6 +294,110 @@ public sealed class AddNachosClientTests
         services.Count(d => d.ServiceType == typeof(NachosHttpClient)).ShouldBe(1);
     }
 
+    public static TheoryData<string> PrimaryConfigurations() =>
+    [
+        "default",
+        "UseSocketsHttpHandler turning redirects on",
+        "ConfigurePrimaryHttpMessageHandler with a SocketsHttpHandler following redirects",
+        "ConfigurePrimaryHttpMessageHandler tuning the registered handler",
+        "ConfigurePrimaryHttpMessageHandler with a wrapper already in place",
+        "AddNachosClient called twice",
+    ];
+
+    /// <summary>
+    /// Whatever the caller does to the primary handler on the returned builder, the built chain ends in exactly one
+    /// <see cref="TransportRedactionHandler"/> directly over a <see cref="SocketsHttpHandler"/> that does not follow
+    /// redirects; a delegate tuning the handler receives that <see cref="SocketsHttpHandler"/>, and its settings survive.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PrimaryConfigurations))]
+    public void PrimaryHandler_EndsUpWrappedOnce_OverASocketsHttpHandlerThatNeverFollowsRedirects(string configuration)
+    {
+        var services = new ServiceCollection();
+        var http = services.AddNachosClient(o => o.BaseAddress = Base);
+        switch (configuration)
+        {
+            case "UseSocketsHttpHandler turning redirects on":
+                http.UseSocketsHttpHandler((handler, _) =>
+                {
+                    handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+                    handler.AllowAutoRedirect = true;
+                });
+                break;
+            case "ConfigurePrimaryHttpMessageHandler with a SocketsHttpHandler following redirects":
+                http.ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = true, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
+                break;
+            case "ConfigurePrimaryHttpMessageHandler tuning the registered handler":
+                http.ConfigurePrimaryHttpMessageHandler((handler, _) => ((SocketsHttpHandler)handler).PooledConnectionLifetime = TimeSpan.FromMinutes(2));
+                break;
+            case "ConfigurePrimaryHttpMessageHandler with a wrapper already in place":
+                // Only this assembly's tests can do this (the type is internal): the filter must not wrap it again, and
+                // it looks no further than the primary handler, so the redirect setting is the test's own here.
+                http.ConfigurePrimaryHttpMessageHandler(() => new TransportRedactionHandler
+                {
+                    InnerHandler = new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) },
+                });
+                break;
+            case "AddNachosClient called twice":
+                services.AddNachosClient(o => o.ApiKey = ApiKey);
+                break;
+        }
+
+        using var provider = services.BuildServiceProvider();
+        var chain = Chain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).ToList();
+
+        services.Count(d => d.ImplementationType == typeof(TransportRedactionFilter)).ShouldBe(1);
+        chain.OfType<RetryHandler>().Count().ShouldBe(1);
+        var wrapper = chain.OfType<TransportRedactionHandler>().ShouldHaveSingleItem();
+        var sockets = chain[^1].ShouldBeOfType<SocketsHttpHandler>();
+        wrapper.InnerHandler.ShouldBeSameAs(sockets);
+        sockets.AllowAutoRedirect.ShouldBeFalse();
+        if (configuration != "default" && configuration != "AddNachosClient called twice")
+        {
+            sockets.PooledConnectionLifetime.ShouldBe(TimeSpan.FromMinutes(2));
+        }
+    }
+
+    [Fact]
+    public void APrimaryHandlerOfAnotherType_IsWrappedToo_AndLeftAsItIs()
+    {
+        var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.OK, MessageJson));
+        var services = new ServiceCollection();
+        services.AddNachosClient(o => o.BaseAddress = Base).ConfigurePrimaryHttpMessageHandler(() => stub);
+        using var provider = services.BuildServiceProvider();
+
+        var chain = Chain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).ToList();
+
+        chain.OfType<TransportRedactionHandler>().ShouldHaveSingleItem().InnerHandler.ShouldBeSameAs(stub);
+        chain[^1].ShouldBeSameAs(stub);
+    }
+
+    [Fact]
+    public void OtherNamedClients_AreNotWrapped()
+    {
+        var services = new ServiceCollection();
+        services.AddNachosClient(o => o.BaseAddress = Base);
+        services.AddHttpClient("other");
+        using var provider = services.BuildServiceProvider();
+
+        var chain = Chain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler("other")).ToList();
+
+        chain.OfType<TransportRedactionHandler>().ShouldBeEmpty();
+        chain.OfType<RetryHandler>().ShouldBeEmpty();
+
+        // The factory's own default primary handler, with its own default for redirects.
+        chain[^1].ShouldBeOfType<SocketsHttpHandler>().AllowAutoRedirect.ShouldBeTrue();
+    }
+
+    /// <summary>The handlers from <paramref name="top"/> down to the primary handler.</summary>
+    private static IEnumerable<HttpMessageHandler> Chain(HttpMessageHandler top)
+    {
+        for (var handler = top; handler is not null; handler = (handler as DelegatingHandler)?.InnerHandler)
+        {
+            yield return handler;
+        }
+    }
+
     [Fact]
     public void AfterAddNachos_TheHttpClientReplacesTheInProcessClient()
     {
