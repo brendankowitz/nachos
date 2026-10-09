@@ -33,9 +33,11 @@ namespace Nachos.Client;
 /// the request's credentials (see <see cref="SecretRedaction"/>). This handler's own attempt timeout (below) keeps the
 /// status too, with a <see cref="TimeoutException"/> as the inner exception. The caller's cancellation surfaces as an
 /// <see cref="OperationCanceledException"/> carrying the caller's token, without the status; it is the transport's own
-/// instance when nothing in it can repeat server bytes, otherwise a rebuilt one of the same type and token (with a
-/// real socket, <see cref="HttpClient"/> reports a cancellation as a <see cref="TaskCanceledException"/> whose inner
-/// exception is the raw transport failure, so the rebuilt form is the usual one). Requests the route rules never replay
+/// instance when that instance already carries the caller's token and nothing in it can repeat server bytes,
+/// otherwise a rebuilt one of the same type and the caller's token (an attempt runs on a token linked from the
+/// caller's and the attempt timer's, so the transport's own instance carries the linked one; and with a real socket,
+/// <see cref="HttpClient"/> reports a cancellation as a <see cref="TaskCanceledException"/> whose inner exception is
+/// the raw transport failure, so the rebuilt form is the usual one). Requests the route rules never replay
 /// (for example an unkeyed message create) are not affected: they are sent once and never reach this logic.
 /// </description></item>
 /// <item><description>
@@ -242,6 +244,10 @@ public sealed class RetryHandler : DelegatingHandler
             {
                 throw AttemptTimedOut(ex, request, status: null, retryAfter: null);
             }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                throw WithCallersToken(ex, cancellationToken);
+            }
         }
 
         var body = request.Content is null
@@ -286,6 +292,10 @@ public sealed class RetryHandler : DelegatingHandler
         {
             throw AttemptTimedOut(ex, original, status: null, retryAfter: null);
         }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            throw WithCallersToken(ex, cancellationToken);
+        }
 
         var status = response.StatusCode;
         try
@@ -311,10 +321,19 @@ public sealed class RetryHandler : DelegatingHandler
             }
 
             // A read failure keeps the status it followed and any delay the server asked for (spec §16); so does an
-            // attempt timeout. The caller's cancellation surfaces unchanged; anything else is sanitized by SendAsync.
-            if (ex is OperationCanceledException canceled && scope.TimedOut)
+            // attempt timeout. The caller's cancellation surfaces with the caller's token; anything else is sanitized
+            // by SendAsync.
+            if (ex is OperationCanceledException canceled)
             {
-                throw AttemptTimedOut(canceled, original, status, retryAfter);
+                if (scope.TimedOut)
+                {
+                    throw AttemptTimedOut(canceled, original, status, retryAfter);
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw WithCallersToken(canceled, cancellationToken);
+                }
             }
 
             if (ex is HttpRequestException or IOException)
@@ -427,6 +446,22 @@ public sealed class RetryHandler : DelegatingHandler
         var redactedCause = SecretRedaction.Sanitize(cause, RedactionSecrets.FromAuthorization(request));
         return SecretRedaction.MarkSanitized(RetryAfterHeader.WithDelay(
             new HttpRequestException(HttpRequestError.Unknown, message, new TimeoutException(timeout, redactedCause), status), retryAfter));
+    }
+
+    // An attempt runs on a token linked from the caller's and the attempt timer's, so a cancellation raised below it
+    // carries the linked token. The caller's cancellation is reported with the caller's own token, the one a caller
+    // compares against, as the same type and with the same inner exception (which SendAsync still sanitizes); a
+    // cancellation that already carries it is thrown as it is.
+    private static OperationCanceledException WithCallersToken(OperationCanceledException exception, CancellationToken caller)
+    {
+        if (exception.CancellationToken == caller)
+        {
+            return exception;
+        }
+
+        return exception is TaskCanceledException
+            ? new TaskCanceledException(exception.Message, exception.InnerException, caller)
+            : new OperationCanceledException(exception.Message, exception.InnerException, caller);
     }
 
     // Full jitter: a uniform wait in [0, BaseDelay * 2^(attempt-1)).

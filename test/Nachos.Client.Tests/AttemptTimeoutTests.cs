@@ -219,6 +219,82 @@ public sealed class AttemptTimeoutTests
         _delays.ShouldBeEmpty();
     }
 
+    public static TheoryData<string, string, string> CallerCancellationMoments()
+    {
+        var data = new TheoryData<string, string, string>();
+        foreach (var moment in new[] { "before the send", "while waiting for headers", "while reading the body" })
+        {
+            foreach (var path in new[] { "HttpMessageInvoker", "NachosHttpClient" })
+            {
+                data.Add(moment, path, "GET message");
+
+                // A never-retried route's body is streamed to the caller after the handler returns, so the handler has
+                // no body phase of its own to cancel: through a raw invoker that moment belongs to the caller's read.
+                if (moment != "while reading the body" || path != "HttpMessageInvoker")
+                {
+                    data.Add(moment, path, "POST keys");
+                }
+            }
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// An attempt runs on a token linked from the caller's and the attempt timer's, so what the transport throws on the
+    /// caller's cancellation carries the linked token. Whatever the moment, the cancellation that leaves the handler
+    /// carries the caller's own token, through a raw <see cref="HttpMessageInvoker"/> as through
+    /// <see cref="NachosHttpClient"/> (where <see cref="HttpClient"/> already re-wraps it), and the attempt is neither
+    /// retried nor waited on.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(CallerCancellationMoments))]
+    public async Task CallerCancellation_SurfacesWithTheCallersToken_AtEveryMoment(string moment, string path, string route)
+    {
+        using var cts = new CancellationTokenSource();
+        var attempts = 0;
+        var inner = new DelegateHandler((_, ct) =>
+        {
+            attempts++;
+            switch (moment)
+            {
+                case "before the send":
+                    ct.ThrowIfCancellationRequested();
+                    throw new IOException("the token was not cancelled before the send");
+                case "while waiting for headers":
+                    cts.Cancel();
+                    ct.ThrowIfCancellationRequested();
+                    throw new IOException("the token was not cancelled while waiting for headers");
+                default:
+                    return Task.FromResult(Streamed(HttpStatusCode.OK, new StallingStream(() => cts.Cancel())));
+            }
+        });
+        if (moment == "before the send")
+        {
+            await cts.CancelAsync();
+        }
+
+        Exception? caught;
+        if (path == "HttpMessageInvoker")
+        {
+            using var invoker = new HttpMessageInvoker(Retry(inner));
+            using var request = new HttpRequestMessage(route == "GET message" ? HttpMethod.Get : HttpMethod.Post, new Uri(Base, "/v3/x"));
+            request.Options.Set(RetryHandler.RouteTemplate, route == "GET message" ? "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}" : "/v3/keys");
+            caught = await CaptureAsync(invoker.SendAsync(request, cts.Token));
+        }
+        else
+        {
+            var client = Client(Retry(inner));
+            caught = await CaptureAsync(route == "GET message" ? client.GetMessageAsync("w1", "s1", "m1", cts.Token) : client.CreateKeyAsync("w1", ct: cts.Token));
+        }
+
+        var cancelled = caught.ShouldBeAssignableTo<OperationCanceledException>()!;
+        cancelled.CancellationToken.ShouldBe(cts.Token);
+        caught.ShouldNotBeOfType<HttpRequestException>();
+        attempts.ShouldBeLessThanOrEqualTo(1);
+        _delays.ShouldBeEmpty();
+    }
+
     [Theory]
     [InlineData("/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}", "GET", 3)]
     [InlineData("/v3/keys", "POST", 1)]
