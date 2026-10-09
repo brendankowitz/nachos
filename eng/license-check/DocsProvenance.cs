@@ -293,7 +293,8 @@ public static class DocsProvenance
                 // statx has a fixed Linux ABI. Seekable devices are not regular files.
                 if (Statx(handle, "", 0x1000, 1, out var status) != 0 || (status.Mask & 1) == 0 || (status.Mode & 0xf000) != 0x8000)
                     throw new InvalidDataException($"Nonregular or unverifiable evidence file: {path}");
-                stream = new FileStream(handle, FileAccess.Read, bufferSize: 4096, isAsync: true);
+                // open() returned a synchronous descriptor; FileStream rejects isAsync for it on Unix.
+                stream = new FileStream(handle, FileAccess.Read, bufferSize: 4096, isAsync: false);
             }
             catch { handle.Dispose(); throw; }
         }

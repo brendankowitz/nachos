@@ -215,7 +215,7 @@ public sealed class ReportDestinationCliTests
         (await Audit(fixture, fixture.Full("safe-report.json"))).Exit.ShouldBe(0);
     }
 
-    private static Task<(int Exit, string Error)> Verify(ProtocolFixture fixture, string report) => Run(
+    internal static Task<(int Exit, string Error)> Verify(ProtocolFixture fixture, string report) => Run(
         "verify-docs", "--site-root", fixture.Full("site"), "--asset-root", fixture.Full("assets"),
         "--npm-root", fixture.Full("site"), "--output-root", fixture.Full("site/dist"), "--report", report);
 
