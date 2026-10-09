@@ -350,13 +350,19 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed (once per row).</summary>
         public string NumberKey => _numberKey ??= writer.NumberKey(Value, Type, from);
 
-        /// <summary>The digest of a number key longer than <see cref="ShortKey"/> (else NULL), computed once per row.</summary>
+        /// <summary>
+        /// The <c>len:SHA256</c> entry (<see cref="SqlDigest.KeySql"/>) of a number key longer than <see cref="ShortKey"/>
+        /// (else NULL), computed once per row.
+        /// </summary>
         public string NumberDigest => _numberDigest ??= writer.Digest(
-            $"CASE WHEN LEN({NumberKey}) > {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.Sql(NumberKey)} END", from);
+            $"CASE WHEN LEN({NumberKey}) > {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.KeySql(NumberKey)} END", from);
 
-        /// <summary>The digest of a string longer than <see cref="RawString"/> code units (else NULL), computed once per row.</summary>
+        /// <summary>
+        /// The <c>len:SHA256</c> entry (<see cref="SqlDigest.StringSql"/>) of a string longer than <see cref="RawString"/>
+        /// code units (else NULL), computed once per row.
+        /// </summary>
         public string StringDigest => _stringDigest ??= writer.Digest(
-            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.Sql(Value)} END", from);
+            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.StringSql(Value)} END", from);
 
         /// <summary>The number keys of the elements of <paramref name="array"/>, joined into the row's FROM clause.</summary>
         public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(array, from);
@@ -526,8 +532,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     }
 
     /// <summary>
-    /// The longest string, in UTF-16 code units, packed as its own hex (4 characters per unit) rather than as a digest:
-    /// such an entry is no longer than a digest's.
+    /// The longest string, in UTF-16 code units, packed exactly as its own hex (4 characters per unit) rather than as a
+    /// <c>len:SHA256</c> entry: such an entry is shorter than a digest entry.
     /// </summary>
     private const int RawString = 16;
 
@@ -535,9 +541,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// Whether the string value of <paramref name="row"/> is exactly (code unit for code unit, trailing spaces included)
     /// one of <paramref name="strings"/>, without parsing a list per row and at a per-row cost independent of the
     /// operands' number and length. Strings of up to <see cref="RawString"/> code units are packed (<see cref="PackedIn"/>)
-    /// as the hex of their UTF-16LE code units; longer ones as their SHA-256 digest (<see cref="SqlDigest"/>), against the
-    /// row's digest computed once (<see cref="MetadataRow.StringDigest"/>). The two tiers apply to disjoint rows (by the
-    /// value's length), so a raw entry is never compared with a digest. Digest equality is accepted as exact for SHA-256
+    /// as the hex of their UTF-16LE code units, exactly; longer ones as their code-unit count and SHA-256 digest
+    /// (<see cref="SqlDigest"/>), against the row's entry computed once (<see cref="MetadataRow.StringDigest"/>). The two
+    /// tiers apply to disjoint rows (by the value's length), so a raw entry is never compared with a digest entry, and
+    /// only string rows are tested. Long-operand membership is decided by SHA-256 digest + kind + length, accepted as exact
     /// (review round 3).
     /// </summary>
     private string StringIn(MetadataRow row, IReadOnlyList<string> strings)
@@ -573,7 +580,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
     /// <summary>
     /// The longest order key packed as itself in <see cref="KeyIn"/> (every number of up to about 85 significant digits);
-    /// longer keys are packed as their SHA-256 digest.
+    /// longer keys are packed as their length and SHA-256 digest.
     /// </summary>
     private const int ShortKey = 100;
 
@@ -630,9 +637,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// Whether the number value of <paramref name="row"/> is one of the numbers whose order keys are
     /// <paramref name="keys"/>, without parsing a list per row and at a per-row cost independent of the operands' number
     /// and length. Keys of up to <see cref="ShortKey"/> characters are packed (<see cref="PackedIn"/>) as themselves (they
-    /// hold only digits and <c>:</c>); longer ones as their SHA-256 digest (<see cref="SqlDigest"/>), against the row's key
-    /// digest computed once (<see cref="MetadataRow.NumberDigest"/>). Keys are canonical, so equal digests mean equal
-    /// numbers (accepted as exact, review round 3). The two tiers apply to disjoint rows (by the key's length).
+    /// hold only digits and <c>:</c>), exactly; longer ones as their length and SHA-256 digest (<see cref="SqlDigest"/>),
+    /// against the row's key entry computed once (<see cref="MetadataRow.NumberDigest"/>), only for number rows. Keys are
+    /// canonical, so equal digests mean equal numbers (accepted as exact, review round 3). The two tiers apply to disjoint
+    /// rows (by the key's length).
     /// </summary>
     private string KeyIn(MetadataRow row, IReadOnlyList<string> keys)
     {
@@ -649,14 +657,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     }
 
     /// <summary>
-    /// Appends to <paramref name="from"/> the value of <paramref name="expression"/> (a digest, or NULL) and returns it as
+    /// Appends to <paramref name="from"/> the value of <paramref name="expression"/> (a digest entry, or NULL) and returns it as
     /// a column, evaluated once per row: the argument of a table-valued function, like <see cref="NumberKey"/>, rather than
     /// an expression the optimizer copies into every reference.
     /// </summary>
     private string Digest(string expression, StringBuilder from)
     {
         var digest = Alias();
-        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY({expression})) WITH (d varchar(64) '$') AS {digest}");
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY({expression})) WITH (d varchar(100) '$') AS {digest}");
         return $"{digest}.d COLLATE {Bin2}";
     }
 

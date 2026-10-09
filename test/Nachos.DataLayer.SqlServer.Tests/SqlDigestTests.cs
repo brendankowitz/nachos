@@ -9,9 +9,10 @@ using Shouldly;
 namespace Nachos.DataLayer.SqlServer.Tests;
 
 /// <summary>
-/// The packed forms <see cref="SqlDigest"/> computes in .NET are byte-identical to what SQL Server computes for the same
-/// stored value, read the way filters read it (<c>OPENJSON</c> of the stored JSON): the SHA-256 of a string's UTF-16LE
-/// code units, the hex of a short string's code units, and the SHA-256 of a number's order key.
+/// The packed entries <see cref="SqlDigest"/> computes in .NET are byte-identical to what SQL Server computes, with the
+/// provider's own SQL expressions, for the same stored value read the way filters read it (<c>OPENJSON</c> of the stored
+/// JSON): <c>len:SHA256</c> of a string (code-unit count, UTF-16LE code units), the hex of a short string's code units,
+/// and <c>len:SHA256</c> of a number's order key.
 /// </summary>
 [Collection(SqlServerDockerGroup.Name)]
 public sealed class SqlDigestTests(SqlServerFixture fixture)
@@ -60,9 +61,9 @@ public sealed class SqlDigestTests(SqlServerFixture fixture)
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         await using var command = new SqlCommand(
-            """
+            $"""
             SELECT CAST(j.[key] AS int),
-                   CONVERT(varchar(64), HASHBYTES('SHA2_256', j.[value]), 2),
+                   {SqlDigest.StringSql("j.[value]")},
                    CASE WHEN DATALENGTH(j.[value]) <= 32 THEN CONVERT(varchar(64), CAST(j.[value] AS varbinary(32)), 2) END
             FROM OPENJSON(@json) AS j
             """,
@@ -74,7 +75,8 @@ public sealed class SqlDigestTests(SqlServerFixture fixture)
         while (await reader.ReadAsync())
         {
             var value = strings[reader.GetInt32(0)];
-            reader.GetString(1).ShouldBe(SqlDigest.OfString(value), $"digest of string {reader.GetInt32(0)} (length {value.Length})");
+            reader.GetString(1).ShouldBe(SqlDigest.OfString(value), $"entry of string {reader.GetInt32(0)} (length {value.Length})");
+            reader.GetString(1).ShouldStartWith(value.Length.ToString(CultureInfo.InvariantCulture) + ":");
             if (value.Length <= 16)
             {
                 reader.GetString(2).ShouldBe(SqlDigest.Utf16Hex(value), $"hex of string {reader.GetInt32(0)}");
@@ -101,8 +103,8 @@ public sealed class SqlDigestTests(SqlServerFixture fixture)
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();
         await using var command = new SqlCommand(
-            """
-            SELECT CAST(j.[key] AS int), k.k, CONVERT(varchar(64), HASHBYTES('SHA2_256', k.k COLLATE Latin1_General_100_BIN2), 2)
+            $"""
+            SELECT CAST(j.[key] AS int), k.k, {SqlDigest.KeySql("k.k COLLATE Latin1_General_100_BIN2")}
             FROM OPENJSON(@json) AS j
             OUTER APPLY OPENJSON(JSON_ARRAY(dbo.JsonNumberOrderKey(j.[value]))) WITH (k varchar(max) '$') AS k
             """,
@@ -116,6 +118,7 @@ public sealed class SqlDigestTests(SqlServerFixture fixture)
             var key = ExactDecimal.Parse(numbers[reader.GetInt32(0)]).ToOrderKey();
             reader.GetString(1).ShouldBe(key);
             reader.GetString(2).ShouldBe(SqlDigest.OfKey(key), string.Create(CultureInfo.InvariantCulture, $"number {reader.GetInt32(0)}"));
+            reader.GetString(2).ShouldStartWith(key.Length.ToString(CultureInfo.InvariantCulture) + ":");
             checkedCount++;
         }
 
@@ -128,7 +131,8 @@ public sealed class SqlDigestTests(SqlServerFixture fixture)
         SqlDigest.Utf16Hex("").ShouldBe("");
         SqlDigest.Utf16Hex("A|").ShouldBe("41007C00");
         SqlDigest.Utf16Hex("😀").ShouldBe("3DD800DE");
-        SqlDigest.OfString("").ShouldBe(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([])));
-        SqlDigest.OfKey("21").ShouldBe(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.ASCII.GetBytes("21"))));
+        SqlDigest.OfString("").ShouldBe("0:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([])));
+        SqlDigest.OfString("😀").ShouldBe("2:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.Unicode.GetBytes("😀"))));
+        SqlDigest.OfKey("21").ShouldBe("2:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.ASCII.GetBytes("21"))));
     }
 }

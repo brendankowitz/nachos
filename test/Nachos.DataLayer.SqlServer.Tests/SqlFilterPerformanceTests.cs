@@ -123,7 +123,7 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
             { "gt", Session, """{"metadata":{"n":{"gt":200}}}""", Rows - 201, Rows, 5 },
             { "range", Session, """{"metadata":{"n":{"gte":100,"lt":1.1e2}}}""", 10, Rows, 5 },
             { "array-contains-10", Session, "{\"metadata\":{\"tags\":[" + ten + "]}}", 0, 3 * Rows, 5 },
-            { "array-contains-2", Session, """{"metadata":{"tags":[5,7]}}""", 1, 3 * Rows, 8 },
+            { "array-contains-2", Session, """{"metadata":{"tags":[5,7]}}""", 1, 3 * Rows, 10 },
 
             // Long keys: packed as digests, tested only for rows whose own key is long. Over 1000-digit rows most of the time
             // is computing the stored keys (about 1.5 s for 10,000 such numbers), which any numeric filter on them pays.

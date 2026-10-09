@@ -269,6 +269,10 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         new string('p', 15), new string('p', 16), new string('p', 17), new string('p', 15) + " ", new string('p', 16) + " ",
         new string('p', 14) + "😀", new string('p', 15) + "😀", new string('p', 13) + "😀|", "\u0000" + new string('p', 16),
         new string('p', 16) + "\u0000", new string('q', 1990), new string('q', 2001), new string('q', 2010), new string('q', 1995) + "😀",
+
+        // Long strings (digest tier) that differ only in case or only in the last code unit.
+        "abcdefghijklmnopq", "ABCDEFGHIJKLMNOPQ", "Abcdefghijklmnopq", new string('r', 1999) + "A", new string('r', 1999) + "B",
+        new string('r', 1999) + "a", new string('r', 30) + "\uD83D\uDE00", new string('r', 30) + "\uD83D\uDE01",
     ];
 
     private static readonly string[] ListOtherValues =
@@ -365,6 +369,25 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
 
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L(longNumbers) + "}}}");
         data.Add("{\"NOT\":[{\"metadata\":{\"o\":{\"x\":{\"in\":" + L(longNumbers) + "}}}}]}");
+
+        // Addendum (Salsa): long operands with near-duplicates differing only in the last code unit or in case, mixed-kind
+        // lists, and in-lists merged with NOT, OR and ne. The stored long strings differ from each other the same way.
+        var r1999 = new string('r', 1999);
+        var r30 = new string('r', 30);
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q(r1999 + "C"), Q("abcdefghijklmnopq")]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "b"), Q(r1999 + "a"), Q("ABCDEFGHIJKLMNOPq"), Q("abcdefghijklmnopQ")]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(r30 + "\uD83D\uDE00"), Q(r30 + "\uD83D\uDE02"), Q(r1999 + "\u0000")]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "B"), Mantissa(88), Mantissa(9000, '6'), "true", Q("a"), "1", Q(Mantissa(88)), Q(Mantissa(9000))]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Mantissa(88, '6'), "-" + Mantissa(88, '6'), Mantissa(7985, '6'), Mantissa(9000, '6'), "-" + Mantissa(9000, '8'), Q(r1999 + "A")]) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q("ABCDEFGHIJKLMNOPQ"), Mantissa(9000), "-" + Mantissa(7987), "false"]) + "}}}]}");
+        data.Add("{\"OR\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Mantissa(9000)]) + "}}},{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "B"), "-" + Mantissa(9000), Q("abcdefghijklmnopq")]) + "}}}]}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q(r1999 + "B"), Q(r1999 + "a")]) + ",\"ne\":" + Q(r1999 + "B") + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Mantissa(9000), "-" + Mantissa(9000), Mantissa(7985)]) + ",\"ne\":" + Mantissa(9000) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Mantissa(9000), Mantissa(7985), Q(r1999 + "A"), "1"]) + ",\"gt\":" + Mantissa(7985) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q("Abcdefghijklmnopq")]) + ",\"ne\":" + Q("Abcdefghijklmnopq") + "}}}]}");
+        data.Add("{\"AND\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q(r1999 + "B"), Mantissa(9000)]) + "}}},{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "B")]) + "}}}]}]}");
+        data.Add("{\"AND\":[{\"metadata\":{\"k\":{\"in\":" + L([Q(r1999 + "A"), Q(r1999 + "B")]) + "}}},{\"metadata\":{\"k\":{\"ne\":" + Q(r1999 + "A") + "}}}]}");
+        data.Add("{\"OR\":[{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([Q(r30 + "\uD83D\uDE01"), Mantissa(7983)]) + "}}}},{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L([Q("ABCDEFGHIJKLMNOPQ"), "-" + Mantissa(9000)]) + "}}}]}]}");
 
         // Long numbers: the stored values with near misses (one digit off, sign flipped, another length).
         data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Mantissa(7983), Mantissa(7984, '8'), "-" + Mantissa(7986), "-" + Mantissa(7988, '8'), Mantissa(9000, '8'), "-" + Mantissa(9000), Mantissa(7989)]) + "}}}");

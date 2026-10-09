@@ -13,8 +13,9 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// <remarks>
 /// <para>
 /// <b>Parameters only.</b> No operand, list element or metadata key is ever written into the SQL text: the text holds
-/// only generated parameter names, generated aliases and fixed fragments. A list (<c>in</c>, containment, or OR-ed
-/// metadata equalities on one path) travels as one JSON parameter read with <c>OPENJSON</c>. Equal values share a
+/// only generated parameter names, generated aliases and fixed fragments. A list (<c>in</c> on a column, containment)
+/// travels as one JSON parameter read with <c>OPENJSON</c>; a metadata <c>in</c> list (or OR-ed metadata equalities on
+/// one path) travels packed into <c>varchar(8000)</c> chunks, described below. Equal values share a
 /// parameter. A filter needing more than <see cref="MaxParameters"/> parameters is rejected with
 /// <see cref="NachosValidationException"/> instead of failing at SQL Server's 2,100-parameter limit.
 /// </para>
@@ -38,6 +39,15 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// exponent of the first significant digit as an arbitrary-size integer, then the significant digits) that sorts like the
 /// value; the operand's key is computed in C# by the same algorithm (<c>Storage.ExactDecimal.ToOrderKey</c>). So
 /// <c>1e2</c> equals <c>100</c>, and <c>1E400</c>, <c>5E-324</c> or 2^96 + 1 compare exactly.
+/// </para>
+/// <para>
+/// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
+/// <c>varchar(8000)</c> chunks passed with their first and last entry, and a row searches only the chunk whose range
+/// holds its own entry. Short operands compare exactly: strings of up to 16 UTF-16 code units as the hex of their code
+/// units, number order keys of up to 100 characters as themselves. Long-operand <c>in</c> membership is decided by
+/// SHA-256 digest + kind + length: a longer string's entry is its UTF-16 code-unit count and the SHA-256 of its UTF-16LE
+/// code units (<c>len:HEX</c>), a longer key's its length and the SHA-256 of the key, each tested only against stored
+/// values of the same JSON kind, so a false match would need a same-length SHA-256 collision.
 /// </para>
 /// </remarks>
 internal static partial class SqlFilterCompiler
