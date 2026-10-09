@@ -106,11 +106,17 @@ public static class NachosClientServiceCollectionExtensions
     /// <c>System.Net.Http</c> EventSource (for example <c>RequestFailedDetailed</c>, which carries the raw exception text,
     /// including a body that <see cref="HttpClient"/> buffers for a never-retried request), and activity exception
     /// events recorded by tracing, which carry the raw text of a failure in the header phase: the .NET 10
-    /// <c>System.Net.Http</c> Activity records an <c>exception.message</c> event with the transport's own text for a
-    /// malformed response (a bad header line, say), which an HttpClient tracing setup such as a service-defaults
-    /// project's exports as it is. Do not enable them at verbose levels against a server you do not trust, and for
-    /// this client restrict or filter that instrumentation yourself: configure the OpenTelemetry HTTP client
-    /// instrumentation not to record exception details, or filter out the activities for this client's base address;
+    /// <c>System.Net.Http</c> ActivitySource itself adds an <c>exception</c> event whose message is the transport's
+    /// own text for a malformed response (a bad header line, say), which an HttpClient tracing setup such as a
+    /// service-defaults project's exports as it is; the OpenTelemetry instrumentation's <c>RecordException</c>
+    /// setting does not control that event. Do not enable them at verbose levels against a server you do not trust,
+    /// and keep this client's activities out of the export yourself: every request of this client carries the
+    /// <see cref="RetryHandler.RouteTemplate"/> option, so
+    /// <c>services.Configure&lt;HttpClientTraceInstrumentationOptions&gt;(o =&gt; o.FilterHttpRequestMessage = r =&gt;
+    /// !r.Options.TryGetValue(RetryHandler.RouteTemplate, out _))</c> drops exactly them, on the service-defaults
+    /// path too. That filter acts only through the OpenTelemetry HTTP client instrumentation package: a tracer that
+    /// subscribes to the <c>System.Net.Http</c> source directly (<c>AddSource("System.Net.Http")</c>) bypasses it and
+    /// must filter or drop that source's <c>exception</c> events itself;
     /// </description></item>
     /// <item><description>
     /// diagnostics that carry the outgoing request itself, whatever the server does: the <c>DiagnosticSource</c>
