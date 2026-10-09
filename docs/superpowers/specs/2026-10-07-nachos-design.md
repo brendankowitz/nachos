@@ -84,7 +84,13 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
      - its license terms reproduced or linked in `THIRD-PARTY-NOTICES.md`;
      - Nachos must comply with the Distributable Code conditions;
      - **any version change needs a fresh license-text review**;
-     - no other Microsoft-proprietary package is covered by this exception.
+     - other Microsoft-licensed packages are covered by the separate owner approval below, not by this exception.
+   - **Owner-approved Microsoft-library acceptance (2026-10-09, PR #6 comment 6083936795: "I'm ok accepting any of the Ms library licenses").** A package published by Microsoft whose *primary* license is Microsoft's own license terms (for example `Microsoft.Data.SqlClient.SNI.runtime`, `Microsoft.SqlServer.Types`) may ship in distributed artifacts. Conditions:
+     - each accepted package is recorded by exact package, version and license-text evidence (with this approval reference) in the license-check evidence; there is no name-prefix bypass and no acceptance of missing license text;
+     - required notices are reproduced or linked in `THIRD-PARTY-NOTICES.md`, and the terms' redistribution conditions are complied with;
+     - third-party components bundled inside a Microsoft package keep their own license obligations and are evaluated under this rule's tiers;
+     - the acceptance does not resolve which terms govern a package whose embedded license document looks wrong or expired (currently `Microsoft.SqlServer.Types` 170.1000.7, which carries a pre-release evaluation document); that remains a release-gate provenance question;
+     - non-Microsoft licenses (including LGPL components and OR-license choices) are unaffected.
    - **Owner-approved container platform-layer carve-out (2026-10-07).** The base OS layer of a container image from an **approved base** is evaluated as unmodified third-party platform, not under this rule's package allowlist. Approved bases are:
      - Microsoft .NET images on `mcr.microsoft.com` (for example `dotnet/aspnet`, `dotnet/runtime-deps`), used by Nachos images;
      - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2). Nachos neither modifies nor redistributes this image: it is a third-party runtime dependency that Container Apps pulls from its upstream registry, and it is replaced by the first deploy. It is therefore approved **as a whole**, application layer included, provided its full package and license inventory is recorded as evidence (`infra/evidence/placeholder-<digest>/`). Changing its digest requires refreshing that evidence.
