@@ -77,27 +77,193 @@ public sealed class SecretRedactionTests
     }
 
     [Fact]
-    public void SecretOnlyInData_IsAMention_AndTheValueIsRedacted()
+    public void ShortSecrets_HaveNoHexForms_SoDigitsAreLeftAlone()
     {
-        var ex = new HttpRequestException("clean");
+        // "zz" is 7A7A / 7A-7A: shorter than the hex minimum, so only the plain text is matched.
+        RedactionSecrets.Of("zz").Redact("status 7a7a 7A-7A zz").ShouldBe("status 7a7a 7A-7A " + ErrorMapper.Redacted);
+    }
+
+    [Fact]
+    public void HexForms_AreMatchedFromTheMinimumLength()
+    {
+        // "abc" is 61-62-63 (8 characters, matched) and 616263 (6, not matched).
+        var secrets = RedactionSecrets.Of("abc");
+
+        secrets.Redact("61-62-63").ShouldBe(ErrorMapper.Redacted);
+        secrets.Redact("616263").ShouldBe("616263");
+    }
+
+    [Theory]
+    [InlineData("bearer nk-tok-123456")]
+    [InlineData("  Bearer nk-tok-123456  ")]
+    [InlineData("BEARER   nk-tok-123456")]
+    public void SchemeIsStripped_InAnyCase_AndPaddingIsIgnored(string authorization)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
+        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+
+        RedactionSecrets.FromAuthorization(request).Redact("echo nk-tok-123456!").ShouldBe("echo " + ErrorMapper.Redacted + "!");
+    }
+
+    [Fact]
+    public void OccursIn_IgnoresTheMarkerItself()
+    {
+        var secrets = RedactionSecrets.Of("redact");
+
+        secrets.OccursIn("[redacted]").ShouldBeFalse();
+        secrets.OccursIn("x redact y").ShouldBeTrue();
+        secrets.OccursIn("[redacted] redact").ShouldBeTrue();
+    }
+
+    [Fact]
+    public void ApiKeyContainingTheMarker_IsRejectedWithoutEchoingIt()
+    {
+        var ex = Should.Throw<ArgumentException>(() => new NachosHttpClient(
+            new HttpClient(), new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/"), ApiKey = "nk-[redacted]-key" }));
+
+        ex.Message.ShouldContain("redaction marker");
+        ex.Message.ShouldNotContain("nk-");
+    }
+
+    // Fail closed: failures whose text can repeat server bytes are replaced, whatever they say.
+
+    [Fact]
+    public void HttpIOException_IsReplaced_KeepingItsError_EvenWithoutASecret()
+    {
+        var ex = new HttpIOException(HttpRequestError.InvalidResponse, "Received an invalid chunk extension: '79-4A-68'.");
+
+        var replaced = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<HttpRequestException>();
+
+        replaced.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
+        replaced.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+        replaced.InnerException.ShouldBeNull();
+    }
+
+    [Fact]
+    public void HttpRequestException_WithAServerError_IsReplaced_KeepingErrorAndStatus()
+    {
+        var ex = new HttpRequestException(HttpRequestError.InvalidResponse, "bad line", new IOException("raw"), HttpStatusCode.BadGateway);
+
+        var replaced = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<HttpRequestException>();
+
+        replaced.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
+        replaced.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
+        replaced.InnerException.ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("io")]
+    [InlineData("format")]
+    [InlineData("invalid operation")]
+    [InlineData("unknown http error")]
+    public void AnythingNotKnownSafe_IsReplaced(string kind)
+    {
+        Exception ex = kind switch
+        {
+            "io" => new IOException("reset after 'eyJhbGci'"),
+            "format" => new FormatException("bad 'eyJhbGci'"),
+            "invalid operation" => new InvalidOperationException("odd 'eyJhbGci'"),
+            _ => new HttpRequestException("odd 'eyJhbGci'"),
+        };
+
+        var replaced = SecretRedaction.Sanitize(ex, RedactionSecrets.None).ShouldBeOfType<HttpRequestException>();
+
+        replaced.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.Unknown));
+    }
+
+    [Fact]
+    public void Replacement_KeepsOnlyLibraryData()
+    {
+        var ex = new HttpIOException(HttpRequestError.ResponseEnded, "ended");
+        ex.Data[NachosExceptionData.RetryAfter] = TimeSpan.FromSeconds(4);
+        ex.Data["other"] = "server said eyJhbGci";
+
+        var replaced = SecretRedaction.Sanitize(ex, Secrets);
+
+        replaced.Data[NachosExceptionData.RetryAfter].ShouldBe(TimeSpan.FromSeconds(4));
+        replaced.Data.Contains("other").ShouldBeFalse();
+    }
+
+    [Fact]
+    public void ConnectionFailure_IsKept_AsTheSameInstance()
+    {
+        var ex = new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused (nachos.test:443)", new System.Net.Sockets.SocketException(10061));
+
+        SecretRedaction.Sanitize(ex, Secrets).ShouldBeSameAs(ex);
+    }
+
+    [Fact]
+    public void ConnectionFailure_OverAnUnsafeInner_IsReplaced()
+    {
+        var ex = new HttpRequestException(HttpRequestError.ConnectionError, "refused", new IOException("raw"));
+
+        SecretRedaction.Sanitize(ex, Secrets).ShouldNotBeSameAs(ex);
+    }
+
+    [Fact]
+    public void CancellationAroundAnUnsafeChain_KeepsTypeAndToken_AndGetsTheReplacementInside()
+    {
+        using var cts = new CancellationTokenSource();
+        var ex = new TaskCanceledException("The operation was canceled.", new HttpIOException(HttpRequestError.InvalidResponse, "raw " + Secret), cts.Token);
+
+        var sanitized = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<TaskCanceledException>();
+
+        sanitized.CancellationToken.ShouldBe(cts.Token);
+        sanitized.Message.ShouldBe("The operation was canceled.");
+        sanitized.InnerException.ShouldBeOfType<HttpRequestException>().Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+    }
+
+    [Fact]
+    public void AggregateWithAnUnsafeInner_IsRebuilt_KeepingTheSafeOne()
+    {
+        var safe = new TimeoutException("slow");
+        var ex = new AggregateException(safe, new IOException("raw " + Secret));
+
+        var aggregate = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<AggregateException>();
+
+        aggregate.InnerExceptions[0].ShouldBeSameAs(safe);
+        aggregate.InnerExceptions[1].ShouldBeOfType<HttpRequestException>();
+    }
+
+    [Fact]
+    public void SanitizedException_IsKept()
+    {
+        var ex = SecretRedaction.MarkSanitized(new HttpIOException(HttpRequestError.InvalidResponse, "library text"));
+
+        SecretRedaction.Sanitize(ex, Secrets).ShouldBeSameAs(ex);
+    }
+
+    // Second layer: the kept (safe) types still have the secrets redacted from them.
+
+    [Fact]
+    public void SafeChain_WithoutASecret_IsReturnedAsItIs()
+    {
+        var ex = new OperationCanceledException("canceled", new TimeoutException("slow"));
+
+        SecretRedaction.Sanitize(ex, Secrets).ShouldBeSameAs(ex);
+    }
+
+    [Fact]
+    public void SecretOnlyInData_IsRedacted()
+    {
+        var ex = new OperationCanceledException("canceled");
         ex.Data["echo"] = "value " + Secret;
 
-        SecretRedaction.Mentions(ex, Secrets).ShouldBeTrue();
-        var redacted = SecretRedaction.Redact(ex, Secrets);
+        var redacted = SecretRedaction.Sanitize(ex, Secrets);
 
-        redacted.Message.ShouldBe("clean");
+        redacted.ShouldNotBeSameAs(ex);
+        redacted.Message.ShouldBe("canceled");
         redacted.Data["echo"].ShouldBe("value " + ErrorMapper.Redacted);
     }
 
     [Fact]
-    public void SecretOnlyInAnAggregatesSecondInnerException_IsAMention()
+    public void SecretOnlyInAnAggregatesSecondInnerException_IsRedacted()
     {
-        var second = new IOException("clean two");
+        var second = new TimeoutException("slow two");
         second.Data["echo"] = Secret;
-        var ex = new HttpRequestException("clean", new AggregateException(new IOException("clean one"), second));
+        var ex = new OperationCanceledException("canceled", new AggregateException(new TimeoutException("slow one"), second));
 
-        SecretRedaction.Mentions(ex, Secrets).ShouldBeTrue();
-        var aggregate = SecretRedaction.Redact(ex, Secrets).InnerException.ShouldBeOfType<AggregateException>();
+        var aggregate = SecretRedaction.Sanitize(ex, Secrets).InnerException.ShouldBeOfType<AggregateException>();
 
         aggregate.InnerExceptions[1].Data["echo"].ShouldBe(ErrorMapper.Redacted);
     }
@@ -105,12 +271,12 @@ public sealed class SecretRedactionTests
     [Fact]
     public void DataKeys_AreRedacted_ExceptTheLibrarysOwn()
     {
-        var ex = new HttpRequestException("clean");
+        var ex = new OperationCanceledException("canceled");
         ex.Data["key " + Secret] = 1;
         ex.Data[NachosExceptionData.RetryAfter] = TimeSpan.FromSeconds(3);
         ex.Data["Nachos.Other"] = "library text mentioning " + Secret;
 
-        var redacted = SecretRedaction.Redact(ex, Secrets);
+        var redacted = SecretRedaction.Sanitize(ex, Secrets);
 
         redacted.Data.Contains("key " + ErrorMapper.Redacted).ShouldBeTrue();
         redacted.Data.Contains("key " + Secret).ShouldBeFalse();
@@ -119,12 +285,12 @@ public sealed class SecretRedactionTests
     }
 
     [Fact]
-    public void LibraryDataAlone_IsNotAMention()
+    public void LibraryDataAlone_IsNotRewritten()
     {
-        var ex = new HttpRequestException("clean");
+        var ex = new OperationCanceledException("canceled");
         ex.Data["Nachos.Other"] = Secret;
 
-        SecretRedaction.Mentions(ex, Secrets).ShouldBeFalse();
+        SecretRedaction.Sanitize(ex, Secrets).ShouldBeSameAs(ex);
     }
 
     [Fact]
@@ -133,7 +299,7 @@ public sealed class SecretRedactionTests
         using var cts = new CancellationTokenSource();
         var ex = new TaskCanceledException("canceled " + Secret, null, cts.Token);
 
-        var redacted = SecretRedaction.Redact(ex, Secrets).ShouldBeOfType<TaskCanceledException>();
+        var redacted = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<TaskCanceledException>();
 
         redacted.CancellationToken.ShouldBe(cts.Token);
         redacted.Message.ShouldBe("canceled " + ErrorMapper.Redacted);
@@ -145,88 +311,62 @@ public sealed class SecretRedactionTests
         using var cts = new CancellationTokenSource();
         var ex = new OperationCanceledException("canceled " + Secret, cts.Token);
 
-        var redacted = SecretRedaction.Redact(ex, Secrets).ShouldBeOfType<OperationCanceledException>();
+        var redacted = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<OperationCanceledException>();
 
         redacted.CancellationToken.ShouldBe(cts.Token);
     }
 
     [Fact]
-    public void HttpRequestException_KeepsItsErrorAndStatus()
+    public void KeptConnectionFailure_WithASecret_KeepsItsErrorAndStatus()
     {
-        var ex = new HttpRequestException(HttpRequestError.InvalidResponse, "bad " + Secret, null, HttpStatusCode.BadGateway);
+        var ex = new HttpRequestException(HttpRequestError.NameResolutionError, "no such host " + Secret, null, HttpStatusCode.BadGateway);
 
-        var redacted = SecretRedaction.Redact(ex, Secrets).ShouldBeOfType<HttpRequestException>();
+        var redacted = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<HttpRequestException>();
 
-        redacted.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
+        redacted.HttpRequestError.ShouldBe(HttpRequestError.NameResolutionError);
         redacted.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
-    }
-
-    [Fact]
-    public void HttpIOException_KeepsItsTypeAndError()
-    {
-        var ex = new HttpIOException(HttpRequestError.InvalidResponse, "Received an invalid chunk extension: '" + DashHex + "'.");
-
-        var redacted = SecretRedaction.Redact(ex, Secrets).ShouldBeOfType<HttpIOException>();
-
-        redacted.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
-        redacted.Message.ShouldNotContain(DashHex);
+        redacted.Message.ShouldBe("no such host " + ErrorMapper.Redacted);
     }
 
     [Fact]
     public void SecretFreeInnerException_KeepsItsIdentity_InsideARebuiltChain()
     {
-        var inner = new IOException("clean inner");
-        var ex = new HttpRequestException("outer " + Secret, inner);
+        var inner = new System.Net.Sockets.SocketException(10054);
+        var ex = new OperationCanceledException("outer " + Secret, inner);
 
-        SecretRedaction.Redact(ex, Secrets).InnerException.ShouldBeSameAs(inner);
-    }
-
-    [Fact]
-    public void SecretFreeException_IsReturnedAsItIs()
-    {
-        var ex = new HttpRequestException("clean", new IOException("clean inner"));
-
-        SecretRedaction.Redact(ex, Secrets).ShouldBeSameAs(ex);
+        SecretRedaction.Sanitize(ex, Secrets).InnerException.ShouldBeSameAs(inner);
     }
 
     [Fact]
     public void RebuiltMessage_IsBounded()
     {
-        var ex = new HttpRequestException(Secret + new string('z', 5000));
+        var ex = new OperationCanceledException(Secret + new string('z', 5000));
 
-        var message = SecretRedaction.Redact(ex, Secrets).Message;
+        var message = SecretRedaction.Sanitize(ex, Secrets).Message;
 
         message.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
         message.ShouldEndWith(ErrorMapper.TruncationMarker);
     }
 
     [Fact]
-    public void OtherExceptionTypes_BecomeIOException_NamingTheOriginalType()
+    public void OtherKeptTypes_BecomeIOException_NamingTheOriginalType()
     {
-        var redacted = SecretRedaction.Redact(new InvalidOperationException("bad " + Secret), Secrets);
+        var redacted = SecretRedaction.Sanitize(new ObjectDisposedException(Secret), Secrets);
 
-        redacted.ShouldBeOfType<IOException>().Message.ShouldBe("System.InvalidOperationException: bad " + ErrorMapper.Redacted);
-    }
-
-    [Fact]
-    public void SanitizedException_IsNeverExaminedOrRebuilt()
-    {
-        var ex = SecretRedaction.MarkSanitized(new HttpRequestException("library text " + Secret));
-
-        SecretRedaction.Mentions(ex, Secrets).ShouldBeFalse();
-        SecretRedaction.Redact(ex, Secrets).ShouldBeSameAs(ex);
+        redacted.ShouldBeOfType<IOException>().Message.ShouldStartWith("System.ObjectDisposedException: ");
+        redacted.Message.ShouldNotContain(Secret);
     }
 
     [Fact]
     public void VeryDeepChain_IsRedactedWithoutOverflow_AndCapped()
     {
-        Exception ex = new IOException("leaf " + Secret);
+        Exception ex = new TimeoutException("leaf " + Secret);
         for (var i = 0; i < 20_000; i++)
         {
-            ex = new IOException($"level {i} {Secret}", ex);
+            ex = new OperationCanceledException($"level {i} {Secret}", ex);
         }
 
-        var redacted = SecretRedaction.Redact(ex, Secrets);
+        var redacted = SecretRedaction.Sanitize(ex, Secrets);
 
         var depth = 0;
         for (var current = redacted; current is not null; current = current.InnerException)
@@ -235,7 +375,57 @@ public sealed class SecretRedactionTests
             depth++;
         }
 
-        depth.ShouldBe(SecretRedaction.MaxRebuiltDepth);
+        depth.ShouldBe(32);
+    }
+
+    [Fact]
+    public void VeryDeepUnsafeChain_IsReplacedWithoutOverflow()
+    {
+        Exception ex = new IOException("leaf " + Secret);
+        for (var i = 0; i < 20_000; i++)
+        {
+            ex = new OperationCanceledException($"level {i}", ex);
+        }
+
+        var sanitized = SecretRedaction.Sanitize(ex, Secrets);
+
+        var depth = 0;
+        for (var current = sanitized; current is not null; current = current.InnerException)
+        {
+            current.Message.ShouldNotContain(Secret);
+            depth++;
+        }
+
+        depth.ShouldBeLessThanOrEqualTo(32);
+    }
+
+    [Fact]
+    public async Task SecretInAnAttemptTimeoutCause_NeverSurfaces()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider();
+        var stub = new LambdaHandler((request, ct) =>
+        {
+            time.Advance(TimeSpan.FromSeconds(30));
+            throw new OperationCanceledException("canceled while sending " + request.Headers.Authorization, ct);
+        });
+        using var invoker = new HttpMessageInvoker(new RetryHandler(time, (_, _) => Task.CompletedTask, () => 0) { InnerHandler = stub });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://nachos.test/v3/keys");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Secret);
+        request.Options.Set(RetryHandler.RouteTemplate, "/v3/keys");
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => invoker.SendAsync(request, CancellationToken.None));
+
+        ex.InnerException.ShouldBeOfType<TimeoutException>().InnerException.ShouldNotBeNull();
+        for (var current = (Exception?)ex; current is not null; current = current.InnerException)
+        {
+            current.ToString().ShouldNotContain(Secret);
+        }
+    }
+
+    private sealed class LambdaHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            send(request, cancellationToken);
     }
 
     [Theory]
@@ -276,7 +466,8 @@ public sealed class SecretRedactionTests
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Client(stub, apiKey).GetMessageAsync("w1", "s1", "m1"));
 
         AssertLibraryTextIntact(ex, TimeSpan.FromSeconds(40));
-        ex.InnerException!.Message.ShouldNotContain($"echoing {apiKey} ");
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.Unknown) + " Retry-After: 40s.");
+        ex.InnerException.ShouldBeNull();
         stub.Requests.Count.ShouldBe(1);
     }
 

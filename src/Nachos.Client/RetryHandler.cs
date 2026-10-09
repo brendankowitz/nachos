@@ -27,12 +27,13 @@ namespace Nachos.Client;
 /// retryable status the body failure is retried, so a lost successful response to a keyed mutation is replayed
 /// safely. When a body read failure that is an <see cref="HttpRequestException"/> or an <see cref="IOException"/>
 /// surfaces from this handler (final status, attempts exhausted, the buffer cap, or a <c>Retry-After</c> over the
-/// cap), it is rethrown as an <see cref="HttpRequestException"/> whose <see cref="HttpRequestException.StatusCode"/>
-/// is the received status and whose inner exception is the read failure. This handler's own attempt timeout (below)
-/// surfaces the same way, with a <see cref="TimeoutException"/> as the inner exception. Any other exception from the
-/// read (the caller's cancellation, or a <see cref="TimeoutException"/> or <see cref="TaskCanceledException"/> from a
-/// timeout below this handler) surfaces unchanged, without the status. Requests the route rules never replay (for
-/// example an unkeyed message create) are not affected: they are sent once and never reach this logic.
+/// cap), it is replaced by an <see cref="HttpRequestException"/> whose <see cref="HttpRequestException.StatusCode"/>
+/// is the received status, whose <see cref="HttpRequestException.HttpRequestError"/> is the read failure's, and whose
+/// message is fixed text with no inner exception: the read failure's own text describes server bytes and can repeat
+/// the request's credentials (see <see cref="SecretRedaction"/>). This handler's own attempt timeout (below) keeps the
+/// status too, with a <see cref="TimeoutException"/> as the inner exception. The caller's cancellation surfaces
+/// unchanged, without the status. Requests the route rules never replay (for example an unkeyed message create) are
+/// not affected: they are sent once and never reach this logic.
 /// </description></item>
 /// <item><description>
 /// A <c>Retry-After</c> longer than <see cref="MaxRetryAfter"/> (30 s) is not waited out; the error reaches the caller
@@ -86,6 +87,11 @@ namespace Nachos.Client;
 /// bounds only the time to response headers; its body is streamed to <see cref="HttpClient"/> after this handler
 /// returns. The caller's cancellation always wins: if the caller's token has fired, the cancellation surfaces
 /// untouched and is never retried or reported as a timeout.
+/// </para>
+/// <para>
+/// <b>Failure text.</b> Every exception that leaves this handler goes through <see cref="SecretRedaction.Sanitize"/>:
+/// known-safe connection failures, timeouts and cancellations are kept (with the request's bearer value redacted from
+/// them), anything that can carry server bytes is replaced by fixed text naming its <see cref="HttpRequestError"/>.
 /// </para>
 /// <para>
 /// <see cref="HttpClient.Timeout"/> (100 s unless changed) bounds the whole call, retries and backoff included, and
@@ -201,9 +207,15 @@ public sealed class RetryHandler : DelegatingHandler
         {
             return await SendCoreAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (SecretRedaction.Mentions(ex, secrets))
+        catch (Exception ex)
         {
-            throw SecretRedaction.Redact(ex, secrets);
+            var safe = SecretRedaction.Sanitize(ex, secrets);
+            if (ReferenceEquals(safe, ex))
+            {
+                throw;
+            }
+
+            throw safe;
         }
     }
 
@@ -291,7 +303,7 @@ public sealed class RetryHandler : DelegatingHandler
             }
 
             // A read failure keeps the status it followed and any delay the server asked for (spec §16); so does an
-            // attempt timeout. The caller's cancellation and anything else surface unchanged.
+            // attempt timeout. The caller's cancellation surfaces unchanged; anything else is sanitized by SendAsync.
             if (ex is OperationCanceledException canceled && scope.TimedOut)
             {
                 throw AttemptTimedOut(canceled, original, status, retryAfter);
@@ -299,14 +311,16 @@ public sealed class RetryHandler : DelegatingHandler
 
             if (ex is HttpRequestException or IOException)
             {
-                // The read failure's text may echo the bearer value (a malformed trailer, say): it is redacted and
-                // bounded first, then the library's suffix is appended, so the suffix is never cut off or rewritten.
-                var cause = SecretRedaction.Redact(ex, RedactionSecrets.FromAuthorization(original));
-                var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
+                // A body read failure's text is the transport describing server bytes (a malformed chunk or trailer can
+                // repeat the request's credentials), so it is replaced by fixed text; the library suffix follows it.
+                var (error, _) = SecretRedaction.Classify(ex);
+                if (error == HttpRequestError.Unknown && ex is not HttpRequestException)
+                {
+                    error = HttpRequestError.ResponseEnded;
+                }
+
                 var suffix = retryAfter is { } delay ? RetryAfterHeader.Suffix(delay) : string.Empty;
-                var message = ErrorMapper.Bound(cause.Message, ErrorMapper.MaxMessageLength - suffix.Length) + suffix;
-                throw SecretRedaction.MarkSanitized(
-                    RetryAfterHeader.WithDelay(new HttpRequestException(error, message, cause, status), retryAfter));
+                throw RetryAfterHeader.WithDelay(SecretRedaction.Replace(error, status, suffix), retryAfter);
             }
 
             throw;
@@ -393,7 +407,7 @@ public sealed class RetryHandler : DelegatingHandler
         var timeout = string.Create(
             CultureInfo.InvariantCulture, $"The Nachos request attempt did not complete within {_attemptTimeout.TotalSeconds:0.###} s.");
         var message = retryAfter is { } delay ? timeout + RetryAfterHeader.Suffix(delay) : timeout;
-        var redactedCause = SecretRedaction.Redact(cause, RedactionSecrets.FromAuthorization(request));
+        var redactedCause = SecretRedaction.Sanitize(cause, RedactionSecrets.FromAuthorization(request));
         return SecretRedaction.MarkSanitized(RetryAfterHeader.WithDelay(
             new HttpRequestException(HttpRequestError.Unknown, message, new TimeoutException(timeout, redactedCause), status), retryAfter));
     }

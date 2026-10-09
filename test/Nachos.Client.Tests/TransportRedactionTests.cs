@@ -22,8 +22,8 @@ public sealed class TransportRedactionTests
     /// <summary>A JWT-shaped canary of 1555 characters (header.payload.signature, base64url alphabet).</summary>
     private static readonly string Token = JwtShaped(1555);
 
-    /// <summary>A 34-character canary API key.</summary>
-    private const string ApiKey = "nk-CANARY-TRANSPORT-APIKEY-6a0e-34";
+    /// <summary>A 34-character canary API key whose first characters are hex digits, as a JWT's are ("e").</summary>
+    private const string ApiKey = "cafe-PROBE-APIKEY-0123456789abcdef";
 
     public static TheoryData<string, string, string> RealSocketCases()
     {
@@ -32,6 +32,7 @@ public sealed class TransportRedactionTests
         {
             "invalid header name", "invalid header line", "invalid trailer after a chunked 200",
             "invalid trailer after a 503 with Retry-After", "bearer where a chunk size belongs (hex-dumped)",
+            "bare value where a chunk size belongs (leading hex digits consumed)",
         })
         {
             foreach (var auth in new[] { "credential", "api key" })
@@ -61,6 +62,11 @@ public sealed class TransportRedactionTests
             // hex-dumped: "72-65-72-20-65-79-4A-…".
             "bearer where a chunk size belongs (hex-dumped)" =>
                 $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{authorization}\r\n{{}}\r\n0\r\n\r\n",
+
+            // A bare JWT starts "eyJ" and the key "cafe": .NET takes the leading hex digits as the chunk size and dumps only
+            // the rest, so no form of the whole value appears; only the fixed text keeps it out.
+            "bare value where a chunk size belongs (leading hex digits consumed)" =>
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{Bare(authorization)}\r\n{{}}\r\n0\r\n\r\n",
             _ => "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
                  $"2\r\n{{}}\r\n0\r\n{authorization}: x\r\n\r\n",
         });
@@ -77,7 +83,8 @@ public sealed class TransportRedactionTests
         server.Requests.ShouldBe(route == "GET message" ? RetryHandler.MaxAttempts : 1);
         server.Authorizations.ShouldAllBe(a => a.EndsWith(Secret(auth), StringComparison.Ordinal));
         AssertNoSecret(ex, auth);
-        Chain(ex).ShouldContain(e => e.Message.Contains(ErrorMapper.Redacted, StringComparison.Ordinal), "the echo must have been redacted, not absent");
+        ex.Message.ShouldStartWith("The Nachos HTTP exchange failed (");
+        ex.InnerException.ShouldBeNull();
         AssertNoSecretText(logs.Text, "logs");
         if (failure.Contains("503", StringComparison.Ordinal) && route == "GET message")
         {
@@ -109,7 +116,7 @@ public sealed class TransportRedactionTests
 
         server.Requests.ShouldBe(RetryHandler.MaxAttempts);
         server.Authorizations.ShouldAllBe(a => a == "Bearer " + key);
-        logs.Text.ShouldContain(ErrorMapper.Redacted);
+        logs.Text.ShouldContain("is withheld because it can repeat what the server sent");
         logs.Text.ShouldNotContain(key);
         ex.ToString().ShouldNotContain(key);
     }
@@ -136,6 +143,110 @@ public sealed class TransportRedactionTests
         ex.Message.ShouldEndWith(" Retry-After: 1s.");
         ex.Message.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
         AssertNoSecret(ex, auth);
+    }
+
+    private const string Chunked = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    private const string Chunked503 =
+        "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    /// <summary>Echo shapes: A is the whole Authorization value ("Bearer …"), T the bare token; '\u0001' splits TCP writes.</summary>
+    private static readonly Dictionary<string, Func<string, string, string>> EchoShapes = new()
+    {
+        ["status line is the bearer"] = (a, _) => $"{a}\r\n\r\n",
+        ["status line is the bare token"] = (_, t) => $"{t}\r\n\r\n",
+        ["token as the status code"] = (_, t) => $"HTTP/1.1 {t}\r\nContent-Length: 0\r\n\r\n",
+        ["token as the reason phrase of a 404"] = (_, t) => $"HTTP/1.1 404 {t}\r\nContent-Length: 0\r\n\r\n",
+        ["token as the reason phrase of a 503 with Retry-After"] = (_, t) => $"HTTP/1.1 503 {t}\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n",
+        ["bearer as a header name"] = (a, _) => $"HTTP/1.1 200 OK\r\n{a}: x\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bare token as a (valid) header name"] = (_, t) => $"HTTP/1.1 200 OK\r\n{t}: x\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bearer as a header line"] = (a, _) => $"HTTP/1.1 200 OK\r\n{a}\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bare token as a header line"] = (_, t) => $"HTTP/1.1 200 OK\r\n{t}\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bearer as a header value"] = (a, _) => $"HTTP/1.1 200 OK\r\nX-Echo: {a}\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bearer as the Content-Length"] = (a, _) => $"HTTP/1.1 200 OK\r\nContent-Length: {a}\r\n\r\n{{}}",
+        ["bare token as the Content-Type"] = (_, t) => $"HTTP/1.1 200 OK\r\nContent-Type: {t}\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["bare token as the Retry-After of a 503"] = (_, t) => $"HTTP/1.1 503 Service Unavailable\r\nRetry-After: {t}\r\nContent-Length: 0\r\n\r\n",
+        ["bearer as a chunk size"] = (a, _) => Chunked + $"{a}\r\n{{}}\r\n0\r\n\r\n",
+        ["bare token as a chunk size"] = (_, t) => Chunked + $"{t}\r\n{{}}\r\n0\r\n\r\n",
+        ["bare token as a chunk extension"] = (_, t) => Chunked + $"2;{t}\r\n{{}}\r\n0\r\n\r\n",
+        ["bearer as a chunk extension"] = (a, _) => Chunked + $"2;{a}\r\n{{}}\r\n0\r\n\r\n",
+        ["bare token overrunning a chunk"] = (_, t) => Chunked + $"2\r\n{t}\r\n0\r\n\r\n",
+        ["bearer as a trailer name"] = (a, _) => Chunked + $"2\r\n{{}}\r\n0\r\n{a}: x\r\n\r\n",
+        ["bare token as a trailer name"] = (_, t) => Chunked + $"2\r\n{{}}\r\n0\r\n{t}: x\r\n\r\n",
+        ["bare token as a trailer line"] = (_, t) => Chunked + $"2\r\n{{}}\r\n0\r\n{t}\r\n\r\n",
+        ["bearer as a trailer value"] = (a, _) => Chunked + $"2\r\n{{}}\r\n0\r\nX-T: {a}\r\n\r\n",
+        ["503 with Retry-After, bare token as a chunk size"] = (_, t) => Chunked503 + $"{t}\r\n{{}}\r\n0\r\n\r\n",
+        ["503 with Retry-After, bearer as a trailer name"] = (a, _) => Chunked503 + $"2\r\n{{}}\r\n0\r\n{a}: x\r\n\r\n",
+        ["503 with Retry-After, bearer as a header name"] = (a, _) => $"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\n{a}: x\r\nContent-Length: 0\r\n\r\n",
+        ["LF-only lines, bare token as a chunk size"] = (_, t) => $"HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\n{t}\n{{}}\n0\n\n",
+        ["LF-only lines, bearer as a header name"] = (a, _) => $"HTTP/1.1 200 OK\n{a}: x\nContent-Length: 2\n\n{{}}",
+        ["bare CR inside a header line"] = (a, _) => $"HTTP/1.1 200 OK\r\nX: {a}\rY: z\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["split write inside the token, bare chunk size"] = (_, t) => Chunked + $"{t[..10]}\u0001{t[10..]}\r\n{{}}\r\n0\r\n\r\n",
+        ["split write inside the token, bearer header name"] = (a, _) => $"HTTP/1.1 200 OK\r\n{a[..20]}\u0001{a[20..]}: x\r\nContent-Length: 2\r\n\r\n{{}}",
+        ["split write before a bare trailer line"] = (_, t) => Chunked + $"2\r\n{{}}\r\n0\r\n\u0001{t}\r\n\r\n",
+    };
+
+    public static TheoryData<string, string> FuzzCases()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var shape in EchoShapes.Keys)
+        {
+            data.Add(shape, "GET message");
+            data.Add(shape, "POST keys");
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Whatever shape the echo takes, no 12-character piece of the token (plain, or inside any decoded hex run) reaches
+    /// the exception chain or the logs.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FuzzCases))]
+    public async Task EchoedToken_InAnyShape_NeverSurfaces(string shape, string route)
+    {
+        await using var server = new EchoingServer(authorization => EchoShapes[shape](authorization, Bare(authorization)));
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential"));
+        await using var provider = services.BuildServiceProvider();
+
+        var text = new StringBuilder();
+        try
+        {
+            await Call(provider.GetRequiredService<INachosClient>(), route);
+        }
+        catch (Exception ex)
+        {
+            text.AppendLine(ex.ToString());
+            foreach (var current in Chain(ex))
+            {
+                text.AppendLine(current.Message).AppendLine(current.ToString());
+                foreach (DictionaryEntry entry in current.Data)
+                {
+                    text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"{entry.Key}={entry.Value}");
+                }
+            }
+        }
+
+        server.Requests.ShouldBeGreaterThan(0);
+        SecretScan.FindLeak(text.ToString(), Token, window: 12).ShouldBeNull("the exception chain leaks the token");
+        SecretScan.FindLeak(logs.Text, Token, window: 12).ShouldBeNull("the logs leak the token");
+    }
+
+    [Fact]
+    public void SecretScan_FindsPiecesAndHexTails()
+    {
+        var token = Token;
+        SecretScan.FindLeak("x" + token[100..112] + "x", token, 12).ShouldNotBeNull();
+        SecretScan.FindLeak(BitConverter.ToString(Encoding.ASCII.GetBytes(token[1..])), token, 12).ShouldNotBeNull();
+        SecretScan.FindLeak(Convert.ToHexString(Encoding.ASCII.GetBytes(token[7..40])).ToLowerInvariant(), token, 12).ShouldNotBeNull();
+        SecretScan.FindLeak("0" + Convert.ToHexString(Encoding.ASCII.GetBytes(token[7..40])), token, 12).ShouldNotBeNull();
+        SecretScan.FindLeak(token[100..111], token, 12).ShouldBeNull();
+        SecretScan.FindLeak("unrelated text 12-34-56", token, 12).ShouldBeNull();
     }
 
     public static TheoryData<string, string> StubCases() => new()
@@ -171,7 +282,8 @@ public sealed class TransportRedactionTests
 
         attempts.ShouldBe(route == "GET message" ? RetryHandler.MaxAttempts : 1);
         ex.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
-        ex.Message.ShouldContain("Received an invalid header name: 'Bearer " + ErrorMapper.Redacted + "'.");
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+        ex.InnerException.ShouldBeNull();
         AssertNoSecret(ex, auth);
     }
 
@@ -208,7 +320,7 @@ public sealed class TransportRedactionTests
     [Fact]
     public async Task TransportFailure_WithoutTheBearer_KeepsItsOriginalException()
     {
-        var original = new HttpRequestException("connection refused (nachos.test:443)", new SocketException(10061));
+        var original = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused (nachos.test:443)", new SocketException(10061));
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
         services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
@@ -272,17 +384,20 @@ public sealed class TransportRedactionTests
         }
     }
 
-    /// <summary>Neither canary appears as plain text, dash-separated hex or contiguous hex (hex in any case).</summary>
+    /// <summary>
+    /// No 20-character window of either canary (so no 20+-character tail either) appears in <paramref name="text"/>,
+    /// as plain text or inside any hex run of it decoded to bytes.
+    /// </summary>
     private static void AssertNoSecretText(string text, string where)
     {
         foreach (var secret in new[] { Token, ApiKey })
         {
-            var bytes = Encoding.UTF8.GetBytes(secret);
-            text.Contains(secret, StringComparison.Ordinal).ShouldBeFalse($"{where} holds a secret in plain text");
-            text.Contains(BitConverter.ToString(bytes), StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"{where} holds a secret as dash-separated hex");
-            text.Contains(Convert.ToHexString(bytes), StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"{where} holds a secret as contiguous hex");
+            SecretScan.FindLeak(text, secret, window: 20).ShouldBeNull($"{where} leaks a canary");
         }
     }
+
+    private static string Bare(string authorization) =>
+        authorization.StartsWith("Bearer ", StringComparison.Ordinal) ? authorization["Bearer ".Length..] : authorization;
 
     private static string JwtShaped(int length)
     {
@@ -388,8 +503,18 @@ public sealed class TransportRedactionTests
                     _authorizations.Add(authorization);
                 }
 
-                await stream.WriteAsync(Encoding.ASCII.GetBytes(_respond(authorization)), _stop.Token);
-                await stream.FlushAsync(_stop.Token);
+                // '\u0001' marks a split: the parts go out as separate TCP writes, a little apart.
+                var parts = _respond(authorization).Split('\u0001');
+                for (var i = 0; i < parts.Length; i++)
+                {
+                    if (i > 0)
+                    {
+                        await Task.Delay(20, _stop.Token);
+                    }
+
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(parts[i]), _stop.Token);
+                    await stream.FlushAsync(_stop.Token);
+                }
                 connection.Client.Shutdown(SocketShutdown.Send);
             }
         }

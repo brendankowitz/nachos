@@ -161,7 +161,8 @@ public sealed class RetryBoundaryTests
     [Fact]
     public async Task ThreeAttemptsMax_LastTransportFailureSurfaces()
     {
-        var stub = new StubHandler((_, attempt) => throw new HttpRequestException($"connection reset on attempt {attempt}"));
+        // A connection failure is known-safe text, so the last one surfaces as it is (others are replaced by fixed text).
+        var stub = new StubHandler((_, attempt) => throw new HttpRequestException(HttpRequestError.ConnectionError, $"connection reset on attempt {attempt}"));
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1"));
 
@@ -461,7 +462,7 @@ public sealed class RetryBoundaryTests
             () => Client(Retry(stub, maxResponseBufferSize: BufferLimit)).GetMessageAsync("w1", "s1", "m1"));
 
         ex.HttpRequestError.ShouldBe(HttpRequestError.ConfigurationLimitExceeded);
-        ex.Message.ShouldContain(BufferLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.ConfigurationLimitExceeded));
         stub.Requests.Count.ShouldBe(1);
         _delays.ShouldBeEmpty();
     }

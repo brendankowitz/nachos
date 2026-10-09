@@ -23,7 +23,8 @@ public sealed class NachosClientOptions
 
     /// <summary>
     /// A NachosKey token, sent as <c>Authorization: Bearer &lt;key&gt;</c>: non-empty printable ASCII without
-    /// whitespace. Null sends no credentials. Ignored when <see cref="Credential"/> is set.
+    /// whitespace, and not containing the redaction marker <c>[redacted]</c>. Null sends no credentials. Ignored when
+    /// <see cref="Credential"/> is set.
     /// </summary>
     public string? ApiKey { get; set; }
 
@@ -70,6 +71,11 @@ public sealed class NachosClientOptions
         if (ApiKey is { } key && !IsBearerValue(key))
         {
             failures.Add("ApiKey must be non-empty printable ASCII without whitespace.");
+        }
+        else if (ApiKey is { } marked && marked.Contains(ErrorMapper.Redacted, StringComparison.Ordinal))
+        {
+            // Redaction never matches inside its own marker, so such a key could not be redacted where it is echoed.
+            failures.Add("ApiKey must not contain the redaction marker.");
         }
 
         if (Scopes is null)

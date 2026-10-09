@@ -1,31 +1,45 @@
 using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 
 namespace Nachos.Client;
 
 /// <summary>
-/// Keeps the call's secrets (<see cref="RedactionSecrets"/>) out of exceptions that did not come from a mapped
-/// status: transport failures whose text echoes what a server sent back, for example
-/// <c>Received an invalid header name: 'Bearer …'</c>, or the hex dump of an invalid chunk extension.
+/// Decides what a transport failure may say before it leaves the client's handlers: failures whose text can repeat
+/// what the server sent are replaced by a fixed message (fail closed); the few whose text cannot are kept, with the
+/// call's secrets redacted from them as a second layer (<see cref="RedactionSecrets"/>).
 /// </summary>
 /// <remarks>
 /// <para>
-/// An exception whose chain never mentions a secret is returned as it is, so identity, type, inner exceptions and
-/// stack trace survive in the common case, and so does any secret-free inner exception of a chain that is rebuilt.
-/// A level that does mention one is rebuilt: the same type where it matters (<see cref="HttpRequestException"/> and
-/// <see cref="HttpIOException"/> with their <see cref="HttpRequestError"/> and status, cancellations with their token,
-/// <see cref="TimeoutException"/>, <see cref="IOException"/>, <see cref="AggregateException"/>), the message redacted
-/// and bounded like server text (<see cref="ErrorMapper"/>), and <see cref="Exception.Data"/> copied with string keys
-/// and string values redacted. Entries whose key starts with <c>Nachos.</c> (such as
-/// <see cref="NachosExceptionData.RetryAfter"/>) are the library's and are copied untouched; non-string values are
-/// copied as they are. A level of any other type becomes an <see cref="IOException"/> whose message starts with the
-/// original type name. Rebuilt exceptions have no stack trace of their own. At most <see cref="MaxRebuiltDepth"/>
-/// levels are rebuilt; anything deeper in a secret-bearing chain is dropped.
+/// <b>Why fail closed.</b> A server that reflects the request's credentials into a malformed response makes the
+/// transport's own exception text carry them, in forms no matcher can enumerate: plain, hex-dumped as an invalid chunk
+/// extension after the leading hex digits were consumed as the chunk size, split across lines, and so on. So the rule
+/// is by exception type, not by content.
 /// </para>
 /// <para>
-/// Exceptions this library builds from already-redacted parts (the retry handler's wraps, rebuilt copies) are
-/// registered with <see cref="MarkSanitized"/> and never examined or rebuilt again, so their library-owned text (the
-/// <c>Retry-After</c> suffix, markers) is never rewritten, whatever the secret.
+/// <b>Kept</b> (<see cref="Sanitize"/> returns the same instance when nothing in it mentions a secret): a chain whose
+/// every level is a <see cref="SocketException"/>, <see cref="TimeoutException"/>,
+/// <see cref="OperationCanceledException"/> (<see cref="TaskCanceledException"/> included),
+/// <see cref="ObjectDisposedException"/>, <see cref="AggregateException"/>, an <see cref="HttpRequestException"/> whose
+/// <see cref="HttpRequestException.HttpRequestError"/> is <see cref="HttpRequestError.ConnectionError"/> or
+/// <see cref="HttpRequestError.NameResolutionError"/>, or an exception this library built from sanitized parts
+/// (<see cref="MarkSanitized"/>). Their text is framework or library text about the connection, so "connection
+/// refused" and timeouts stay informative. A level that still mentions a secret is rebuilt with it redacted (the same
+/// type for cancellations, timeouts and connection failures, keeping token, error and status; any other type becomes an
+/// <see cref="IOException"/> whose message starts with the original type name), with string <see cref="Exception.Data"/>
+/// keys and values redacted except <c>Nachos.</c> entries. Secret-free levels keep their identity. At most
+/// <see cref="MaxRebuiltDepth"/> levels are rebuilt.
+/// </para>
+/// <para>
+/// <b>Replaced</b>: everything else, unknown types included (<see cref="HttpIOException"/>, other
+/// <see cref="IOException"/>s, an <see cref="HttpRequestException"/> with any other error, <see cref="FormatException"/>,
+/// …). It becomes an <see cref="HttpRequestException"/> with the <see cref="HttpRequestError"/> and status of the first
+/// <see cref="HttpRequestException"/> or <see cref="HttpIOException"/> in its chain, only the <c>Nachos.</c> entries of
+/// its <see cref="Exception.Data"/>, no inner exception, and the fixed text of <see cref="CannedMessage"/>. A
+/// cancellation, timeout or aggregate wrapped around such a chain keeps its own type, token and (redacted) message, and
+/// gets the replaced chain as its inner exception.
 /// </para>
 /// </remarks>
 internal static class SecretRedaction
@@ -37,7 +51,7 @@ internal static class SecretRedaction
 
     private static readonly ConditionalWeakTable<Exception, object> Sanitized = [];
 
-    /// <summary>Records that <paramref name="exception"/> was built from redacted parts; returns it.</summary>
+    /// <summary>Records that <paramref name="exception"/> was built from sanitized parts; returns it.</summary>
     public static TException MarkSanitized<TException>(TException exception)
         where TException : Exception
     {
@@ -46,21 +60,97 @@ internal static class SecretRedaction
     }
 
     /// <summary>
-    /// True when a message, or a string key or value of a non-library <see cref="Exception.Data"/> entry, anywhere in
-    /// the chain (aggregate inner exceptions included, sanitized exceptions excluded) holds a secret.
+    /// The exception to surface in place of <paramref name="exception"/>: the same instance when it may be shown as it
+    /// is, otherwise a rebuilt or replaced one (see the type remarks).
     /// </summary>
-    public static bool Mentions(Exception exception, RedactionSecrets secrets) =>
-        !secrets.IsEmpty && Chain(exception).Any(e => secrets.OccursIn(e.Message) || DataMentions(e.Data, secrets));
+    public static Exception Sanitize(Exception exception, RedactionSecrets secrets) => Sanitize(exception, secrets, depth: 0);
+
+    /// <summary>A replacement failure: the fixed text, then <paramref name="suffix"/>; no inner exception.</summary>
+    public static HttpRequestException Replace(HttpRequestError error, HttpStatusCode? status, string suffix = "") =>
+        MarkSanitized(new HttpRequestException(error, CannedMessage(error) + suffix, inner: null, status));
+
+    /// <summary>The fixed text of a replaced failure: a static sentence and the error's enum name, nothing else.</summary>
+    public static string CannedMessage(HttpRequestError error) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"The Nachos HTTP exchange failed ({error}). The transport's own description is withheld because it can repeat what the server sent.");
 
     /// <summary>
-    /// <paramref name="exception"/> itself when its chain never mentions a secret; otherwise a rebuilt chain without
-    /// them (see the type remarks).
+    /// The first <see cref="HttpRequestError"/> other than <see cref="HttpRequestError.Unknown"/> carried by an
+    /// <see cref="HttpRequestException"/> or <see cref="HttpIOException"/> in the chain (else
+    /// <see cref="HttpRequestError.Unknown"/>), and the first status an <see cref="HttpRequestException"/> carries.
     /// </summary>
-    public static Exception Redact(Exception exception, RedactionSecrets secrets) => Redact(exception, secrets, depth: 0);
+    public static (HttpRequestError Error, HttpStatusCode? Status) Classify(Exception exception)
+    {
+        var error = HttpRequestError.Unknown;
+        HttpStatusCode? status = null;
+        foreach (var level in Chain(exception, skipSanitized: false))
+        {
+            switch (level)
+            {
+                case HttpRequestException http:
+                    status ??= http.StatusCode;
+                    error = error == HttpRequestError.Unknown ? http.HttpRequestError : error;
+                    break;
+                case HttpIOException io:
+                    error = error == HttpRequestError.Unknown ? io.HttpRequestError : error;
+                    break;
+            }
+        }
 
-    /// <summary><paramref name="text"/> redacted in one pass, then bounded like server text.</summary>
-    public static string Text(string text, RedactionSecrets secrets) => ErrorMapper.Bound(secrets.Redact(text));
+        return (error, status);
+    }
 
+    private static Exception Sanitize(Exception exception, RedactionSecrets secrets, int depth)
+    {
+        if (Sanitized.TryGetValue(exception, out _))
+        {
+            return exception;
+        }
+
+        if (Chain(exception, skipSanitized: true).All(IsSafeLevel))
+        {
+            return Redact(exception, secrets, depth);
+        }
+
+        var deeper = depth + 1 < MaxRebuiltDepth;
+        var message = Text(exception.Message, secrets);
+        Exception? Inner() => deeper && exception.InnerException is { } cause ? Sanitize(cause, secrets, depth + 1) : null;
+        return exception switch
+        {
+            TaskCanceledException canceled => MarkSanitized(new TaskCanceledException(message, Inner(), canceled.CancellationToken)),
+            OperationCanceledException canceled => MarkSanitized(new OperationCanceledException(message, Inner(), canceled.CancellationToken)),
+            TimeoutException => MarkSanitized(new TimeoutException(message, Inner())),
+            AggregateException aggregate => MarkSanitized(new AggregateException(
+                deeper ? aggregate.InnerExceptions.Select(e => Sanitize(e, secrets, depth + 1)) : [])),
+            _ => Replaced(exception),
+        };
+    }
+
+    private static HttpRequestException Replaced(Exception exception)
+    {
+        var (error, status) = Classify(exception);
+        var replacement = Replace(error, status);
+        foreach (DictionaryEntry entry in exception.Data)
+        {
+            if (IsLibraryKey(entry.Key))
+            {
+                replacement.Data[entry.Key] = entry.Value;
+            }
+        }
+
+        return replacement;
+    }
+
+    // A level whose own text is framework or library text about the connection, never bytes the server sent.
+    private static bool IsSafeLevel(Exception level) => level switch
+    {
+        HttpRequestException http => http.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError,
+        SocketException or TimeoutException or OperationCanceledException or ObjectDisposedException or AggregateException => true,
+        _ => false,
+    };
+
+    // Second layer, for a chain of safe levels only: rebuild the levels that mention a secret.
     private static Exception Redact(Exception exception, RedactionSecrets secrets, int depth)
     {
         if (!Mentions(exception, secrets))
@@ -76,11 +166,9 @@ internal static class SecretRedaction
             AggregateException aggregate => new AggregateException(
                 deeper ? aggregate.InnerExceptions.Select(e => Redact(e, secrets, depth + 1)) : []),
             HttpRequestException http => new HttpRequestException(http.HttpRequestError, message, inner, http.StatusCode),
-            HttpIOException http => new HttpIOException(http.HttpRequestError, message, inner),
             TaskCanceledException canceled => new TaskCanceledException(message, inner, canceled.CancellationToken),
             OperationCanceledException canceled => new OperationCanceledException(message, inner, canceled.CancellationToken),
             TimeoutException => new TimeoutException(message, inner),
-            IOException => new IOException(message, inner),
             _ => new IOException($"{exception.GetType().FullName}: {message}", inner),
         };
 
@@ -98,6 +186,11 @@ internal static class SecretRedaction
 
         return MarkSanitized(copy);
     }
+
+    private static bool Mentions(Exception exception, RedactionSecrets secrets) =>
+        !secrets.IsEmpty && Chain(exception, skipSanitized: true).Any(e => secrets.OccursIn(e.Message) || DataMentions(e.Data, secrets));
+
+    private static string Text(string text, RedactionSecrets secrets) => ErrorMapper.Bound(secrets.Redact(text));
 
     private static bool IsLibraryKey(object key) =>
         key is string text && text.StartsWith(LibraryDataPrefix, StringComparison.Ordinal);
@@ -120,13 +213,13 @@ internal static class SecretRedaction
         return false;
     }
 
-    // Iterative, so a very deep chain cannot overflow the stack; sanitized exceptions and their subtrees are skipped.
-    private static IEnumerable<Exception> Chain(Exception root)
+    // Iterative, so a very deep chain cannot overflow the stack.
+    private static IEnumerable<Exception> Chain(Exception root, bool skipSanitized)
     {
         var pending = new Stack<Exception>([root]);
         while (pending.TryPop(out var current))
         {
-            if (Sanitized.TryGetValue(current, out _))
+            if (skipSanitized && Sanitized.TryGetValue(current, out _))
             {
                 continue;
             }

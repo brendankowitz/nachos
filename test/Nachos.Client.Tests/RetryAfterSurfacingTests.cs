@@ -138,7 +138,7 @@ public sealed class RetryAfterSurfacingTests
         ex.StatusCode.ShouldBe(HttpStatusCode.Created);
         ex.Data[Key].ShouldBe(TimeSpan.FromSeconds(45));
         ex.Message.ShouldEndWith(" Retry-After: 45s.");
-        ex.InnerException.ShouldNotBeNull();
+        ex.InnerException.ShouldBeNull();
         stub.Requests.Count.ShouldBe(1);
         _delays.ShouldBeEmpty();
     }

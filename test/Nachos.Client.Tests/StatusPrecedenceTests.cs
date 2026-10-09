@@ -72,7 +72,10 @@ public sealed class StatusPrecedenceTests
         var ex = await Should.ThrowAsync<HttpRequestException>(() => http.SendAsync(request));
 
         ex.StatusCode.ShouldBe(status);
-        ex.InnerException.ShouldNotBeNull("the read failure is kept as the inner exception");
+
+        // The read failure's own text can repeat server bytes, so it is withheld: fixed text, no inner exception.
+        ex.Message.ShouldStartWith("The Nachos HTTP exchange failed (");
+        ex.InnerException.ShouldBeNull();
     }
 
     /// <summary>Cedar's probe: a broken body on a permanent status used to cost three sends through the client.</summary>

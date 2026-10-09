@@ -3,25 +3,36 @@ using System.Text;
 namespace Nachos.Client;
 
 /// <summary>
-/// The secrets of one call (the bearer value, and the API key) in every form a transport or server may echo them:
-/// as plain text (matched exactly), and as the hex of their UTF-8 bytes, dash-separated (<c>65-79-4A</c>, as .NET
-/// dumps an invalid chunk extension) or contiguous (<c>65794A</c>), the hex forms matched in any letter case.
+/// The bearer value of one call, as plain text (matched exactly) and as the hex of its UTF-8 bytes, dash-separated
+/// (<c>65-79-4A</c>) or contiguous (<c>65794A</c>), the hex forms matched in any letter case and only when they are at
+/// least <see cref="MinHexLength"/> characters long.
 /// </summary>
 /// <remarks>
+/// <para>
+/// This is the second layer. It redacts server text the client shows on purpose (mapped error bodies, reason phrases;
+/// see <see cref="ErrorMapper"/>) and the few transport failures <see cref="SecretRedaction"/> keeps. It does not
+/// protect the malformed-response family: those failures are replaced by fixed text, because no list of encodings can
+/// cover every way a transport describes reflected bytes.
+/// </para>
 /// <para>
 /// <see cref="Redact"/> replaces every match in one pass: overlapping or adjacent matches collapse into one
 /// <see cref="ErrorMapper.Redacted"/>, and text that already is that marker is never matched again, so redacting twice
 /// changes nothing and the marker cannot grow (a secret such as <c>redact</c> leaves <c>[redacted]</c> intact).
 /// </para>
 /// <para>
-/// Matching is by substring, so an echo that holds the whole secret (or the whole hex of it, inside a longer dump) is
-/// caught wherever it sits. Not caught: a partial echo, one split across lines, a different case of the plain text,
-/// or any other encoding (percent-encoding, base64).
+/// Matching is by substring, so an echo that holds the whole secret (or the whole hex of it) is caught wherever it sits.
+/// Not caught: a partial echo, one split across lines, a different case of the plain text, or another encoding.
 /// </para>
 /// </remarks>
 internal sealed class RedactionSecrets
 {
     public static readonly RedactionSecrets None = new([]);
+
+    /// <summary>
+    /// Shortest hex form that is matched. Hex of a very short secret (a key of "0" is "30") would match ordinary digits
+    /// such as a status code and corrupt unrelated text; plain matching has no minimum.
+    /// </summary>
+    public const int MinHexLength = 8;
 
     private const string BearerScheme = "Bearer ";
 
@@ -42,8 +53,13 @@ internal sealed class RedactionSecrets
         {
             var bytes = Encoding.UTF8.GetBytes(secret);
             forms.Add((secret, StringComparison.Ordinal));
-            forms.Add((BitConverter.ToString(bytes), StringComparison.OrdinalIgnoreCase));
-            forms.Add((Convert.ToHexString(bytes), StringComparison.OrdinalIgnoreCase));
+            foreach (var hex in new[] { BitConverter.ToString(bytes), Convert.ToHexString(bytes) })
+            {
+                if (hex.Length >= MinHexLength)
+                {
+                    forms.Add((hex, StringComparison.OrdinalIgnoreCase));
+                }
+            }
         }
 
         return forms.Count == 0 ? None : new([.. forms.Distinct()]);
@@ -112,6 +128,9 @@ internal sealed class RedactionSecrets
         return result.ToString();
     }
 
-    private static string StripScheme(string value) =>
-        value.StartsWith(BearerScheme, StringComparison.OrdinalIgnoreCase) ? value[BearerScheme.Length..].Trim() : value.Trim();
+    private static string StripScheme(string value)
+    {
+        var trimmed = value.Trim();
+        return trimmed.StartsWith(BearerScheme, StringComparison.OrdinalIgnoreCase) ? trimmed[BearerScheme.Length..].Trim() : trimmed;
+    }
 }

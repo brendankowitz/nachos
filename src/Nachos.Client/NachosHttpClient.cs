@@ -370,9 +370,12 @@ public sealed class NachosHttpClient : INachosClient
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         }
 
-        // Transport failures can echo the bearer value (a server reflecting it into a malformed header, trailer or chunk
-        // line); they are redacted like mapped server text. Exceptions that never mention it pass through unchanged.
-        var secrets = RedactionSecrets.Of(bearer, _apiKey);
+        // Transport failures can repeat what the server sent (a server reflecting the bearer value into a malformed
+        // header, trailer or chunk line), so SecretRedaction replaces them with fixed text unless they are known-safe.
+        // That covers failures raised outside the handler pipeline too, such as HttpClient buffering the body of a
+        // never-retried request. The bearer value is the only secret this call sends (with a credential, the API key
+        // never leaves the process).
+        var secrets = RedactionSecrets.Of(bearer);
         HttpResponseMessage? response = null;
         string text;
         try
@@ -383,12 +386,13 @@ public sealed class NachosHttpClient : INachosClient
         catch (Exception ex)
         {
             response?.Dispose();
-            if (SecretRedaction.Mentions(ex, secrets))
+            var safe = SecretRedaction.Sanitize(ex, secrets);
+            if (ReferenceEquals(safe, ex))
             {
-                throw SecretRedaction.Redact(ex, secrets);
+                throw;
             }
 
-            throw;
+            throw safe;
         }
 
         // The mapped exception is built from redacted server text, outside the redaction above, so its library-owned
