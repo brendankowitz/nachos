@@ -41,6 +41,16 @@ public sealed class SqlIContainsFoldingTests(SqlServerFixture fixture)
         { "ა", "Ა", false, true },                    // U+10D0 Mkhedruli an vs U+1C90 Mtavruli: .NET folds, SQL does not
         { "Ა", "ა", false, true },
         { "\U00010428", "\U00010400", false, true },  // Deseret small long i vs capital (supplementary): .NET folds
+        { "\uAB70", "\u13A0", false, true },          // Cherokee small a vs capital: .NET folds, SQL does not
+
+        // Parity since partner review round 1 (I3): the operand is folded under the same binary collation as the text. Before,
+        // it was folded under the database's default collation, which does not upper-case these, so even an identical
+        // string did not match.
+        { "\u2D04", "\u2D04", true, true },           // Georgian Nuskhuri en (both fold to Asomtavruli U+10A4)
+        { "\u2D04", "\u10A4", true, true },
+        { "\u10A4", "\u2D04", true, true },
+        { "\u024D", "\u024D", true, true },           // Latin small r with stroke
+        { "\u2C65", "\u023A", true, true },           // Latin small a with stroke vs capital
     };
 
     [Theory]
