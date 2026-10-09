@@ -44,10 +44,11 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
 /// <c>varchar(8000)</c> chunks passed with their first and last entry, and a row searches only the chunk whose range
 /// holds its own entry. Short operands compare exactly: strings of up to 16 UTF-16 code units as the hex of their code
-/// units, number order keys of up to 100 characters as themselves. Long-operand <c>in</c> membership is decided by
-/// SHA-256 digest + kind + length: a longer string's entry is its UTF-16 code-unit count and the SHA-256 of its UTF-16LE
-/// code units (<c>len:HEX</c>), a longer key's its length and the SHA-256 of the key, each tested only against stored
-/// values of the same JSON kind, so a false match would need a same-length SHA-256 collision.
+/// units, number order keys of up to 100 characters as themselves. Long-operand <c>in</c> membership uses a SHA-256 + kind
+/// + length prefilter, confirmed by exact comparison: a longer string's entry is its UTF-16 code-unit count and the
+/// SHA-256 of its UTF-16LE code units (<c>len:HEX</c>), a longer key's its length and the SHA-256 of the key, each
+/// tested only against stored values of the same JSON kind. An entry match only locates the one operand it names, whose
+/// bytes are then compared with the stored value's bytes, so a digest collision can never produce a false match.
 /// </para>
 /// </remarks>
 internal static partial class SqlFilterCompiler
@@ -59,7 +60,15 @@ internal static partial class SqlFilterCompiler
     /// <param name="tableAlias">The alias of the resource's table in the caller's query: an identifier, never user input.</param>
     /// <exception cref="ArgumentException"><paramref name="tableAlias"/> is not a plain identifier.</exception>
     /// <exception cref="NachosValidationException">The filter needs more than <see cref="MaxParameters"/> parameters.</exception>
-    public static (string Sql, IReadOnlyList<SqlParameter> Parameters) Compile(FilterNode? filter, ResourceKind kind, string tableAlias)
+    public static (string Sql, IReadOnlyList<SqlParameter> Parameters) Compile(FilterNode? filter, ResourceKind kind, string tableAlias) =>
+        Compile(filter, kind, tableAlias, SqlDigest.FullHexLength);
+
+    /// <summary>
+    /// Test seam: <see cref="Compile(FilterNode?, ResourceKind, string)"/> with prefilter digests shortened to
+    /// <paramref name="digestHexLength"/> hex digits (0 to 64), so tests can force digest collisions between different
+    /// operands of one length and prove that the exact confirmation decides membership. Production always uses 64.
+    /// </summary>
+    internal static (string Sql, IReadOnlyList<SqlParameter> Parameters) Compile(FilterNode? filter, ResourceKind kind, string tableAlias, int digestHexLength)
     {
         if (!SafeAlias().IsMatch(tableAlias))
         {
@@ -71,7 +80,7 @@ internal static partial class SqlFilterCompiler
             return (FilterWriter.True, []);
         }
 
-        var writer = new FilterWriter(kind, tableAlias);
+        var writer = new FilterWriter(kind, tableAlias, digestHexLength);
         var sql = writer.Write(filter);
         return writer.Parameters.Count <= MaxParameters
             ? (sql, writer.Parameters)

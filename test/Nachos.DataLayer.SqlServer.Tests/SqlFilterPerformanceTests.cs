@@ -17,7 +17,7 @@ namespace Nachos.DataLayer.SqlServer.Tests;
 /// row (Task 7 review C1): the key function's call count per statement is bounded by the number of numeric values, whatever
 /// the size of the operand list. 1000-element <c>in</c> lists of numbers, long-key numbers, strings of any length and mixed
 /// kinds finish well within the request timeout: the per-row cost does not grow with the operands' lengths (review
-/// rounds 2 and 3).
+/// rounds 2 and 3), including when every row passes the long-operand prefilter and is confirmed exactly.
 /// </summary>
 [Collection(SqlServerDockerGroup.Name)]
 public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOutputHelper output)
@@ -29,8 +29,9 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
     private const string Session = "performance-session";
 
     /// <summary>
-    /// Every message has metadata <c>{"h": Huge(i)}</c>, and every tenth also <c>"ls": LongString(i)</c>: 1000-digit
-    /// numbers and 1999-unit strings.
+    /// Every message has metadata <c>{"h": Huge(i), "hh": Huge(i % 1000), "ls": LongString(i % 1000)}</c>: unique
+    /// 1000-digit numbers, and 1000-digit numbers and 1999-unit strings each shared by ten rows, so a 1000-operand list
+    /// can make every row a prefilter hit that must be confirmed exactly (the worst case).
     /// </summary>
     private const string LongSession = "performance-long";
 
@@ -66,16 +67,12 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
                     await store.Messages.AppendAsync(
                         Workspace,
                         LongSession,
-                        [.. Enumerable.Range(start, 1000).Select(i =>
-                        {
-                            var metadata = new JsonObject { ["h"] = JsonNode.Parse(Huge(i)) };
-                            if (i % 10 == 0)
-                            {
-                                metadata["ls"] = LongString(i);
-                            }
-
-                            return new NewMessage("alice", $"h{i}", 1, metadata, null);
-                        })],
+                        [.. Enumerable.Range(start, 1000).Select(i => new NewMessage(
+                            "alice",
+                            $"h{i}",
+                            1,
+                            new JsonObject { ["h"] = JsonNode.Parse(Huge(i)), ["hh"] = JsonNode.Parse(Huge(i % 1000)), ["ls"] = LongString(i % 1000) },
+                            null))],
                         null,
                         Ct);
                 }
@@ -132,7 +129,9 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
             { "in-500-long-500-short", Session, "{\"metadata\":{\"n\":{\"in\":" + List(sevens.Select(i => i % 2 == 0 ? Big(i) : i.ToString(CultureInfo.InvariantCulture))) + "}}}", 500, Rows, 5 },
             { "in-500-long-500-short-long-rows", Session, "{\"metadata\":{\"big\":{\"in\":" + List(sevens.Select(i => i % 2 == 0 ? Big(i) : i.ToString(CultureInfo.InvariantCulture))) + "}}}", 500, Rows, 6 },
             { "in-1000-1000-digit-short-rows", Session, "{\"metadata\":{\"n\":{\"in\":" + List(sevens.Select(Huge)) + "}}}", 0, Rows, 5 },
-            { "in-1000-1000-digit-1000-digit-rows", LongSession, "{\"metadata\":{\"h\":{\"in\":" + List(sevens.Select(Huge)) + "}}}", 1000, Rows, 10 },
+            { "in-1000-1000-digit-1000-digit-rows", LongSession, "{\"metadata\":{\"h\":{\"in\":" + List(sevens.Select(Huge)) + "}}}", 1000, Rows, 12 },
+            { "in-1000-1000-digit-all-rows-hit", LongSession, "{\"metadata\":{\"hh\":{\"in\":" + List(Enumerable.Range(0, 1000).Select(Huge)) + "}}}", Rows, Rows, 12 },
+            { "in-1000-1000-digit-same-length-misses", LongSession, "{\"metadata\":{\"hh\":{\"in\":" + List(Enumerable.Range(1000, 1000).Select(Huge)) + "}}}", 0, Rows, 12 },
             { "in-1000-300-digit-1000-digit-rows", LongSession, "{\"metadata\":{\"h\":{\"in\":" + List(sevens.Select(ThreeHundredDigits)) + "}}}", 0, Rows, 10 },
 
             // Strings: up to 16 units packed as hex, longer ones as digests; the per-row cost is independent of their length.
@@ -141,7 +140,9 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
             { "in-500-numbers-500-strings", Session, "{\"metadata\":{\"n\":{\"in\":" + List(sevens.Select(i => i % 2 == 0 ? $"\"x{i}\"" : i.ToString(CultureInfo.InvariantCulture))) + "}}}", 500, Rows, 8 },
             { "in-1000-200-unit-strings-short-rows", Session, "{\"metadata\":{\"s\":{\"in\":" + List(sevens.Select(i => Quote(new string('x', 195) + i.ToString("D5", CultureInfo.InvariantCulture)))) + "}}}", 0, 0, 5 },
             { "in-1000-1999-unit-strings-short-rows", Session, "{\"metadata\":{\"s\":{\"in\":" + List(sevens.Select(i => Quote(LongString(i)))) + "}}}", 0, 0, 5 },
-            { "in-1000-1999-unit-strings-long-rows", LongSession, "{\"metadata\":{\"ls\":{\"in\":" + List(tens.Select(i => Quote(LongString(i)))) + "}}}", 1000, 0, 5 },
+            { "in-1000-1999-unit-strings-all-rows-hit", LongSession, "{\"metadata\":{\"ls\":{\"in\":" + List(Enumerable.Range(0, 1000).Select(i => Quote(LongString(i)))) + "}}}", Rows, 0, 10 },
+            { "in-100-1999-unit-strings-long-rows", LongSession, "{\"metadata\":{\"ls\":{\"in\":" + List(tens.Take(100).Select(i => Quote(LongString(i)))) + "}}}", 1000, 0, 6 },
+            { "in-1000-1999-unit-strings-same-length-misses", LongSession, "{\"metadata\":{\"ls\":{\"in\":" + List(Enumerable.Range(1000, 1000).Select(i => Quote(LongString(i)))) + "}}}", 0, 0, 6 },
         };
     }
 

@@ -12,9 +12,13 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// <summary>
 /// One compilation of <see cref="SqlFilterCompiler"/>: writes the predicate text and collects its parameters. Every
 /// interpolated name in the SQL below is a generated alias, a generated parameter name or the caller's checked table
-/// alias; operands only ever reach <see cref="Parameter"/>.
+/// alias; operands only ever reach <see cref="Parameter"/> (or <see cref="Bytes"/>).
 /// </summary>
-internal sealed class FilterWriter(ResourceKind kind, string table)
+/// <param name="digestHexLength">
+/// The hex digits of SHA-256 kept in prefilter entries: <see cref="SqlDigest.FullHexLength"/> except in tests, which
+/// shorten it to force digest collisions and prove that the exact confirmation decides membership.
+/// </param>
+internal sealed class FilterWriter(ResourceKind kind, string table, int digestHexLength = SqlDigest.FullHexLength)
 {
     public const string True = "(1 = 1)";
     public const string False = "(1 = 0)";
@@ -30,6 +34,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     private int _aliases;
 
     public IReadOnlyList<SqlParameter> Parameters => _parameters;
+
+    private int DigestHexLength => digestHexLength;
 
     public string Write(FilterNode node) => node switch
     {
@@ -355,14 +361,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         /// (else NULL), computed once per row.
         /// </summary>
         public string NumberDigest => _numberDigest ??= writer.Digest(
-            $"CASE WHEN LEN({NumberKey}) > {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.KeySql(NumberKey)} END", from);
+            $"CASE WHEN LEN({NumberKey}) > {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.KeySql(NumberKey, writer.DigestHexLength)} END", from);
 
         /// <summary>
         /// The <c>len:SHA256</c> entry (<see cref="SqlDigest.StringSql"/>) of a string longer than <see cref="RawString"/>
         /// code units (else NULL), computed once per row.
         /// </summary>
         public string StringDigest => _stringDigest ??= writer.Digest(
-            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.StringSql(Value)} END", from);
+            $"CASE WHEN {Type} = 1 AND DATALENGTH({Value}) > {(RawString * 2).ToString(CultureInfo.InvariantCulture)} THEN {SqlDigest.StringSql(Value, writer.DigestHexLength)} END", from);
 
         /// <summary>The number keys of the elements of <paramref name="array"/>, joined into the row's FROM clause.</summary>
         public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(array, from);
@@ -541,11 +547,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// Whether the string value of <paramref name="row"/> is exactly (code unit for code unit, trailing spaces included)
     /// one of <paramref name="strings"/>, without parsing a list per row and at a per-row cost independent of the
     /// operands' number and length. Strings of up to <see cref="RawString"/> code units are packed (<see cref="PackedIn"/>)
-    /// as the hex of their UTF-16LE code units, exactly; longer ones as their code-unit count and SHA-256 digest
-    /// (<see cref="SqlDigest"/>), against the row's entry computed once (<see cref="MetadataRow.StringDigest"/>). The two
-    /// tiers apply to disjoint rows (by the value's length), so a raw entry is never compared with a digest entry, and
-    /// only string rows are tested. Long-operand membership is decided by SHA-256 digest + kind + length, accepted as exact
-    /// (review round 3).
+    /// as the hex of their UTF-16LE code units, exactly. Longer ones go through <see cref="VerifiedIn"/>: a prefilter on
+    /// the row's code-unit count and SHA-256 (<see cref="MetadataRow.StringDigest"/>, computed once per row, string rows
+    /// only), confirmed by comparing the row's UTF-16LE bytes with the one operand the entry selects. The two tiers apply
+    /// to disjoint rows (by the value's length), so a raw entry is never compared with a digest entry.
     /// </summary>
     private string StringIn(MetadataRow row, IReadOnlyList<string> strings)
     {
@@ -556,11 +561,15 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
             distinct.Where(s => s.Length <= RawString).Select(SqlDigest.Utf16Hex));
         if (distinct.Any(s => s.Length > RawString))
         {
-            parts.AddRange(PackedIn(row.StringDigest, distinct.Where(s => s.Length > RawString).Select(SqlDigest.OfString)));
+            parts.AddRange(VerifiedIn(
+                row.StringDigest,
+                $"CAST({row.Value} AS varbinary(max))",
+                [.. distinct.Where(s => s.Length > RawString).Select(s => (SqlDigest.OfString(s, digestHexLength), SqlDigest.Utf16Bytes(s)))]));
         }
 
         return $"({string.Join(" OR ", parts)})";
     }
+
     private string StringList(IEnumerable<string> strings) =>
         Parameter(SqlDbType.NVarChar, new JsonArray([.. strings.Select(s => (JsonNode)s)]).ToJsonString(), SqlParameters.LongText);
 
@@ -637,10 +646,10 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// Whether the number value of <paramref name="row"/> is one of the numbers whose order keys are
     /// <paramref name="keys"/>, without parsing a list per row and at a per-row cost independent of the operands' number
     /// and length. Keys of up to <see cref="ShortKey"/> characters are packed (<see cref="PackedIn"/>) as themselves (they
-    /// hold only digits and <c>:</c>), exactly; longer ones as their length and SHA-256 digest (<see cref="SqlDigest"/>),
-    /// against the row's key entry computed once (<see cref="MetadataRow.NumberDigest"/>), only for number rows. Keys are
-    /// canonical, so equal digests mean equal numbers (accepted as exact, review round 3). The two tiers apply to disjoint
-    /// rows (by the key's length).
+    /// hold only digits and <c>:</c>), exactly. Longer ones go through <see cref="VerifiedIn"/>: a prefilter on the key's
+    /// length and SHA-256 (<see cref="MetadataRow.NumberDigest"/>, computed once per row, number rows only), confirmed by
+    /// comparing the whole key with the one operand key the entry selects. Keys are canonical, so equal keys mean equal
+    /// numbers. The two tiers apply to disjoint rows (by the key's length).
     /// </summary>
     private string KeyIn(MetadataRow row, IReadOnlyList<string> keys)
     {
@@ -650,10 +659,108 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
             keys.Where(k => k.Length <= ShortKey));
         if (keys.Any(k => k.Length > ShortKey))
         {
-            parts.AddRange(PackedIn(row.NumberDigest, keys.Where(k => k.Length > ShortKey).Select(SqlDigest.OfKey)));
+            parts.AddRange(VerifiedIn(
+                row.NumberDigest,
+                $"CAST({key} AS varbinary(max))",
+                [.. keys.Where(k => k.Length > ShortKey).Select(k => (SqlDigest.OfKey(k, digestHexLength), SqlDigest.KeyBytes(k)))]));
         }
 
         return $"({string.Join(" OR ", parts)})";
+    }
+
+    /// <summary>The digits of an operand's byte offset in a <see cref="VerifiedIn"/> entry.</summary>
+    private const int OffsetDigits = 10;
+
+    /// <summary>
+    /// Whether the row, whose prefilter entry is <paramref name="entry"/> (NULL for a row that cannot match) and whose
+    /// value's bytes are <paramref name="valueBytes"/>, is exactly one of <paramref name="operands"/> (each a prefilter
+    /// entry and the operand's bytes). Membership uses a SHA-256 + kind + length prefilter, confirmed by exact comparison.
+    /// </summary>
+    /// <remarks>
+    /// The operands' bytes are concatenated into one <c>varbinary(max)</c> parameter. Each operand is packed as
+    /// <c>len:HEX:offset</c> (offset: <see cref="OffsetDigits"/> digits, 1-based, into those bytes) into sorted
+    /// <c>varchar(8000)</c> chunks passed with their first and last entry, as in <see cref="PackedIn"/>. A row scans only
+    /// the chunk whose range holds its entry. Only when <c>CHARINDEX</c> finds the entry there, the offset beside it
+    /// selects the operand, and the row's bytes are compared with that operand's bytes: nested <c>CASE</c> guarantees the
+    /// order, so the exact comparison runs once per prefilter hit and never rescans the operands. Lengths are equal by then
+    /// (the entry holds the length), so SQL's zero-padded <c>varbinary</c> comparison is exact. Operands sharing an entry
+    /// (a digest collision; only forced ones in tests) cannot be told apart by position, so each such group is tested
+    /// against all its members' bytes.
+    /// </remarks>
+    private List<string> VerifiedIn(string entry, string valueBytes, IReadOnlyList<(string Entry, byte[] Bytes)> operands)
+    {
+        using var buffer = new MemoryStream();
+        long Append(byte[] bytes)
+        {
+            var offset = buffer.Position + 1;
+            buffer.Write(bytes);
+            return offset;
+        }
+
+        var singles = new List<(string Entry, long Offset)>();
+        var collisions = new List<(string Entry, List<long> Offsets, int Length)>();
+        foreach (var group in operands.GroupBy(o => o.Entry, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var members = group.ToList();
+            if (members.Count == 1)
+            {
+                singles.Add((group.Key, Append(members[0].Bytes)));
+            }
+            else
+            {
+                collisions.Add((group.Key, [.. members.Select(m => Append(m.Bytes))], members[0].Bytes.Length));
+            }
+        }
+
+        var bytes = Bytes(buffer.ToArray());
+        var parts = new List<string>();
+        var needle = $"'|' + {entry} + ':'";
+        var chunk = new StringBuilder("|");
+        string? first = null;
+        string? last = null;
+
+        void Flush()
+        {
+            if (first is null)
+            {
+                return;
+            }
+
+            var low = Parameter(SqlDbType.VarChar, first, SqlParameters.Ascii);
+            var high = Parameter(SqlDbType.VarChar, last!, SqlParameters.Ascii);
+            var packed = Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii);
+            var offset = $"CAST(SUBSTRING({packed}, CHARINDEX({needle}, {packed}) + DATALENGTH({entry}) + 2, {OffsetDigits.ToString(CultureInfo.InvariantCulture)}) AS bigint)";
+            parts.Add(
+                $"(CASE WHEN {entry} >= {low} AND {entry} <= {high} THEN " +
+                $"CASE WHEN CHARINDEX({needle}, {packed}) > 0 THEN " +
+                $"CASE WHEN SUBSTRING({bytes}, {offset}, DATALENGTH({valueBytes})) = {valueBytes} THEN 1 ELSE 0 END " +
+                "ELSE 0 END ELSE 0 END = 1)");
+            chunk.Clear().Append('|');
+            first = null;
+        }
+
+        foreach (var (key, offset) in singles)
+        {
+            var item = string.Create(CultureInfo.InvariantCulture, $"{key}:{offset.ToString(new string('0', OffsetDigits), CultureInfo.InvariantCulture)}");
+            if (chunk.Length + item.Length + 1 > ChunkLength)
+            {
+                Flush();
+            }
+
+            first ??= key;
+            last = key;
+            chunk.Append(item).Append('|');
+        }
+
+        Flush();
+
+        foreach (var (key, offsets, length) in collisions)
+        {
+            var candidates = string.Join(", ", offsets.Select(o => string.Create(CultureInfo.InvariantCulture, $"SUBSTRING({bytes}, {o}, {length})")));
+            parts.Add($"(CASE WHEN {entry} = {Parameter(SqlDbType.VarChar, key, SqlParameters.Ascii)} THEN CASE WHEN {valueBytes} IN ({candidates}) THEN 1 ELSE 0 END ELSE 0 END = 1)");
+        }
+
+        return parts;
     }
 
     /// <summary>
@@ -718,6 +825,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     private string Alias() => $"fa{_aliases++}";
 
     private string Text(string value) => Parameter(SqlDbType.NVarChar, value, SqlParameters.Text);
+
+    /// <summary>A new <c>varbinary(max)</c> parameter holding <paramref name="value"/>.</summary>
+    private string Bytes(byte[] value)
+    {
+        var name = $"@f{_parameters.Count}";
+        _parameters.Add(new SqlParameter(name, SqlDbType.VarBinary, -1) { Value = value });
+        return name;
+    }
 
     /// <summary>
     /// The parameter holding <paramref name="value"/>, shared with any earlier parameter of the same type and value.

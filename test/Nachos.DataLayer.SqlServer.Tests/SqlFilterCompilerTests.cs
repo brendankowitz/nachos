@@ -179,7 +179,8 @@ public sealed class SqlFilterCompilerTests
                 new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["in"] = list } } }, ResourceKind.Peer);
 
             parameters.Count.ShouldBeLessThan(40);
-            parameters.ShouldAllBe(p => ((string)p.Value).Length <= 8000);
+            parameters.Where(p => p.Value is string).ShouldAllBe(p => ((string)p.Value).Length <= 8000);
+            parameters.Count(p => p.Value is byte[]).ShouldBeLessThanOrEqualTo(1, "long operands travel as one byte buffer");
             sql.Length.ShouldBeLessThan(12_000);
             sql.ShouldContain("CHARINDEX");
         }
