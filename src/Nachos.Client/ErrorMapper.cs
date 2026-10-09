@@ -188,13 +188,15 @@ internal static class ErrorMapper
     }
 
     // FastAPI loc entries are member names (strings) or array indexes (integers). Anything else (an object, an array, a
-    // float, a bool) is kept as a node here and shown as JSON text by Sanitize, once its strings are redacted.
+    // float, a bool) is kept as a node here and shown as JSON text by Sanitize, once its strings are redacted. The
+    // last arm is cast on purpose: JsonNode converts implicitly from string and int, so without it the arms' common type
+    // would be JsonNode and every name and index would come out wrapped in a JsonValue.
     private static object LocPart(JsonNode? part) => part switch
     {
         JsonValue v when v.TryGetValue<string>(out var name) => name,
         JsonValue v when v.TryGetValue<int>(out var index) => index,
         null => "null",
-        _ => part,
+        _ => (object)part,
     };
 
     // The strings of a loc part are redacted before it is encoded as JSON text: encoding escapes characters an echoed
