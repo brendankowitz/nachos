@@ -25,6 +25,10 @@ BEGIN
     IF DATALENGTH(@number) > 8000
         RETURN [dbo].[JsonNumberOrderKeyLong](@number);
     -- Not number-shaped (-?D(.D)?([eE][+-]?D)? with D one or more digits): NULL, never an error.
+    -- Characters are checked on the NVARCHAR input under a binary collation first: the CAST below would map fullwidth
+    -- and other non-ASCII digits (and superscripts) to ASCII ones under a linguistic collation.
+    IF PATINDEX(N'%[^-+.0-9eE]%', @number COLLATE Latin1_General_100_BIN2) > 0
+        RETURN NULL;
     DECLARE @text VARCHAR (8000) = CAST(@number AS VARCHAR (8000));
     DECLARE @negative BIT = CASE WHEN LEFT(@text, 1) = '-' THEN 1 ELSE 0 END;
     IF @negative = 1

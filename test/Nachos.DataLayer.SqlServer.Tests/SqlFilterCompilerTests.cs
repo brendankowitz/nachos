@@ -12,6 +12,9 @@ public sealed class SqlFilterCompilerTests
 {
     private const string Marker = "zqxj";
 
+    /// <summary><see cref="Marker"/> as UTF-16LE hex, the form string <c>in</c> lists are packed in.</summary>
+    private static readonly string MarkerHex = string.Concat(Marker.Select(c => $"{c & 0xFF:X2}{c >> 8:X2}"));
+
     /// <summary>Values that would break out of a string literal, an identifier, a comment or a LIKE pattern.</summary>
     private static readonly string[] Hostile =
     [
@@ -88,8 +91,10 @@ public sealed class SqlFilterCompilerTests
                     sql.ShouldContain(parameter.ParameterName);
                 }
 
-                // The value travels in a parameter (possibly escaped, folded into a LIKE pattern or inside a JSON list).
-                parameters.Any(p => (p.Value as string)?.Contains(Marker, StringComparison.Ordinal) == true)
+                // The value travels in a parameter (possibly escaped, folded into a LIKE pattern, inside a JSON list, or as
+                // the hex of its UTF-16 code units packed for an `in` list).
+                sql.ShouldNotContain(MarkerHex, Case.Insensitive, $"a user value leaked into the SQL of {filter.ToJsonString()}");
+                parameters.Any(p => p.Value is string value && (value.Contains(Marker, StringComparison.Ordinal) || value.Contains(MarkerHex, StringComparison.Ordinal)))
                     .ShouldBeTrue($"the value of {filter.ToJsonString()} is not in any parameter");
             }
         }

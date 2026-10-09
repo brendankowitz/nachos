@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
@@ -207,13 +208,173 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         static FilterNode? Parse(string json) => FilterParser.Parse(json, json.Contains("content", StringComparison.Ordinal) ? ResourceKind.Message : ResourceKind.Peer);
     }
 
-    private static async Task<List<string>> ListAsync(IMemoryStore store, ResourceKind kind, FilterNode? filter)
+    // ------------------------------------------------------------------------------------------------ lists and merges
+
+    /// <summary>
+    /// <c>in</c> lists, array containment and merged same-path conditions (review round 2): multi-number lists with
+    /// negative and long order keys, the 100/101-character short-key boundary, lists spanning many packed chunks, NOT over
+    /// a merged AND, merged and mixed-kind ranges, nested paths, and string lists across the packed-length boundary.
+    /// Seeded in a workspace of their own, so the hand-numbered sentinels above are unaffected.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ListFilters))]
+    public async Task ListsAndMergedConditions_MatchTheReference(string filterJson)
+    {
+        var store = await SeedListsAsync();
+        var filter = FilterParser.Parse(filterJson, ResourceKind.Peer);
+
+        var expected = await ListAsync(Reference, ResourceKind.Peer, filter, ListWorkspace);
+        var actual = await ListAsync(store, ResourceKind.Peer, filter, ListWorkspace);
+
+        actual.ShouldBe(expected, ignoreOrder: true, filterJson.Length > 300 ? filterJson[..300] : filterJson);
+    }
+
+    private const string ListWorkspace = "differential-lists";
+    private static bool _listsSeeded;
+
+    /// <summary>
+    /// <c>1.33…3</c> + <paramref name="last"/> with <paramref name="digits"/> significant digits. Its order key has
+    /// <c>13 + digits</c> characters (one more when negative), so 87 and 88 digits straddle the 100-character short-key limit.
+    /// </summary>
+    private static string Mantissa(int digits, char last = '7') => "1." + new string('3', digits - 2) + last;
+
+    private static List<string> ListNumbers()
+    {
+        var list = new List<string> { "0", "-0", "1", "-1", "1.2", "1.23", "12", "123", "-1.2", "-1.23", "-12", "11.2", "0.5", "-0.5", "3", "4", "5", "-5", "1e2", "-1e-2", "2.5", "7" };
+        for (var digits = 82; digits <= 92; digits++)
+        {
+            list.AddRange([Mantissa(digits), "-" + Mantissa(digits), Mantissa(digits, '8'), "-" + Mantissa(digits, '8')]);
+        }
+
+        list.AddRange([new string('9', 500), "-" + new string('9', 500)]);
+        return list;
+    }
+
+    /// <summary>Strings around the packed-length limit (1999 UTF-16 units) and with characters the packing must not confuse.</summary>
+    private static readonly string[] ListStrings =
+    [
+        "", " ", "a", "a ", "A", "|", "x|y", "||", "😀", "\uFFFF", "\u0000", "1", "-0", new string('s', 1998) + "t",
+        new string('s', 1999), new string('s', 2000), new string('s', 1999) + " ", new string('s', 4100),
+    ];
+
+    private static readonly string[] ListOtherValues =
+    [
+        "\"a\"", "true", "false", "null", "{\"x\":1}", "[]", "[1,2,3]", "[-1,1.0,\"a\",true]", "[" + Mantissa(88) + ",-5]",
+        "[\"1\",1]", "[[1]]", "[3,4,5,-5]",
+    ];
+
+    public static TheoryData<string> ListFilters()
+    {
+        var data = new TheoryData<string>();
+        static string L(IEnumerable<string> items) => "[" + string.Join(",", items) + "]";
+        static string Q(string s) => JsonValue.Create(s)!.ToJsonString();
+        var numbers = ListNumbers();
+
+        // Number lists: the whole numeric set with other kinds, negative and long keys, nested paths.
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([.. numbers.Take(30), "\"a\"", "true"]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L(numbers.Skip(20)) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":[1.23,11.2,-1.23,\"1\",false]}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":[1.2,-12]}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":[" + Mantissa(87) + "," + Mantissa(88) + ",-" + Mantissa(86) + ",-" + Mantissa(87) + "]}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":[" + Mantissa(87, '8') + "," + Mantissa(88, '8') + ",-" + Mantissa(86, '8') + ",-" + Mantissa(87, '8') + ",0]}}}");
+        data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":[" + Mantissa(89) + ",-" + Mantissa(90) + ",5]}}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":[1,null,\"a\"]}}}");
+
+        // Lists spanning many chunks: 980 fillers (89-character keys in the short tier, 104-character in the long tier)
+        // with real values spread across them.
+        string[] reals = ["1", "-1", "1.23", "-1.2", "0", Mantissa(88), "-" + Mantissa(87), "5", "-5", "123", Mantissa(90, '8'), "-" + Mantissa(91)];
+        foreach (var fillerDigits in new[] { 70, 85 })
+        {
+            var list = Enumerable.Range(0, 980).Select(j => "1." + new string('2', fillerDigits) + j.ToString("D4", CultureInfo.InvariantCulture) + "1").ToList();
+            for (var r = 0; r < reals.Length; r++)
+            {
+                list.Insert(r * 97 % list.Count, reals[r]);
+            }
+
+            data.Add("{\"metadata\":{\"k\":{\"in\":" + L(list) + "}}}");
+            data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L(list) + "}}}]}");
+        }
+
+        // Merged same-path conditions, their negation, and the same under a nested path.
+        foreach (var range in new[] { "{\"gt\":1,\"lt\":5}", "{\"gte\":-5,\"lte\":1.2}", "{\"gt\":\"\",\"lt\":5}", "{\"gt\":0,\"ne\":3}", "{\"gt\":-1,\"in\":[1,2,3,4,\"a\"]}", "{\"gte\":1,\"lt\":1.3}", "{\"contains\":\"a\",\"gt\":0}", "{\"gt\":-1e400,\"lt\":1e400}" })
+        {
+            data.Add("{\"metadata\":{\"k\":" + range + "}}");
+            data.Add("{\"NOT\":[{\"metadata\":{\"k\":" + range + "}}]}");
+            data.Add("{\"metadata\":{\"o\":{\"x\":" + range + "}}}");
+        }
+
+        data.Add("{\"AND\":[{\"metadata\":{\"k\":[1]}},{\"metadata\":{\"k\":{\"contains\":\"a\"}}}]}");
+        data.Add("{\"AND\":[{\"metadata\":{\"k\":[3,-5]}},{\"metadata\":{\"k\":\"*\"}}]}");
+        data.Add("{\"AND\":[{\"metadata\":{\"k\":{\"gt\":1}}},{\"metadata\":{\"k\":{\"lt\":5}}},{\"metadata\":{\"k\":null}}]}");
+        data.Add("{\"OR\":[{\"metadata\":{\"k\":{\"gt\":1,\"lt\":3}}},{\"metadata\":{\"k\":{\"gt\":4,\"lt\":6}}}]}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"gt\":1,\"lt\":3}}},{\"metadata\":{\"k\":{\"gt\":4,\"lt\":6}}}]}");
+
+        // Array containment.
+        data.Add("{\"metadata\":{\"k\":[1,-1,\"a\",true]}}");
+        data.Add("{\"metadata\":{\"k\":[1.0,2,3]}}");
+        data.Add("{\"metadata\":{\"k\":[" + Mantissa(88) + ",-5.0]}}");
+        data.Add("{\"metadata\":{\"k\":[3,4,5,-5,3e0]}}");
+        data.Add("{\"metadata\":{\"k\":[\"1\"]}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":[1]}}]}");
+
+        // String lists: exact code units and trailing spaces, the packed-length boundary, mixed with numbers.
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L(ListStrings.Select(Q)) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L(ListStrings.Where((_, i) => i % 2 == 0).Select(Q)) + "}}}");
+        data.Add("{\"NOT\":[{\"metadata\":{\"k\":{\"in\":" + L(ListStrings.Where((_, i) => i % 2 == 1).Select(Q)) + "}}}]}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('s', 1999)), Q(new string('s', 2000)), Q("a"), "1", "-0"]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q(new string('s', 1999) + " "), Q(new string('s', 4100)), Q("|"), "true"]) + "}}}");
+        data.Add("{\"metadata\":{\"k\":{\"in\":" + L([Q("x"), Q("y|"), Q("a  "), Q("😀"), Q("\uFFFF"), Q("\u0000"), Q("A")]) + "}}}");
+        data.Add("{\"metadata\":{\"o\":{\"x\":{\"in\":" + L([.. Enumerable.Range(0, 997).Select(i => Q("f" + i.ToString(CultureInfo.InvariantCulture))), Q("a "), Q("||"), "1"]) + "}}}}");
+        return data;
+    }
+
+    private async Task<SqlMemoryStore> SeedListsAsync()
+    {
+        var database = await SqlTestDatabase.GetAsync(fixture, "filter-differential");
+        var store = database.CreateStore(TimeProvider.System);
+        await SeedLock.WaitAsync(Ct);
+        try
+        {
+            if (!_listsSeeded)
+            {
+                await SeedListsAsync(Reference);
+                await SeedListsAsync(store);
+                _listsSeeded = true;
+            }
+        }
+        finally
+        {
+            SeedLock.Release();
+        }
+
+        return store;
+    }
+
+    private static async Task SeedListsAsync(IMemoryStore store)
+    {
+        await store.Workspaces.GetOrCreateAsync(ListWorkspace, null, null, Ct);
+        var i = 0;
+        async Task PeerAsync(JsonObject metadata) => await store.Peers.GetOrCreateAsync(ListWorkspace, $"l{i++:D4}", metadata, null, Ct);
+        foreach (var value in ListNumbers().Select(n => JsonNode.Parse(n)).Concat(ListStrings.Select(s => (JsonNode?)JsonValue.Create(s))))
+        {
+            await PeerAsync(new JsonObject { ["k"] = value?.DeepClone(), ["o"] = new JsonObject { ["x"] = value?.DeepClone() } });
+        }
+
+        foreach (var value in ListOtherValues)
+        {
+            await PeerAsync(new JsonObject { ["k"] = JsonNode.Parse(value) });
+        }
+
+        await PeerAsync(new JsonObject { ["other"] = 1 });
+    }
+
+    private static async Task<List<string>> ListAsync(IMemoryStore store, ResourceKind kind, FilterNode? filter, string workspace = Workspace)
     {
         var ids = new List<string>();
         if (kind == ResourceKind.Peer)
         {
             await foreach (var peer in ((Func<PageRequest, CancellationToken, Task<Page<PeerRecord>>>)((page, ct) =>
-                store.Peers.ListAsync(Workspace, PeerKind.All, filter, page, ct))).EnumerateAsync(100))
+                store.Peers.ListAsync(workspace, PeerKind.All, filter, page, ct))).EnumerateAsync(100))
             {
                 ids.Add(peer.Name);
             }

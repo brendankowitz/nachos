@@ -166,6 +166,18 @@ public sealed class SqlNumberOrderKeyTests(SqlServerFixture fixture)
     [InlineData("1e5e5")]
     [InlineData("0x10")]
     [InlineData("١")]
+    [InlineData("１")]                 // fullwidth digit one: a varchar CAST under a linguistic collation maps it to 1
+    [InlineData("１e2")]
+    [InlineData("-１")]
+    [InlineData("1２")]
+    [InlineData("१")]                  // Devanagari one
+    [InlineData("৫")]                  // Bengali five
+    [InlineData("²")]                  // superscripts
+    [InlineData("³1")]
+    [InlineData("¹")]
+    [InlineData("1,5")]
+    [InlineData("1/2")]
+    [InlineData("𝟙")]                  // mathematical double-struck one (supplementary)
     public async Task SqlFunctions_OfTextThatIsNotANumber_AreNull(string text)
     {
         var database = await SqlTestDatabase.GetAsync(fixture, "order-key");

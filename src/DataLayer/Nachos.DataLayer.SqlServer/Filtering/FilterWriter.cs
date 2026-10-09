@@ -488,8 +488,9 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     }
 
     /// <summary>
-    /// The value equals (same kind) some operand. Operands are split by kind: strings are one JSON list, booleans fixed
-    /// literals, and numbers a set of order keys tested against the value's key, which is computed once per row.
+    /// The value equals (same kind) some operand. Operands are split by kind: strings are tested with
+    /// <see cref="StringIn"/>, booleans as fixed literals, and numbers as a set of order keys tested against the value's
+    /// key, which is computed once per row.
     /// </summary>
     private string ListMatch(MetadataRow row, IReadOnlyList<JsonNode> operands)
     {
@@ -497,8 +498,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         var strings = operands.Where(o => o.GetValueKind() == JsonValueKind.String).Select(o => o.GetValue<string>()).ToList();
         if (strings.Count > 0)
         {
-            var wanted = Alias();
-            parts.Add($"({row.Type} = 1 AND EXISTS (SELECT 1 FROM OPENJSON({StringList(strings)}) AS {wanted} WHERE {wanted}.[value] COLLATE {Bin2} = {row.Value} COLLATE {Bin2} AND DATALENGTH({wanted}.[value]) = DATALENGTH({row.Value})))");
+            parts.Add($"({row.Type} = 1 AND {StringIn(row.Value, strings)})");
         }
 
         foreach (var flag in operands.Select(o => o.GetValueKind()).Where(k => k is JsonValueKind.True or JsonValueKind.False).Distinct())
@@ -513,6 +513,50 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         }
 
         return parts.Count == 0 ? False : $"({string.Join(" OR ", parts)})";
+    }
+
+    /// <summary>The longest string, in UTF-16 code units, whose hex fits one packed entry (<c>|</c> + 4 per unit + <c>|</c>).</summary>
+    private const int PackedString = (ChunkLength - 2) / 4;
+
+    /// <summary>
+    /// Whether the string <paramref name="value"/> is exactly (code unit for code unit, trailing spaces included) one of
+    /// <paramref name="strings"/>, without parsing a list per row. Strings of up to <see cref="PackedString"/> code units are
+    /// written as the hex of their UTF-16LE code units and packed (<see cref="PackedIn"/>); the stored value's hex
+    /// (<c>CAST(… AS varbinary)</c>, style 2) is found with <c>CHARINDEX</c>. Hex holds no <c>|</c>, so a match between
+    /// delimiters is exact equality. Longer strings take an exact <c>OPENJSON</c> list, gated on the stored value's own
+    /// length so it is parsed only for rows that could match (measured: 1000 strings over 10,000 rows, 8.1 s -> 1.9 s).
+    /// </summary>
+    private string StringIn(string value, IReadOnlyList<string> strings)
+    {
+        var bytes = (PackedString * 2).ToString(CultureInfo.InvariantCulture);
+        var needle = $"CASE WHEN DATALENGTH({value}) <= {bytes} THEN '|' + CONVERT(varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)}), CAST({value} AS varbinary({bytes})), 2) + '|' END COLLATE {Bin2}";
+        var parts = PackedIn(needle, strings.Where(s => s.Length <= PackedString).Distinct(StringComparer.Ordinal).Select(Utf16Hex));
+
+        var longStrings = strings.Where(s => s.Length > PackedString).ToList();
+        if (longStrings.Count > 0)
+        {
+            var wanted = Alias();
+            parts.Add($"(CASE WHEN DATALENGTH({value}) > {bytes} THEN CASE WHEN EXISTS (SELECT 1 FROM OPENJSON({StringList(longStrings)}) AS {wanted} WHERE {wanted}.[value] COLLATE {Bin2} = {value} COLLATE {Bin2} AND DATALENGTH({wanted}.[value]) = DATALENGTH({value})) THEN 1 ELSE 0 END ELSE 0 END = 1)");
+        }
+
+        return $"({string.Join(" OR ", parts)})";
+    }
+
+    /// <summary>
+    /// Upper-case hex of the UTF-16LE code units of <paramref name="value"/>, as SQL Server's
+    /// <c>CONVERT(varchar, CAST(nvarchar AS varbinary), 2)</c> writes it. Built per code unit, so a lone surrogate is kept
+    /// as is (an encoder would replace it with U+FFFD).
+    /// </summary>
+    private static string Utf16Hex(string value)
+    {
+        const string Digits = "0123456789ABCDEF";
+        var hex = new StringBuilder(value.Length * 4);
+        foreach (var unit in value)
+        {
+            hex.Append(Digits[(unit >> 4) & 0xF]).Append(Digits[unit & 0xF]).Append(Digits[(unit >> 12) & 0xF]).Append(Digits[(unit >> 8) & 0xF]);
+        }
+
+        return hex.ToString();
     }
 
     private string StringList(IEnumerable<string> strings) =>
@@ -532,8 +576,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
     // ------------------------------------------------------------------------------------------------ numbers
 
-    /// <summary>The longest key tested by <c>CHARINDEX</c> in <see cref="KeyIn"/>; longer ones (absurd numbers) take the exact list path.</summary>
+    /// <summary>
+    /// The longest key in the short tier of <see cref="KeyIn"/> (every number of up to about 85 significant digits). Longer
+    /// keys are packed separately, so a row with a short key never scans them.
+    /// </summary>
     private const int ShortKey = 100;
+
+    /// <summary>The longest key that fits one packed entry (<c>|key|</c>) of a chunk.</summary>
+    private const int PackedKey = ChunkLength - 2;
 
     /// <summary>The longest <c>varchar</c> value that is not <c>max</c>, where <c>CHARINDEX</c> is about twice as fast.</summary>
     private const int ChunkLength = 8000;
@@ -587,24 +637,48 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
     /// <summary>
     /// Whether the key column <paramref name="key"/> is one of <paramref name="keys"/>, without parsing a list per row.
-    /// Keys of up to <see cref="ShortKey"/> characters are packed as <c>|k1|k2|…|</c> into <c>varchar(8000)</c> chunks and
-    /// found with <c>CHARINDEX</c>; keys hold only digits and <c>:</c>, so a match between delimiters is exact equality.
-    /// Longer keys (numbers of about 90 digits or more) go through an exact <c>OPENJSON</c> list.
+    /// Keys hold only digits and <c>:</c>, so they are packed (<see cref="PackedIn"/>) and a <c>CHARINDEX</c> match between
+    /// delimiters is exact equality. Keys of up to <see cref="ShortKey"/> characters and longer ones are packed in separate
+    /// tiers, each tested only for rows whose own key is in that tier (review round 2, I-1: 1000 long keys over 10,000
+    /// short-key rows went from the 30 s timeout to well under a second). Keys over <see cref="PackedKey"/> characters
+    /// (numbers of about 8000 digits) take an exact <c>OPENJSON</c> list, gated the same way.
     /// </summary>
     private string KeyIn(string key, IReadOnlyList<string> keys)
     {
-        var parts = new List<string>();
-        var needle = $"CASE WHEN LEN({key}) <= {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN CAST('|' + {key} + '|' AS varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)})) END COLLATE {Bin2}";
-        var chunk = new StringBuilder("|");
-        foreach (var shortKey in keys.Where(k => k.Length <= ShortKey))
+        string Needle(string condition) => $"CASE WHEN {condition} THEN CAST('|' + {key} + '|' AS varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)})) END COLLATE {Bin2}";
+        var shortKey = ShortKey.ToString(CultureInfo.InvariantCulture);
+        var packedKey = PackedKey.ToString(CultureInfo.InvariantCulture);
+        var parts = PackedIn(Needle($"LEN({key}) <= {shortKey}"), keys.Where(k => k.Length <= ShortKey));
+        parts.AddRange(PackedIn(Needle($"LEN({key}) > {shortKey} AND LEN({key}) <= {packedKey}"), keys.Where(k => k.Length > ShortKey && k.Length <= PackedKey)));
+
+        var hugeKeys = keys.Where(k => k.Length > PackedKey).ToList();
+        if (hugeKeys.Count > 0)
         {
-            if (chunk.Length + shortKey.Length + 1 > ChunkLength)
+            var wanted = Alias();
+            parts.Add($"(CASE WHEN LEN({key}) > {packedKey} THEN CASE WHEN {key} IN (SELECT {wanted}.k COLLATE {Bin2} FROM OPENJSON({KeyList(hugeKeys)}) WITH (k varchar(max) '$') AS {wanted}) THEN 1 ELSE 0 END ELSE 0 END = 1)");
+        }
+
+        return $"({string.Join(" OR ", parts)})";
+    }
+
+    /// <summary>
+    /// <c>CHARINDEX</c> tests of <paramref name="needle"/> (<c>|entry|</c>, or NULL for a row that cannot match) against
+    /// <paramref name="entries"/> packed as <c>|e1|e2|…|</c> into <c>varchar(8000)</c> parameters. Entries must not contain
+    /// <c>|</c> and each must fit a chunk. One chunk is scanned per row instead of one list being parsed per row.
+    /// </summary>
+    private List<string> PackedIn(string needle, IEnumerable<string> entries)
+    {
+        var parts = new List<string>();
+        var chunk = new StringBuilder("|");
+        foreach (var entry in entries)
+        {
+            if (chunk.Length + entry.Length + 1 > ChunkLength)
             {
                 parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
                 chunk.Clear().Append('|');
             }
 
-            chunk.Append(shortKey).Append('|');
+            chunk.Append(entry).Append('|');
         }
 
         if (chunk.Length > 1)
@@ -612,14 +686,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
             parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
         }
 
-        var longKeys = keys.Where(k => k.Length > ShortKey).ToList();
-        if (longKeys.Count > 0)
-        {
-            var wanted = Alias();
-            parts.Add($"{key} IN (SELECT {wanted}.k COLLATE {Bin2} FROM OPENJSON({KeyList(longKeys)}) WITH (k varchar(max) '$') AS {wanted})");
-        }
-
-        return $"({string.Join(" OR ", parts)})";
+        return parts;
     }
 
     // ------------------------------------------------------------------------------------------------ names
