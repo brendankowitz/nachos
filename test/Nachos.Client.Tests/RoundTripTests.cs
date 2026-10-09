@@ -18,7 +18,9 @@ namespace Nachos.Client.Tests;
 /// result or the same exception as the in-process client for the same call sequence. Each scenario runs once per
 /// client on a fresh <see cref="RoundTripHarness"/>; every step is recorded as text and the two recordings must be
 /// equal. Only server-generated message ids are normalized (to <c>&lt;message#n&gt;</c> by first appearance); clocks
-/// are frozen at one instant on both sides, so every <c>created_at</c> is compared as it is.
+/// are frozen at one instant on both sides, so every <c>created_at</c> is compared as it is. One outcome differs by
+/// design and is asserted on each side instead of compared: an invalid body <c>id</c> on a create (see
+/// <c>Steps.DoInvalidBodyId</c>).
 /// </summary>
 /// <remarks>
 /// Coverage is enforced: <see cref="EveryOperation_HasARoundTrip"/> fails when an <see cref="INachosClient"/> method is
@@ -57,11 +59,13 @@ public sealed class RoundTripTests
                 await s.Do("update nothing", c => c.UpdateWorkspaceAsync("w"));
                 await s.Do("update with empty metadata", c => c.UpdateWorkspaceAsync("w", new JsonObject()));
                 await s.Do("update missing", c => c.UpdateWorkspaceAsync("missing", Obj("""{"a":1}""")));
-                await s.Do("create invalid id", c => c.GetOrCreateWorkspaceAsync("bad id!"));
-                await s.Do("create too-long id", c => c.GetOrCreateWorkspaceAsync(new string('w', 513)));
+                await s.DoInvalidBodyId("create invalid id", "bad id!", "string_pattern_mismatch", c => c.GetOrCreateWorkspaceAsync("bad id!"));
+                await s.DoInvalidBodyId("create too-long id", new string('w', 513), "string_too_long", c => c.GetOrCreateWorkspaceAsync(new string('w', 513)));
+                await s.DoInvalidBodyId("create empty id", "", "string_too_short", c => c.GetOrCreateWorkspaceAsync(""));
                 await s.Do("update invalid id", c => c.UpdateWorkspaceAsync("bad id!", Obj("""{"a":1}""")));
                 await s.Do("ids are case-sensitive", c => c.GetOrCreateWorkspaceAsync("W"));
                 await s.Do("unicode metadata", c => c.UpdateWorkspaceAsync("W", Obj("""{"emoji":"😀","cjk":"漢字","rtl":"שלום","escaped":"\u0000\t\""}""")));
+                await s.Do("only the valid ids exist", c => c.ListWorkspacesAsync(null, FirstPage));
             }),
         new(
             "workspace listing: paging envelope, reverse, filters",
@@ -98,7 +102,7 @@ public sealed class RoundTripTests
                 await s.Do("get-or-create is idempotent", c => c.GetOrCreatePeerAsync("w", "alice", Obj("""{"role":"changed"}""")));
                 await s.Do("create bob", c => c.GetOrCreatePeerAsync("w", "bob", Obj("""{"role":"agent"}""")));
                 await s.Do("create Bob (case-sensitive)", c => c.GetOrCreatePeerAsync("w", "Bob"));
-                await s.Do("invalid peer id", c => c.GetOrCreatePeerAsync("w", "bad id!"));
+                await s.DoInvalidBodyId("invalid peer id", "bad id!", "string_pattern_mismatch", c => c.GetOrCreatePeerAsync("w", "bad id!"));
                 await s.Do("update alice", c => c.UpdatePeerAsync("w", "alice", Obj("""{"role":"admin"}"""), Obj("""{"x":[1,2]}""")));
                 await s.Do("update configuration only", c => c.UpdatePeerAsync("w", "bob", configuration: Obj("""{"y":true}""")));
                 await s.Do("update missing peer", c => c.UpdatePeerAsync("w", "nobody", Obj("""{"a":1}""")));
@@ -132,7 +136,7 @@ public sealed class RoundTripTests
                     "w", "s1", Obj("""{"topic":"ignored"}"""), peers: new Dictionary<string, SessionPeerConfig> { ["carol"] = new() }));
                 await s.Do("create s2", c => c.GetOrCreateSessionAsync("w", "s2", Obj("""{"topic":"other"}""")));
                 await s.Do("create s3 with alice", c => c.GetOrCreateSessionAsync("w", "s3", peers: new Dictionary<string, SessionPeerConfig> { ["alice"] = new() }));
-                await s.Do("invalid session id", c => c.GetOrCreateSessionAsync("w", "bad id!"));
+                await s.DoInvalidBodyId("invalid session id", "bad id!", "string_pattern_mismatch", c => c.GetOrCreateSessionAsync("w", "bad id!"));
                 await s.Do("update s1", c => c.UpdateSessionAsync("w", "s1", Obj("""{"topic":"updated"}"""), new SessionConfiguration(Dream: new DreamConfiguration(true))));
                 await s.Do("update missing", c => c.UpdateSessionAsync("w", "nope", Obj("""{"a":1}""")));
                 await s.Do("list", c => c.ListSessionsAsync("w", null, FirstPage));
@@ -248,8 +252,8 @@ public sealed class RoundTripTests
     {
         var scenario = Scenarios.Single(s => s.Name == name);
         using var harness = new RoundTripHarness();
-        var http = new Steps(harness.Http, () => harness.Wire.Requests.Count);
-        var inProcess = new Steps(harness.InProcess);
+        var http = new Steps(harness.Http, Side.Http, () => harness.Wire.Requests.Count);
+        var inProcess = new Steps(harness.InProcess, Side.InProcess);
 
         await scenario.Run(http);
         await scenario.Run(inProcess);
@@ -315,6 +319,67 @@ public sealed class RoundTripTests
         harness.Wire.Requests.ShouldBe(["POST /v3/workspaces", "POST /v3/workspaces/w/sessions"]);
         (await harness.Http.ListSessionsAsync("w", null, FirstPage)).Total.ShouldBe(0);
     }
+
+    /// <summary>
+    /// An invalid body id together with non-empty <c>scopes</c>: the located schema error comes first, the 501 of the
+    /// staged scopes gap is never reached, and nothing is stored. <see cref="INachosClient"/> cannot send scopes, so
+    /// the request goes through the named pipeline by hand and the response through the client's own mapping.
+    /// </summary>
+    [Fact]
+    public async Task InvalidSessionId_WithNonEmptyScopes_IsTheLocatedSchemaError_NotThe501()
+    {
+        using var harness = new RoundTripHarness();
+        await harness.Http.GetOrCreateWorkspaceAsync("w");
+        using var http = harness.CreatePipelineClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v3/workspaces/w/sessions")
+        {
+            Content = new StringContent("""{"id":"bad id!","scopes":["team"],"peers":{"not-stored":{}}}""", Encoding.UTF8, "application/json"),
+        };
+        request.Options.Set(RetryHandler.RouteTemplate, "/v3/workspaces/{workspace_id}/sessions");
+
+        using var response = await http.SendAsync(request);
+        var mapped = await MapAsync(response);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
+        var error = mapped.ShouldBeOfType<RequestValidationException>().Errors.ShouldHaveSingleItem();
+        JsonSerializer.Serialize(error.Loc, Compare).ShouldBe("""["body","id"]""");
+        error.Type.ShouldBe("string_pattern_mismatch");
+        harness.Wire.Requests.ShouldBe(["POST /v3/workspaces", "POST /v3/workspaces/w/sessions"]);
+        (await harness.Http.ListSessionsAsync("w", null, FirstPage)).Total.ShouldBe(0);
+        (await harness.Http.ListPeersAsync("w", null, null, FirstPage)).Total.ShouldBe(0);
+    }
+
+    /// <summary>
+    /// A body that is not valid UTF-8 is rejected as a whole, as a located 422 at <c>["body"]</c>. The client always
+    /// sends what it serialized (valid UTF-8), so the bytes go through the named pipeline by hand and the response
+    /// through the client's own mapping.
+    /// </summary>
+    [Fact]
+    public async Task InvalidUtf8Body_IsAJsonInvalidErrorLocatedAtTheBody()
+    {
+        using var harness = new RoundTripHarness();
+        using var http = harness.CreatePipelineClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "v3/workspaces")
+        {
+            Content = new ByteArrayContent([(byte)'{', (byte)'"', (byte)'i', (byte)'d', (byte)'"', (byte)':', (byte)'"', 0xFF, 0xFE, (byte)'"', (byte)'}']),
+        };
+        request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        request.Options.Set(RetryHandler.RouteTemplate, "/v3/workspaces");
+
+        using var response = await http.SendAsync(request);
+        var mapped = await MapAsync(response);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
+        var error = mapped.ShouldBeOfType<RequestValidationException>().Errors.ShouldHaveSingleItem();
+        JsonSerializer.Serialize(error.Loc, Compare).ShouldBe("""["body"]""");
+        error.Type.ShouldBe("json_invalid");
+        harness.Wire.Requests.ShouldBe(["POST /v3/workspaces"]);
+        (await harness.Http.ListWorkspacesAsync(null, FirstPage)).Total.ShouldBe(0);
+    }
+
+    /// <summary>The exception <see cref="NachosHttpClient"/> would raise for <paramref name="response"/>.</summary>
+    private static async Task<Exception> MapAsync(HttpResponseMessage response) =>
+        ErrorMapper.Map(response, await response.Content.ReadAsStringAsync(), "POST (by hand)", RedactionSecrets.None, TimeProvider.System);
 
     [Fact]
     public void Normalization_AliasesOnlyMessageIds()
@@ -395,23 +460,78 @@ public sealed class RoundTripTests
     /// <summary>A named call sequence and the operations it must call.</summary>
     private sealed record Scenario(string Name, string[] Covers, Func<Steps, Task> Run);
 
+    private enum Side
+    {
+        Http,
+        InProcess,
+    }
+
     /// <summary>
     /// Runs steps against one client (through a proxy that records which operations were called) and keeps one line
     /// per step: <c>"label => result"</c> or <c>"label !! exception"</c>, with message ids aliased.
     /// </summary>
     private sealed class Steps
     {
+        /// <summary>What the in-process client says about an invalid id (<c>IdValidator</c>, the domain rule).</summary>
+        private const string InProcessIdDetail = "id must be 1–512 ASCII letters, digits, '_' or '-'.";
+
         private readonly INachosClient _client;
+        private readonly Side _side;
         private readonly Dictionary<string, string> _messageIds = new(StringComparer.Ordinal);
         private readonly HashSet<string> _called = [];
         private readonly Func<int>? _wireCount;
 
         /// <param name="client">The client under test; null only for normalization tests that record by hand.</param>
+        /// <param name="side">Which client this is, for the steps whose outcome differs by design.</param>
         /// <param name="wireCount">The number of requests the server has seen so far, for <see cref="Sent"/>.</param>
-        public Steps(INachosClient client, Func<int>? wireCount = null)
+        public Steps(INachosClient client, Side side = Side.Http, Func<int>? wireCount = null)
         {
             _client = client is null ? null! : CallRecorder.Wrap(client, _called);
+            _side = side;
             _wireCount = wireCount;
+        }
+
+        /// <summary>
+        /// A create whose body <c>id</c> is invalid: the one outcome agreed to differ by client. The API rejects it at
+        /// admission as schema validation, a located 422 with exactly one error at <c>["body","id"]</c> of
+        /// <paramref name="type"/> (<c>string_too_short</c>, <c>string_too_long</c> or <c>string_pattern_mismatch</c>),
+        /// which the HTTP client maps to <see cref="RequestValidationException"/>; the in-process client keeps the
+        /// domain rule's <see cref="NachosValidationException"/>. Each side is asserted on its own shape here, and the
+        /// step is recorded identically on both, so the line-for-line comparison of the scenario is unchanged. Neither
+        /// side stores anything, which the scenario's later steps compare as strictly as any other.
+        /// </summary>
+        public async Task DoInvalidBodyId<T>(string label, string id, string type, Func<INachosClient, Task<T>> call)
+        {
+            var before = _wireCount?.Invoke();
+            Exception? thrown = null;
+            try
+            {
+                await call(_client);
+            }
+            catch (Exception ex)
+            {
+                thrown = ex;
+            }
+            finally
+            {
+                CountSent(label, before);
+            }
+
+            thrown.ShouldNotBeNull($"{label}: the {_side} client accepted the invalid id");
+            if (_side == Side.Http)
+            {
+                var error = thrown.ShouldBeOfType<RequestValidationException>($"{label}: HTTP").Errors.ShouldHaveSingleItem($"{label}: HTTP errors");
+                JsonSerializer.Serialize(error.Loc, Compare).ShouldBe("""["body","id"]""", $"{label}: HTTP loc");
+                error.Type.ShouldBe(type, $"{label}: HTTP type");
+                error.Msg.ShouldNotBeNullOrWhiteSpace($"{label}: HTTP msg");
+                (id.Length > 0 && error.Msg.Contains(id, StringComparison.Ordinal)).ShouldBeFalse($"{label}: HTTP msg echoes the id");
+            }
+            else
+            {
+                thrown.ShouldBeOfType<NachosValidationException>($"{label}: in-process").Detail.ShouldBe(InProcessIdDetail, $"{label}: in-process detail");
+            }
+
+            Entries.Add($"{label} !! invalid body id ({type}): RequestValidationException at [body, id] over HTTP, NachosValidationException in process");
         }
 
         public List<string> Entries { get; } = [];
