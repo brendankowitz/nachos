@@ -215,15 +215,16 @@ public sealed class ReportDestinationCliTests
         (await Audit(fixture, fixture.Full("safe-report.json"))).Exit.ShouldBe(0);
     }
 
-    internal static Task<(int Exit, string Error)> Verify(ProtocolFixture fixture, string report) => Run(
-        "verify-docs", "--site-root", fixture.Full("site"), "--asset-root", fixture.Full("assets"),
+    // A timeout kills the checker process so a hang fails the test instead of blocking the run.
+    internal static Task<(int Exit, string Error)> Verify(ProtocolFixture fixture, string report, TimeSpan? timeout = null) => Run(
+        timeout ?? TimeSpan.FromSeconds(45), "verify-docs", "--site-root", fixture.Full("site"), "--asset-root", fixture.Full("assets"),
         "--npm-root", fixture.Full("site"), "--output-root", fixture.Full("site/dist"), "--report", report);
 
-    private static Task<(int Exit, string Error)> Audit(AuditFixture fixture, string report) => Run(
+    private static Task<(int Exit, string Error)> Audit(AuditFixture fixture, string report) => Run(TimeSpan.FromSeconds(45),
         "--repo", fixture.Root, "--nuget-inventory", fixture.Full("nuget.json"), "--nuget-cache", fixture.Full("cache"),
         "--api-publish", fixture.Full("artifacts/api"), "--cli-publish", fixture.Full("artifacts/cli"), "--report", report);
 
-    private static async Task<(int Exit, string Error)> Run(params string[] args)
+    private static async Task<(int Exit, string Error)> Run(TimeSpan timeout, params string[] args)
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         start.ArgumentList.Add(typeof(LicenseAudit).Assembly.Location);
@@ -231,13 +232,13 @@ public sealed class ReportDestinationCliTests
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
-        try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45)); }
+        try { await process.WaitForExitAsync().WaitAsync(timeout); }
         catch (TimeoutException) { process.Kill(entireProcessTree: true); throw; }
         await output;
         return (process.ExitCode, await error);
     }
 
-    private static string[] ProtectedSnapshot(ProtocolFixture fixture) =>
+    internal static string[] ProtectedSnapshot(ProtocolFixture fixture) =>
         Snapshot(fixture.Full("site")).Select(item => "site/" + item)
             .Concat(Snapshot(fixture.Full("assets")).Select(item => "assets/" + item)).ToArray();
 
@@ -247,7 +248,7 @@ public sealed class ReportDestinationCliTests
 
     private static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
 
-    private static void HardLink(string link, string original)
+    internal static void HardLink(string link, string original)
     {
         if (OperatingSystem.IsWindows()) CreateHardLink(link, original, IntPtr.Zero).ShouldBeTrue();
         else CreateUnixLink(original, link).ShouldBe(0);

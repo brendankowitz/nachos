@@ -73,6 +73,9 @@ internal sealed class ReportDestination
             || IsAuditInputName(Path.GetFileName(destination))))
             throw new InvalidDataException("Report destination names collected dependency, lock or restore evidence.");
         if (Directory.Exists(path)) throw new InvalidDataException("Report destination is a directory.");
+        // The Device attribute is never set on Unix: a FIFO, socket or device entry must be refused by its real type.
+        if (OperatingSystem.IsLinux() && LinuxFile.EntryType(path) is { } type && type != LinuxFile.Regular)
+            throw new InvalidDataException("Report destination exists and is not a regular file.");
         foreach (var root in roots)
         {
             var protectedRoot = Canonical(root);

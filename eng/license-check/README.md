@@ -184,6 +184,12 @@ after full-path normalization (including device/trailing-dot/space forms), and
 paths that cannot be resolved safely fail with exit 2 before writes.
 No report path or trusted root is taken from manifest JSON.
 
+An existing destination must be a regular file. On Linux .NET never reports
+the Device attribute, so the destination entry's own `statx` type (a final
+symlink is not followed) is checked: an existing FIFO, socket, character or
+block device, or directory fails with exit 2 before any directory or file is
+created or replaced.
+
 Existing external reports may still be overwritten. The writer creates a new
 same-directory file and atomically replaces the destination entry, never
 truncating an existing target in place. Thus an external hardlink to an
