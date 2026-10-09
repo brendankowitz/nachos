@@ -9,6 +9,14 @@ internal static class SqlErrors
     public static bool IsUniqueViolation(Exception exception) =>
         Find(exception) is { } sql && sql.Errors.Cast<SqlError>().Any(error => error.Number is 2627 or 2601);
 
+    /// <summary>
+    /// The statement is beyond what SQL Server can compile: an expression-services limit (8632), the query processor
+    /// running out of internal resources (8623) or of stack space while optimizing (8621), or nesting too deep (191). For a
+    /// filtered list, a property of the filter.
+    /// </summary>
+    public static bool IsTooComplex(Exception exception) =>
+        Find(exception) is { } sql && sql.Errors.Cast<SqlError>().Any(error => error.Number is 8632 or 8623 or 8621 or 191);
+
     // EF Core may wrap the provider exception; the SqlException is then the inner one.
     private static SqlException? Find(Exception? exception)
     {

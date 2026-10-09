@@ -131,12 +131,14 @@ public sealed class SqlFilterPerformanceTests(SqlServerFixture fixture, ITestOut
         var ten = string.Join(",", Enumerable.Range(0, 10).Select(i => (i * 7).ToString(CultureInfo.InvariantCulture)));
         return new TheoryData<string, string, string, int, int, int>
         {
-            // Many conditions (partner review I2): each row's metadata is read once for all of them. The 1000-condition cases
-            // are mostly compile time on a cold cache (measured 0.4-4.7 s, Salsa's 1990-condition repro 5.6 s; warm 0.2-3.5 s).
+            // Many conditions (partner review I2): each row's metadata is read once for all of them. Bounds are at least 4x the
+            // worst cold-cache time seen. A condition repeated under many keys is tested once (1990 contains on distinct keys:
+            // 0.55 s cold, 9.7 s before that change). The OR of 500 ANDs shares nothing and is mostly compile time: worst seen
+            // 5.7 s cold, so its bound is 25 s, under the 30 s command timeout.
             { "or-1000-gt", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"n\":{\"gt\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), 0, Rows, 12 },
             { "and-1000-ne", Session, Leaves("AND", 1000, i => "{\"metadata\":{\"n\":{\"ne\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), Rows, Rows, 5 },
-            { "or-1000-contains-distinct-keys", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 12 },
-            { "or-1990-contains-distinct-keys", Session, Leaves("OR", 1990, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 25 },
+            { "or-1000-contains-distinct-keys", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 5 },
+            { "or-1990-contains-distinct-keys", Session, Leaves("OR", 1990, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"contains\":\"zz\"}}}"), 0, 0, 5 },
             { "or-1000-gt-distinct-keys", Session, Leaves("OR", 1000, i => "{\"metadata\":{\"k" + i.ToString(CultureInfo.InvariantCulture) + "\":{\"gt\":5}}}"), 0, 0, 5 },
             { "or-500-and-pairs", Session, "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 500).Select(i => "{\"metadata\":{\"n\":{\"gte\":0},\"s\":{\"contains\":\"zz" + i.ToString(CultureInfo.InvariantCulture) + "\"}}}")) + "]}", 0, Rows, 25 },
             { "or-128-gt", Session, Leaves("OR", 128, i => "{\"metadata\":{\"n\":{\"gt\":" + (Rows + i).ToString(CultureInfo.InvariantCulture) + "}}}"), 0, Rows, 6 },

@@ -62,8 +62,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     /// The predicate for a whole filter. A filter with one metadata condition (after merging) is written directly: an
     /// <c>EXISTS</c> over its path. With more, the metadata is read once per row for all of them (<see cref="WriteWithFlags"/>),
     /// so a row costs one pass over its entries, not one per condition (partner review I2: 128 conditions as separate
-    /// <c>EXISTS</c> took minutes over 10,000 rows; measured with flags, cold cache, 10,000 rows: 1000 conditions in
-    /// 0.4-4.7 s, and 1990 <c>contains</c> on distinct keys in 5.6 s, almost all of it compilation).
+    /// <c>EXISTS</c> took minutes over 10,000 rows). Very large filters cost mostly compile time, which varies with the
+    /// server; <c>SqlFilterPerformanceTests</c> holds the measured cases.
     /// </summary>
     public string WriteFilter(FilterNode node)
     {
@@ -119,15 +119,24 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         var definitions = new List<string>(flags.Count);
         for (var i = 0; i < flags.Count; i++)
         {
-            // One branch per first key, so a member's condition only ever runs on the entry under its own key.
+            // One branch per condition, guarded by the keys it applies to, so a condition only ever runs on the entry under
+            // one of its own keys. Keys whose conditions are identical (the same SQL over the same row and parameters) share
+            // a branch, which keeps the statement small when one condition is applied to many keys.
+            var perKey = flags[i].Members
+                .GroupBy(member => member.Path[0], StringComparer.Ordinal)
+                .Select(group =>
+                {
+                    var key = keys[group.Key].ToString(CultureInfo.InvariantCulture);
+                    return (Key: key, Holds: string.Join(" OR ", group.Select(member => member.Path.Count == 1
+                        ? member.Condition(row)
+                        : Isolated(() => MetadataExists([.. member.Path.Skip(1)], member.Condition, $"CASE WHEN {root}.[type] = 5 THEN {root}.[value] END")))));
+                })
+                .ToList();
             var branches = new StringBuilder();
-            foreach (var group in flags[i].Members.GroupBy(member => member.Path[0], StringComparer.Ordinal))
+            foreach (var shared in perKey.GroupBy(branch => branch.Holds, StringComparer.Ordinal))
             {
-                var key = keys[group.Key].ToString(CultureInfo.InvariantCulture);
-                var holds = string.Join(" OR ", group.Select(member => member.Path.Count == 1
-                    ? member.Condition(row)
-                    : MetadataExists([.. member.Path.Skip(1)], member.Condition, $"CASE WHEN {root}.[type] = 5 AND {index} = {key} THEN {root}.[value] END")));
-                branches.Append(CultureInfo.InvariantCulture, $" WHEN {index} = {key} THEN CASE WHEN {holds} THEN 1 ELSE 0 END");
+                var guard = shared.Count() == 1 ? $"{index} = {shared.First().Key}" : $"{index} IN ({string.Join(", ", shared.Select(branch => branch.Key))})";
+                branches.Append(CultureInfo.InvariantCulture, $" WHEN {guard} THEN CASE WHEN {shared.Key} THEN 1 ELSE 0 END");
             }
 
             definitions.Add(string.Create(CultureInfo.InvariantCulture, $"CASE{branches} ELSE 0 END AS f{i}"));
@@ -1102,7 +1111,30 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     }
     // ------------------------------------------------------------------------------------------------ names
 
-    private string Alias() => $"fa{_aliases++}";
+    private string Alias() => $"{_aliasPrefix}{_aliases++}";
+
+    /// <summary>The prefix of generated aliases: <c>fa</c>, or <c>fd</c> inside <see cref="Isolated"/>.</summary>
+    private string _aliasPrefix = "fa";
+
+    /// <summary>
+    /// Writes a self-contained subquery (one that refers to the enclosing statement only through names it was given) with
+    /// aliases of its own namespace, numbered from zero each time, so identical conditions produce identical text and can
+    /// share a branch (<see cref="WriteWithFlags"/>). Sibling subqueries may reuse those aliases: each has its own scope,
+    /// and no <c>fa</c> alias of the enclosing statement is shadowed.
+    /// </summary>
+    private string Isolated(Func<string> write)
+    {
+        var (prefix, aliases) = (_aliasPrefix, _aliases);
+        (_aliasPrefix, _aliases) = ("fd", 0);
+        try
+        {
+            return write();
+        }
+        finally
+        {
+            (_aliasPrefix, _aliases) = (prefix, aliases);
+        }
+    }
 
     private string Text(string value) => Parameter(SqlDbType.NVarChar, value, SqlParameters.Text);
 

@@ -13,7 +13,9 @@ internal static class Paging
     /// </summary>
     /// <remarks>
     /// The count and the page are two statements, each with its own read-committed-snapshot view, as in Honcho; a
-    /// concurrent write can make them disagree by that write.
+    /// concurrent write can make them disagree by that write. A statement SQL Server cannot compile (a filter with very
+    /// many conditions) is a <see cref="NachosValidationException"/> with the fixed detail
+    /// <see cref="Filtering.SqlFilterCompiler.TooComplex"/>, like a filter beyond the parameter limit.
     /// </remarks>
     public static async Task<Page<T>> ToPageAsync<TEntity, T>(
         IQueryable<TEntity> rows,
@@ -22,13 +24,25 @@ internal static class Paging
         Func<List<TEntity>, Task<IReadOnlyList<T>>> project,
         CancellationToken ct)
     {
-        var total = await rows.LongCountAsync(ct);
+        var total = await TooComplexIsInvalid(() => rows.LongCountAsync(ct));
         var skip = (long)(request.Page - 1) * request.Size;
         IReadOnlyList<T> items = skip >= total
             ? []
-            : await project(await order(rows, request.Reverse).Skip(checked((int)skip)).Take(request.Size).ToListAsync(ct));
+            : await project(await TooComplexIsInvalid(() => order(rows, request.Reverse).Skip(checked((int)skip)).Take(request.Size).ToListAsync(ct)));
         var pages = (int)((total + request.Size - 1) / request.Size);
         return new Page<T>(items, total, request.Page, request.Size, pages);
+    }
+
+    private static async Task<TResult> TooComplexIsInvalid<TResult>(Func<Task<TResult>> query)
+    {
+        try
+        {
+            return await query();
+        }
+        catch (Exception ex) when (SqlErrors.IsTooComplex(ex))
+        {
+            throw new NachosValidationException(Filtering.SqlFilterCompiler.TooComplex, ex);
+        }
     }
 
     /// <summary><see cref="ToPageAsync{TEntity, T}"/> with a synchronous projection.</summary>

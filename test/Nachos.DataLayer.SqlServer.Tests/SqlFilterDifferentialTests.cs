@@ -359,6 +359,15 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         data.Add(orGt);
         data.Add("{\"NOT\":[" + orGt[7..^1] + "}");
         data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Key(i) + "\":{\"contains\":\"x\"}}}")) + "]}");
+
+        // Nested conditions repeated under many keys share one branch (partner review round 2): the real nested object
+        // "o" among 39 others.
+        static string Nested(int i) => i == 11 ? "o" : i == 23 ? "a" : "y" + i.ToString(CultureInfo.InvariantCulture);
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Nested(i) + "\":{\"x\":5}}}")) + "]}");
+        data.Add("{\"NOT\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Nested(i) + "\":{\"y\":{\"icontains\":\"X\"}}}}")) + "]}");
+        data.Add("{\"AND\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Nested(i) + "\":{\"x\":{\"ne\":5}}}}")) + "]}");
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => i % 2 == 0 ? "{\"metadata\":{\"" + Nested(i) + "\":{\"gt\":4}}}" : "{\"metadata\":{\"" + Nested(i) + "\":{\"x\":{\"gt\":4}}}}")) + "]}");
+        data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Nested(i) + "\":{\"x\":\"5\"}}}")) + "]}");
         data.Add("{\"AND\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"" + Key(i) + "\":{\"ne\":10}}}")) + "]}");
         data.Add("{\"AND\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => i % 2 == 0 ? "{\"metadata\":{\"" + Key(i) + "\":null}}" : "{\"metadata\":{\"" + Key(i) + "\":{\"ne\":\"x\"}}}")) + "]}");
         data.Add("{\"OR\":[" + string.Join(",", Enumerable.Range(0, 40).Select(i => "{\"metadata\":{\"a\":{\"gte\":1},\"" + (i == 7 ? "o" : Key(i)) + "\":\"*\"}}")) + "]}");

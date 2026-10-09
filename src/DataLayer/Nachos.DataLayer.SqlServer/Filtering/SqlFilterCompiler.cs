@@ -46,8 +46,13 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// more, they become flags over a single read of the row's metadata: each entry's key is looked up once among the keys
 /// the filter names, entries under other keys are skipped, one aggregate per row computes each flag from the entries under
 /// its keys, and the filter's AND/OR/NOT is evaluated over the flags. Conditions OR-ed together (and unset/<c>ne</c>
-/// conditions AND-ed together) share flags of up to 32 conditions, and identical conditions share one flag. There is no
-/// cap on the number of conditions; the largest filters cost mostly compile time.
+/// conditions AND-ed together) share flags of up to 32 conditions, a condition repeated under many keys is tested once for
+/// all of them, and identical conditions share one flag. The parser sets no cap on the number of conditions, but SQL
+/// Server bounds what it can compile: a filtered list whose statement fails with an expression-services or optimizer
+/// resource limit (errors 8632, 8623, 8621, 191) is a <see cref="NachosValidationException"/> with the fixed detail
+/// <see cref="TooComplex"/>, like a filter beyond the parameter limit. Measured: tens of thousands of conditions that
+/// share their tests run (10,000 in seconds), while about 3,500 conditions that share nothing (an OR of ANDs on distinct
+/// keys) are refused. The largest filters cost mostly compile time.
 /// </para>
 /// <para>
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
@@ -98,6 +103,12 @@ internal static partial class SqlFilterCompiler
 
     /// <summary>The fixed detail of the 422 for a filter beyond SQL Server's parameter limit.</summary>
     public const string TooManyValues = "The filter needs more distinct values than the SQL Server provider can send in one statement.";
+
+    /// <summary>
+    /// The fixed detail of the 422 for a filter whose statement SQL Server cannot compile (<see cref="Storage.SqlErrors.IsTooComplex"/>);
+    /// the stores translate those errors when they run a filtered list.
+    /// </summary>
+    public const string TooComplex = "The filter is too complex for the SQL Server provider to run in one statement.";
 
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]{0,63}\z", RegexOptions.CultureInvariant)]
     private static partial Regex SafeAlias();
