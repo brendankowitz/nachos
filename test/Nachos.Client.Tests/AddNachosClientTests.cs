@@ -553,6 +553,42 @@ public sealed class AddNachosClientTests
         chain.OfType<RetryHandler>().Count().ShouldBe(1);
     }
 
+    /// <summary>
+    /// Only the exact full names count: a caller's own handler sharing the short name, one whose name ends with it, and
+    /// one sharing the package's namespace and a prefix of the name all stay in the chain.
+    /// </summary>
+    [Fact]
+    public void HandlersWhoseNamesMerelyResembleTheResilienceHandler_AreKept()
+    {
+        var services = new ServiceCollection();
+        services.AddNachosClient(o => o.BaseAddress = Base)
+            .AddHttpMessageHandler(() => new MyApp.Http.ResilienceHandler())
+            .AddHttpMessageHandler(() => new X.NachosResilienceHandler())
+            .AddHttpMessageHandler(() => new Microsoft.Extensions.Http.Resilience.ResilienceHandlerLookalike());
+        using var provider = services.BuildServiceProvider();
+
+        var chain = Chain(provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).ToList();
+
+        chain.OfType<MyApp.Http.ResilienceHandler>().ShouldHaveSingleItem();
+        chain.OfType<X.NachosResilienceHandler>().ShouldHaveSingleItem();
+        chain.OfType<Microsoft.Extensions.Http.Resilience.ResilienceHandlerLookalike>().ShouldHaveSingleItem();
+    }
+
+    /// <summary>Two real handlers, from the defaults and from the client's own builder, are both removed, not only the first.</summary>
+    [Fact]
+    public void TwoResilienceHandlers_AreBothRemoved()
+    {
+        var services = new ServiceCollection();
+        services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+        services.AddNachosClient(o => o.BaseAddress = Base).AddStandardResilienceHandler();
+        services.AddHttpClient("other").AddStandardResilienceHandler();
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+
+        Chain(factory.CreateHandler("other")).Count(h => h.GetType().FullName == ResilienceHandlerTypeName).ShouldBe(2, "the other client has both of its handlers");
+        Chain(factory.CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).Count(h => h.GetType().FullName == ResilienceHandlerTypeName).ShouldBe(0);
+    }
+
     /// <summary>The handlers from <paramref name="top"/> down to the primary handler.</summary>
     private static IEnumerable<HttpMessageHandler> Chain(HttpMessageHandler top)
     {
