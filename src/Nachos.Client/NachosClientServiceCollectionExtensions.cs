@@ -38,42 +38,42 @@ public static class NachosClientServiceCollectionExtensions
     /// to at least 150 s if every honoured wait must complete.
     /// </para>
     /// <para>
-    /// <b>Secrets in logs and exceptions.</b> The bearer value (token or API key) is kept out of:
+    /// <b>Secrets in logs and exceptions.</b> A server that reflects the request's credentials back into its response is
+    /// misconfigured or hostile; the client still keeps the bearer value (token or API key) out of what it controls:
     /// <list type="bullet">
     /// <item><description>
-    /// logged header values: <see cref="IHttpClientFactory"/> logging redacts every header value by default; do not turn
-    /// that off for this client;
+    /// exception text: transport failures whose text can repeat server bytes (malformed status lines, headers, chunks or
+    /// trailers, and anything not known to be safe) are replaced by fixed text naming only their
+    /// <see cref="HttpRequestError"/>, keeping the status and the <c>Retry-After</c> data; known-safe connection failures,
+    /// timeouts and cancellations are kept, with the bearer value redacted from them. <see cref="RetryHandler"/> and
+    /// <see cref="NachosHttpClient"/> apply this whatever the primary handler (see <c>SecretRedaction</c>);
     /// </description></item>
     /// <item><description>
-    /// logged transport failures: the primary <see cref="SocketsHttpHandler"/> is wrapped in a handler that redacts a
-    /// failure whose text echoes the bearer value (for example a server reflecting it into a malformed header line or
-    /// trailer) before the factory's <c>ClientHandler</c> logger and <see cref="RetryHandler"/> see it.
-    /// <c>ConfigurePrimaryHttpMessageHandler</c> on the returned builder replaces that wrapper too, so the
-    /// <c>ClientHandler</c> log of such a failure is then no longer covered;
+    /// the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and <c>LogicalHandler</c> logs: the primary
+    /// <see cref="SocketsHttpHandler"/> is wrapped in a handler that applies the same rule before those loggers see a
+    /// failure, and removes a response header whose name holds the bearer value (a bare JWT is a valid header name, which
+    /// the factory would log). Header values are redacted by the factory's default; do not turn that off for this client.
+    /// <c>ConfigurePrimaryHttpMessageHandler</c> on the returned builder replaces the wrapper, so with your own primary
+    /// handler the <c>ClientHandler</c> log of such a failure is no longer covered (exception text still is);
     /// </description></item>
     /// <item><description>
-    /// exception text: <see cref="RetryHandler"/> and <see cref="NachosHttpClient"/> redact every exception they raise
-    /// or let through (message, inner chain, string data), whatever the primary handler.
+    /// server text the client shows on purpose (error bodies and reason phrases mapped to exceptions): the bearer value
+    /// is redacted as plain text and as hex.
     /// </description></item>
     /// </list>
-    /// The value is recognised as plain text (exact case) and as the hex of its bytes, dash-separated or contiguous, in
-    /// any case (how .NET dumps an invalid chunk extension); see <c>RedactionSecrets</c>. Not covered:
+    /// Not covered:
     /// <list type="bullet">
+    /// <item><description>
+    /// <c>System.Net.Http</c> diagnostics raised by the framework itself, before any of this code runs: the
+    /// <c>System.Net.Http</c> EventSource (for example <c>RequestFailedDetailed</c>, which carries the raw exception text,
+    /// including a body that <see cref="HttpClient"/> buffers for a never-retried request), <c>DiagnosticSource</c>
+    /// events and activity exception events recorded by tracing. Do not enable them at verbose levels against a server
+    /// you do not trust;
+    /// </description></item>
     /// <item><description>what your own handlers log;</description></item>
     /// <item><description>
-    /// diagnostics emitted inside the primary handler before any of this runs (for example HttpClient
-    /// <c>DiagnosticSource</c> or activity exception events picked up by tracing);
-    /// </description></item>
-    /// <item><description>
-    /// a bare token echoed as a valid response header name (JWT characters are valid there, so the response parses and
-    /// the factory logs the header as <c>eyJ…sig: *</c>);
-    /// </description></item>
-    /// <item><description>
-    /// echoes in another encoding (percent-encoding, base64) or another letter case of the plain text, partial or
-    /// truncated echoes, and a value split across two lines: matching is by whole value;
-    /// </description></item>
-    /// <item><description>
-    /// non-string <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>) holding the value.
+    /// in mapped server text, echoes in another encoding (percent-encoding, base64), another letter case, or only part of
+    /// the value; and non-string <see cref="Exception.Data"/> values (a <c>string[]</c>, a <see cref="Uri"/>).
     /// </description></item>
     /// </list>
     /// </para>
