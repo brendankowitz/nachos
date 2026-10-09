@@ -17,6 +17,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireName(name);
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);

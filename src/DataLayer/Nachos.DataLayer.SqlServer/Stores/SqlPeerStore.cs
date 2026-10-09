@@ -22,6 +22,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
         bool isInternal = false)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireName(name);
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);

@@ -23,6 +23,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireName(name);
+        ColumnLimits.RequireNames(peers?.Keys ?? []);
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -99,6 +101,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireNames(peers.Keys);
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -115,6 +118,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireNames(peers.Keys);
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);

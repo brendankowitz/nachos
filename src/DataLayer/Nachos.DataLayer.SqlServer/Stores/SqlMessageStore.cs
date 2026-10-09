@@ -44,6 +44,12 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireNames(messages.Select(message => message.PeerName));
+        if (idempotency is not null)
+        {
+            ColumnLimits.RequireIdempotency(idempotency.Key, idempotency.RequestHash);
+        }
+
         var storedMetadata = messages.Select(message => SqlJson.ToStorage(message.Metadata, JsonField.Metadata)).ToList();
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();

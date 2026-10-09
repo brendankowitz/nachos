@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Storage;
@@ -6,21 +7,22 @@ using Nachos.DataLayer.SqlServer.Storage;
 namespace Nachos.DataLayer.SqlServer.Stores;
 
 /// <remarks>
-/// <c>Role</c> uses the database's default collation, so role comparisons spell out a binary collation; object ids
-/// are binary and, like names, also compare <c>DATALENGTH</c>.
+/// Object ids and roles are binary (case-exact, like the in-memory provider) and, like names, also compare
+/// <c>DATALENGTH</c>: a binary collation still ignores trailing spaces in <c>=</c> and in the unique constraint.
 /// </remarks>
 internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
 {
     private const string SameGrant =
         """
         ObjectId = @objectId AND DATALENGTH(ObjectId) = DATALENGTH(@objectId)
-        AND Role COLLATE Latin1_General_100_BIN2 = @role AND DATALENGTH(Role) = DATALENGTH(@role)
+        AND Role = @role AND DATALENGTH(Role) = DATALENGTH(@role)
         AND ((@workspace IS NULL AND WorkspaceId IS NULL) OR WorkspaceId = @workspace)
         """;
 
     public async Task AddAsync(GrantRecord grant, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        ColumnLimits.RequireGrant(grant.ObjectId, grant.Role);
         await using var db = await runtime.OpenAsync(ct);
 
         long? workspaceId = grant.WorkspaceName is { } workspace ? await Lookups.RequireWorkspaceIdAsync(db, workspace, ct) : null;
@@ -37,7 +39,16 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
         }
         catch (Exception ex) when (SqlErrors.IsUniqueViolation(ex))
         {
-            // Lost a race with an identical add: the grant exists, which is what was asked.
+            // Lost a race with an identical add: the grant exists, which is what was asked. Unless the row in the way differs
+            // only by trailing spaces, which the unique constraint treats as equal: then this grant cannot be stored.
+            var exists = await db.Database
+                .SqlQueryRaw<int>(string.Concat("SELECT COUNT(*) AS [Value] FROM dbo.PrincipalGrants WHERE ", SameGrant), Parameters(grant, workspaceId))
+                .SingleAsync(ct);
+            if (exists == 0)
+            {
+                throw new NachosValidationException(
+                    "The grant differs from an existing grant only by trailing spaces in its object id or role, which the SQL Server provider cannot store side by side.");
+            }
         }
     }
 

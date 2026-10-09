@@ -3,7 +3,7 @@ CREATE TABLE [dbo].[PrincipalGrants]
     [Id]          BIGINT        IDENTITY (1, 1) NOT NULL,
     [ObjectId]    NVARCHAR (64) COLLATE Latin1_General_100_BIN2_UTF8 NOT NULL, -- Entra object id
     [WorkspaceId] BIGINT        NULL,                                         -- NULL = grant applies to all workspaces
-    [Role]        NVARCHAR (32) NOT NULL,
+    [Role]        NVARCHAR (32) COLLATE Latin1_General_100_BIN2_UTF8 NOT NULL, -- case-exact, like the other key columns
 
     CONSTRAINT [PK_PrincipalGrants] PRIMARY KEY CLUSTERED ([Id]),
     CONSTRAINT [FK_PrincipalGrants_Workspaces] FOREIGN KEY ([WorkspaceId]) REFERENCES [dbo].[Workspaces] ([Id]),

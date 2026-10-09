@@ -486,6 +486,13 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         "{\"OR\":[{\"metadata\":{\"a\":{\"gt\":5,\"lt\":20}}},{\"metadata\":{\"a\":\"10\"}},{\"metadata\":{\"o\":{\"x\":\"*\"}}}]}",
         "{\"NOT\":[{\"metadata\":{\"a\":\"*\"}},{\"metadata\":{\"o\":\"*\"}}]}",
         "{\"OR\":[{\"metadata\":{\"a \":10}},{\"metadata\":{\"a\":10}}]}",
+
+        // Keys differing only by a trailing space ({"a ": 10, "a": 2}): one condition, as an EXISTS, and among several, as flags.
+        "{\"metadata\":{\"a\":10}}",
+        "{\"metadata\":{\"a \":2}}",
+        "{\"metadata\":{\"a\":{\"ne\":10}}}",
+        "{\"metadata\":{\"a\":10,\"b\":null}}",
+        "{\"metadata\":{\"a \":{\"gt\":5},\"a\":{\"lt\":5}}}",
         "{\"AND\":[{\"metadata\":{\"k\":{\"ne\":1}}},{\"metadata\":{\"o\":{\"x\":{\"ne\":1}}}},{\"metadata\":{\"other\":null}}]}",
         "{\"OR\":[{\"metadata\":{\"a\":{\"contains\":\"x\"}}},{\"metadata\":{\"b\":{\"contains\":\"x\"}}},{\"metadata\":{\"k\":{\"icontains\":\"A\"}}}]}",
     ];
