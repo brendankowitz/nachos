@@ -24,6 +24,6 @@
   <!-- Notices for the DacFx exception (design spec section 3, rule 7). No Exists condition: a missing file must break the build. -->
   <ItemGroup>
     <Content Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
-    <Content Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 </Project>
