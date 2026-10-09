@@ -19,10 +19,10 @@ var api = builder.AddProject<Projects.Nachos_Api>("api")
 
 if (builder.Environment.IsDevelopment())
 {
-    // A fresh random key per run: tokens minted in one run are not valid in the next, which is what a dev loop wants.
+    // A fresh random key per run (tokens from one run are not valid in the next) unless Parameters:nachos-signing-key is set\n    // in user secrets or the environment, which pins a known key, for example to mint tokens with `nachos keys create`.
     var signingKey = builder.AddParameter(
         "nachos-signing-key",
-        () => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+        () => builder.Configuration["Parameters:nachos-signing-key"] ?? Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
         secret: true);
 
     api.WithEnvironment("Nachos__SqlServer__AutomaticSchemaDeploymentEnabled", "true")
@@ -31,6 +31,3 @@ if (builder.Environment.IsDevelopment())
 }
 
 builder.Build().Run();
-
-
-

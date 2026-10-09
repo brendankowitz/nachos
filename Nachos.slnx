@@ -3,8 +3,8 @@
     <Project Path="src/DataLayer/Nachos.DataLayer.InMemory/Nachos.DataLayer.InMemory.csproj" />
     <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer/Nachos.DataLayer.SqlServer.csproj" />
     <Project Path="src/Nachos.Abstractions/Nachos.Abstractions.csproj" />
-    <Project Path="src/Nachos.AppHost/Nachos.AppHost.csproj" />
     <Project Path="src/Nachos.Api/Nachos.Api.csproj" />
+    <Project Path="src/Nachos.AppHost/Nachos.AppHost.csproj" />
     <Project Path="src/Nachos.Cli/Nachos.Cli.csproj" />
     <Project Path="src/Nachos.Client/Nachos.Client.csproj" />
     <Project Path="src/Nachos.Core/Nachos.Core.csproj" />
