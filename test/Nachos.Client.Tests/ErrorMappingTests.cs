@@ -268,6 +268,30 @@ public sealed class ErrorMappingTests
         ex.ToString().ShouldNotContain(ApiKey);
     }
 
+    /// <summary>
+    /// A <c>loc</c> part that is an object or an array is shown as JSON text. Encoding it escapes <c>+ &lt; &gt; &amp; ' "</c>,
+    /// so a key holding one of those, echoed inside such a part, would no longer match as plain text; its strings are
+    /// redacted before encoding instead.
+    /// </summary>
+    [Theory]
+    [InlineData("nk+SECRET/with%percent-77")]
+    [InlineData("nk<SECRET>&'quoted\"-77")]
+    public async Task EchoedApiKey_InsideAnObjectOrArrayLocPart_IsRedacted(string apiKey)
+    {
+        var key = System.Text.Json.JsonSerializer.Serialize(apiKey);
+        var ex = await CaptureAsync(
+            HttpStatusCode.UnprocessableEntity,
+            $$"""{"detail":[{"loc":["body",{"k":{{key}},{{key}}:[{{key}},1.5,true,null]},[{{key}}]],"msg":"m","type":"t"}]}""",
+            apiKey);
+
+        var loc = ex.ShouldBeOfType<RequestValidationException>().Errors.Single().Loc;
+        loc[0].ShouldBe("body");
+        loc[1].ShouldBe("""{"k":"[redacted]","[redacted]":["[redacted]",1.5,true,null]}""");
+        loc[2].ShouldBe("""["[redacted]"]""");
+        ex.ToString().ShouldNotContain(apiKey);
+        ex.ToString().ShouldNotContain(apiKey[3..9]);
+    }
+
     [Fact]
     public async Task HugeValidationLocAndType_AreTruncated()
     {
@@ -345,12 +369,12 @@ public sealed class ErrorMappingTests
         loc.ShouldBe(Enumerable.Range(0, ErrorMapper.MaxLocComponents).Cast<object>().ToArray());
     }
 
-    private static NachosHttpClient Client(StubHandler stub) =>
-        new NachosHttpClient(new HttpClient(stub), new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/"), ApiKey = ApiKey });
+    private static NachosHttpClient Client(StubHandler stub, string apiKey = ApiKey) =>
+        new NachosHttpClient(new HttpClient(stub), new NachosClientOptions { BaseAddress = new Uri("https://nachos.test/"), ApiKey = apiKey });
 
-    private static async Task<Exception> CaptureAsync(HttpStatusCode status, string body)
+    private static async Task<Exception> CaptureAsync(HttpStatusCode status, string body, string apiKey = ApiKey)
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(status, body));
-        return await Should.ThrowAsync<Exception>(() => Client(stub).GetMessageAsync("w1", "s1", "m1"));
+        return await Should.ThrowAsync<Exception>(() => Client(stub, apiKey).GetMessageAsync("w1", "s1", "m1"));
     }
 }

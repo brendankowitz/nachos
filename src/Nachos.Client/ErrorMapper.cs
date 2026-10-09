@@ -15,8 +15,10 @@ namespace Nachos.Client;
 /// <remarks>
 /// Server-supplied text is untrusted: if it echoes the call's bearer value or API key back (as text or as hex, see
 /// <see cref="RedactionSecrets"/>), it is replaced with <see cref="Redacted"/>, and then the text is cut to <see cref="MaxMessageLength"/> (redaction first, so a key
-/// straddling the cut is never partly kept). A body that is not valid JSON (including one with duplicate property
-/// names) is treated as having no detail, and the status alone picks the exception.
+/// straddling the cut is never partly kept). A validation error's <c>loc</c> part that is an object or an array is
+/// shown as JSON text whose strings were redacted before encoding, so an echo is caught even where the encoding would
+/// escape one of its characters. A body that is not valid JSON (including one with duplicate property names) is
+/// treated as having no detail, and the status alone picks the exception.
 /// </remarks>
 internal static class ErrorMapper
 {
@@ -99,12 +101,18 @@ internal static class ErrorMapper
         return string.Concat(text.AsSpan(0, cut), TruncationMarker);
     }
 
-    // Every server-supplied string (msg, type, string loc parts) is redacted and bounded like the detail text.
+    // Every server-supplied string (msg, type, string loc parts, and the strings inside an object or array loc part) is
+    // redacted and bounded like the detail text.
     private static ValidationError[] Sanitize((ValidationError[] Kept, int Omitted) errors, RedactionSecrets secrets)
     {
         var sanitized = errors.Kept
             .Select(e => new ValidationError(
-                [.. e.Loc.Select(part => part is string text ? Sanitize(text, secrets) : part)],
+                [.. e.Loc.Select(part => part switch
+                {
+                    string text => Sanitize(text, secrets),
+                    JsonNode node => Sanitize(RedactedNode(node, secrets)!.ToJsonString(), secrets),
+                    _ => part,
+                })],
                 Sanitize(e.Msg, secrets),
                 Sanitize(e.Type, secrets)))
             .ToList();
@@ -179,11 +187,37 @@ internal static class ErrorMapper
             : [.. kept, string.Create(CultureInfo.InvariantCulture, $"{TruncationMarker} {loc.Count - MaxLocComponents} more loc components")];
     }
 
-    // FastAPI loc entries are member names (strings) or array indexes (integers).
+    // FastAPI loc entries are member names (strings) or array indexes (integers). Anything else (an object, an array, a
+    // float, a bool) is kept as a node here and shown as JSON text by Sanitize, once its strings are redacted.
     private static object LocPart(JsonNode? part) => part switch
     {
         JsonValue v when v.TryGetValue<string>(out var name) => name,
         JsonValue v when v.TryGetValue<int>(out var index) => index,
-        _ => part?.ToJsonString() ?? "null",
+        null => "null",
+        _ => part,
     };
+
+    // The strings of a loc part are redacted before it is encoded as JSON text: encoding escapes characters an echoed
+    // key may contain (+ < > & ' "), and the plain match on the encoded text would then miss it. Property names that
+    // redact to the same text collapse into one member. Depth is bounded by WireJson.MaxDepth.
+    private static JsonNode? RedactedNode(JsonNode? node, RedactionSecrets secrets)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                var members = new JsonObject();
+                foreach (var (name, value) in obj)
+                {
+                    members[secrets.Redact(name)] = RedactedNode(value, secrets);
+                }
+
+                return members;
+            case JsonArray array:
+                return new JsonArray([.. array.Select(element => RedactedNode(element, secrets))]);
+            case JsonValue value when value.TryGetValue<string>(out var text):
+                return JsonValue.Create(secrets.Redact(text));
+            default:
+                return node?.DeepClone();
+        }
+    }
 }
