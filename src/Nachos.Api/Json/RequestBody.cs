@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
+using System.Text.Unicode;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Json;
@@ -15,12 +16,24 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
 
     public static async Task<RequestBody> ReadAsync(HttpRequest request, bool requireObject = true)
     {
+        using var buffer = new MemoryStream();
+        await request.Body.CopyToAsync(buffer, request.HttpContext.RequestAborted);
+        // JsonDocument retains this managed buffer after the stream is disposed.
+        ReadOnlyMemory<byte> utf8 = buffer.GetBuffer().AsMemory(0, (int)buffer.Length);
+        if (!Utf8.IsValid(utf8.Span))
+        {
+            throw Invalid(["body"], "Invalid JSON body.", "json_invalid");
+        }
+        // Stream parsing accepted a leading BOM; the memory overload does not.
+        if (utf8.Span.StartsWith("\uFEFF"u8))
+        {
+            utf8 = utf8[3..];
+        }
         JsonDocument document;
         try
         {
             // Core owns the per-value depth limits; the HTTP envelope must not consume that allowance.
-            document = await JsonDocument.ParseAsync(request.Body, new JsonDocumentOptions { MaxDepth = int.MaxValue },
-                request.HttpContext.RequestAborted);
+            document = JsonDocument.Parse(utf8, new JsonDocumentOptions { MaxDepth = int.MaxValue });
         }
         catch (JsonException error)
         {
@@ -96,17 +109,7 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         if (strict)
         {
             // Check JSON-backed strings before typed deserialization can replace malformed Unicode.
-            string raw;
-            try
-            {
-                raw = value.GetRawText();
-            }
-            catch (InvalidOperationException error) when (error is not ObjectDisposedException)
-            {
-                throw new RequestValidationException(
-                    [new(["body", property], "Invalid JSON data.", "json_invalid")], error);
-            }
-            _ = StrictJsonData.ToCanonical(JsonNode.Parse(raw, new JsonNodeOptions(),
+            _ = StrictJsonData.ToCanonical(JsonNode.Parse(value.GetRawText(), new JsonNodeOptions(),
                 new JsonDocumentOptions { MaxDepth = int.MaxValue }));
         }
         return ReadValue(value, typeInfo, ["body", property]);

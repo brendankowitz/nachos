@@ -24,7 +24,7 @@ public sealed class StrictConfigurationUtf8Tests : ApiTest
         var data = new TheoryData<string, string, string, string>();
         foreach (var (method, path) in Routes)
         {
-            foreach (var hex in new[] { "FF", "C0AF", "EDA080" })
+            foreach (var hex in new[] { "FF", "C0AF", "EDA080", "F4908080", "E282", "80" })
             {
                 foreach (var configuration in new[]
                 {
@@ -60,7 +60,7 @@ public sealed class StrictConfigurationUtf8Tests : ApiTest
         var (status, text) = await Raw(client, method, path, body);
         status.ShouldBe(422, text + Environment.NewLine + string.Join(Environment.NewLine, errors.Events));
         using var document = JsonDocument.Parse(text);
-        Location(document.RootElement, "body", "configuration");
+        Location(document.RootElement, "body");
         var detail = document.RootElement.GetProperty("detail");
         detail.GetArrayLength().ShouldBe(1);
         detail[0].GetProperty("type").GetString().ShouldBe("json_invalid");
@@ -70,7 +70,7 @@ public sealed class StrictConfigurationUtf8Tests : ApiTest
         text.ShouldNotContain("not-stored");
         errors.Events.ShouldBeEmpty();
         observed.Exceptions.ShouldHaveSingleItem().ShouldBeOfType<RequestValidationException>()
-            .InnerException.ShouldBeOfType<InvalidOperationException>();
+            .InnerException.ShouldBeNull();
         (await State(client)).ShouldBe(before);
     }
 
@@ -157,15 +157,18 @@ public sealed class StrictConfigurationUtf8Tests : ApiTest
     [InlineData("PUT", W)]
     [InlineData("POST", W + "/sessions")]
     [InlineData("PUT", S)]
-    public async Task UnknownRootValue_IsNotSubjectToNewUtf8Scanning(string method, string path)
+    public async Task UnknownRootValue_InvalidUtf8IsRejectedBeforeMutation(string method, string path)
     {
         await Seed(Client);
+        var before = await State(Client);
         var body = Envelope(method, """{"custom_instructions":"accepted"}""");
         var (status, text) = await Raw(Client, method, path,
             Payload(body[..^1] + ""","future":"@@"}""", [0xFF]));
-        status.ShouldBe(200, text);
+        status.ShouldBe(422, text);
         using var document = JsonDocument.Parse(text);
-        document.RootElement.GetProperty("configuration").GetProperty("custom_instructions").GetString().ShouldBe("accepted");
+        Location(document.RootElement, "body");
+        document.RootElement.GetProperty("detail")[0].GetProperty("type").GetString().ShouldBe("json_invalid");
+        (await State(Client)).ShouldBe(before);
     }
 
     private static string Envelope(string method, string configuration) =>
