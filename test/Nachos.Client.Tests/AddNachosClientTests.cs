@@ -91,6 +91,7 @@ public sealed class AddNachosClientTests
         { "api key with whitespace", o => o.ApiKey = ApiKey + " x" },
         { "api key with CRLF", o => o.ApiKey = ApiKey + "\r\nX-Injected: 1" },
         { "credential without scopes", o => o.Credential = new StaticCredential(Token) },
+        { "null scopes without a credential", o => o.Scopes = null! },
         { "credential with a blank scope", o => { o.Credential = new StaticCredential(Token); o.Scopes = [" "]; } },
         { "zero attempt timeout", o => o.AttemptTimeout = TimeSpan.Zero },
         { "negative attempt timeout", o => o.AttemptTimeout = TimeSpan.FromSeconds(-1) },

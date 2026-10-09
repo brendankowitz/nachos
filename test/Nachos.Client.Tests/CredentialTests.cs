@@ -222,6 +222,18 @@ public sealed class CredentialTests
     }
 
     [Fact]
+    public void NullScopes_WithoutACredential_IsAValueFreeOptionsFailure()
+    {
+        var ex = Should.Throw<ArgumentException>(() => new NachosHttpClient(
+            new HttpClient(), new NachosClientOptions { BaseAddress = Base, ApiKey = ApiKey, Scopes = null! }));
+
+        ex.ShouldNotBeOfType<ArgumentNullException>();
+        ex.ParamName.ShouldBe("options");
+        ex.Message.ShouldContain("Scopes");
+        ex.ToString().ShouldNotContain(ApiKey);
+    }
+
+    [Fact]
     public void Options_ToString_PrintsNoSecret()
     {
         var options = new NachosClientOptions { BaseAddress = Base, ApiKey = ApiKey, Credential = new FakeCredential(Token), Scopes = Scopes };

@@ -39,7 +39,7 @@ public sealed class NachosClientOptions
 
     /// <summary>
     /// Entra scopes requested for <see cref="Credential"/>, for example <c>api://nachos/.default</c>. Required when
-    /// <see cref="Credential"/> is set: at least one, none blank. The client copies them at construction.
+    /// <see cref="Credential"/> is set: at least one, none blank. Never null. The client copies them at construction.
     /// </summary>
     public string[] Scopes { get; set; } = [];
 
@@ -71,7 +71,11 @@ public sealed class NachosClientOptions
             failures.Add("ApiKey must be non-empty printable ASCII without whitespace.");
         }
 
-        if (Credential is not null && (Scopes is not { Length: > 0 } || Scopes.Any(string.IsNullOrWhiteSpace)))
+        if (Scopes is null)
+        {
+            failures.Add("Scopes must not be null; leave it empty when there is no Credential.");
+        }
+        else if (Credential is not null && (Scopes.Length == 0 || Scopes.Any(string.IsNullOrWhiteSpace)))
         {
             failures.Add("Scopes must hold at least one non-blank scope when Credential is set.");
         }
