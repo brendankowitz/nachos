@@ -81,9 +81,11 @@ public static class NachosClientServiceCollectionExtensions
     /// text replaces the values with <c>*</c>: the structured state they hand providers (what OpenTelemetry, Serilog
     /// or Application Insights export) carries the raw values, the request's own <c>Authorization</c> on every call
     /// included, and whatever a server echoes into <c>Location</c>, <c>WWW-Authenticate</c>, <c>Retry-After</c>, a
-    /// charset or any other value. So this method removes them (<c>RemoveAllLoggers</c>). To log this client's
-    /// traffic, add a logger of your own with <c>AddLogger&lt;T&gt;</c> on the returned builder, and do not log
-    /// headers in it. Adding the built-in ones back with <c>AddDefaultLogger</c> puts the header values into the
+    /// charset or any other value. So this method removes them (<c>RemoveAllLoggers</c>), which also drops, for this
+    /// client only, a logger your organisation adds to every client with
+    /// <c>ConfigureHttpClientDefaults(b =&gt; b.AddLogger&lt;T&gt;())</c>. To log this client's traffic, add a logger
+    /// of your own with <c>AddLogger&lt;T&gt;</c> on the returned builder, after this call, and do not log headers
+    /// in it. Adding the built-in ones back with <c>AddDefaultLogger</c> puts the header values into the
     /// structured state again, which nothing here covers. What the client does for any logger or handler above the
     /// primary handler: that handler, whatever you made it (see Pipeline), is wrapped in a handler that applies the
     /// exception rule above before anything above it sees a failure, and that removes a response header whose name
@@ -147,8 +149,10 @@ public static class NachosClientServiceCollectionExtensions
     /// when it is built, whether the defaults were configured before or after this call: it is matched by its exact
     /// type full name, <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> (package 8.2.0 and later) or
     /// <c>Microsoft.Extensions.Http.Resilience.Internal.ResilienceHandler</c> (8.0.0 and 8.1.0), and every other
-    /// handler you add stays, whatever its name. A caller who wants resilience of their own replaces
-    /// <see cref="RetryHandler"/>'s semantics knowingly, with a handler of another type.
+    /// handler you add stays, whatever its name. The match is by type, not by intent: a pipeline you add to this
+    /// client deliberately with <c>AddResilienceHandler("custom", ...)</c> is the same handler type and is removed
+    /// too. A caller who wants resilience of their own replaces <see cref="RetryHandler"/>'s semantics knowingly, with
+    /// a handler of another type.
     /// </para>
     /// <para>
     /// <b>Time.</b> One <see cref="TimeProvider"/> from the container serves both <see cref="RetryHandler"/> (backoff,
