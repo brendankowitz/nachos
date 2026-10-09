@@ -23,9 +23,22 @@ namespace Nachos.Client;
 /// (<c>TryAddEnumerable</c>), so a container that calls <c>AddNachosClient</c> twice still wraps once; a primary
 /// handler that already is a <see cref="TransportRedactionHandler"/> is left alone for the same reason.
 /// </para>
+/// <para>
+/// It also removes any <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> from the chain (matched by type
+/// name, so no package is referenced and any version of it counts). <c>AddStandardResilienceHandler</c> in
+/// <c>ConfigureHttpClientDefaults</c>, the shape a service-defaults project generates, puts one above
+/// <see cref="RetryHandler"/> on every named client, and it retries by status alone: a request this client sends once
+/// by spec (a key creation, an unkeyed message create, a 501) is resent, a keyed create is attempted up to twelve
+/// times, its own per-attempt timeout cuts and retries even a mutation, and its total timeout overrides
+/// <see cref="NachosClientOptions.AttemptTimeout"/> and <c>Retry-After</c>. The client does its own, spec-defined
+/// retries, so a second retry layer is removed; every other handler the caller adds stays. A caller who wants
+/// resilience of their own replaces <see cref="RetryHandler"/>'s semantics knowingly, with a handler of another type.
+/// </para>
 /// </remarks>
 internal sealed class TransportRedactionFilter : IHttpMessageHandlerBuilderFilter
 {
+    private const string ResilienceHandlerTypeName = "Microsoft.Extensions.Http.Resilience.ResilienceHandler";
+
     public Action<HttpMessageHandlerBuilder> Configure(Action<HttpMessageHandlerBuilder> next)
     {
         ArgumentNullException.ThrowIfNull(next);
@@ -35,6 +48,14 @@ internal sealed class TransportRedactionFilter : IHttpMessageHandlerBuilderFilte
             if (builder.Name != NachosClientServiceCollectionExtensions.HttpClientName)
             {
                 return;
+            }
+
+            for (var i = builder.AdditionalHandlers.Count - 1; i >= 0; i--)
+            {
+                if (builder.AdditionalHandlers[i].GetType().FullName == ResilienceHandlerTypeName)
+                {
+                    builder.AdditionalHandlers.RemoveAt(i);
+                }
             }
 
             // Redirects are not followed: a 3xx is a final status (spec §16), and the redirected hop's failure text

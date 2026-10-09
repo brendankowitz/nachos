@@ -127,10 +127,16 @@ public static class NachosClientServiceCollectionExtensions
     /// </list>
     /// </para>
     /// <para>
-    /// Handlers added to every client by <c>ConfigureHttpClientDefaults</c>
-    /// sit above <see cref="RetryHandler"/>; a resilience handler there (for example
-    /// <c>AddStandardResilienceHandler</c>) would retry requests this client deliberately sends once, such as message
-    /// creation without an <c>Idempotency-Key</c>, so remove it from this client.
+    /// <b>Resilience handlers.</b> Handlers added to every client by <c>ConfigureHttpClientDefaults</c> sit above
+    /// <see cref="RetryHandler"/>. A <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> there (what
+    /// <c>AddStandardResilienceHandler</c> in a service-defaults project adds) retries by status alone, so it would
+    /// resend what this client sends once by spec (a key creation, an unkeyed message create, a 501), attempt a keyed
+    /// create up to twelve times, cut and retry even a mutation on its own per-attempt timeout, and override
+    /// <see cref="NachosClientOptions.AttemptTimeout"/> and <c>Retry-After</c> with its total timeout. The client does
+    /// its own, spec-defined retries, so that handler is removed from this client's chain when it is built (matched
+    /// by type name, whichever version of the package; every other handler you add stays), whether the defaults were
+    /// configured before or after this call. A caller who wants resilience of their own replaces
+    /// <see cref="RetryHandler"/>'s semantics knowingly, with a handler of another type.
     /// </para>
     /// <para>
     /// <b>Time.</b> One <see cref="TimeProvider"/> from the container serves both <see cref="RetryHandler"/> (backoff,

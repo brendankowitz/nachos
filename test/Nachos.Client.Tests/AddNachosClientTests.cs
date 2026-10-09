@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions;
+using Nachos.Abstractions.Contracts;
 using Nachos.Core;
 using Shouldly;
 
@@ -387,6 +388,115 @@ public sealed class AddNachosClientTests
 
         // The factory's own default primary handler, with its own default for redirects.
         chain[^1].ShouldBeOfType<SocketsHttpHandler>().AllowAutoRedirect.ShouldBeTrue();
+    }
+
+    private const string ResilienceHandlerTypeName = "Microsoft.Extensions.Http.Resilience.ResilienceHandler";
+
+    public static TheoryData<string> ResilienceDefaultsOrder() => ["defaults before AddNachosClient", "defaults after AddNachosClient"];
+
+    /// <summary>
+    /// <c>AddStandardResilienceHandler</c> in <c>ConfigureHttpClientDefaults</c> (the service-defaults shape) puts a
+    /// <c>ResilienceHandler</c> above <see cref="RetryHandler"/> on every named client; it retries by status alone,
+    /// breaking the spec §16 rules: a key creation answered 503 would go out four times, a 501 four times, a keyed
+    /// create twelve. The client removes it from its own chain, whichever order the two were configured in, and leaves
+    /// other clients alone.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ResilienceDefaultsOrder))]
+    public async Task StandardResilienceHandler_IsRemovedFromThisClient_SoTheSpecRetryRulesHold(string order)
+    {
+        var stub = new StubHandler((request, _) => request.Uri.AbsolutePath switch
+        {
+            var path when path.EndsWith("/v3/keys", StringComparison.Ordinal) => StubHandler.Json(HttpStatusCode.ServiceUnavailable, """{"detail":"busy"}"""),
+            var path when path.EndsWith("/messages/m1", StringComparison.Ordinal) =>
+                StubHandler.Json(HttpStatusCode.NotImplemented, """{"detail":"Not implemented in this Nachos version"}"""),
+            _ => StubHandler.Json(HttpStatusCode.ServiceUnavailable, """{"detail":"busy"}"""),
+        });
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddHttpClient("other");
+        if (order == "defaults before AddNachosClient")
+        {
+            services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+        }
+
+        services.AddNachosClient(o => o.BaseAddress = Base).ConfigurePrimaryHttpMessageHandler(() => stub);
+        if (order == "defaults after AddNachosClient")
+        {
+            services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+        }
+
+        using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<INachosClient>();
+        var factory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+
+        (await Should.ThrowAsync<HttpRequestException>(() => client.CreateKeyAsync("w1"))).StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        (await Should.ThrowAsync<HttpRequestException>(() => client.GetMessageAsync("w1", "s1", "m1"))).StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
+        (await Should.ThrowAsync<HttpRequestException>(() => client.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")], "key-1")))
+            .StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+
+        stub.Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/v3/keys", StringComparison.Ordinal)).ShouldBe(1, "a key creation is never retried");
+        stub.Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/messages/m1", StringComparison.Ordinal)).ShouldBe(1, "a 501 is final");
+        stub.Requests.Count(r => r.Uri.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal)).ShouldBe(RetryHandler.MaxAttempts, "a keyed create is retried by RetryHandler alone");
+        Chain(factory.CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).Count(h => h.GetType().FullName == ResilienceHandlerTypeName).ShouldBe(0);
+        Chain(factory.CreateHandler("other")).Count(h => h.GetType().FullName == ResilienceHandlerTypeName).ShouldBe(1, "other clients keep their resilience handler");
+    }
+
+    /// <summary>
+    /// With the resilience defaults configured, a <c>Retry-After</c> over the cap still surfaces at once with its delay
+    /// (the standard handler would wait it out and resend), and the attempt timeout is still the client's own, on the
+    /// container's clock (the standard handler's per-attempt timeout runs on the system clock).
+    /// </summary>
+    [Fact]
+    public async Task RetryAfterAndTheAttemptTimeout_StayTheClientsOwn_WithTheResilienceDefaults()
+    {
+        var time = new FakeTimeProvider(Epoch);
+        var stalled = new SemaphoreSlim(0);
+        var attempts = 0;
+        var primary = new LambdaHandler(async (request, ct) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/v3/keys", StringComparison.Ordinal))
+            {
+                var busy = StubHandler.Json(HttpStatusCode.ServiceUnavailable, """{"detail":"busy"}""");
+                busy.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(40));
+                return busy;
+            }
+
+            if (Interlocked.Increment(ref attempts) > 1)
+            {
+                return StubHandler.Json(HttpStatusCode.OK, MessageJson);
+            }
+
+            stalled.Release();
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            throw new IOException("the attempt timeout never fired");
+        });
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(time);
+        services.ConfigureHttpClientDefaults(b => b.AddStandardResilienceHandler());
+        services.AddNachosClient(o =>
+        {
+            o.BaseAddress = Base;
+            o.AttemptTimeout = TimeSpan.FromSeconds(5);
+        }).ConfigurePrimaryHttpMessageHandler(() => primary);
+        using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<INachosClient>();
+
+        var busy = await Should.ThrowAsync<HttpRequestException>(() => client.CreateKeyAsync("w1"));
+        NachosExceptionData.TryGetRetryAfter(busy, out var delay).ShouldBeTrue();
+        delay.ShouldBe(TimeSpan.FromSeconds(40));
+
+        var call = client.GetMessageAsync("w1", "s1", "m1");
+        (await stalled.WaitAsync(TimeSpan.FromSeconds(10))).ShouldBeTrue();
+        time.Advance(TimeSpan.FromSeconds(5));
+        while (!call.IsCompleted)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(100));
+            await Task.Delay(1);
+        }
+
+        (await call).Id.ShouldBe("m1");
+        attempts.ShouldBe(2);
     }
 
     /// <summary>The handlers from <paramref name="top"/> down to the primary handler.</summary>
