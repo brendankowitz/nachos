@@ -82,7 +82,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
         await using var db = await runtime.OpenAsync(ct);
 
         var rows = db.Workspaces.FromSqlRaw(string.Concat("SELECT * FROM dbo.Workspaces AS t WHERE ", where), [.. parameters]).AsNoTracking();
-        return await Paging.ToPageAsync(
+        return await Paging.ToFilteredPageAsync(
             rows,
             page,
             (query, reverse) => reverse

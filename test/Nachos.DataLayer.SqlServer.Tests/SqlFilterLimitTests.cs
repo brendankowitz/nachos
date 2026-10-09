@@ -37,7 +37,7 @@ public sealed class SqlFilterLimitTests(SqlServerFixture fixture)
 
     public static TheoryData<string, string> WideFilters() => new()
     {
-        { "3000 contains of one operand on distinct keys", Of("OR", 3000, i => "{\"metadata\":{\"c" + I(i) + "\":{\"contains\":\"v1\"}}}") },
+        { "3000 contains of one operand on distinct keys (the round 2 I-1 repro: SQL error 8632, a 500, before conditions were shared across keys)", Of("OR", 3000, i => "{\"metadata\":{\"c" + I(i) + "\":{\"contains\":\"v1\"}}}") },
         { "10000 equalities on distinct keys", Of("OR", 10_000, i => "{\"metadata\":{\"k" + I(i) + "\":1}}") },
         { "10000 ne on distinct keys", Of("AND", 10_000, i => "{\"metadata\":{\"k" + I(i) + "\":{\"ne\":1}}}") },
         { "3000 nested contains on distinct keys", Of("OR", 3000, i => "{\"metadata\":{\"c" + I(i) + "\":{\"x\":{\"icontains\":\"v1\"}}}}") },

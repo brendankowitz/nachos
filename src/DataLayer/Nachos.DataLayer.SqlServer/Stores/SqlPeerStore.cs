@@ -86,7 +86,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
                 string.Concat("SELECT * FROM dbo.Peers AS t WHERE t.WorkspaceId = @workspace", kindClause, " AND ", where),
                 [SqlParameters.Long("@workspace", workspaceId), .. parameters])
             .AsNoTracking();
-        return await Paging.ToPageAsync(rows, page, InCreationOrder, peer => peer.ToRecord(workspaceName), ct);
+        return await Paging.ToFilteredPageAsync(rows, page, InCreationOrder, peer => peer.ToRecord(workspaceName), ct);
     }
 
     public async Task<Page<SessionRecord>> ListSessionsForPeerAsync(
@@ -106,7 +106,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
                     where),
                 [SqlParameters.Long("@workspace", workspaceId), SqlParameters.Long("@peer", peerId), .. parameters])
             .AsNoTracking();
-        return await Paging.ToPageAsync(rows, page, SqlSessionStore.InCreationOrder, session => session.ToRecord(workspaceName), ct);
+        return await Paging.ToFilteredPageAsync(rows, page, SqlSessionStore.InCreationOrder, session => session.ToRecord(workspaceName), ct);
     }
 
     internal static IQueryable<PeerEntity> InCreationOrder(IQueryable<PeerEntity> peers, bool reverse) =>

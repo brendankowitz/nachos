@@ -91,7 +91,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
                 string.Concat("SELECT * FROM dbo.Sessions AS t WHERE t.WorkspaceId = @workspace AND ", where),
                 [SqlParameters.Long("@workspace", workspaceId), .. parameters])
             .AsNoTracking();
-        return await Paging.ToPageAsync(rows, page, InCreationOrder, session => session.ToRecord(workspaceName), ct);
+        return await Paging.ToFilteredPageAsync(rows, page, InCreationOrder, session => session.ToRecord(workspaceName), ct);
     }
 
     public async Task AddPeersAsync(

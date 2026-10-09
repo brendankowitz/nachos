@@ -156,7 +156,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
                 string.Concat("SELECT * FROM dbo.Messages AS t WHERE t.SessionId = @session AND ", where),
                 [SqlParameters.Long("@session", session.SessionId), .. parameters])
             .AsNoTracking();
-        return await Paging.ToPageAsync<MessageEntity, MessageRecord>(
+        return await Paging.ToFilteredPageAsync<MessageEntity, MessageRecord>(
             rows,
             page,
             (query, reverse) => reverse ? query.OrderByDescending(m => m.Seq) : query.OrderBy(m => m.Seq),
