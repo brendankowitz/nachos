@@ -108,10 +108,15 @@ public static class NachosClientServiceCollectionExtensions
     /// </description></item>
     /// <item><description>
     /// diagnostics that carry the outgoing request itself, whatever the server does: the <c>DiagnosticSource</c>
-    /// events <c>System.Net.Http.HttpRequestOut.Start</c> and <c>System.Net.Http.Request</c> hand listeners the
-    /// <see cref="HttpRequestMessage"/>, whose <c>ToString</c> prints the <c>Authorization</c> value, and the
-    /// <c>Private.InternalDiagnostics.System.Net.Http</c> EventSource prints it the same way. A listener on those sees
-    /// the bearer value on every request;
+    /// events <c>System.Net.Http.HttpRequestOut.Start</c>, <c>System.Net.Http.HttpRequestOut.Stop</c>,
+    /// <c>System.Net.Http.Request</c>, <c>System.Net.Http.Response</c> (through
+    /// <see cref="HttpResponseMessage.RequestMessage"/>, and with every response header value the server sent,
+    /// <c>WWW-Authenticate</c> included) and <c>System.Net.Http.Exception</c> hand listeners the
+    /// <see cref="HttpRequestMessage"/>, whose <c>ToString</c> prints the <c>Authorization</c> value; the
+    /// <c>Private.InternalDiagnostics.System.Net.Http</c> EventSource prints it the same way, and the
+    /// <c>Private.InternalDiagnostics.System.Net.Sockets</c> EventSource's <c>DumpBuffer</c> event (Verbose) holds the
+    /// raw request bytes, <c>Authorization</c> included. A listener on any of those sees the bearer value on every
+    /// request: treat every <c>DiagnosticSource</c> and EventSource consumer as sensitive;
     /// </description></item>
     /// <item><description>
     /// <c>System.Net.NameResolution</c> events, which name the host being resolved: with your own primary handler that
