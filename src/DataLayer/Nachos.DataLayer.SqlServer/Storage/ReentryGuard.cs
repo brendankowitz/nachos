@@ -4,7 +4,8 @@ namespace Nachos.DataLayer.SqlServer.Storage;
 
 /// <summary>
 /// Enforces that an <see cref="IdempotencyWrite.SerializeResponse"/> callback is a pure function of the records it is
-/// given: while it runs, every entry point of the same store rejects calls from the execution context running it.
+/// given: while it runs, every entry point of <b>every</b> <see cref="SqlMemoryStore"/> in the process rejects calls from the
+/// execution context running it.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -15,23 +16,27 @@ namespace Nachos.DataLayer.SqlServer.Storage;
 /// Other execution contexts, including concurrent appends, never see it.
 /// </para>
 /// <para>
+/// The marker is <b>static</b>, shared by every instance: a callback that reaches a different store (another DI scope's
+/// <see cref="SqlMemoryStore"/>) would otherwise wait for the row locks its own append holds, and deadlock against itself.
+/// </para>
+/// <para>
 /// A rejected call is recorded on the invocation, so the append fails (and rolls back) after the callback returns even
 /// if the callback swallowed the rejection. A callback that suppresses execution-context flow defeats the guard and is
 /// out of contract.
 /// </para>
 /// </remarks>
-internal sealed class ReentryGuard
+internal static class ReentryGuard
 {
     /// <summary>Names the rule; deliberately carries no data.</summary>
     public const string ReentryMessage = "The SerializeResponse callback must not call the store.";
 
-    private readonly AsyncLocal<Invocation?> _current = new();
+    private static readonly AsyncLocal<Invocation?> Current = new();
 
-    /// <summary>Throws when the calling execution context is inside a callback of this store, recording the attempt.</summary>
+    /// <summary>Throws when the calling execution context is inside a callback of any SQL store, recording the attempt.</summary>
     /// <exception cref="InvalidOperationException">The store was re-entered from a <c>SerializeResponse</c> callback.</exception>
-    public void ThrowIfReentered()
+    public static void ThrowIfReentered()
     {
-        if (_current.Value is { } invocation)
+        if (Current.Value is { } invocation)
         {
             invocation.RecordReentry();
             throw new InvalidOperationException(ReentryMessage);
@@ -42,10 +47,10 @@ internal sealed class ReentryGuard
     /// Runs <paramref name="serialize"/> with the guard raised. An exception it throws propagates unchanged; if it
     /// returns after anything tried to re-enter the store, throws <see cref="InvalidOperationException"/>.
     /// </summary>
-    public string Invoke(Func<IReadOnlyList<MessageRecord>, string> serialize, IReadOnlyList<MessageRecord> records)
+    public static string Invoke(Func<IReadOnlyList<MessageRecord>, string> serialize, IReadOnlyList<MessageRecord> records)
     {
         var invocation = new Invocation();
-        _current.Value = invocation;
+        Current.Value = invocation;
         string body;
         try
         {
@@ -54,7 +59,7 @@ internal sealed class ReentryGuard
         finally
         {
             // The callback runs synchronously in the append's own context, so this write must be undone before it awaits.
-            _current.Value = null;
+            Current.Value = null;
         }
 
         return invocation.ReentryAttempted ? throw new InvalidOperationException(ReentryMessage) : body;

@@ -11,7 +11,7 @@ internal sealed class SqlIdempotencyStore(SqlStoreRuntime runtime) : IIdempotenc
 {
     public async Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         if (await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is not { } workspaceId)

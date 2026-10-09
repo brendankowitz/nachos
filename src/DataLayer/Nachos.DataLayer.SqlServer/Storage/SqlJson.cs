@@ -1,3 +1,5 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Json;
@@ -64,8 +66,15 @@ internal static class SqlJson
             RequireStorableKeys(canonical);
         }
 
-        return canonical.ToJsonString();
+        return canonical.ToJsonString(StorageText);
     }
+
+    /// <summary>
+    /// The writer for stored text: the column is data, never HTML, so non-ASCII text is written as itself rather than as
+    /// <c>\uXXXX</c> escapes (3 to 6 times larger). Parsing it back yields the same values; quotes, backslashes and control
+    /// characters are still escaped, and the strict-data helper has already ruled out unpaired surrogates.
+    /// </summary>
+    private static readonly JsonSerializerOptions StorageText = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     /// <summary>Walks the canonical tree (its depth is bounded by the helper) and rejects an over-long key.</summary>
     private static void RequireStorableKeys(JsonNode node)

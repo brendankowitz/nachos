@@ -21,7 +21,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
         CancellationToken ct,
         bool isInternal = false)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -34,7 +34,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
 
     public async Task<PeerRecord?> GetAsync(string workspaceName, string name, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         if (await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is not { } workspaceId)
@@ -48,7 +48,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
     public async Task<PeerRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -69,7 +69,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
     public async Task<Page<PeerRecord>> ListAsync(
         string workspaceName, PeerKind kind, FilterNode? filter, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var (where, parameters) = SqlFilterCompiler.Compile(filter, ResourceKind.Peer, "t");
         await using var db = await runtime.OpenAsync(ct);
 
@@ -91,7 +91,7 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
     public async Task<Page<SessionRecord>> ListSessionsForPeerAsync(
         string workspaceName, string peerName, FilterNode? filter, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var (where, parameters) = SqlFilterCompiler.Compile(filter, ResourceKind.Session, "t");
         await using var db = await runtime.OpenAsync(ct);
 

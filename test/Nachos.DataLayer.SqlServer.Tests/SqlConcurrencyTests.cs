@@ -200,6 +200,57 @@ public sealed class SqlConcurrencyTests(SqlServerFixture fixture)
         (await CountAsync(database, "SELECT COUNT(*) FROM dbo.SessionPeers sp JOIN dbo.Workspaces w ON w.Id = sp.WorkspaceId WHERE w.Name = @w", workspace)).ShouldBe(4);
     }
 
+    [Fact]
+    public async Task Append_FactoryCallingAnotherStoreInstance_FailsFast_AndCommitsNothing()
+    {
+        var database = await SqlTestDatabase.GetAsync(fixture, "concurrency");
+        var store = database.CreateStore(TimeProvider.System);
+        var other = database.CreateStore(TimeProvider.System); // as another DI scope's IMemoryStore would be
+        var workspace = Unique("ws");
+        await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+        await store.Sessions.GetOrCreateAsync(workspace, "s", null, null, null, Ct);
+
+        // Without the process-wide guard this read would wait for the session row the append holds: a self-deadlock.
+        var reentrant = new IdempotencyWrite(
+            Unique("key"),
+            new string('b', 64),
+            201,
+            _ =>
+            {
+                other.Messages.ListAsync(workspace, "s", null, new PageRequest(), Ct).GetAwaiter().GetResult();
+                return "body";
+            },
+            TimeSpan.FromMinutes(5));
+
+        await Should.ThrowAsync<InvalidOperationException>(() =>
+            Task.Run(() => store.Messages.AppendAsync(workspace, "s", [new NewMessage("alice", "hi", 1, null, null)], reentrant, Ct))
+                .WaitAsync(TimeSpan.FromSeconds(30)));
+
+        (await other.Messages.ListAsync(workspace, "s", null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await other.Peers.GetAsync(workspace, "alice", Ct)).ShouldBeNull();
+
+        // Outside a callback both instances work normally.
+        (await other.Messages.AppendAsync(workspace, "s", [new NewMessage("alice", "hi", 1, null, null)], null, Ct)).Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Append_MissingWorkspace_NamesTheWorkspace()
+    {
+        var database = await SqlTestDatabase.GetAsync(fixture, "concurrency");
+        var store = database.CreateStore(TimeProvider.System);
+        var missing = Unique("missing");
+
+        var notFound = await Should.ThrowAsync<NotFoundException>(
+            () => store.Messages.AppendAsync(missing, "s", [new NewMessage("alice", "hi", 1, null, null)], null, Ct));
+        notFound.Message.ShouldBe($"Workspace '{missing}' not found.");
+
+        var workspace = Unique("ws");
+        await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+        (await Should.ThrowAsync<NotFoundException>(
+            () => store.Messages.AppendAsync(workspace, "nope", [new NewMessage("alice", "hi", 1, null, null)], null, Ct)))
+            .Message.ShouldContain("Session 'nope'");
+    }
+
     private static async Task<long> CountAsync(SqlTestDatabase database, string sql, string workspace)
     {
         await using var connection = new SqlConnection(database.ConnectionString);

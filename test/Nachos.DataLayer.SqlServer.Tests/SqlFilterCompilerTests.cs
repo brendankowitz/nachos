@@ -182,7 +182,21 @@ public sealed class SqlFilterCompilerTests
         }
 
         Should.Throw<NachosValidationException>(
-            () => Compile(new JsonObject { ["metadata"] = metadata }, ResourceKind.Peer));
+            () => Compile(new JsonObject { ["metadata"] = metadata }, ResourceKind.Peer))
+            .Detail.ShouldBe("The filter needs more distinct values than the SQL Server provider can send in one statement.");
+    }
+
+    [Fact]
+    public void NumberList_IsKeysInChunks_NotOneParameterPerElement()
+    {
+        var numbers = new JsonArray([.. Enumerable.Range(0, FilterParser.MaxListItems).Select(i => (JsonNode)(i * 1000003L))]);
+
+        var (sql, parameters) = Compile(
+            new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["in"] = numbers } } }, ResourceKind.Peer);
+
+        parameters.Count.ShouldBeLessThan(10);
+        sql.ShouldContain("CHARINDEX");
+        sql.Split("dbo.JsonNumberOrderKey(").Length.ShouldBe(2, "the stored value's key is computed in exactly one place");
     }
 
     [Fact]

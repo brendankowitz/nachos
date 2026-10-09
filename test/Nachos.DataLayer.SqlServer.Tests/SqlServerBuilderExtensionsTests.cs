@@ -36,6 +36,30 @@ public sealed class SqlServerBuilderExtensionsTests(SqlServerFixture fixture)
     }
 
     [Fact]
+    public void UseSqlServer_ReplacesAnEarlierStore_AndASecondCallAmendsTheSameOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<IMemoryStore>(_ => throw new InvalidOperationException("the earlier provider must be replaced"));
+        services.AddNachos(nachos =>
+        {
+            nachos.UseSqlServer(options => options.ConnectionString = "Server=first;Database=unused");
+            nachos.UseSqlServer(options => options.AutomaticSchemaDeploymentEnabled = true);
+        });
+
+        services.Count(d => d.ServiceType == typeof(IMemoryStore)).ShouldBe(1);
+        services.Count(d => d.ServiceType == typeof(SqlServerOptions)).ShouldBe(1);
+        services.Count(d => d.ServiceType == typeof(ISchemaManager)).ShouldBe(1);
+        services.Count(d => d.ServiceType == typeof(SchemaGate)).ShouldBe(1);
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+        var options = provider.GetRequiredService<SqlServerOptions>();
+        options.ConnectionString.ShouldBe("Server=first;Database=unused");
+        options.AutomaticSchemaDeploymentEnabled.ShouldBeTrue();
+        using var scope = provider.CreateScope();
+        scope.ServiceProvider.GetRequiredService<IMemoryStore>().ShouldBeOfType<SqlMemoryStore>();
+    }
+
+    [Fact]
     public async Task FirstStoreOperation_RunsTheSchemaGate()
     {
         // An empty database with automatic deployment off: the gate refuses before the store touches any table.

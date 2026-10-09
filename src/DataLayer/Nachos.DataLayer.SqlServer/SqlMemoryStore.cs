@@ -28,8 +28,9 @@ namespace Nachos.DataLayer.SqlServer;
 /// </para>
 /// <para>
 /// <b>Serializer re-entry.</b> While an <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback
-/// runs inside an append's transaction, every entry point of this instance called from its execution context throws
-/// <see cref="InvalidOperationException"/> before touching the database, and the append rolls back.
+/// runs inside an append's transaction, every entry point of every <see cref="SqlMemoryStore"/> in the process called
+/// from its execution context throws <see cref="InvalidOperationException"/> before touching the database, and the append
+/// rolls back. Any store, not just this one: another instance would block on the locks the append holds.
 /// </para>
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore

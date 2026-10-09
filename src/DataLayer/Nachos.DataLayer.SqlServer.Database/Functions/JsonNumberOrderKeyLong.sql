@@ -1,39 +1,22 @@
 /*
-The order key of JSON number text, for exact numeric comparison in filters (FilterWriter in Nachos.DataLayer.SqlServer).
-Two numbers compare exactly like their keys compared under a binary collation, at any size: there is no precision or
-range limit, because no part of the number is ever converted to a fixed-width type it might not fit.
-
-Input: the text of a JSON number (OPENJSON [value] where [type] = 2). NULL, or text that is not number-shaped, gives NULL.
-Key:   zero (any spelling: 0, -0, 0.00, 0e5) is '1'. Otherwise the value is 0.m x 10^(a+1) with mantissa digits m (no
-       leading or trailing zeros) and a the power of ten of m's first digit, an integer of any size. With
-       F = the digit count of |a| in 10 digits followed by the digits of |a|, the exponent field is '1' + F when a >= 0
-       and '0' + 9-complement(F) when a < 0. A positive number is '2' + field + m; a negative one is
-       '0' + 9-complement(field + m) + ':' (':' sorts after every digit, so of two complemented mantissas where one is a
-       prefix of the other, the longer, larger magnitude sorts first).
-ExactDecimal.ToOrderKey computes the same key in C# for filter operands; the two must change together.
-
-Cost: callers evaluate it once per stored value (see FilterWriter.NumberKey). Text of up to 4000 characters, every
-realistic number, is handled here on VARCHAR (8000) values, which is about twice as fast as VARCHAR (MAX); longer text
-goes to dbo.JsonNumberOrderKeyLong, the same algorithm on VARCHAR (MAX). Procedural and not inlined (INLINE = OFF): as
-one inlined expression, the exact exponent arithmetic exceeds SQL Server's expression-services limit (error 8632).
+The general form of dbo.JsonNumberOrderKey, for number text longer than 4000 characters: the same algorithm on
+VARCHAR (MAX) values. dbo.JsonNumberOrderKey documents the key. The bodies of the two functions are identical apart from
+VARCHAR (MAX) / VARCHAR (8000) and the delegation at the top of dbo.JsonNumberOrderKey (SqlNumberOrderKeyTests pins this).
 */
-CREATE FUNCTION [dbo].[JsonNumberOrderKey] (@number NVARCHAR (MAX))
+CREATE FUNCTION [dbo].[JsonNumberOrderKeyLong] (@number NVARCHAR (MAX))
 RETURNS VARCHAR (MAX)
 WITH SCHEMABINDING, RETURNS NULL ON NULL INPUT, INLINE = OFF
 AS
-BEGIN
-    IF DATALENGTH(@number) > 8000
-        RETURN [dbo].[JsonNumberOrderKeyLong](@number);
-    -- Not number-shaped (-?D(.D)?([eE][+-]?D)? with D one or more digits): NULL, never an error.
-    DECLARE @text VARCHAR (8000) = CAST(@number AS VARCHAR (8000));
+BEGIN    -- Not number-shaped (-?D(.D)?([eE][+-]?D)? with D one or more digits): NULL, never an error.
+    DECLARE @text VARCHAR (MAX) = CAST(@number AS VARCHAR (MAX));
     DECLARE @negative BIT = CASE WHEN LEFT(@text, 1) = '-' THEN 1 ELSE 0 END;
     IF @negative = 1
         SET @text = STUFF(@text, 1, 1, '');
 
     -- Split into the significand I.F and the exponent X.
     DECLARE @at BIGINT = PATINDEX('%[eE]%', @text);
-    DECLARE @significand VARCHAR (8000) = CASE WHEN @at > 0 THEN LEFT(@text, @at - 1) ELSE @text END;
-    DECLARE @exponent VARCHAR (8000) = CASE WHEN @at > 0 THEN STUFF(@text, 1, @at, '') ELSE '0' END;
+    DECLARE @significand VARCHAR (MAX) = CASE WHEN @at > 0 THEN LEFT(@text, @at - 1) ELSE @text END;
+    DECLARE @exponent VARCHAR (MAX) = CASE WHEN @at > 0 THEN STUFF(@text, 1, @at, '') ELSE '0' END;
     DECLARE @exponentNegative BIT = CASE WHEN LEFT(@exponent, 1) = '-' THEN 1 ELSE 0 END;
     IF LEFT(@exponent, 1) IN ('-', '+')
         SET @exponent = STUFF(@exponent, 1, 1, '');
@@ -50,16 +33,16 @@ BEGIN
 
     -- The mantissa: the significant digits of I.F; the value is zero when there are none.
     DECLARE @integerLength BIGINT = CASE WHEN @dot > 0 THEN @dot - 1 ELSE LEN(@significand) END;
-    DECLARE @digits VARCHAR (8000) = REPLACE(@significand, '.', '');
+    DECLARE @digits VARCHAR (MAX) = REPLACE(@significand, '.', '');
     DECLARE @first BIGINT = PATINDEX('%[^0]%', @digits);
     IF @first = 0
         RETURN '1';
-    DECLARE @mantissa VARCHAR (8000) =
+    DECLARE @mantissa VARCHAR (MAX) =
         SUBSTRING(@digits, @first, LEN(@digits) - PATINDEX('%[^0]%', REVERSE(@digits)) - @first + 2);
 
     -- a = (+/-)X + shift, exactly. The shift is bounded by the text's length; X is not.
     DECLARE @shift BIGINT = @integerLength - @first;
-    DECLARE @aNegative BIT, @aDigits VARCHAR (8000);
+    DECLARE @aNegative BIT, @aDigits VARCHAR (MAX);
     IF LEN(@exponent) <= 18
     BEGIN
         DECLARE @a BIGINT = CAST(@exponent AS BIGINT) * (1 - 2 * @exponentNegative) + @shift;
@@ -69,7 +52,7 @@ BEGIN
     BEGIN
         -- |X| >= 10^18 exceeds any shift, so a has X's sign; add the shift to |X| in 18-digit chunks, right to left.
         DECLARE @carry BIGINT = @shift * (1 - 2 * @exponentNegative);
-        DECLARE @rest VARCHAR (8000) = @exponent, @result VARCHAR (8000) = '', @chunk BIGINT;
+        DECLARE @rest VARCHAR (MAX) = @exponent, @result VARCHAR (MAX) = '', @chunk BIGINT;
         WHILE LEN(@rest) > 0 OR @carry <> 0
         BEGIN
             SET @chunk = CASE WHEN LEN(@rest) > 0 THEN CAST(RIGHT(@rest, 18) AS BIGINT) ELSE 0 END + @carry;
@@ -83,7 +66,7 @@ BEGIN
         SELECT @aNegative = @exponentNegative, @aDigits = STUFF(@result, 1, PATINDEX('%[^0]%', @result) - 1, '');
     END
 
-    DECLARE @field VARCHAR (8000) = RIGHT('0000000000' + CAST(LEN(@aDigits) AS VARCHAR (19)), 10) + @aDigits;
+    DECLARE @field VARCHAR (MAX) = RIGHT('0000000000' + CAST(LEN(@aDigits) AS VARCHAR (19)), 10) + @aDigits;
     SET @field = CASE WHEN @aNegative = 0 THEN '1' + @field ELSE '0' + TRANSLATE(@field, '0123456789', '9876543210') END;
     RETURN CASE
         WHEN @negative = 0 THEN '2' + @field + @mantissa

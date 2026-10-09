@@ -43,7 +43,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         IdempotencyWrite? idempotency,
         CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = messages.Select(message => SqlJson.ToStorage(message.Metadata, JsonField.Metadata)).ToList();
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
@@ -63,7 +63,15 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
                 SqlParameters.Text("@workspaceName", workspaceName),
                 SqlParameters.Text("@sessionName", sessionName))
             .ToListAsync(ct))
-            .SingleOrDefault() ?? throw Lookups.SessionNotFound(workspaceName, sessionName);
+            .SingleOrDefault();
+        if (allocation is null)
+        {
+            // Name the missing parent as the other stores (and the in-memory provider) do.
+            throw await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is null
+                ? Lookups.WorkspaceNotFound(workspaceName)
+                : Lookups.SessionNotFound(workspaceName, sessionName);
+        }
+
         var session = new SessionKey(allocation.WorkspaceId, allocation.SessionId);
 
         byte[]? keyHash = null;
@@ -86,7 +94,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
 
         if (idempotency is not null)
         {
-            var body = runtime.Guard.Invoke(idempotency.SerializeResponse, [.. records.Select(Records.Copy)]);
+            var body = ReentryGuard.Invoke(idempotency.SerializeResponse, [.. records.Select(Records.Copy)]);
             await InsertIdempotencyRecordAsync(db, session.WorkspaceId, idempotency, keyHash!, body, now, ct);
         }
 
@@ -97,7 +105,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     public async Task<MessageRecord?> GetAsync(
         string workspaceName, string sessionName, string publicId, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -112,7 +120,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     public async Task<MessageRecord> UpdateMetadataAsync(
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         await using var db = await runtime.OpenAsync(ct);
 
@@ -132,7 +140,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     public async Task<Page<MessageRecord>> ListAsync(
         string workspaceName, string sessionName, FilterNode? filter, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var (where, parameters) = SqlFilterCompiler.Compile(filter, ResourceKind.Message, "t");
         await using var db = await runtime.OpenAsync(ct);
 

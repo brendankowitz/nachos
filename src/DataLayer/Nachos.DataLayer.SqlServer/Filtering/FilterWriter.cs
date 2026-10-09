@@ -25,8 +25,6 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     /// <summary>The longest <c>LIKE</c> pattern SQL Server accepts (8000 bytes of <c>nvarchar</c>).</summary>
     private const int MaxLikePattern = 4000;
 
-    private const string ListColumns = "WITH (t int '$.t', k nvarchar(max) '$.k')";
-
     private readonly List<SqlParameter> _parameters = [];
     private readonly Dictionary<(SqlDbType Type, string Value), string> _shared = [];
     private int _aliases;
@@ -35,7 +33,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
     public string Write(FilterNode node) => node switch
     {
-        FilterNode.And and => and.Children.Count == 0 ? True : Join(and.Children.Select(Write), " AND "),
+        FilterNode.And and => and.Children.Count == 0 ? True : Join(Conjuncts(and.Children), " AND "),
         FilterNode.Or or => or.Children.Count == 0 ? False : Join(Alternatives(or.Children), " OR "),
         FilterNode.Not not => not.Children.Count == 0 ? True : $"(NOT {Join(Alternatives(not.Children), " OR ")})",
         FilterNode.MatchAll => True,
@@ -46,6 +44,36 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     };
 
     private static string Join(IEnumerable<string> parts, string separator) => $"({string.Join(separator, parts)})";
+
+    /// <summary>The metadata operators that are a positive condition on the value at their path (no <c>NOT</c> around it).</summary>
+    private static bool IsPositive(FilterOp op) => op is not (FilterOp.Ne or FilterOp.IsNull);
+
+    /// <summary>
+    /// The children of an AND, with positive metadata conditions on one path merged into a single <c>EXISTS</c>: a stored
+    /// object never repeats a key (stored JSON is canonical), so <c>EXISTS(p, a) AND EXISTS(p, b)</c> is
+    /// <c>EXISTS(p, a AND b)</c>, and the merged form resolves the path, and computes a number's key, once instead of per
+    /// condition (a range such as <c>{"gte": 1, "lt": 2}</c> is two conditions).
+    /// </summary>
+    private IEnumerable<string> Conjuncts(IReadOnlyList<FilterNode> children)
+    {
+        var groups = children
+            .OfType<FilterNode.MetadataPath>()
+            .Where(path => IsPositive(path.Op) && Reachable(path.Path))
+            .GroupBy(path => new JsonArray([.. path.Path.Select(key => (JsonNode)key)]).ToJsonString(), StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .ToList();
+        var merged = groups.SelectMany(group => group).ToHashSet(ReferenceEqualityComparer.Instance);
+
+        foreach (var group in groups)
+        {
+            yield return MetadataExists(group.First().Path, row => string.Join(" AND ", group.Select(path => PositiveCondition(row, path))));
+        }
+
+        foreach (var child in children.Where(child => !merged.Contains(child)))
+        {
+            yield return Write(child);
+        }
+    }
 
     /// <summary>
     /// The children of an OR (or NOT), with metadata equalities on one path merged into a single list match: the parser
@@ -63,7 +91,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
         foreach (var group in equalities)
         {
-            yield return MetadataExists(group.First().Path, row => ListMatch(row, ListParameter(group.Select(path => path.Value!))));
+            yield return MetadataExists(group.First().Path, row => ListMatch(row, [.. group.Select(path => path.Value!)]));
         }
 
         foreach (var child in children.Where(child => !merged.Contains(child)))
@@ -234,14 +262,44 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
                 : $"({text} COLLATE {Bin2} LIKE {pattern} ESCAPE N'\\')";
         }
 
-        // Too long for a LIKE pattern: compare the operand with every substring of its length, positions numbered by
-        // OPENJSON over an array of that many elements. Text shorter than the operand yields a NULL array and no rows.
+        // Too long for a LIKE pattern. A LIKE on the longest prefix that fits picks the candidates cheaply (containing the
+        // operand implies containing its prefix, folded or not); only those are scanned exactly, comparing the operand with
+        // every substring of its length, positions numbered by OPENJSON over an array of that many elements. CASE fixes
+        // the order of evaluation, so the scan never runs for a row the prefix rules out.
+        var prefixPattern = Text($"%{LongestLikePrefix(operand)}%");
+        var candidate = fold
+            ? $"UPPER({text} COLLATE {Bin2}) LIKE UPPER({prefixPattern}) ESCAPE N'\\'"
+            : $"{text} COLLATE {Bin2} LIKE {prefixPattern} ESCAPE N'\\'";
         var value = Text(operand);
         var length = Parameter(SqlDbType.Int, operand.Length.ToString(CultureInfo.InvariantCulture), (name, _) => SqlParameters.Int(name, operand.Length));
         var position = Alias();
         var slice = $"SUBSTRING({text} COLLATE {Bin2}, CAST({position}.[key] AS int) + 1, {length})";
         var match = fold ? $"UPPER({slice}) = UPPER({value} COLLATE {Bin2})" : $"{slice} = {value} COLLATE {Bin2}";
-        return $"EXISTS (SELECT 1 FROM OPENJSON(N'[' + REPLICATE(CAST(N'0,' AS nvarchar(max)), DATALENGTH({text}) / 2 - {length}) + N'0]') AS {position} WHERE {match})";
+        var scan = $"EXISTS (SELECT 1 FROM OPENJSON(N'[' + REPLICATE(CAST(N'0,' AS nvarchar(max)), DATALENGTH({text}) / 2 - {length}) + N'0]') AS {position} WHERE {match})";
+        return $"(CASE WHEN {candidate} THEN CASE WHEN {scan} THEN 1 ELSE 0 END ELSE 0 END = 1)";
+    }
+
+    /// <summary>
+    /// The escaped form of the longest prefix of <paramref name="operand"/> that fits a <c>LIKE</c> pattern with a
+    /// <c>%</c> on each side. It never ends inside a surrogate pair.
+    /// </summary>
+    private static string LongestLikePrefix(string operand)
+    {
+        var escaped = new StringBuilder(MaxLikePattern);
+        for (var i = 0; i < operand.Length; i++)
+        {
+            var take = char.IsHighSurrogate(operand[i]) && i + 1 < operand.Length ? 2 : 1;
+            var piece = EscapeLike(operand.Substring(i, take));
+            if (escaped.Length + piece.Length + 2 > MaxLikePattern)
+            {
+                break;
+            }
+
+            escaped.Append(piece);
+            i += take - 1;
+        }
+
+        return escaped.ToString();
     }
 
     /// <summary>Escapes the <c>LIKE</c> metacharacters <c>%</c>, <c>_</c>, <c>[</c> and the escape character <c>\</c>.</summary>
@@ -278,7 +336,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
     // ------------------------------------------------------------------------------------------------ metadata
 
-    /// <summary>The value at a path inside the metadata: the final <c>OPENJSON</c> row, plus its number key on demand.</summary>
+    /// <summary>The value at a path inside the metadata: the final <c>OPENJSON</c> row, plus derived key columns on demand.</summary>
     private sealed class MetadataRow(FilterWriter writer, string row, StringBuilder from)
     {
         private string? _numberKey;
@@ -287,8 +345,11 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
 
         public string Type => $"{row}.[type]";
 
-        /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed.</summary>
+        /// <summary>The value's number key, joined into the row's FROM clause the first time it is needed (once per row).</summary>
         public string NumberKey => _numberKey ??= writer.NumberKey(Value, Type, from);
+
+        /// <summary>The number keys of the elements of <paramref name="array"/>, joined into the row's FROM clause.</summary>
+        public string ArrayNumberKeys(string array) => writer.ArrayNumberKeys(array, from);
     }
 
     /// <summary>False when a key is longer than any stored key can be (see <see cref="SqlJson.MaxKeyLength"/>).</summary>
@@ -305,17 +366,27 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         var operand = path.Value;
         return path.Op switch
         {
-            FilterOp.NotNull => MetadataExists(path.Path, row => $"{row.Type} <> 0"),
             FilterOp.IsNull => $"(NOT {MetadataExists(path.Path, row => $"{row.Type} <> 0")})",
-            FilterOp.Eq => MetadataExists(path.Path, row => ScalarEquals(row, operand!)),
             FilterOp.Ne => $"(NOT {MetadataExists(path.Path, row => ScalarEquals(row, operand!))})",
-            FilterOp.Gt => MetadataExists(path.Path, row => Ordered(row, operand!, ">")),
-            FilterOp.Gte => MetadataExists(path.Path, row => Ordered(row, operand!, ">=")),
-            FilterOp.Lt => MetadataExists(path.Path, row => Ordered(row, operand!, "<")),
-            FilterOp.Lte => MetadataExists(path.Path, row => Ordered(row, operand!, "<=")),
-            FilterOp.Contains => MetadataExists(path.Path, row => MetadataContains(row, operand!.GetValue<string>(), fold: false)),
-            FilterOp.IContains => MetadataExists(path.Path, row => MetadataContains(row, operand!.GetValue<string>(), fold: true)),
-            FilterOp.JsonContains => MetadataExists(path.Path, row => ArrayContainsAll(row, ListParameter(operand!.AsArray()!))),
+            _ => MetadataExists(path.Path, row => PositiveCondition(row, path)),
+        };
+    }
+
+    /// <summary>The condition a positive operator puts on the value at its path (see <see cref="IsPositive"/>).</summary>
+    private string PositiveCondition(MetadataRow row, FilterNode.MetadataPath path)
+    {
+        var operand = path.Value;
+        return path.Op switch
+        {
+            FilterOp.NotNull => $"{row.Type} <> 0",
+            FilterOp.Eq => ScalarEquals(row, operand!),
+            FilterOp.Gt => Ordered(row, operand!, ">"),
+            FilterOp.Gte => Ordered(row, operand!, ">="),
+            FilterOp.Lt => Ordered(row, operand!, "<"),
+            FilterOp.Lte => Ordered(row, operand!, "<="),
+            FilterOp.Contains => MetadataContains(row, operand!.GetValue<string>(), fold: false),
+            FilterOp.IContains => MetadataContains(row, operand!.GetValue<string>(), fold: true),
+            FilterOp.JsonContains => ArrayContainsAll(row, [.. operand!.AsArray().Select(element => element!)]),
             _ => throw new NotSupportedException($"Operator {path.Op} does not apply to metadata."),
         };
     }
@@ -355,7 +426,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     private string ScalarEquals(MetadataRow row, JsonNode operand) => operand.GetValueKind() switch
     {
         JsonValueKind.String => $"({row.Type} = 1 AND {row.Value} COLLATE {Bin2} = {Text(operand.GetValue<string>())} AND DATALENGTH({row.Value}) = DATALENGTH({Text(operand.GetValue<string>())}))",
-        JsonValueKind.Number => $"({row.Type} = 2 AND {CompareNumber(row.NumberKey, operand)} = 0)",
+        JsonValueKind.Number => $"({row.Type} = 2 AND {CompareNumber(row.NumberKey, operand, "=")})",
         JsonValueKind.True => $"({row.Type} = 3 AND {row.Value} = N'true')",
         JsonValueKind.False => $"({row.Type} = 3 AND {row.Value} = N'false')",
         var other => throw new NotSupportedException($"A metadata operand of kind {other} cannot be compared."),
@@ -365,7 +436,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
     private string Ordered(MetadataRow row, JsonNode operand, string op) => operand.GetValueKind() switch
     {
         JsonValueKind.String => $"({row.Type} = 1 AND {CompareText(row.Value, operand.GetValue<string>())} {op} 0)",
-        JsonValueKind.Number => $"({row.Type} = 2 AND {CompareNumber(row.NumberKey, operand)} {op} 0)",
+        JsonValueKind.Number => $"({row.Type} = 2 AND {CompareNumber(row.NumberKey, operand, op)})",
         var other => throw new NotSupportedException($"A metadata operand of kind {other} cannot be ordered."),
     };
 
@@ -380,80 +451,175 @@ internal sealed class FilterWriter(ResourceKind kind, string table)
         return $"(({row.Type} = 1 AND {Contains(row.Value, operand, fold)}) OR ({row.Type} = 4 AND EXISTS (SELECT 1 FROM OPENJSON(CASE WHEN {row.Type} = 4 THEN {row.Value} END) AS {element} WHERE {element}.[type] = 1 AND {equal} AND DATALENGTH({element}.[value]) = DATALENGTH({value}))))";
     }
 
-    /// <summary>The value is an array holding an element equal (same kind) to every element of the list.</summary>
-    private string ArrayContainsAll(MetadataRow row, string list)
-    {
-        var wanted = Alias();
-        var element = Alias();
-        var from = new StringBuilder($"FROM OPENJSON(CASE WHEN {row.Type} = 4 THEN {row.Value} END) AS {element}");
-        var key = NumberKey($"{element}.[value]", $"{element}.[type]", from);
-        return $"({row.Type} = 4 AND NOT EXISTS (SELECT 1 FROM OPENJSON({list}) {ListColumns} AS {wanted} WHERE NOT EXISTS (SELECT 1 {from} WHERE {ElementMatches($"{element}.[value]", $"{element}.[type]", key, wanted)})))";
-    }
-
-    /// <summary>The value equals (same kind) some element of the list.</summary>
-    private string ListMatch(MetadataRow row, string list)
-    {
-        var wanted = Alias();
-        return $"EXISTS (SELECT 1 FROM OPENJSON({list}) {ListColumns} AS {wanted} WHERE {ElementMatches(row.Value, row.Type, row.NumberKey, wanted)})";
-    }
-
     /// <summary>
-    /// Kind-and-value equality of a JSON value with a list element <c>{t, k}</c> (see <see cref="ListParameter"/>).
+    /// The value is an array holding, for every operand, an element of the same kind equal to it. Number elements' keys
+    /// are computed once per element (an aggregate over the array), never per (element, operand) pair.
     /// </summary>
-    private static string ElementMatches(string value, string type, string key, string wanted) =>
-        $"(({type} = 1 AND {wanted}.t = 1 AND {value} COLLATE {Bin2} = {wanted}.k COLLATE {Bin2} AND DATALENGTH({value}) = DATALENGTH({wanted}.k))"
-        + $" OR ({type} = 2 AND {wanted}.t = 2 AND {key} = {wanted}.k COLLATE {Bin2})"
-        + $" OR ({type} = 3 AND {wanted}.t = 3 AND {value} = {wanted}.k))";
-
-    /// <summary>
-    /// A list of scalar operands as one JSON parameter of <c>{t, k}</c> objects: <c>t</c> is the <c>OPENJSON</c> type
-    /// (1 string, 2 number, 3 boolean) and <c>k</c> the string, the number's order key (see
-    /// <see cref="ExactDecimal.ToOrderKey"/>) or <c>true</c>/<c>false</c>.
-    /// </summary>
-    private string ListParameter(IEnumerable<JsonNode> operands)
+    private string ArrayContainsAll(MetadataRow row, IReadOnlyList<JsonNode> operands)
     {
-        var list = new JsonArray();
-        foreach (var operand in operands)
+        var array = $"CASE WHEN {row.Type} = 4 THEN {row.Value} END";
+        var parts = new List<string> { $"{row.Type} = 4" };
+
+        var strings = operands.Where(o => o.GetValueKind() == JsonValueKind.String).Select(o => o.GetValue<string>()).ToList();
+        if (strings.Count > 0)
         {
-            list.Add(operand.GetValueKind() switch
-            {
-                JsonValueKind.String => new JsonObject { ["t"] = 1, ["k"] = operand.GetValue<string>() },
-                JsonValueKind.Number => new JsonObject { ["t"] = 2, ["k"] = ExactDecimal.Parse(operand.ToJsonString()).ToOrderKey() },
-                JsonValueKind.True => new JsonObject { ["t"] = 3, ["k"] = "true" },
-                JsonValueKind.False => new JsonObject { ["t"] = 3, ["k"] = "false" },
-                var other => throw new NotSupportedException($"A metadata list element of kind {other} cannot be compared."),
-            });
+            var wanted = Alias();
+            var element = Alias();
+            parts.Add($"NOT EXISTS (SELECT 1 FROM OPENJSON({StringList(strings)}) AS {wanted} WHERE NOT EXISTS (SELECT 1 FROM OPENJSON({array}) AS {element} WHERE {element}.[type] = 1 AND {element}.[value] COLLATE {Bin2} = {wanted}.[value] COLLATE {Bin2} AND DATALENGTH({element}.[value]) = DATALENGTH({wanted}.[value])))");
         }
 
-        return Parameter(SqlDbType.NVarChar, list.ToJsonString(), SqlParameters.LongText);
+        foreach (var flag in operands.Select(o => o.GetValueKind()).Where(k => k is JsonValueKind.True or JsonValueKind.False).Distinct())
+        {
+            var element = Alias();
+            parts.Add($"EXISTS (SELECT 1 FROM OPENJSON({array}) AS {element} WHERE {element}.[type] = 3 AND {element}.[value] = {(flag == JsonValueKind.True ? "N'true'" : "N'false'")})");
+        }
+
+        var numbers = NumberKeys(operands);
+        if (numbers.Count > 0)
+        {
+            // The array's number keys as one JSON array of strings, built once per row by the aggregate.
+            var keys = row.ArrayNumberKeys(array);
+            var wanted = Alias();
+            var have = Alias();
+            parts.Add($"NOT EXISTS (SELECT 1 FROM OPENJSON({KeyList(numbers)}) WITH (k varchar(max) '$') AS {wanted} WHERE NOT EXISTS (SELECT 1 FROM OPENJSON({keys}) WITH (k varchar(max) '$') AS {have} WHERE {have}.k COLLATE {Bin2} = {wanted}.k COLLATE {Bin2}))");
+        }
+
+        return $"({string.Join(" AND ", parts)})";
     }
+
+    /// <summary>
+    /// The value equals (same kind) some operand. Operands are split by kind: strings are one JSON list, booleans fixed
+    /// literals, and numbers a set of order keys tested against the value's key, which is computed once per row.
+    /// </summary>
+    private string ListMatch(MetadataRow row, IReadOnlyList<JsonNode> operands)
+    {
+        var parts = new List<string>();
+        var strings = operands.Where(o => o.GetValueKind() == JsonValueKind.String).Select(o => o.GetValue<string>()).ToList();
+        if (strings.Count > 0)
+        {
+            var wanted = Alias();
+            parts.Add($"({row.Type} = 1 AND EXISTS (SELECT 1 FROM OPENJSON({StringList(strings)}) AS {wanted} WHERE {wanted}.[value] COLLATE {Bin2} = {row.Value} COLLATE {Bin2} AND DATALENGTH({wanted}.[value]) = DATALENGTH({row.Value})))");
+        }
+
+        foreach (var flag in operands.Select(o => o.GetValueKind()).Where(k => k is JsonValueKind.True or JsonValueKind.False).Distinct())
+        {
+            parts.Add($"({row.Type} = 3 AND {row.Value} = {(flag == JsonValueKind.True ? "N'true'" : "N'false'")})");
+        }
+
+        var numbers = NumberKeys(operands);
+        if (numbers.Count > 0)
+        {
+            parts.Add($"({row.Type} = 2 AND {KeyIn(row.NumberKey, numbers)})");
+        }
+
+        return parts.Count == 0 ? False : $"({string.Join(" OR ", parts)})";
+    }
+
+    private string StringList(IEnumerable<string> strings) =>
+        Parameter(SqlDbType.NVarChar, new JsonArray([.. strings.Select(s => (JsonNode)s)]).ToJsonString(), SqlParameters.LongText);
+
+    private string KeyList(IEnumerable<string> keys) =>
+        Parameter(SqlDbType.NVarChar, new JsonArray([.. keys.Select(k => (JsonNode)k)]).ToJsonString(), SqlParameters.LongText);
+
+    /// <summary>The distinct order keys of the number operands (see <see cref="ExactDecimal.ToOrderKey"/>).</summary>
+    private static List<string> NumberKeys(IEnumerable<JsonNode> operands) =>
+    [
+        .. operands
+            .Where(o => o.GetValueKind() == JsonValueKind.Number)
+            .Select(o => ExactDecimal.Parse(o.ToJsonString()).ToOrderKey())
+            .Distinct(StringComparer.Ordinal),
+    ];
 
     // ------------------------------------------------------------------------------------------------ numbers
 
+    /// <summary>The longest key tested by <c>CHARINDEX</c> in <see cref="KeyIn"/>; longer ones (absurd numbers) take the exact list path.</summary>
+    private const int ShortKey = 100;
+
+    /// <summary>The longest <c>varchar</c> value that is not <c>max</c>, where <c>CHARINDEX</c> is about twice as fast.</summary>
+    private const int ChunkLength = 8000;
+
     /// <summary>
-    /// Appends to <paramref name="from"/> the order key of a stored JSON number, computed by the schema function
-    /// <c>dbo.JsonNumberOrderKey</c> from the number's text, and returns the key expression. The key is exact for any
-    /// number text, of any length or exponent; <see cref="ExactDecimal.ToOrderKey"/> documents it and computes the same
-    /// key for operands.
+    /// Appends to <paramref name="from"/> the order key of a stored JSON number and returns the key column, which may be
+    /// referenced any number of times: <c>dbo.JsonNumberOrderKey</c> runs <b>once per row</b>. The key is exact for any
+    /// number text; <see cref="ExactDecimal.ToOrderKey"/> documents it and computes the same key for operands.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// <b>Why <c>OPENJSON(JSON_ARRAY(...))</c>.</b> A scalar UDF in a <c>CROSS APPLY (SELECT f(...))</c>, even under
+    /// <c>TOP (1)</c>, is a deferred compute scalar: the optimizer copies the call into every place the column is used,
+    /// including the inner side of a join over an operand list, so one row costs one call per list element (measured:
+    /// 995,050 calls for 10,000 rows and 100 operands). As the argument of a table-valued function the call must run once to
+    /// open the rowset, and the key comes back as a plain column. A non-number passes NULL; <c>JSON_ARRAY</c> then yields
+    /// <c>[]</c> and the <c>OUTER APPLY</c> a NULL key, and every caller tests <c>type = 2</c> first.
+    /// </para>
+    /// <para>
     /// <c>OPENJSON</c> over <c>nvarchar(max)</c> returns a number's text exactly as stored, at any length (unlike
     /// <c>JSON_VALUE</c>, which returns at most 4000 characters). Keys compare under a binary collation, where SQL's space
-    /// padding makes a proper prefix sort first, as the key requires. Rows that are not numbers pass NULL and get a NULL
-    /// key, and every caller tests <c>type = 2</c> first, so a NULL never decides a match.
+    /// padding makes a proper prefix sort first, as the key requires.
+    /// </para>
     /// </remarks>
     private string NumberKey(string value, string type, StringBuilder from)
     {
         var key = Alias();
-        from.Append(CultureInfo.InvariantCulture, $" CROSS APPLY (SELECT dbo.JsonNumberOrderKey(CASE WHEN {type} = 2 THEN {value} END) COLLATE {Bin2} AS k) AS {key}");
-        return $"{key}.k";
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY OPENJSON(JSON_ARRAY(dbo.JsonNumberOrderKey(CASE WHEN {type} = 2 THEN {value} END))) WITH (k varchar(max) '$') AS {key}");
+        return $"{key}.k COLLATE {Bin2}";
     }
 
-    /// <summary>Exact comparison of a stored number's key with a number operand as -1, 0 or 1.</summary>
-    private string CompareNumber(string stored, JsonNode operand)
+    /// <summary>
+    /// Appends to <paramref name="from"/> the order keys of the number elements of <paramref name="array"/> as one JSON
+    /// array of strings (NULL when there are none) and returns that column. The aggregate consumes each element once, so
+    /// <c>dbo.JsonNumberOrderKey</c> runs once per number element.
+    /// </summary>
+    private string ArrayNumberKeys(string array, StringBuilder from)
+    {
+        var keys = Alias();
+        var element = Alias();
+        from.Append(CultureInfo.InvariantCulture, $" OUTER APPLY (SELECT CAST(N'[\"' AS nvarchar(max)) + STRING_AGG(CAST(dbo.JsonNumberOrderKey({element}.[value]) AS nvarchar(max)), N'\",\"') + N'\"]' AS k FROM OPENJSON({array}) AS {element} WHERE {element}.[type] = 2) AS {keys}");
+        return $"{keys}.k";
+    }
+
+    /// <summary>Single-reference comparison of a stored number's key with a number operand's key.</summary>
+    private string CompareNumber(string stored, JsonNode operand, string op)
     {
         var key = Parameter(SqlDbType.VarChar, ExactDecimal.Parse(operand.ToJsonString()).ToOrderKey(), SqlParameters.Ascii);
-        return $"(CASE WHEN {stored} = {key} THEN 0 WHEN {stored} < {key} THEN -1 ELSE 1 END)";
+        return $"({stored} {op} {key})";
+    }
+
+    /// <summary>
+    /// Whether the key column <paramref name="key"/> is one of <paramref name="keys"/>, without parsing a list per row.
+    /// Keys of up to <see cref="ShortKey"/> characters are packed as <c>|k1|k2|…|</c> into <c>varchar(8000)</c> chunks and
+    /// found with <c>CHARINDEX</c>; keys hold only digits and <c>:</c>, so a match between delimiters is exact equality.
+    /// Longer keys (numbers of about 90 digits or more) go through an exact <c>OPENJSON</c> list.
+    /// </summary>
+    private string KeyIn(string key, IReadOnlyList<string> keys)
+    {
+        var parts = new List<string>();
+        var needle = $"CASE WHEN LEN({key}) <= {ShortKey.ToString(CultureInfo.InvariantCulture)} THEN CAST('|' + {key} + '|' AS varchar({ChunkLength.ToString(CultureInfo.InvariantCulture)})) END COLLATE {Bin2}";
+        var chunk = new StringBuilder("|");
+        foreach (var shortKey in keys.Where(k => k.Length <= ShortKey))
+        {
+            if (chunk.Length + shortKey.Length + 1 > ChunkLength)
+            {
+                parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
+                chunk.Clear().Append('|');
+            }
+
+            chunk.Append(shortKey).Append('|');
+        }
+
+        if (chunk.Length > 1)
+        {
+            parts.Add($"CHARINDEX({needle}, {Parameter(SqlDbType.VarChar, chunk.ToString(), SqlParameters.Ascii)}) > 0");
+        }
+
+        var longKeys = keys.Where(k => k.Length > ShortKey).ToList();
+        if (longKeys.Count > 0)
+        {
+            var wanted = Alias();
+            parts.Add($"{key} IN (SELECT {wanted}.k COLLATE {Bin2} FROM OPENJSON({KeyList(longKeys)}) WITH (k varchar(max) '$') AS {wanted})");
+        }
+
+        return $"({string.Join(" OR ", parts)})";
     }
 
     // ------------------------------------------------------------------------------------------------ names

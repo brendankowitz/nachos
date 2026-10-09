@@ -65,9 +65,11 @@ internal static partial class SqlFilterCompiler
         var sql = writer.Write(filter);
         return writer.Parameters.Count <= MaxParameters
             ? (sql, writer.Parameters)
-            : throw new NachosValidationException(
-                $"The filter has too many distinct values ({writer.Parameters.Count}); the limit is {MaxParameters}. Use 'in' lists to combine values.");
+            : throw new NachosValidationException(TooManyValues);
     }
+
+    /// <summary>The fixed detail of the 422 for a filter beyond SQL Server's parameter limit.</summary>
+    public const string TooManyValues = "The filter needs more distinct values than the SQL Server provider can send in one statement.";
 
     [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]{0,63}\z", RegexOptions.CultureInvariant)]
     private static partial Regex SafeAlias();

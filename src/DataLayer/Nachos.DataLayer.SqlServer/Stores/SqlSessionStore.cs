@@ -22,7 +22,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         IReadOnlyDictionary<string, SessionPeerConfig>? peers,
         CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -44,7 +44,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
 
     public async Task<SessionRecord?> GetAsync(string workspaceName, string name, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         if (await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is not { } workspaceId)
@@ -58,7 +58,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task<SessionRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -79,7 +79,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task<Page<SessionRecord>> ListAsync(
         string workspaceName, FilterNode? filter, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var (where, parameters) = SqlFilterCompiler.Compile(filter, ResourceKind.Session, "t");
         await using var db = await runtime.OpenAsync(ct);
 
@@ -98,7 +98,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         IReadOnlyDictionary<string, SessionPeerConfig> peers,
         CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -114,7 +114,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         IReadOnlyDictionary<string, SessionPeerConfig> peers,
         CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -147,7 +147,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task RemovePeersAsync(
         string workspaceName, string sessionName, IReadOnlyList<string> peerNames, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -176,7 +176,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task<Page<PeerRecord>> ListPeersAsync(
         string workspaceName, string sessionName, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -191,7 +191,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task<SessionPeerConfig> GetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -203,7 +203,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task SetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, SessionPeerConfig config, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
@@ -235,7 +235,7 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
     public async Task<bool> IsActiveMemberAsync(
         string workspaceName, string sessionName, string peerName, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);

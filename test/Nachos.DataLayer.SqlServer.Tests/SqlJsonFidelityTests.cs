@@ -120,6 +120,38 @@ public sealed class SqlJsonFidelityTests(SqlServerFixture fixture)
     }
 
     [Fact]
+    public async Task Metadata_NonAsciiText_IsStoredUnescaped_AndRoundTrips()
+    {
+        var store = await StoreAsync();
+        var name = Unique("ws");
+        var metadata = new JsonObject
+        {
+            ["text"] = "😀𝔘 שלום مرحبا é <tag> & 'quote'",
+            ["escaped"] = "quote \" backslash \\ newline \n tab \t nul \u0000",
+            ["日本語"] = "キー",
+        };
+
+        var created = await store.Workspaces.GetOrCreateAsync(name, metadata, null, Ct);
+
+        created.Metadata.ToJsonString().ShouldBe(metadata.ToJsonString());
+        (await store.Workspaces.GetAsync(name, Ct))!.Metadata.ToJsonString().ShouldBe(metadata.ToJsonString());
+        JsonNode.DeepEquals(created.Metadata, metadata).ShouldBeTrue();
+
+        // The column holds BMP characters themselves, not \uXXXX escapes (supplementary ones such as emoji are always
+        // escaped by the framework's encoders), and JSON's own escapes remain.
+        var raw = await RawColumnAsync(name);
+        raw.ShouldContain("שלום مرحبا é <tag> & 'quote'");
+        raw.ShouldContain("\"日本語\":\"キー\"");
+        raw.ShouldContain("\\uD83D\\uDE00", Case.Insensitive);
+        raw.ShouldContain("quote \\\" backslash \\\\ newline \\n tab \\t nul \\u0000");
+        raw.ShouldNotContain("\\u05E9", Case.Insensitive);
+
+        // Filters read the stored text as the same values.
+        var filter = FilterParser.Parse(new JsonObject { ["metadata"] = new JsonObject { ["日本語"] = "キー" } }, ResourceKind.Workspace);
+        (await store.Workspaces.ListAsync(filter, new PageRequest(1, 100), Ct)).Items.ShouldContain(w => w.Name == name);
+    }
+
+    [Fact]
     public async Task Metadata_KeyOfMoreThan4000Units_IsRejected_AndOf4000IsFilterable()
     {
         var store = await StoreAsync();

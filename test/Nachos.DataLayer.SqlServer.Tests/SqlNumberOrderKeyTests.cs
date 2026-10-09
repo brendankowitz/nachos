@@ -146,4 +146,84 @@ public sealed class SqlNumberOrderKeyTests(SqlServerFixture fixture)
         await using var command = new SqlCommand("SELECT dbo.JsonNumberOrderKey(NULL)", connection);
         (await command.ExecuteScalarAsync()).ShouldBe(DBNull.Value);
     }
+
+    /// <summary>Text that is not number-shaped gets a NULL key from both functions, never an error.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("e5")]
+    [InlineData("-")]
+    [InlineData("abc")]
+    [InlineData("1e5x")]
+    [InlineData("1.")]
+    [InlineData(".5")]
+    [InlineData("1.2.3")]
+    [InlineData("1e")]
+    [InlineData("1e+")]
+    [InlineData("+1")]
+    [InlineData(" 1")]
+    [InlineData("1 ")]
+    [InlineData("--1")]
+    [InlineData("1e5e5")]
+    [InlineData("0x10")]
+    [InlineData("١")]
+    public async Task SqlFunctions_OfTextThatIsNotANumber_AreNull(string text)
+    {
+        var database = await SqlTestDatabase.GetAsync(fixture, "order-key");
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand("SELECT dbo.JsonNumberOrderKey(@text), dbo.JsonNumberOrderKeyLong(@text)", connection);
+        command.Parameters.Add("@text", System.Data.SqlDbType.NVarChar, -1).Value = text;
+        await using var reader = await command.ExecuteReaderAsync();
+        (await reader.ReadAsync()).ShouldBeTrue();
+        reader.IsDBNull(0).ShouldBeTrue("JsonNumberOrderKey");
+        reader.IsDBNull(1).ShouldBeTrue("JsonNumberOrderKeyLong");
+    }
+
+    /// <summary>Text of more than 4000 characters is delegated to the long form, at the boundary too.</summary>
+    [Fact]
+    public async Task SqlFunctions_AgreeAcrossTheLengthBoundary()
+    {
+        var database = await SqlTestDatabase.GetAsync(fixture, "order-key");
+        string[] literals = [new string('9', 4000), new string('9', 4001), "-0." + new string('0', 3995) + "1", "1." + new string('5', 3998) + "e-12345678901234567890"];
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        foreach (var literal in literals)
+        {
+            await using var command = new SqlCommand("SELECT dbo.JsonNumberOrderKey(@text), dbo.JsonNumberOrderKeyLong(@text)", connection);
+            command.Parameters.Add("@text", System.Data.SqlDbType.NVarChar, -1).Value = literal;
+            await using var reader = await command.ExecuteReaderAsync();
+            (await reader.ReadAsync()).ShouldBeTrue();
+            reader.GetString(0).ShouldBe(Key(literal), $"length {literal.Length}");
+            reader.GetString(1).ShouldBe(Key(literal), $"length {literal.Length}");
+        }
+    }
+
+    /// <summary>
+    /// The two schema functions are one algorithm: their bodies must be identical apart from <c>VARCHAR (8000)</c> versus
+    /// <c>VARCHAR (MAX)</c> and the delegation at the top of the fast one.
+    /// </summary>
+    [Fact]
+    public void SchemaFunctions_ShareOneBody()
+    {
+        var directory = Path.Combine(RepoRoot(), "src", "DataLayer", "Nachos.DataLayer.SqlServer.Database", "Functions");
+        static string Body(string text) => text[(text.IndexOf("    -- Not number-shaped", StringComparison.Ordinal))..];
+        var fast = Body(File.ReadAllText(Path.Combine(directory, "JsonNumberOrderKey.sql")));
+        var general = Body(File.ReadAllText(Path.Combine(directory, "JsonNumberOrderKeyLong.sql")));
+
+        fast.ShouldNotContain("VARCHAR (MAX)");
+        fast.Replace("VARCHAR (8000)", "VARCHAR (MAX)", StringComparison.Ordinal).ShouldBe(general);
+    }
+
+    private static string RepoRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Nachos.slnx")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("Nachos.slnx was not found above the test output directory.");
+    }
 }

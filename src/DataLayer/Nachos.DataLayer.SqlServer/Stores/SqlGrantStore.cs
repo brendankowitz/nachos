@@ -20,7 +20,7 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
 
     public async Task AddAsync(GrantRecord grant, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         long? workspaceId = grant.WorkspaceName is { } workspace ? await Lookups.RequireWorkspaceIdAsync(db, workspace, ct) : null;
@@ -43,7 +43,7 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
 
     public async Task RemoveAsync(GrantRecord grant, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         long? workspaceId = null;
@@ -63,7 +63,7 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
 
     public async Task<IReadOnlyList<GrantRecord>> ListAsync(string? objectId, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
         var grants = db.PrincipalGrants.AsNoTracking();

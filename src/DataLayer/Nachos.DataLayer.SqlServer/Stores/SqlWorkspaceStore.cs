@@ -16,7 +16,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
     public async Task<WorkspaceRecord> GetOrCreateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -49,7 +49,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
 
     public async Task<WorkspaceRecord?> GetAsync(string name, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
         return (await db.Workspaces.AsNoTracking().Named(name).FirstOrDefaultAsync(ct))?.ToRecord();
     }
@@ -57,7 +57,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
     public async Task<WorkspaceRecord> UpdateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
@@ -76,7 +76,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
 
     public async Task<Page<WorkspaceRecord>> ListAsync(FilterNode? filter, PageRequest page, CancellationToken ct)
     {
-        runtime.Guard.ThrowIfReentered();
+        ReentryGuard.ThrowIfReentered();
         var (where, parameters) = SqlFilterCompiler.Compile(filter, ResourceKind.Workspace, "t");
         await using var db = await runtime.OpenAsync(ct);
 
