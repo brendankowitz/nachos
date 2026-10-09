@@ -499,6 +499,40 @@ public sealed class AddNachosClientTests
         attempts.ShouldBe(2);
     }
 
+    public static TheoryData<string> ResilienceHandlerTypeNames() => [.. TransportRedactionFilter.ResilienceHandlerTypeNames];
+
+    /// <summary>
+    /// The package's handler was <c>Microsoft.Extensions.Http.Resilience.Internal.ResilienceHandler</c> in 8.0.0 and
+    /// 8.1.0 and is the public <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> since 8.2.0: both exact
+    /// names are removed (the old one through a test-only type of that name, the current one is the real handler in
+    /// <see cref="StandardResilienceHandler_IsRemovedFromThisClient_SoTheSpecRetryRulesHold"/>).
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(ResilienceHandlerTypeNames))]
+    public void AResilienceHandler_OfEitherKnownTypeName_IsRemoved(string typeName)
+    {
+        var services = new ServiceCollection();
+        foreach (var builder in new[] { services.AddNachosClient(o => o.BaseAddress = Base), services.AddHttpClient("other") })
+        {
+            if (typeName == "Microsoft.Extensions.Http.Resilience.Internal.ResilienceHandler")
+            {
+                builder.AddHttpMessageHandler(() => new Microsoft.Extensions.Http.Resilience.Internal.ResilienceHandler());
+            }
+            else
+            {
+                builder.AddStandardResilienceHandler();
+            }
+        }
+
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+
+        Chain(factory.CreateHandler("other")).Count(h => h.GetType().FullName == typeName).ShouldBe(1, "the type under test is in a chain the filter leaves alone");
+        var chain = Chain(factory.CreateHandler(NachosClientServiceCollectionExtensions.HttpClientName)).ToList();
+        chain.Count(h => h.GetType().FullName == typeName).ShouldBe(0, $"{typeName} must be removed");
+        chain.OfType<RetryHandler>().Count().ShouldBe(1);
+    }
+
     /// <summary>The handlers from <paramref name="top"/> down to the primary handler.</summary>
     private static IEnumerable<HttpMessageHandler> Chain(HttpMessageHandler top)
     {

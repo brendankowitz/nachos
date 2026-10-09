@@ -129,14 +129,16 @@ public static class NachosClientServiceCollectionExtensions
     /// </para>
     /// <para>
     /// <b>Resilience handlers.</b> Handlers added to every client by <c>ConfigureHttpClientDefaults</c> sit above
-    /// <see cref="RetryHandler"/>. A <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> there (what
+    /// <see cref="RetryHandler"/>. A <c>Microsoft.Extensions.Http.Resilience</c> <c>ResilienceHandler</c> there (what
     /// <c>AddStandardResilienceHandler</c> in a service-defaults project adds) retries by status alone, so it would
-    /// resend what this client sends once by spec (a key creation, an unkeyed message create, a 501), attempt a keyed
-    /// create up to twelve times, cut and retry even a mutation on its own per-attempt timeout, and override
-    /// <see cref="NachosClientOptions.AttemptTimeout"/> and <c>Retry-After</c> with its total timeout. The client does
-    /// its own, spec-defined retries, so that handler is removed from this client's chain when it is built (matched
-    /// by type name, whichever version of the package; every other handler you add stays), whether the defaults were
-    /// configured before or after this call. A caller who wants resilience of their own replaces
+    /// resend what this client sends once by spec (a key creation, a 501), attempt a message create (always keyed, so
+    /// already retried up to three attempts) up to twelve times, cut and retry even a mutation on its own per-attempt
+    /// timeout, and override <see cref="NachosClientOptions.AttemptTimeout"/> and <c>Retry-After</c> with its total
+    /// timeout. The client does its own, spec-defined retries, so that handler is removed from this client's chain
+    /// when it is built, whether the defaults were configured before or after this call: it is matched by its exact
+    /// type full name, <c>Microsoft.Extensions.Http.Resilience.ResilienceHandler</c> (package 8.2.0 and later) or
+    /// <c>Microsoft.Extensions.Http.Resilience.Internal.ResilienceHandler</c> (8.0.0 and 8.1.0), and every other
+    /// handler you add stays, whatever its name. A caller who wants resilience of their own replaces
     /// <see cref="RetryHandler"/>'s semantics knowingly, with a handler of another type.
     /// </para>
     /// <para>
