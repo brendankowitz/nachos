@@ -16,6 +16,7 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("script-no-changes.sql")]
     [InlineData("script-missing-table.sql")]
     [InlineData("script-database-option-drift.sql")]
+    [InlineData("script-grant-execute.sql")]
     public void RealDacFxScripts_Parse(string fixture)
     {
         // The whole schema (json columns, constraints, indexes) and the SQLCMD wrapper must parse, or every table change would be unclassifiable.
@@ -80,6 +81,7 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("script-missing-table.sql")]
     [InlineData("script-add-nullable-column.sql")]
     [InlineData("script-add-not-null-column-with-default.sql")]
+    [InlineData("script-grant-execute.sql")]
     public void RealDacFxScripts_OfAdditiveChanges_HaveNothingOutsideTheAllowlist(string fixture)
     {
         var analysis = DeployScriptAnalysis.TryParse(Fixtures.Read(fixture))!;
@@ -134,6 +136,15 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("DROP PROCEDURE [dbo].[P];", "DropProcedureStatement")]
     [InlineData("CREATE TRIGGER [dbo].[Tr] ON [dbo].[T] AFTER INSERT AS SELECT 1;", "CreateTriggerStatement")]
     [InlineData("GRANT SELECT ON [dbo].[T] TO [u];", "GrantStatement")]
+    [InlineData("GRANT CONTROL ON OBJECT::[dbo].[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE, SELECT ON OBJECT::[dbo].[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC WITH GRANT OPTION;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC AS [dbo];", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON SCHEMA::[dbo] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON [otherdb].[dbo].[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("DENY EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC;", "DenyStatement")]
+    [InlineData("REVOKE EXECUTE ON OBJECT::[dbo].[F] FROM PUBLIC;", "RevokeStatement")]
     [InlineData("CREATE LOGIN [l] WITH PASSWORD = 'x';", "CreateLoginStatement")]
     [InlineData("ALTER TABLE [dbo].[T] NOCHECK CONSTRAINT [CK];", "AlterTableConstraintModificationStatement")]
     [InlineData("ALTER TABLE [dbo].[T] WITH NOCHECK CHECK CONSTRAINT [CK];", "AlterTableConstraintModificationStatement")]
@@ -166,6 +177,9 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("ALTER VIEW [dbo].[V] AS SELECT 2 AS [C];")]
     [InlineData("CREATE FUNCTION [dbo].[F] () RETURNS INT AS BEGIN RETURN 1; END")]
     [InlineData("EXECUTE sp_refreshsqlmodule N'[dbo].[V]';")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC;")]
+    [InlineData("GRANT EXECUTE ON [dbo].[F] TO [public];")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[F] TO [app], [other];")]
     [InlineData("MERGE [dbo].[SchemaVersion] AS target USING (SELECT CAST(1 AS TINYINT) AS [Id], 1 AS [Version]) AS source ON target.[Id] = source.[Id] WHEN MATCHED AND target.[Version] < source.[Version] THEN UPDATE SET [Version] = source.[Version] WHEN NOT MATCHED THEN INSERT ([Id], [Version]) VALUES (source.[Id], source.[Version]);")]
     public void AdditiveScaffolding_IsNotFlagged(string script)
     {

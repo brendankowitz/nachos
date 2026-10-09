@@ -127,8 +127,9 @@ internal sealed partial class DeployScriptAnalysis
     /// <summary>
     /// The statements DacFx 170 emits for the changes the classifier allows: creating tables, indexes, constraints and routines,
     /// adding columns, and the scaffolding around them (<c>USE</c>, <c>SET</c>, <c>PRINT</c>, <c>IF</c>/<c>BEGIN … END</c>, the
-    /// data-loss <c>RAISERROR</c>, transactions), plus the post-deployment stamp, a <c>MERGE</c> into <c>dbo.SchemaVersion</c>.
-    /// Constraints are only ever re-enabled (<c>WITH CHECK CHECK</c>), never disabled. <c>EXECUTE</c> is allowed here and
+    /// data-loss <c>RAISERROR</c>, transactions), plus the post-deployment stamp, a <c>MERGE</c> into <c>dbo.SchemaVersion</c>,
+    /// and <c>GRANT EXECUTE</c> on a single object of this database (see <see cref="IsExecuteGrant"/>), which the schema uses to
+    /// let any user call its pure functions. Constraints are only ever re-enabled (<c>WITH CHECK CHECK</c>), never disabled. <c>EXECUTE</c> is allowed here and
     /// judged in <see cref="Visitor"/>. <c>ALTER DATABASE</c> is not allowed; it is reported separately.
     /// </summary>
     private static bool IsAllowed(TSqlStatement statement) => statement switch
@@ -143,6 +144,7 @@ internal sealed partial class DeployScriptAnalysis
         AlterTableConstraintModificationStatement reenable =>
             reenable.ExistingRowsCheckEnforcement == ConstraintEnforcement.Check && reenable.ConstraintEnforcement == ConstraintEnforcement.Check,
         MergeStatement merge => IsSchemaVersionStamp(merge),
+        GrantStatement grant => IsExecuteGrant(grant),
         ExecuteStatement => true,
         _ => false,
     };
@@ -161,6 +163,19 @@ internal sealed partial class DeployScriptAnalysis
         && target.BaseIdentifier.Value.Equals("SchemaVersion", StringComparison.OrdinalIgnoreCase)
         && (target.SchemaIdentifier is null || target.SchemaIdentifier.Value.Equals("dbo", StringComparison.OrdinalIgnoreCase))
         && specification.ActionClauses.All(clause => clause.Action is not DeleteMergeAction);
+
+    // GRANT EXECUTE, and nothing else, on one object of this database (OBJECT:: or an unqualified object name; no server or
+    // database part, no column list), without WITH GRANT OPTION or AS: it lets the grantees run that routine, and changes no data,
+    // schema or other permission.
+    private static bool IsExecuteGrant(GrantStatement grant) =>
+        !grant.WithGrantOption
+        && grant.AsClause is null
+        && grant.Permissions.Count == 1
+        && grant.Permissions[0].Identifiers.Count == 1
+        && grant.Permissions[0].Identifiers[0].Value.Equals("EXECUTE", StringComparison.OrdinalIgnoreCase)
+        && grant.Permissions[0].Columns.Count == 0
+        && grant.SecurityTargetObject is { ObjectKind: SecurityObjectKind.Object or SecurityObjectKind.NotSpecified, ObjectName.MultiPartIdentifier: { Count: <= 2 } }
+        && grant.Principals.Count > 0;
 
     // A procedure a deploy script may call: a known name, not qualified with a server or database, in the sys schema or unqualified
     // (an unqualified name resolves to the system procedure; [dbo].[sp_refreshsqlmodule] would be someone else's).

@@ -16,6 +16,9 @@ namespace Nachos.DataLayer.SqlServer.Schema;
 /// <item><c>Create</c> of a constraint only when its table is created in the same report: a constraint added to a
 /// table that already has rows is validated against them, or scripted <c>WITH NOCHECK</c> and left untrusted.</item>
 /// <item><c>Alter</c> of a procedure, function or view.</item>
+/// <item><c>Create</c> of a permission (<c>SqlPermissionStatement</c>). The report does not say which, so
+/// <see cref="DeployScriptAnalysis"/> allows only <c>GRANT EXECUTE</c> on one object in the script; any other grant,
+/// <c>DENY</c> or <c>REVOKE</c> makes the deploy unsafe there. Dropping a permission is unsafe.</item>
 /// <item><c>Alter</c> of a table only when the generated script merely adds nullable or defaulted columns to it
 /// (see <see cref="DeployScriptAnalysis"/>); the report itself cannot tell that from a type change.</item>
 /// </list>
@@ -38,6 +41,9 @@ internal static class DeployReportClassifier
     [
         "SqlPrimaryKeyConstraint", "SqlDefaultConstraint", "SqlCheckConstraint", "SqlUniqueConstraint", "SqlForeignKeyConstraint",
     ];
+
+    // The report's type for GRANT/DENY/REVOKE; its Value is only "Permission", so the script decides which one it is.
+    private const string PermissionType = "SqlPermissionStatement";
 
     private static readonly HashSet<string> OtherCreatableTypes = ["SqlTable", "SqlSimpleColumn", "SqlIndex", .. RoutineTypes];
 
@@ -123,6 +129,9 @@ internal static class DeployReportClassifier
                     : DeployClassification.Unclassifiable;
 
             case "Alter" when RoutineTypes.Contains(item.Type):
+                return DeployClassification.AutoSafe;
+
+            case "Create" when item.Type == PermissionType:
                 return DeployClassification.AutoSafe;
 
             case "Alter" when item.Type == "SqlTable":

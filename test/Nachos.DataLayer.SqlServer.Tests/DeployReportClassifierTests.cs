@@ -38,6 +38,21 @@ public sealed class DeployReportClassifierTests
     }
 
     [Fact]
+    public void GrantExecuteOnTheOrderKeyFunctions_IsAutoSafe()
+    {
+        // Captured upgrading a database deployed before the functions were granted to public. The report only says
+        // "Permission"; the script, which the deployer checks too, holds exactly GRANT EXECUTE on each function.
+        Classify("report-grant-execute.xml").ShouldBe(DeployClassification.AutoSafe);
+    }
+
+    [Fact]
+    public void DroppedPermission_IsUnsafe()
+    {
+        Classify(Report("""<Alerts /><Operations><Operation Name="Drop"><Item Value="Permission" Type="SqlPermissionStatement" /></Operation></Operations>"""))
+            .ShouldBe(DeployClassification.Unsafe);
+    }
+
+    [Fact]
     public void NoChanges_ReportWithoutOperationsElement_IsAutoSafe()
     {
         // DacFx omits <Operations> entirely when the database already matches the model.
