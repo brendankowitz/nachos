@@ -179,7 +179,10 @@ origins outside the conventional `src`/`.github` trees.
 
 Dot segments are normalized, case aliases are conservatively compared, and
 Windows existing paths are resolved to final volume paths to cover filesystem
-aliases. Linked/reparse targets or ancestors, unsafe path segments remaining
+aliases. On Linux, existing paths are only checked for linked components and
+then compared as strings, so bind-mount (and other mount) aliases of protected
+roots or files are **not** covered by the report-destination checks; this
+remains open. Linked/reparse targets or ancestors, unsafe path segments remaining
 after full-path normalization (including device/trailing-dot/space forms), and
 paths that cannot be resolved safely fail with exit 2 before writes.
 No report path or trusted root is taken from manifest JSON.
@@ -244,7 +247,9 @@ without finalizers. Host devices cannot be placed in an evidence tree without
 mount or mknod, so only this test uses that boundary (test-friend access via
 `InternalsVisibleTo`). Device nodes minted with `mknod`
 inside the test directory need CAP_MKNOD and run only with
-`NACHOS_LINUX_DEVICE_FIXTURES=1`; otherwise they report as not executed.
+`NACHOS_LINUX_DEVICE_FIXTURES=1`; otherwise they report as not executed (2
+not-executed entries in a default Linux run). Linux execution therefore remains
+an integration validation requirement, not a claimed platform proof.
 
 Closed output-bound roles: `copy`, `vite-chunk`, `vite-asset`,
 `expressive-stylesheet`, `expressive-script`, `sitemap`, `pagefind`.
