@@ -164,9 +164,9 @@ internal sealed partial class DeployScriptAnalysis
         && (target.SchemaIdentifier is null || target.SchemaIdentifier.Value.Equals("dbo", StringComparison.OrdinalIgnoreCase))
         && specification.ActionClauses.All(clause => clause.Action is not DeleteMergeAction);
 
-    // GRANT EXECUTE, and nothing else, on one object of this database (OBJECT:: or an unqualified object name; no server or
-    // database part, no column list), without WITH GRANT OPTION or AS: it lets the grantees run that routine, and changes no data,
-    // schema or other permission.
+    // GRANT EXECUTE, and nothing else, to [public] alone, on one object of this database's dbo schema spelled dbo.x (OBJECT:: or
+    // a plain object name; no column list), without WITH GRANT OPTION or AS: it lets anyone run that routine, and changes no
+    // data, schema or other permission. This is what the schema declares for its pure functions (Security/FunctionPermissions.sql).
     private static bool IsExecuteGrant(GrantStatement grant) =>
         !grant.WithGrantOption
         && grant.AsClause is null
@@ -174,8 +174,12 @@ internal sealed partial class DeployScriptAnalysis
         && grant.Permissions[0].Identifiers.Count == 1
         && grant.Permissions[0].Identifiers[0].Value.Equals("EXECUTE", StringComparison.OrdinalIgnoreCase)
         && grant.Permissions[0].Columns.Count == 0
-        && grant.SecurityTargetObject is { ObjectKind: SecurityObjectKind.Object or SecurityObjectKind.NotSpecified, ObjectName.MultiPartIdentifier: { Count: <= 2 } }
-        && grant.Principals.Count > 0;
+        && grant.SecurityTargetObject is { ObjectKind: SecurityObjectKind.Object or SecurityObjectKind.NotSpecified, ObjectName.MultiPartIdentifier: { Count: 2 } name }
+        && name[0].Value.Equals("dbo", StringComparison.OrdinalIgnoreCase)
+        && grant.Principals.Count == 1
+        && grant.Principals[0] is { } principal
+        && (principal.PrincipalType == PrincipalType.Public
+            || (principal.PrincipalType == PrincipalType.Identifier && principal.Identifier.Value.Equals("public", StringComparison.OrdinalIgnoreCase)));
 
     // A procedure a deploy script may call: a known name, not qualified with a server or database, in the sys schema or unqualified
     // (an unqualified name resolves to the system procedure; [dbo].[sp_refreshsqlmodule] would be someone else's).

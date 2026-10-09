@@ -143,6 +143,14 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("GRANT EXECUTE ON SCHEMA::[dbo] TO PUBLIC;", "GrantStatement")]
     [InlineData("GRANT EXECUTE TO PUBLIC;", "GrantStatement")]
     [InlineData("GRANT EXECUTE ON [otherdb].[dbo].[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[sys].[sp_executesql] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON [sys].[F] TO [public];", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[other].[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[F] TO PUBLIC;", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO [app];", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO [app], [other];", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC, [app];", "GrantStatement")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO [guest];", "GrantStatement")]
     [InlineData("DENY EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC;", "DenyStatement")]
     [InlineData("REVOKE EXECUTE ON OBJECT::[dbo].[F] FROM PUBLIC;", "RevokeStatement")]
     [InlineData("CREATE LOGIN [l] WITH PASSWORD = 'x';", "CreateLoginStatement")]
@@ -179,7 +187,7 @@ public sealed class DeployScriptAnalysisTests
     [InlineData("EXECUTE sp_refreshsqlmodule N'[dbo].[V]';")]
     [InlineData("GRANT EXECUTE ON OBJECT::[dbo].[F] TO PUBLIC;")]
     [InlineData("GRANT EXECUTE ON [dbo].[F] TO [public];")]
-    [InlineData("GRANT EXECUTE ON OBJECT::[F] TO [app], [other];")]
+    [InlineData("GRANT EXECUTE ON OBJECT::[DBO].[F] TO [PUBLIC];")]
     [InlineData("MERGE [dbo].[SchemaVersion] AS target USING (SELECT CAST(1 AS TINYINT) AS [Id], 1 AS [Version]) AS source ON target.[Id] = source.[Id] WHEN MATCHED AND target.[Version] < source.[Version] THEN UPDATE SET [Version] = source.[Version] WHEN NOT MATCHED THEN INSERT ([Id], [Version]) VALUES (source.[Id], source.[Version]);")]
     public void AdditiveScaffolding_IsNotFlagged(string script)
     {
