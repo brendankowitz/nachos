@@ -111,17 +111,91 @@ public sealed class SecretRedactionTests
     [InlineData(15, true)]
     [InlineData(16, false)]
     [InlineData(1555, false)]
-    public void ForHeaderNames_IgnoresBearerValuesShorterThanTheMinimum(int length, bool ignored)
+    public void BearerForHeaderNames_IgnoresValuesShorterThanTheMinimum(int length, bool ignored)
     {
         var value = new string('k', length);
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + value);
 
-        var secrets = RedactionSecrets.ForHeaderNames(request);
+        var bearer = RedactionSecrets.BearerForHeaderNames(request);
 
-        secrets.IsEmpty.ShouldBe(ignored);
-        secrets.OccursIn("X-" + value).ShouldBe(!ignored);
+        (bearer is null).ShouldBe(ignored);
+        RedactionSecrets.HeaderNameEchoes("X-" + value, value).ShouldBe(!ignored);
         RedactionSecrets.FromAuthorization(request).OccursIn("X-" + value).ShouldBeTrue("mapped text keeps plain matching at any length");
+    }
+
+    /// <summary>A JWT-shaped bearer of 1555 characters, as <c>TransportRedactionTests</c> uses.</summary>
+    private static readonly string Jwt = TransportRedactionTests.JwtShaped(1555);
+
+    public static TheoryData<string, string, bool> HeaderNameCases()
+    {
+        var signature = Jwt[(Jwt.LastIndexOf('.') + 1)..];
+        return new TheoryData<string, string, bool>
+        {
+            { "the whole value", Jwt, true },
+            { "the value minus its first character", Jwt[1..], true },
+            { "the signature segment alone", signature, true },
+            { "the lower-cased value", Jwt.ToLowerInvariant(), true },
+            { "the upper-cased value", Jwt.ToUpperInvariant(), true },
+            // '~' is a token character outside the base64url alphabet, so it cannot extend a run.
+            { "exactly 16 characters of the value", "~~" + Jwt[100..116] + "~~", true },
+            { "only 15 characters of the value", "~~" + Jwt[100..115] + "~~", false },
+            { "an ordinary name", "Transfer-Encoding", false },
+            { "Retry-After", "Retry-After", false },
+        };
+    }
+
+    /// <summary>
+    /// A name echoes the value when it shares a run of 16 characters with it in any letter case; a shorter run, or an
+    /// ordinary name, does not. The old rule (the whole value, exact case) missed 1554 of 1555 characters of a JWT.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(HeaderNameCases))]
+    public void HeaderNameEchoes_OnASharedRunOf16Characters_InAnyCase(string _, string name, bool echoes)
+    {
+        RedactionSecrets.HeaderNameEchoes(name, Jwt).ShouldBe(echoes);
+    }
+
+    /// <summary>
+    /// A value whose letters alternate in case shares no 16-character run with its own lower or upper case, so only
+    /// case-insensitive matching finds those (the JWT canary has long single-case runs, which would hide a
+    /// case-sensitive comparison).
+    /// </summary>
+    [Fact]
+    public void HeaderNameEchoes_InAnotherLetterCase_OfAValueWithNoSingleCaseRun()
+    {
+        const string bearer = "nK-mIxEd-CaSe-KeY-0a1B2c3D4e5F6g7H";
+
+        RedactionSecrets.HeaderNameEchoes(bearer.ToLowerInvariant(), bearer).ShouldBeTrue();
+        RedactionSecrets.HeaderNameEchoes(bearer.ToUpperInvariant(), bearer).ShouldBeTrue();
+        RedactionSecrets.HeaderNameEchoes("X-" + bearer[5..21].ToLowerInvariant(), bearer).ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData(16, true)]
+    [InlineData(15, false)]
+    public void HeaderNameEchoes_OnlyForABearerOfAtLeast16Characters(int length, bool echoes)
+    {
+        var key = "k-" + new string('x', length - 2);
+
+        RedactionSecrets.HeaderNameEchoes(key, key).ShouldBe(echoes);
+        RedactionSecrets.HeaderNameEchoes(key.ToUpperInvariant(), key).ShouldBe(echoes);
+    }
+
+    [Fact]
+    public void Bearer_IsReadFromTheParsedHeaderFirst_AndFromTheRawTextWhenItDoesNotParse()
+    {
+        using var parsed = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
+        parsed.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Jwt);
+        using var raw = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
+        raw.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Jwt);
+        using var unparseable = new HttpRequestMessage(HttpMethod.Get, "https://nachos.test/");
+        unparseable.Headers.TryAddWithoutValidation("Authorization", "Bearer nk-CANARY,\"quoted\"-key-77");
+
+        RedactionSecrets.BearerForHeaderNames(parsed).ShouldBeSameAs(Jwt);
+        RedactionSecrets.BearerForHeaderNames(raw).ShouldBe(Jwt);
+        RedactionSecrets.BearerForHeaderNames(unparseable).ShouldBe("nk-CANARY,\"quoted\"-key-77");
+        RedactionSecrets.FromAuthorization(unparseable).Redact("echo nk-CANARY,\"quoted\"-key-77").ShouldBe("echo " + ErrorMapper.Redacted);
     }
 
     [Fact]

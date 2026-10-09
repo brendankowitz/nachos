@@ -35,9 +35,10 @@ internal sealed class RedactionSecrets
     public const int MinHexLength = 8;
 
     /// <summary>
-    /// Shortest bearer value that is matched against response header <em>names</em> (<see cref="ForHeaderNames"/>).
-    /// A header name holding the value is removed before the <see cref="IHttpClientFactory"/> loggers see it, so a
-    /// short value that is a substring of an ordinary name (a key of <c>e</c>, <c>ry</c> or <c>After</c> is inside
+    /// The run of characters a response header <em>name</em> must share with the bearer value to count as an echo of
+    /// it (<see cref="HeaderNameEchoes"/>), and so the shortest bearer value that is matched against names at all. A
+    /// name echoing the value is removed before the <see cref="IHttpClientFactory"/> loggers see it, so a short value
+    /// that is a substring of an ordinary name (a key of <c>e</c>, <c>ry</c> or <c>After</c> is inside
     /// <c>Retry-After</c>) would strip real headers and change retry behaviour. Real keys are JWTs, hundreds of
     /// characters long, so values shorter than this are never matched against names; mapped text keeps plain matching
     /// at any length.
@@ -75,53 +76,66 @@ internal sealed class RedactionSecrets
         return forms.Count == 0 ? None : new([.. forms.Distinct()]);
     }
 
-    /// <summary>
-    /// The bearer value of <paramref name="request"/>'s <c>Authorization</c> header, read without validation so a value
-    /// that does not parse (an API key with <c>,</c> or <c>"</c> on a retry copy) is still found.
-    /// </summary>
-    public static RedactionSecrets FromAuthorization(HttpRequestMessage request) =>
-        request.Headers.NonValidated.TryGetValues("Authorization", out var values)
-            ? Of([.. values.Select(StripScheme)])
-            : None;
+    /// <summary>The bearer value of <paramref name="request"/>'s <c>Authorization</c> header (see <see cref="Bearer"/>), in all its forms.</summary>
+    public static RedactionSecrets FromAuthorization(HttpRequestMessage request) => Of(Bearer(request));
 
     /// <summary>
-    /// The bearer values of <paramref name="request"/> that are matched against response header names: those at least
-    /// <see cref="MinHeaderNameMatchLength"/> long (see its remarks), in all their forms.
+    /// The bearer value of <paramref name="request"/> that response header names are checked against
+    /// (<see cref="HeaderNameEchoes"/>): its <c>Authorization</c> value when that is at least
+    /// <see cref="MinHeaderNameMatchLength"/> long, else null.
     /// </summary>
-    public static RedactionSecrets ForHeaderNames(HttpRequestMessage request) =>
-        request.Headers.NonValidated.TryGetValues("Authorization", out var values)
-            ? Of([.. values.Select(StripScheme).Where(v => v.Length >= MinHeaderNameMatchLength)])
-            : None;
+    public static string? BearerForHeaderNames(HttpRequestMessage request) =>
+        Bearer(request) is { Length: >= MinHeaderNameMatchLength } bearer ? bearer : null;
 
     /// <summary>
-    /// The length of the shortest bearer value <see cref="ForHeaderNames"/> would match, or null when it would match
-    /// none. A header name shorter than this cannot hold the value (its hex forms are longer still), so the caller can
-    /// skip building the secrets, which cost several times the value's length, unless such a name arrived. Allocates
-    /// nothing.
+    /// True when <paramref name="name"/>, a response header name, shares a run of <see cref="MinHeaderNameMatchLength"/>
+    /// characters with <paramref name="bearer"/>, in any letter case: the whole value, a part of it (the signature
+    /// segment, the value minus its first character) or another case of it all count, so a name is dropped unless it
+    /// is clearly unrelated. A bearer shorter than the run is never echoed (see the constant). Allocates nothing; the
+    /// cost is one search of the value per window of the name, and a response's names are bounded by the handler's
+    /// header size limit. Hex forms of the value are not runs of it; <see cref="OccursIn"/> finds those whole.
     /// </summary>
-    public static int? ShortestHeaderNameMatch(HttpRequestMessage request)
+    public static bool HeaderNameEchoes(string name, string bearer)
     {
-        if (!request.Headers.NonValidated.TryGetValues("Authorization", out var values))
+        if (bearer.Length < MinHeaderNameMatchLength)
         {
-            return null;
+            return false;
         }
 
-        int? shortest = null;
-        foreach (var value in values)
+        var value = bearer.AsSpan();
+        for (var at = 0; at + MinHeaderNameMatchLength <= name.Length; at++)
         {
-            var length = StripScheme(value.AsSpan()).Length;
-            if (length >= MinHeaderNameMatchLength && length < (shortest ?? int.MaxValue))
+            if (value.Contains(name.AsSpan(at, MinHeaderNameMatchLength), StringComparison.OrdinalIgnoreCase))
             {
-                shortest = length;
+                return true;
             }
         }
 
-        return shortest;
+        return false;
     }
 
     /// <summary>True when any form of any secret occurs in <paramref name="text"/> outside existing markers.</summary>
     public bool OccursIn(string text) =>
         !IsEmpty && text.Split(ErrorMapper.Redacted).Any(segment => _forms.Any(f => segment.Contains(f.Form, f.Comparison)));
+
+    /// <summary>
+    /// The bearer value of <paramref name="request"/>'s <c>Authorization</c> header, or null. The parsed header is read
+    /// first: its parameter is the string the client set, so a request built by <see cref="NachosHttpClient"/>
+    /// allocates nothing here. A retry copy stores the raw text (<see cref="RetryHandler"/> copies headers unvalidated),
+    /// which the parsed read parses once, the cost of its length; a value that does not parse (an API key with
+    /// <c>,</c> or <c>"</c>) is then read unvalidated, so it is still found.
+    /// </summary>
+    private static string? Bearer(HttpRequestMessage request)
+    {
+        if (request.Headers.Authorization?.Parameter is { } parameter)
+        {
+            return parameter;
+        }
+
+        return request.Headers.NonValidated.TryGetValues("Authorization", out var values)
+            ? StripScheme(values.ToString())
+            : null;
+    }
 
     /// <summary><paramref name="text"/> with every match replaced, in one pass (see the type remarks). Not bounded.</summary>
     public string Redact(string text)
