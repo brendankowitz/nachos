@@ -13,6 +13,7 @@ internal static class SessionEndpoints
         endpoints.MapPost("/v3/workspaces/{workspace_id}/sessions", async Task<IResult> (string workspace_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
+            var id = body.RequiredId();
             var scopes = body.OptionalStrings("scopes");
             if (scopes is { Length: > 100 })
             {
@@ -22,7 +23,7 @@ internal static class SessionEndpoints
             {
                 return NotImplementedEndpoints.Response();
             }
-            return TypedResults.Ok(await client.GetOrCreateSessionAsync(workspace_id, body.RequiredId(),
+            return TypedResults.Ok(await client.GetOrCreateSessionAsync(workspace_id, id,
                 body.Object("metadata"), body.Optional("configuration", NachosJsonContext.Default.SessionConfiguration, strict: true),
                 body.Peers("peers"), http.RequestAborted));
         }).Accepts<SessionCreate>("application/json").Produces<Session>().Produces<ErrorResponse>(501)
