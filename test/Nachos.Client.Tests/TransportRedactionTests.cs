@@ -318,9 +318,10 @@ public sealed class TransportRedactionTests
     }
 
     [Fact]
-    public async Task TransportFailure_WithoutTheBearer_KeepsItsOriginalException()
+    public async Task ConnectionFailure_WithoutTheBearer_IsRebuiltWithoutTheHost_KeepingItsSocketException()
     {
-        var original = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused (nachos.test:443)", new SocketException(10061));
+        var socket = new SocketException(10061);
+        var original = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused (nachos.test:443)", socket);
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
         services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
@@ -329,8 +330,118 @@ public sealed class TransportRedactionTests
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().CreateKeyAsync("w"));
 
-        ex.ShouldBeSameAs(original);
-        ex.InnerException.ShouldBeOfType<SocketException>();
+        ex.HttpRequestError.ShouldBe(HttpRequestError.ConnectionError);
+        ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.ConnectionError, SocketError.ConnectionRefused));
+        ex.Message.ShouldNotContain("nachos.test");
+        ex.InnerException.ShouldBeSameAs(socket);
+    }
+
+    /// <summary>
+    /// A <c>Location</c> whose hostname spells the bearer value in hex, split into DNS labels. Following it would make
+    /// the redirected hop's name-resolution failure name that host, so the default pipeline does not follow: the 3xx is
+    /// final under spec §16 status precedence and surfaces as the mapped exception, once.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StubCases))]
+    public async Task RedirectToAHostSpellingTheBearer_IsNotFollowed_AndSurfacesAsTheFinalStatus(string auth, string route)
+    {
+        await using var server = new EchoingServer(authorization =>
+            $"HTTP/1.1 302 Found\r\nLocation: http://{HexHost(Bare(authorization))}/\r\nContent-Length: 0\r\n\r\n");
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
+
+        server.Requests.ShouldBe(1);
+        ex.StatusCode.ShouldBe(HttpStatusCode.Found);
+        ex.Message.ShouldContain("returned 302");
+        ex.InnerException.ShouldBeNull();
+        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+    }
+
+    /// <summary>
+    /// A primary handler of the caller's own that follows redirects: the redirected hop fails to resolve the hex
+    /// hostname (through the connect callback, so no DNS query is made), and .NET's own text names that host. The kept
+    /// connection failure is rebuilt without it, so neither the exception chain nor the <c>LogicalHandler</c> log
+    /// carries the value. The <c>ClientHandler</c> log sits between that handler and the retry handler and does (as
+    /// documented on <c>AddNachosClient</c>): only the default pipeline's wrapper covers it.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StubCases))]
+    public async Task RedirectFollowedByACallersHandler_SurfacesTheFailure_WithoutTheHost(string auth, string route)
+    {
+        await using var server = new EchoingServer(authorization =>
+            $"HTTP/1.1 302 Found\r\nLocation: http://{HexHost(Bare(authorization))}/\r\nContent-Length: 0\r\n\r\n");
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                ConnectCallback = async (context, ct) =>
+                {
+                    if (context.DnsEndPoint.Host != server.BaseAddress.Host)
+                    {
+                        throw new SocketException((int)SocketError.HostNotFound);
+                    }
+
+                    var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                    await socket.ConnectAsync(context.DnsEndPoint, ct);
+                    return new NetworkStream(socket, ownsSocket: true);
+                },
+            });
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
+
+        server.Requests.ShouldBe(route == "GET message" ? RetryHandler.MaxAttempts : 1);
+        ex.HttpRequestError.ShouldBe(HttpRequestError.NameResolutionError);
+        ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
+        ex.InnerException.ShouldBeOfType<SocketException>().SocketErrorCode.ShouldBe(SocketError.HostNotFound);
+        AssertNoSecretWindow(ex, logs.TextOf(".LogicalHandler"), Secret(auth));
+        logs.TextOf(".LogicalHandler").ShouldContain("HTTP request failed");
+
+        // The raw .NET text of the redirected hop does name the host: that log is the caller's handler's to cover.
+        SecretScan.FindLeak(logs.TextOf(".ClientHandler"), Secret(auth), window: 12).ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void HexHost_SpellsTheSecret_AndTheScanSeesThroughTheDots()
+    {
+        var host = HexHost(ApiKey);
+
+        host.ShouldBe("636166652d50524f42452d4150494b45592d303132333435363738396162.63646566");
+        SecretScan.FindLeak($"Name or service not known ({host}:80)", ApiKey, window: 12).ShouldNotBeNull();
+        SecretScan.FindLeak($"x ({host[..30]}.{host[30..]}:80)", ApiKey, window: 12).ShouldNotBeNull();
+    }
+
+    /// <summary>The hex of <paramref name="secret"/>'s bytes, lowercased, as DNS labels of at most 60 characters.</summary>
+    private static string HexHost(string secret)
+    {
+        var hex = Convert.ToHexString(Encoding.ASCII.GetBytes(secret)).ToLowerInvariant();
+        return string.Join('.', Enumerable.Range(0, (hex.Length + 59) / 60).Select(i => hex.Substring(i * 60, Math.Min(60, hex.Length - i * 60))));
+    }
+
+    /// <summary>No 12-character window of <paramref name="secret"/>, plain or in any hex form, in the chain or the logs.</summary>
+    private static void AssertNoSecretWindow(Exception ex, string logs, string secret)
+    {
+        var text = new StringBuilder(ex.ToString());
+        foreach (var current in Chain(ex))
+        {
+            text.AppendLine(current.Message).AppendLine(current.ToString());
+            foreach (DictionaryEntry entry in current.Data)
+            {
+                text.AppendLine(System.Globalization.CultureInfo.InvariantCulture, $"{entry.Key}={entry.Value}");
+            }
+        }
+
+        SecretScan.FindLeak(text.ToString(), secret, window: 12).ShouldBeNull("the exception chain leaks the secret");
+        SecretScan.FindLeak(logs, secret, window: 12).ShouldBeNull("the logs leak the secret");
     }
 
     private static void Configure(NachosClientOptions options, Uri baseAddress, string auth)

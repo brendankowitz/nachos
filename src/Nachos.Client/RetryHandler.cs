@@ -91,7 +91,8 @@ namespace Nachos.Client;
 /// <para>
 /// <b>Failure text.</b> Every exception that leaves this handler goes through <see cref="SecretRedaction.Sanitize"/>:
 /// known-safe connection failures, timeouts and cancellations are kept (with the request's bearer value redacted from
-/// them), anything that can carry server bytes is replaced by fixed text naming its <see cref="HttpRequestError"/>.
+/// them, and a connection failure's text rebuilt without the target host and port), anything that can carry server
+/// bytes is replaced by fixed text naming its <see cref="HttpRequestError"/>.
 /// </para>
 /// <para>
 /// <see cref="HttpClient.Timeout"/> (100 s unless changed) bounds the whole call, retries and backoff included, and

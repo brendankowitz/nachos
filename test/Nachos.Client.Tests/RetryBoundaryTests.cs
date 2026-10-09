@@ -161,12 +161,20 @@ public sealed class RetryBoundaryTests
     [Fact]
     public async Task ThreeAttemptsMax_LastTransportFailureSurfaces()
     {
-        // A connection failure is known-safe text, so the last one surfaces as it is (others are replaced by fixed text).
-        var stub = new StubHandler((_, attempt) => throw new HttpRequestException(HttpRequestError.ConnectionError, $"connection reset on attempt {attempt}"));
+        // A connection failure is known-safe, so the last one surfaces (rebuilt without the host; see SecretRedaction),
+        // keeping its error and its data.
+        var stub = new StubHandler((_, attempt) =>
+        {
+            var failure = new HttpRequestException(HttpRequestError.ConnectionError, $"connection reset (nachos.test:443) on attempt {attempt}");
+            failure.Data["attempt"] = attempt;
+            throw failure;
+        });
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1"));
 
-        ex.Message.ShouldBe("connection reset on attempt 3");
+        ex.HttpRequestError.ShouldBe(HttpRequestError.ConnectionError);
+        ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.ConnectionError, null));
+        ex.Data["attempt"].ShouldBe(3);
         stub.Requests.Count.ShouldBe(3);
     }
 

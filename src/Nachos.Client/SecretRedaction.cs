@@ -19,17 +19,21 @@ namespace Nachos.Client;
 /// is by exception type, not by content.
 /// </para>
 /// <para>
-/// <b>Kept</b> (<see cref="Sanitize"/> returns the same instance when nothing in it mentions a secret): a chain whose
-/// every level is a <see cref="SocketException"/>, <see cref="TimeoutException"/>,
+/// <b>Kept</b>: a chain whose every level is a <see cref="SocketException"/>, <see cref="TimeoutException"/>,
 /// <see cref="OperationCanceledException"/> (<see cref="TaskCanceledException"/> included),
 /// <see cref="ObjectDisposedException"/>, <see cref="AggregateException"/>, an <see cref="HttpRequestException"/> whose
 /// <see cref="HttpRequestException.HttpRequestError"/> is <see cref="HttpRequestError.ConnectionError"/> or
 /// <see cref="HttpRequestError.NameResolutionError"/>, or an exception this library built from sanitized parts
 /// (<see cref="MarkSanitized"/>). Their text is framework or library text about the connection, so "connection
-/// refused" and timeouts stay informative. A level that still mentions a secret is rebuilt with it redacted (the same
-/// type for cancellations, timeouts and connection failures, keeping token, error and status; any other type becomes an
+/// refused" and timeouts stay informative. <see cref="Sanitize"/> returns the same instance when nothing in the chain
+/// mentions a secret and no level is an <see cref="HttpRequestException"/>. A level that mentions a secret is rebuilt
+/// with it redacted (the same type for cancellations and timeouts, keeping the token; any other type becomes an
 /// <see cref="IOException"/> whose message starts with the original type name), with string <see cref="Exception.Data"/>
-/// keys and values redacted except <c>Nachos.</c> entries. Secret-free levels keep their identity. At most
+/// keys and values redacted except <c>Nachos.</c> entries. An <see cref="HttpRequestException"/> level is always
+/// rebuilt, keeping its error, status and (redacted) inner chain but with the fixed text of
+/// <see cref="ConnectionMessage"/>: .NET's own text names the target host and port, and a followed redirect lets the
+/// server choose that host (a hostname can spell the request's credentials in hex), so the host is withheld even when
+/// no secret is found in it. Secret-free levels of the other kept types keep their identity. At most
 /// <see cref="MaxRebuiltDepth"/> levels are rebuilt.
 /// </para>
 /// <para>
@@ -74,6 +78,16 @@ internal static class SecretRedaction
         string.Create(
             CultureInfo.InvariantCulture,
             $"The Nachos HTTP exchange failed ({error}). The transport's own description is withheld because it can repeat what the server sent.");
+
+    /// <summary>
+    /// The fixed text of a kept connection failure: a static sentence, the error's enum name and the
+    /// <see cref="SocketError"/> of the first <see cref="SocketException"/> beneath it (when there is one); never the
+    /// target host and port.
+    /// </summary>
+    public static string ConnectionMessage(HttpRequestError error, SocketError? socketError) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"The Nachos HTTP connection failed ({error}{(socketError is { } code ? $", {code}" : string.Empty)}). The target host and port are withheld because a redirect lets the server choose them.");
 
     /// <summary>
     /// The first <see cref="HttpRequestError"/> other than <see cref="HttpRequestError.Unknown"/> carried by an
@@ -150,10 +164,11 @@ internal static class SecretRedaction
         _ => false,
     };
 
-    // Second layer, for a chain of safe levels only: rebuild the levels that mention a secret.
+    // Second layer, for a chain of safe levels only: rebuild the levels that mention a secret, and every
+    // HttpRequestException level (its text names the host, see the type remarks).
     private static Exception Redact(Exception exception, RedactionSecrets secrets, int depth)
     {
-        if (!Mentions(exception, secrets))
+        if (!NeedsRebuild(exception, secrets))
         {
             return exception;
         }
@@ -165,7 +180,8 @@ internal static class SecretRedaction
         {
             AggregateException aggregate => new AggregateException(
                 deeper ? aggregate.InnerExceptions.Select(e => Redact(e, secrets, depth + 1)) : []),
-            HttpRequestException http => new HttpRequestException(http.HttpRequestError, message, inner, http.StatusCode),
+            HttpRequestException http => new HttpRequestException(
+                http.HttpRequestError, ConnectionMessage(http.HttpRequestError, FirstSocketError(http)), inner, http.StatusCode),
             TaskCanceledException canceled => new TaskCanceledException(message, inner, canceled.CancellationToken),
             OperationCanceledException canceled => new OperationCanceledException(message, inner, canceled.CancellationToken),
             TimeoutException => new TimeoutException(message, inner),
@@ -187,8 +203,13 @@ internal static class SecretRedaction
         return MarkSanitized(copy);
     }
 
-    private static bool Mentions(Exception exception, RedactionSecrets secrets) =>
-        !secrets.IsEmpty && Chain(exception, skipSanitized: true).Any(e => secrets.OccursIn(e.Message) || DataMentions(e.Data, secrets));
+    private static bool NeedsRebuild(Exception exception, RedactionSecrets secrets) =>
+        Chain(exception, skipSanitized: true).Any(e =>
+            e is HttpRequestException ||
+            (!secrets.IsEmpty && (secrets.OccursIn(e.Message) || DataMentions(e.Data, secrets))));
+
+    private static SocketError? FirstSocketError(Exception exception) =>
+        Chain(exception, skipSanitized: false).OfType<SocketException>().FirstOrDefault()?.SocketErrorCode;
 
     private static string Text(string text, RedactionSecrets secrets) => ErrorMapper.Bound(secrets.Redact(text));
 

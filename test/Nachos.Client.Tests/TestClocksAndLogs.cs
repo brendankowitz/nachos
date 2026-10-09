@@ -18,18 +18,12 @@ internal sealed class ZeroDelayTimeProvider : TimeProvider
 /// <summary>Captures every log message, scope, structured value and exception text, at every level.</summary>
 internal sealed class CapturingLoggerProvider : ILoggerProvider
 {
-    private readonly StringBuilder _text = new();
+    private readonly List<(string Category, string Text)> _entries = [];
 
-    public string Text
-    {
-        get
-        {
-            lock (_text)
-            {
-                return _text.ToString();
-            }
-        }
-    }
+    public string Text => TextOf(_ => true);
+
+    /// <summary>The captured text of the categories whose name ends with <paramref name="categorySuffix"/>.</summary>
+    public string TextOf(string categorySuffix) => TextOf(c => c.EndsWith(categorySuffix, StringComparison.Ordinal));
 
     public ILogger CreateLogger(string categoryName) => new Logger(this, categoryName);
 
@@ -37,11 +31,28 @@ internal sealed class CapturingLoggerProvider : ILoggerProvider
     {
     }
 
-    private void Append(string line)
+    private string TextOf(Func<string, bool> category)
     {
-        lock (_text)
+        var text = new StringBuilder();
+        lock (_entries)
         {
-            _text.AppendLine(line);
+            foreach (var (name, line) in _entries)
+            {
+                if (category(name))
+                {
+                    text.AppendLine(line);
+                }
+            }
+        }
+
+        return text.ToString();
+    }
+
+    private void Append(string category, string line)
+    {
+        lock (_entries)
+        {
+            _entries.Add((category, line));
         }
     }
 
@@ -50,7 +61,7 @@ internal sealed class CapturingLoggerProvider : ILoggerProvider
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull
         {
-            owner.Append($"{category} scope: {state}");
+            owner.Append(category, $"{category} scope: {state}");
             return null;
         }
 
@@ -58,12 +69,12 @@ internal sealed class CapturingLoggerProvider : ILoggerProvider
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            owner.Append($"{category} {logLevel}: {formatter(state, exception)} {exception}");
+            owner.Append(category, $"{category} {logLevel}: {formatter(state, exception)} {exception}");
             if (state is IEnumerable<KeyValuePair<string, object?>> values)
             {
                 foreach (var (key, value) in values)
                 {
-                    owner.Append($"  {key}={value}");
+                    owner.Append(category, $"  {key}={value}");
                 }
             }
         }

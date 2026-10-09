@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using Shouldly;
@@ -184,10 +185,45 @@ public sealed class SecretRedactionTests
         replaced.Data.Contains("other").ShouldBeFalse();
     }
 
-    [Fact]
-    public void ConnectionFailure_IsKept_AsTheSameInstance()
+    /// <summary>
+    /// .NET names the target host and port in a connection failure, and a followed redirect lets the server choose that
+    /// host, so the kept failure is rebuilt with fixed text: error and socket error, no host. The inner socket
+    /// exception is framework text and keeps its identity.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpRequestError.ConnectionError, 10061, SocketError.ConnectionRefused)]
+    [InlineData(HttpRequestError.NameResolutionError, 11001, SocketError.HostNotFound)]
+    public void ConnectionFailure_IsRebuilt_WithoutTheHost_KeepingErrorStatusAndInner(HttpRequestError error, int nativeError, SocketError socketError)
     {
-        var ex = new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused (nachos.test:443)", new System.Net.Sockets.SocketException(10061));
+        var inner = new SocketException(nativeError);
+        var hexHost = Convert.ToHexString(Encoding.UTF8.GetBytes(Secret)).ToLowerInvariant();
+        var ex = new HttpRequestException(error, $"Name or service not known ({hexHost[..20]}.{hexHost[20..]}:80)", inner, HttpStatusCode.BadGateway);
+
+        var rebuilt = SecretRedaction.Sanitize(ex, RedactionSecrets.None).ShouldBeOfType<HttpRequestException>();
+
+        rebuilt.ShouldNotBeSameAs(ex);
+        rebuilt.HttpRequestError.ShouldBe(error);
+        rebuilt.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
+        rebuilt.InnerException.ShouldBeSameAs(inner);
+        rebuilt.Message.ShouldBe(SecretRedaction.ConnectionMessage(error, socketError));
+        rebuilt.Message.ShouldBe($"The Nachos HTTP connection failed ({error}, {socketError}). The target host and port are withheld because a redirect lets the server choose them.");
+        SecretScan.FindLeak(rebuilt.ToString(), Secret, window: 8).ShouldBeNull();
+    }
+
+    [Fact]
+    public void ConnectionFailure_WithoutASocketException_NamesOnlyTheError()
+    {
+        var ex = new HttpRequestException(HttpRequestError.ConnectionError, "refused (nachos.test:443)");
+
+        SecretRedaction.Sanitize(ex, Secrets).Message.ShouldBe(
+            "The Nachos HTTP connection failed (ConnectionError). The target host and port are withheld because a redirect lets the server choose them.");
+    }
+
+    [Fact]
+    public void SanitizedConnectionFailure_IsKept_AsTheSameInstance()
+    {
+        var ex = SecretRedaction.Sanitize(
+            new HttpRequestException(HttpRequestError.ConnectionError, "Connection refused (nachos.test:443)", new SocketException(10061)), Secrets);
 
         SecretRedaction.Sanitize(ex, Secrets).ShouldBeSameAs(ex);
     }
@@ -317,21 +353,41 @@ public sealed class SecretRedactionTests
     }
 
     [Fact]
-    public void KeptConnectionFailure_WithASecret_KeepsItsErrorAndStatus()
+    public void KeptConnectionFailure_WithASecret_KeepsItsErrorAndStatus_AndRedactsItsData()
     {
         var ex = new HttpRequestException(HttpRequestError.NameResolutionError, "no such host " + Secret, null, HttpStatusCode.BadGateway);
+        ex.Data["echo"] = Secret;
 
         var redacted = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<HttpRequestException>();
 
         redacted.HttpRequestError.ShouldBe(HttpRequestError.NameResolutionError);
         redacted.StatusCode.ShouldBe(HttpStatusCode.BadGateway);
-        redacted.Message.ShouldBe("no such host " + ErrorMapper.Redacted);
+        redacted.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, null));
+        redacted.Data["echo"].ShouldBe(ErrorMapper.Redacted);
+    }
+
+    [Fact]
+    public void CancellationAroundAConnectionFailure_KeepsTypeAndToken_AndGetsTheHostFreeFailureInside()
+    {
+        using var cts = new CancellationTokenSource();
+        var ex = new TaskCanceledException(
+            "The operation was canceled.",
+            new HttpRequestException(HttpRequestError.ConnectionError, "refused (evil.example:80)", new SocketException(10061)),
+            cts.Token);
+
+        var sanitized = SecretRedaction.Sanitize(ex, Secrets).ShouldBeOfType<TaskCanceledException>();
+
+        sanitized.CancellationToken.ShouldBe(cts.Token);
+        sanitized.Message.ShouldBe("The operation was canceled.");
+        var inner = sanitized.InnerException.ShouldBeOfType<HttpRequestException>();
+        inner.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.ConnectionError, SocketError.ConnectionRefused));
+        inner.InnerException.ShouldBeOfType<SocketException>();
     }
 
     [Fact]
     public void SecretFreeInnerException_KeepsItsIdentity_InsideARebuiltChain()
     {
-        var inner = new System.Net.Sockets.SocketException(10054);
+        var inner = new SocketException(10054);
         var ex = new OperationCanceledException("outer " + Secret, inner);
 
         SecretRedaction.Sanitize(ex, Secrets).InnerException.ShouldBeSameAs(inner);

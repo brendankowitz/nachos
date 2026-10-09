@@ -30,6 +30,11 @@ public static class NachosClientServiceCollectionExtensions
     /// </para>
     /// <para>
     /// <b>Pipeline.</b> The client's <see cref="HttpClient.BaseAddress"/> is <see cref="NachosClientOptions.BaseAddress"/>.
+    /// The primary <see cref="SocketsHttpHandler"/> does not follow redirects (<c>AllowAutoRedirect</c> is false): a 3xx
+    /// is a final status under spec §16 status precedence and surfaces as the mapped <see cref="HttpRequestException"/>
+    /// with that status, sent once. Following it would let the server pick the next hop's host, which .NET names in a
+    /// connection failure's text and in <c>System.Net.NameResolution</c> events; and .NET drops <c>Authorization</c> on
+    /// the redirected hop, so an authenticated API gains nothing from redirects.
     /// <see cref="RetryHandler"/> gets <see cref="NachosClientOptions.AttemptTimeout"/>. <see cref="HttpClient.Timeout"/>
     /// keeps its default of 100 s and stays the overall bound of a call, retries and waits included; change it with
     /// <c>ConfigureHttpClient</c> on the returned builder. With the default 30 s attempt timeout, a call whose retries
@@ -45,8 +50,10 @@ public static class NachosClientServiceCollectionExtensions
     /// exception text: transport failures whose text can repeat server bytes (malformed status lines, headers, chunks or
     /// trailers, and anything not known to be safe) are replaced by fixed text naming only their
     /// <see cref="HttpRequestError"/>, keeping the status and the <c>Retry-After</c> data; known-safe connection failures,
-    /// timeouts and cancellations are kept, with the bearer value redacted from them. <see cref="RetryHandler"/> and
-    /// <see cref="NachosHttpClient"/> apply this whatever the primary handler (see <c>SecretRedaction</c>);
+    /// timeouts and cancellations are kept, with the bearer value redacted from them, and a connection failure's text is
+    /// rebuilt without the target host and port (a primary handler of your own that follows redirects lets the server
+    /// choose that host). <see cref="RetryHandler"/> and <see cref="NachosHttpClient"/> apply this whatever the primary
+    /// handler (see <c>SecretRedaction</c>);
     /// </description></item>
     /// <item><description>
     /// the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and <c>LogicalHandler</c> logs: the primary
@@ -119,7 +126,13 @@ public static class NachosClientServiceCollectionExtensions
         if (!services.Any(d => d.ServiceType == typeof(NachosHttpClient)))
         {
             http.ConfigureHttpClient((provider, client) => client.BaseAddress = Options(provider).BaseAddress)
-                .ConfigurePrimaryHttpMessageHandler(() => new TransportRedactionHandler { InnerHandler = new SocketsHttpHandler() })
+                .ConfigurePrimaryHttpMessageHandler(() => new TransportRedactionHandler
+                {
+                    // Redirects are not followed: a 3xx is a final status (spec §16), and the redirected hop's failure
+                    // text would name a host the server chose. The API gives a redirect nothing anyway: .NET strips
+                    // Authorization on the redirected hop.
+                    InnerHandler = new SocketsHttpHandler { AllowAutoRedirect = false },
+                })
                 .AddHttpMessageHandler(provider =>
                     new RetryHandler(provider.GetRequiredService<TimeProvider>(), Options(provider).AttemptTimeout));
             services.AddTransient(provider => new NachosHttpClient(

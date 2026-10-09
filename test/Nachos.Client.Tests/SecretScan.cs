@@ -5,8 +5,9 @@ namespace Nachos.Client.Tests;
 
 /// <summary>
 /// Looks for any <c>window</c>-character substring of a secret in a text: as plain text, and inside every hex run of
-/// the text decoded to bytes (dash-separated pairs, and contiguous digits at both alignments, any letter case). So a
-/// partial echo, a tail, or the hex dump of any part of the secret is found, not only the whole value.
+/// the text decoded to bytes (dash-separated pairs, dot-separated labels as in a hostname, and contiguous digits at
+/// both alignments, any letter case). So a partial echo, a tail, or the hex dump of any part of the secret is found,
+/// not only the whole value.
 /// </summary>
 internal static partial class SecretScan
 {
@@ -42,6 +43,13 @@ internal static partial class SecretScan
             yield return ("as dash-separated hex", Decode(run.Value.Replace("-", string.Empty, StringComparison.Ordinal)));
         }
 
+        foreach (Match run in DottedHex().Matches(text))
+        {
+            var joined = run.Value.Replace(".", string.Empty, StringComparison.Ordinal);
+            yield return ("as dotted hex", Decode(joined));
+            yield return ("as dotted hex (odd alignment)", Decode(joined[1..]));
+        }
+
         foreach (Match run in ContiguousHex().Matches(text))
         {
             yield return ("as contiguous hex", Decode(run.Value));
@@ -62,6 +70,9 @@ internal static partial class SecretScan
 
     [GeneratedRegex("[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2})+")]
     private static partial Regex DashHex();
+
+    [GeneratedRegex("[0-9A-Fa-f]{2,}(?:\\.[0-9A-Fa-f]{2,})+")]
+    private static partial Regex DottedHex();
 
     [GeneratedRegex("[0-9A-Fa-f]{4,}")]
     private static partial Regex ContiguousHex();
