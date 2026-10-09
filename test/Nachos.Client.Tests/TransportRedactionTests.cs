@@ -83,15 +83,21 @@ public sealed class TransportRedactionTests
         server.Requests.ShouldBe(route == "GET message" ? RetryHandler.MaxAttempts : 1);
         server.Authorizations.ShouldAllBe(a => a.EndsWith(Secret(auth), StringComparison.Ordinal));
         AssertNoSecret(ex, auth);
-        ex.Message.ShouldStartWith("The Nachos HTTP exchange failed (");
         ex.InnerException.ShouldBeNull();
         AssertNoSecretText(logs.Text, "logs");
-        if (failure.Contains("503", StringComparison.Ordinal) && route == "GET message")
+
+        // The whole text is fixed: the static sentence names the error, then the Retry-After suffix when the retry handler
+        // wrapped a body failure after a 503 (a never-retried route's body fails inside HttpClient, without the header).
+        var surfacedRetryAfter = failure.Contains("503", StringComparison.Ordinal) && route == "GET message";
+        ex.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
+        ex.Message.ShouldBe(
+            "The Nachos HTTP exchange failed (InvalidResponse). The transport's own description is withheld because it can repeat what the server sent." +
+            (surfacedRetryAfter ? " Retry-After: 1s." : string.Empty));
+        if (surfacedRetryAfter)
         {
             ex.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
             NachosExceptionData.TryGetRetryAfter(ex, out var delay).ShouldBeTrue();
             delay.ShouldBe(TimeSpan.FromSeconds(1));
-            ex.Message.ShouldEndWith(" Retry-After: 1s.");
         }
     }
 
@@ -257,34 +263,78 @@ public sealed class TransportRedactionTests
         { "api key", "POST keys" },
     };
 
+    public static TheoryData<string, string, string> ReplacedPrimaryCases()
+    {
+        var data = new TheoryData<string, string, string>();
+        foreach (var (auth, route) in new[] { ("credential", "GET message"), ("credential", "POST keys"), ("api key", "GET message"), ("api key", "POST keys") })
+        {
+            data.Add("invalid header name (replaced by fixed text)", auth, route);
+            data.Add("connection failure over a timeout naming the bearer (kept, redacted)", auth, route);
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// With the primary handler replaced there is no wrapper below the <c>ClientHandler</c> logger, so the raw failure
+    /// does reach that log (documented on <c>AddNachosClient</c>). What leaves <see cref="RetryHandler"/> must already be
+    /// clean, whatever <see cref="NachosHttpClient"/> does afterwards: the <c>LogicalHandler</c> log above it sees exactly
+    /// that (the factory logs an <see cref="HttpRequestException"/> with its whole chain), for a failure that is replaced
+    /// and for a kept chain whose inner level is only redacted.
+    /// </summary>
     [Theory]
-    [MemberData(nameof(StubCases))]
-    public async Task TransportFailureText_WithTheBearer_IsSanitized_WhenThePrimaryHandlerIsReplaced(string auth, string route)
+    [MemberData(nameof(ReplacedPrimaryCases))]
+    public async Task TransportFailureText_WithTheBearer_IsSanitized_WhenThePrimaryHandlerIsReplaced(string failure, string auth, string route)
     {
         var secret = Secret(auth);
+        var replaced = failure.StartsWith("invalid", StringComparison.Ordinal);
         var attempts = 0;
+        var logs = new CapturingLoggerProvider();
         var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
         services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), auth))
             .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((request, _) =>
             {
                 Interlocked.Increment(ref attempts);
-                var failure = new HttpRequestException(
+                if (!replaced)
+                {
+                    throw new HttpRequestException(
+                        HttpRequestError.ConnectionError,
+                        "connect failed (nachos.test:443)",
+                        new TimeoutException($"timed out sending '{request.Authorization}'"));
+                }
+
+                var echo = new HttpRequestException(
                     HttpRequestError.InvalidResponse,
                     $"Received an invalid header name: '{request.Authorization}'.",
                     new AggregateException(new IOException($"inner echo {secret}"), new SocketException(10054)));
-                failure.Data["echo"] = $"data {secret}";
-                throw failure;
+                echo.Data["echo"] = $"data {secret}";
+                throw echo;
             }));
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
 
         attempts.ShouldBe(route == "GET message" ? RetryHandler.MaxAttempts : 1);
-        ex.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
-        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
-        ex.InnerException.ShouldBeNull();
+        if (replaced)
+        {
+            ex.HttpRequestError.ShouldBe(HttpRequestError.InvalidResponse);
+            ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
+            ex.InnerException.ShouldBeNull();
+        }
+        else
+        {
+            ex.HttpRequestError.ShouldBe(HttpRequestError.ConnectionError);
+            ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.ConnectionError, null));
+            ex.InnerException.ShouldBeOfType<TimeoutException>().Message.ShouldBe($"timed out sending 'Bearer {ErrorMapper.Redacted}'");
+        }
+
         AssertNoSecret(ex, auth);
+        var logical = logs.TextOf(".LogicalHandler");
+        logical.ShouldContain("HTTP request failed");
+        AssertNoSecretText(logical, "LogicalHandler logs");
+        SecretScan.FindLeak(logs.TextOf(".ClientHandler"), secret, window: 20).ShouldNotBeNull("the ClientHandler log is below the retry handler and is not covered here");
     }
 
     [Fact]

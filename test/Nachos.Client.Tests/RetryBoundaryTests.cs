@@ -190,6 +190,26 @@ public sealed class RetryBoundaryTests
         stub.Requests.Count.ShouldBe(2);
     }
 
+    /// <summary>
+    /// HttpContent wraps an <see cref="IOException"/> raised while its body is copied into an
+    /// <see cref="HttpRequestException"/>, but one raised before the copy starts (computing the content length) surfaces
+    /// raw. Such a read failure carries no <see cref="HttpRequestError"/> of its own, so the wrapped failure says
+    /// <see cref="HttpRequestError.ResponseEnded"/>: the body was not delivered.
+    /// </summary>
+    [Fact]
+    public async Task UnwrappedIOException_WhileBufferingTheBody_SurfacesAsResponseEnded_WithTheStatus()
+    {
+        var stub = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK) { Content = new LengthFailsContent() });
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => Client(Retry(stub)).GetMessageAsync("w1", "s1", "m1"));
+
+        stub.Requests.Count.ShouldBe(RetryHandler.MaxAttempts);
+        ex.HttpRequestError.ShouldBe(HttpRequestError.ResponseEnded);
+        ex.StatusCode.ShouldBe(HttpStatusCode.OK);
+        ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.ResponseEnded));
+        ex.InnerException.ShouldBeNull();
+    }
+
     [Fact]
     public async Task TimeoutStyleFailure_NotCallerCancellation_IsRetried()
     {
@@ -653,6 +673,14 @@ public sealed class RetryBoundaryTests
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>Content whose length computation fails with a raw <see cref="IOException"/> (as a seekable stream whose Length throws would).</summary>
+    private sealed class LengthFailsContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) => Task.CompletedTask;
+
+        protected override bool TryComputeLength(out long length) => throw new IOException("connection reset before the body");
     }
 
     /// <summary>Removes the Idempotency-Key before the retry handler sees the request (a "raw" caller).</summary>
