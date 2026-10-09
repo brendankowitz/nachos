@@ -106,6 +106,8 @@ public sealed class RoundTripTests
                 await s.Do("list regular (null kind)", c => c.ListPeersAsync("w", null, null, FirstPage));
                 await s.Do("list regular", c => c.ListPeersAsync("w", PeerKind.Regular, null, FirstPage));
                 await s.Do("list scope", c => c.ListPeersAsync("w", PeerKind.Scope, null, FirstPage));
+                // M1 cannot create scope (internal) peers: the scope routes answer 501. So "scope" is empty and "all"
+                // equals "regular" here; both still go over the wire with their kind and must match in-process.
                 await s.Do("list all", c => c.ListPeersAsync("w", PeerKind.All, null, FirstPage));
                 await s.Do("list filtered", c => c.ListPeersAsync("w", null, Obj("""{"metadata":{"role":"admin"}}"""), FirstPage));
                 await s.Do("list paged reverse", c => c.ListPeersAsync("w", null, null, new PageRequest(2, 1, Reverse: true)));
@@ -141,7 +143,8 @@ public sealed class RoundTripTests
                 await s.Do("list bad filter", c => c.ListSessionsAsync("w", Obj("""{"is_active":"true"}"""), FirstPage));
                 await s.Do("alice's sessions", c => c.ListPeerSessionsAsync("w", "alice", null, FirstPage));
                 await s.Do("alice's sessions reversed", c => c.ListPeerSessionsAsync("w", "alice", null, new PageRequest(1, 1, Reverse: true)));
-                await s.Do("carol's sessions filtered", c => c.ListPeerSessionsAsync("w", "carol", Obj("""{"metadata":{"topic":"updated"}}"""), FirstPage));
+                await s.Do("alice's sessions filtered (s1 only, not s3)", c => c.ListPeerSessionsAsync("w", "alice", Obj("""{"metadata":{"topic":"updated"}}"""), FirstPage));
+                await s.Do("carol's sessions", c => c.ListPeerSessionsAsync("w", "carol", null, FirstPage));
                 await s.Do("sessions of a missing peer", c => c.ListPeerSessionsAsync("w", "nobody", null, FirstPage));
             }),
         new(
@@ -173,8 +176,15 @@ public sealed class RoundTripTests
                 await s.Do("members after set", c => c.ListSessionPeersAsync("w", "s", FirstPage));
                 await s.Do("alice's sessions after set", c => c.ListPeerSessionsAsync("w", "alice", null, FirstPage));
                 await s.Do("removed alice's config", c => c.GetSessionPeerConfigAsync("w", "s", "alice"));
-                await s.Do("re-add alice", c => c.AddSessionPeersAsync("w", "s", new Dictionary<string, SessionPeerConfig> { ["alice"] = new() }));
-                await s.Do("remove carol and a non-member", c => c.RemoveSessionPeersAsync("w", "s", ["carol", "nobody"]));
+                await s.Do("re-add alice and bob", c => c.AddSessionPeersAsync("w", "s", new Dictionary<string, SessionPeerConfig>
+                {
+                    ["alice"] = new(),
+                    ["bob"] = new(ObserveOthers: false),
+                }));
+
+                // Adding keeps carol (a PUT would have replaced the members); this listing tells the two apart.
+                await s.Do("members after re-add", c => c.ListSessionPeersAsync("w", "s", FirstPage));
+                await s.Do("remove carol, bob and a non-member", c => c.RemoveSessionPeersAsync("w", "s", ["carol", "bob", "nobody"]));
                 await s.Do("members after remove", c => c.ListSessionPeersAsync("w", "s", FirstPage));
                 await s.Do("remove nothing", c => c.RemoveSessionPeersAsync("w", "s", []));
                 await s.Do("add to a missing session", c => c.AddSessionPeersAsync("w", "missing", new Dictionary<string, SessionPeerConfig> { ["alice"] = new() }));
@@ -238,7 +248,7 @@ public sealed class RoundTripTests
     {
         var scenario = Scenarios.Single(s => s.Name == name);
         using var harness = new RoundTripHarness();
-        var http = new Steps(harness.Http);
+        var http = new Steps(harness.Http, () => harness.Wire.Requests.Count);
         var inProcess = new Steps(harness.InProcess);
 
         await scenario.Run(http);
@@ -256,8 +266,10 @@ public sealed class RoundTripTests
             scenario.Covers.Where(op => !steps.Called.Contains(op)).ShouldBeEmpty("declared operations the scenario never called");
         }
 
-        // No step was retried: every attempt the server saw is a distinct call.
-        harness.Wire.Requests.Count.ShouldBeLessThanOrEqualTo(http.Entries.Count);
+        // Every step reached the server exactly once: none is rejected client-side (that would be 0) and none was
+        // retried (more than 1). A step added later that the client rejects before sending must change this rule.
+        http.Sent.Where(step => step.Requests != 1).Select(step => $"{step.Label}: {step.Requests}").ShouldBeEmpty("requests per step");
+        http.Sent.Count.ShouldBe(http.Entries.Count);
     }
 
     [Fact]
@@ -392,18 +404,26 @@ public sealed class RoundTripTests
         private readonly INachosClient _client;
         private readonly Dictionary<string, string> _messageIds = new(StringComparer.Ordinal);
         private readonly HashSet<string> _called = [];
+        private readonly Func<int>? _wireCount;
 
-        public Steps(INachosClient client)
+        /// <param name="client">The client under test; null only for normalization tests that record by hand.</param>
+        /// <param name="wireCount">The number of requests the server has seen so far, for <see cref="Sent"/>.</param>
+        public Steps(INachosClient client, Func<int>? wireCount = null)
         {
             _client = client is null ? null! : CallRecorder.Wrap(client, _called);
+            _wireCount = wireCount;
         }
 
         public List<string> Entries { get; } = [];
+
+        /// <summary>Requests that reached the server during each step (only with a wire count).</summary>
+        public List<(string Label, int Requests)> Sent { get; } = [];
 
         public HashSet<string> Called => _called;
 
         public async Task<T?> Do<T>(string label, Func<INachosClient, Task<T>> call)
         {
+            var before = _wireCount?.Invoke();
             try
             {
                 var result = await call(_client);
@@ -415,10 +435,15 @@ public sealed class RoundTripTests
                 RecordError(label, ex);
                 return default;
             }
+            finally
+            {
+                CountSent(label, before);
+            }
         }
 
         public async Task Do(string label, Func<INachosClient, Task> call)
         {
+            var before = _wireCount?.Invoke();
             try
             {
                 await call(_client);
@@ -427,6 +452,18 @@ public sealed class RoundTripTests
             catch (Exception ex)
             {
                 RecordError(label, ex);
+            }
+            finally
+            {
+                CountSent(label, before);
+            }
+        }
+
+        private void CountSent(string label, int? before)
+        {
+            if (before is { } start)
+            {
+                Sent.Add((label, _wireCount!() - start));
             }
         }
 
