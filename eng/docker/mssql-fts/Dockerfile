@@ -11,14 +11,19 @@ ARG MSSQL_PACKAGE_VERSION=17.0.5005.3-1
 FROM mcr.microsoft.com/mssql/server:2025-${MSSQL_UPDATE}-ubuntu-24.04 AS fts
 ARG MSSQL_PACKAGE_VERSION
 USER root
+# The engine library is hashed before apt and checked after it: if the pinned packages are not the build the base image
+# ships, the build fails here instead of producing an engine paired with another version's full-text payload.
+#
 # The base image trusts the Microsoft signing key (microsoft-prod.gpg) and has the generic microsoft-prod source, but
 # mssql-server-fts is published only in the mssql-server-2025 repository, so that repository is added here with the same key.
-RUN echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main" \
+RUN sha256sum /opt/mssql/lib/sqlservr.sfp > /tmp/base-engine.sha256 \
+    && echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main" \
         > /etc/apt/sources.list.d/mssql-server-2025.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         mssql-server=${MSSQL_PACKAGE_VERSION} \
         mssql-server-fts=${MSSQL_PACKAGE_VERSION} \
+    && sha256sum -c /tmp/base-engine.sha256 \
     && rm -rf /var/lib/apt/lists/*
 
 # Stage 2: the base image plus exactly the files the mssql-server-fts package installs (see `dpkg -L mssql-server-fts`).

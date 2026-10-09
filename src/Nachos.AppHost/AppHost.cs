@@ -19,7 +19,8 @@ var api = builder.AddProject<Projects.Nachos_Api>("api")
 
 if (builder.Environment.IsDevelopment())
 {
-    // A fresh random key per run (tokens from one run are not valid in the next) unless Parameters:nachos-signing-key is set\n    // in user secrets or the environment, which pins a known key, for example to mint tokens with `nachos keys create`.
+    // A fresh random key per run (tokens from one run are not valid in the next) unless Parameters:nachos-signing-key is set
+    // in user secrets or the environment, which pins a known key, for example to mint tokens with `nachos keys create`.
     var signingKey = builder.AddParameter(
         "nachos-signing-key",
         () => builder.Configuration["Parameters:nachos-signing-key"] ?? Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),

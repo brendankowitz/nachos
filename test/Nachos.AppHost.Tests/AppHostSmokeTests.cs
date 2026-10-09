@@ -15,6 +15,7 @@ namespace Nachos.AppHost.Tests;
 public sealed class AppHostSmokeTests
 {
     private static readonly TimeSpan DatabaseTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan ApiTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(5);
 
     /// <summary>
@@ -43,9 +44,9 @@ public sealed class AppHostSmokeTests
 
         await using var app = await appHost.BuildAsync(cts.Token);
         await app.StartAsync(cts.Token);
-        // The API waits for the database, so a database that never comes up is reported by name instead of as a bare timeout.
+        // The API waits for the database, so a database or API that never comes up is reported by name instead of as a bare timeout.
         await WaitHealthyAsync(app, "nachos", DatabaseTimeout, cts.Token);
-        await app.ResourceNotifications.WaitForResourceHealthyAsync("api", cts.Token);
+        await WaitHealthyAsync(app, "api", ApiTimeout, cts.Token);
 
         using var client = app.CreateHttpClient("api");
         using var ready = await client.GetAsync("/health/ready", cts.Token);
