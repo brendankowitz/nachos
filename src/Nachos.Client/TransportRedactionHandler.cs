@@ -4,8 +4,8 @@ namespace Nachos.Client;
 
 /// <summary>
 /// Wraps the primary handler of the <c>AddNachosClient</c> pipeline (<see cref="TransportRedactionFilter"/> puts it
-/// there), so that nothing above it, including the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and
-/// <c>LogicalHandler</c> loggers, sees transport text that can repeat what the server sent.
+/// there), so that nothing above it (a handler or logger the caller adds, the factory's built-in loggers if the caller
+/// adds them back) sees transport text that can repeat what the server sent.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,8 +14,9 @@ namespace Nachos.Client;
 /// echoes the request's bearer value is removed: a name that shares a run of
 /// <see cref="RedactionSecrets.MinHeaderNameMatchLength"/> characters with the value in any letter case
 /// (<see cref="RedactionSecrets.HeaderNameEchoes"/>), or that holds a whole hex form of it. Such a name is valid HTTP
-/// when the value is a bare JWT, or any part of one, and the factory would otherwise log it. A value shorter than that
-/// run is never matched against names.
+/// when the value is a bare JWT, or any part of one, and a logger above would otherwise write it. A value shorter than
+/// that run is never matched against names. Header values are not inspected: the factory's built-in loggers, the only
+/// thing in the pipeline that wrote them, are removed by <c>AddNachosClient</c>.
 /// </para>
 /// <para>
 /// Failures while a caller later reads a response body do not pass through any handler; <see cref="RetryHandler"/> and

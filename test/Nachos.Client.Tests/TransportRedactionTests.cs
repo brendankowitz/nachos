@@ -74,7 +74,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, auth));
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<INachosClient>();
 
@@ -84,7 +84,7 @@ public sealed class TransportRedactionTests
         server.Authorizations.ShouldAllBe(a => a.EndsWith(Secret(auth), StringComparison.Ordinal));
         AssertNoSecret(ex, auth);
         ex.InnerException.ShouldBeNull();
-        AssertNoSecretText(logs.Text, "logs");
+        AssertNoSecretText(logs.FormattedText, "logs");
 
         // The whole text is fixed: the static sentence names the error, then the Retry-After suffix when the retry handler
         // wrapped a body failure after a 503 (a never-retried route's body fails inside HttpClient, without the header).
@@ -101,6 +101,83 @@ public sealed class TransportRedactionTests
         }
     }
 
+    /// <summary>Response shapes that carry the request's bearer value in a header VALUE, or carry nothing unusual.</summary>
+    private static readonly string[] HeaderValueShapes =
+    [
+        "well-behaved 200", "Location on a 302", "WWW-Authenticate on a 401", "Retry-After on a 503",
+        "Content-Type charset on a 200", "Content-Length on a 200", "X-Echo on a 200",
+    ];
+
+    public static TheoryData<string, string, string> HeaderValueCases()
+    {
+        var data = new TheoryData<string, string, string>();
+        foreach (var shape in HeaderValueShapes)
+        {
+            foreach (var auth in new[] { "credential", "api key" })
+            {
+                foreach (var route in new[] { "GET message", "POST keys" })
+                {
+                    data.Add(shape, auth, route);
+                }
+            }
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// The factory's built-in <c>LogicalHandler</c> and <c>ClientHandler</c> loggers write every request and response
+    /// header at Trace; only their formatted text replaces values with <c>*</c>, while the structured state a provider
+    /// such as OpenTelemetry exports carries the raw values: the request's own <c>Authorization</c> on every call, and
+    /// whatever a server echoes into <c>Location</c>, <c>WWW-Authenticate</c>, <c>Retry-After</c>, a charset or any
+    /// other header value. <c>AddNachosClient</c> removes those loggers, so with a capture provider at Trace neither
+    /// the structured state nor the formatted text carries the value, whatever the server sends.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(HeaderValueCases))]
+    public async Task HeaderValues_NeverReachTheLogs_StructuredStateIncluded(string shape, string auth, string route)
+    {
+        var body = route == "GET message" ? MessageJson : """{"key":"nk-created"}""";
+        var ok = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\n\r\n{body}";
+        await using var server = new EchoingServer(authorization => shape switch
+        {
+            "well-behaved 200" => ok,
+            "Location on a 302" => $"HTTP/1.1 302 Found\r\nLocation: http://example.invalid/?t={Bare(authorization)}\r\nContent-Length: 0\r\n\r\n",
+            "WWW-Authenticate on a 401" => $"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: {authorization}\r\nContent-Length: 0\r\n\r\n",
+            "Retry-After on a 503" => $"HTTP/1.1 503 Service Unavailable\r\nRetry-After: {Bare(authorization)}\r\nContent-Length: 0\r\n\r\n",
+            "Content-Type charset on a 200" =>
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset={Bare(authorization)}\r\nContent-Length: {body.Length}\r\n\r\n{body}",
+            "Content-Length on a 200" => $"HTTP/1.1 200 OK\r\nContent-Length: {Bare(authorization)}\r\n\r\n{{}}",
+            _ => $"HTTP/1.1 200 OK\r\nX-Echo: {authorization}\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\n\r\n{body}",
+        });
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        await using var provider = services.BuildServiceProvider();
+
+        Exception? failure = null;
+        try
+        {
+            await Call(provider.GetRequiredService<INachosClient>(), route);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+
+        server.Requests.ShouldBeGreaterThan(0);
+        server.Authorizations.ShouldAllBe(a => a == "Bearer " + Secret(auth));
+        if (failure is not null)
+        {
+            AssertNoSecretWindow(failure, logs.Text, Secret(auth));
+        }
+
+        SecretScan.FindLeak(logs.Text, Secret(auth), window: 12).ShouldBeNull("the structured log state leaks the bearer value");
+        SecretScan.FindLeak(logs.FormattedText, Secret(auth), window: 12).ShouldBeNull("the formatted log text leaks the bearer value");
+    }
+
     [Fact]
     public async Task ApiKeyWithCommaAndQuote_IsRedactedOnEveryAttempt_InTheLogs()
     {
@@ -111,7 +188,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o =>
+        AddLoggedNachosClient(services, o =>
         {
             o.BaseAddress = server.BaseAddress;
             o.ApiKey = key;
@@ -122,8 +199,8 @@ public sealed class TransportRedactionTests
 
         server.Requests.ShouldBe(RetryHandler.MaxAttempts);
         server.Authorizations.ShouldAllBe(a => a == "Bearer " + key);
-        logs.Text.ShouldContain("is withheld because it can repeat what the server sent");
-        logs.Text.ShouldNotContain(key);
+        logs.FormattedText.ShouldContain("is withheld because it can repeat what the server sent");
+        logs.FormattedText.ShouldNotContain(key);
         ex.ToString().ShouldNotContain(key);
     }
 
@@ -137,7 +214,7 @@ public sealed class TransportRedactionTests
             $"2\r\n{{}}\r\n0\r\n{authorization}{new string('z', 2500)}: x\r\n\r\n");
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, auth));
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
@@ -217,7 +294,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential"));
+        AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, "credential"));
         await using var provider = services.BuildServiceProvider();
 
         var text = new StringBuilder();
@@ -240,7 +317,7 @@ public sealed class TransportRedactionTests
 
         server.Requests.ShouldBeGreaterThan(0);
         SecretScan.FindLeak(text.ToString(), Token, window: 12).ShouldBeNull("the exception chain leaks the token");
-        SecretScan.FindLeak(logs.Text, Token, window: 12).ShouldBeNull("the logs leak the token");
+        SecretScan.FindLeak(logs.FormattedText, Token, window: 12).ShouldBeNull("the logs leak the token");
     }
 
     [Fact]
@@ -298,7 +375,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), auth))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), auth))
             .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((request, _) =>
             {
                 Interlocked.Increment(ref attempts);
@@ -341,10 +418,10 @@ public sealed class TransportRedactionTests
         }
 
         AssertNoSecret(ex, auth);
-        var logical = logs.TextOf(".LogicalHandler");
+        var logical = logs.FormattedTextOf(".LogicalHandler");
         logical.ShouldContain("HTTP request failed");
         AssertNoSecretText(logical, "LogicalHandler logs");
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain("HTTP request failed");
         if (wrapped)
         {
@@ -392,7 +469,7 @@ public sealed class TransportRedactionTests
         });
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), "api key"))
             .ConfigurePrimaryHttpMessageHandler(() => stub);
         if (!wrapped)
         {
@@ -444,7 +521,7 @@ public sealed class TransportRedactionTests
         });
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), "api key"))
             .ConfigurePrimaryHttpMessageHandler(() => stub);
         if (!wrapped)
         {
@@ -475,7 +552,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), auth))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), auth))
             .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((request, _) =>
                 throw new HttpRequestException(
                     HttpRequestError.ConnectionError,
@@ -485,10 +562,10 @@ public sealed class TransportRedactionTests
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().CreateKeyAsync("w1"));
 
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain("HTTP request failed");
         clientHandler.ShouldContain($"timed out sending 'Bearer {ErrorMapper.Redacted}'");
-        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+        AssertNoSecretWindow(ex, logs.FormattedText, Secret(auth));
     }
 
     /// <summary>
@@ -506,7 +583,7 @@ public sealed class TransportRedactionTests
         // transport failure; that inner text must not carry the token either.
         using var cts = new CancellationTokenSource();
         var services = new ServiceCollection();
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "credential"))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), "credential"))
             .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((request, _) =>
             {
                 cts.Cancel();
@@ -536,7 +613,7 @@ public sealed class TransportRedactionTests
         var original = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused (nachos.test:443)", socket);
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, new Uri("https://nachos.test/"), "api key"))
+        AddLoggedNachosClient(services, o => Configure(o, new Uri("https://nachos.test/"), "api key"))
             .ConfigurePrimaryHttpMessageHandler(() => new StubHandler((_, _) => throw original));
         await using var provider = services.BuildServiceProvider();
 
@@ -591,7 +668,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, auth)), primary);
+        ConfigurePrimary(AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, auth)), primary);
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => Call(provider.GetRequiredService<INachosClient>(), route));
@@ -600,7 +677,7 @@ public sealed class TransportRedactionTests
         ex.StatusCode.ShouldBe(HttpStatusCode.Found);
         ex.Message.ShouldContain("returned 302");
         ex.InnerException.ShouldBeNull();
-        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+        AssertNoSecretWindow(ex, logs.FormattedText, Secret(auth));
     }
 
     /// <summary>A 302 to another server that would answer 200: the call fails with the 302 and the other server is never asked.</summary>
@@ -614,7 +691,7 @@ public sealed class TransportRedactionTests
             $"HTTP/1.1 302 Found\r\nLocation: {target.BaseAddress}v3/workspaces/w1/sessions/s1/messages/m1\r\nContent-Length: 0\r\n\r\n");
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential")), primary);
+        ConfigurePrimary(AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, "credential")), primary);
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
@@ -637,17 +714,17 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        ConfigurePrimary(services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential")), primary);
+        ConfigurePrimary(AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, "credential")), primary);
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
 
         server.Requests.ShouldBe(RetryHandler.MaxAttempts);
         ex.Message.ShouldBe(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain(SecretRedaction.CannedMessage(HttpRequestError.InvalidResponse));
         clientHandler.ShouldNotContain("Received an invalid header name");
-        AssertNoSecretWindow(ex, logs.Text, Token);
+        AssertNoSecretWindow(ex, logs.FormattedText, Token);
     }
 
     /// <summary>
@@ -667,7 +744,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth))
+        AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, auth))
             .ConfigurePrimaryHttpMessageHandler(() => new CallersHandler
             {
                 InnerHandler = new SocketsHttpHandler
@@ -693,9 +770,9 @@ public sealed class TransportRedactionTests
         ex.HttpRequestError.ShouldBe(HttpRequestError.NameResolutionError);
         ex.Message.ShouldBe(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
         ex.InnerException.ShouldBeOfType<SocketException>().SocketErrorCode.ShouldBe(SocketError.HostNotFound);
-        logs.TextOf(".LogicalHandler").ShouldContain("HTTP request failed");
-        logs.TextOf(".ClientHandler").ShouldContain(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
-        AssertNoSecretWindow(ex, logs.Text, Secret(auth));
+        logs.FormattedTextOf(".LogicalHandler").ShouldContain("HTTP request failed");
+        logs.FormattedTextOf(".ClientHandler").ShouldContain(SecretRedaction.ConnectionMessage(HttpRequestError.NameResolutionError, SocketError.HostNotFound));
+        AssertNoSecretWindow(ex, logs.FormattedText, Secret(auth));
     }
 
     /// <summary>A key whose letters alternate in case: no 16-character run of it survives a change of case.</summary>
@@ -742,7 +819,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o =>
+        AddLoggedNachosClient(services, o =>
         {
             Configure(o, server.BaseAddress, auth == "mixed-case api key" ? "api key" : auth);
             if (auth == "mixed-case api key")
@@ -758,11 +835,11 @@ public sealed class TransportRedactionTests
         message.Id.ShouldBe("m1");
         server.Requests.ShouldBe(1);
         server.Authorizations.ShouldAllBe(a => a == "Bearer " + secret);
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain("Content-Type", Case.Insensitive);
         clientHandler.Contains(name!, StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"the name ({shape}) reached the ClientHandler log");
-        SecretScan.FindLeak(logs.Text, secret, window: 12).ShouldBeNull("the logs leak the secret");
-        SecretScan.FindLeak(logs.Text.ToLowerInvariant(), secret.ToLowerInvariant(), window: 12).ShouldBeNull("the logs leak the secret in another case");
+        SecretScan.FindLeak(logs.FormattedText, secret, window: 12).ShouldBeNull("the logs leak the secret");
+        SecretScan.FindLeak(logs.FormattedText.ToLowerInvariant(), secret.ToLowerInvariant(), window: 12).ShouldBeNull("the logs leak the secret in another case");
     }
 
     /// <summary>
@@ -782,7 +859,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o => Configure(o, server.BaseAddress, "credential"));
+        AddLoggedNachosClient(services, o => Configure(o, server.BaseAddress, "credential"));
         await using var provider = services.BuildServiceProvider();
 
         var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
@@ -790,7 +867,7 @@ public sealed class TransportRedactionTests
         server.Requests.ShouldBe(1);
         NachosExceptionData.TryGetRetryAfter(ex, out var delay).ShouldBeTrue();
         delay.ShouldBe(TimeSpan.FromSeconds(40));
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain(name!);
         clientHandler.ShouldContain("Retry-After");
     }
@@ -810,7 +887,7 @@ public sealed class TransportRedactionTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o =>
+        AddLoggedNachosClient(services, o =>
         {
             o.BaseAddress = server.BaseAddress;
             o.ApiKey = key;
@@ -819,10 +896,20 @@ public sealed class TransportRedactionTests
 
         await provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1");
 
-        var clientHandler = logs.TextOf(".ClientHandler");
+        var clientHandler = logs.FormattedTextOf(".ClientHandler");
         clientHandler.ShouldContain("Content-Type", Case.Insensitive);
         clientHandler.Contains(key + ":", StringComparison.Ordinal).ShouldBe(!removed);
     }
+
+    /// <summary>
+    /// <c>AddNachosClient</c> with the factory's default loggers added back, as a caller may do: these tests observe
+    /// what the wrapper keeps out of those loggers (exception text, header names). Their structured state carries every
+    /// header value, the request's own <c>Authorization</c> included, so the assertions read the formatted text only;
+    /// the default pipeline, which has no such loggers, is covered by
+    /// <see cref="HeaderValues_NeverReachTheLogs_StructuredStateIncluded"/>.
+    /// </summary>
+    private static IHttpClientBuilder AddLoggedNachosClient(IServiceCollection services, Action<NachosClientOptions> configure) =>
+        services.AddNachosClient(configure).AddDefaultLogger();
 
     private static void ConfigurePrimary(IHttpClientBuilder http, string primary)
     {
@@ -866,7 +953,7 @@ public sealed class TransportRedactionTests
             "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 40\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"detail\":\"busy\"}");
         var services = new ServiceCollection();
         services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
-        services.AddNachosClient(o =>
+        AddLoggedNachosClient(services, o =>
         {
             o.BaseAddress = server.BaseAddress;
             o.ApiKey = key;

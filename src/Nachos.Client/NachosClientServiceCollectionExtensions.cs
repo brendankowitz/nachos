@@ -76,15 +76,21 @@ public static class NachosClientServiceCollectionExtensions
     /// <see cref="NachosHttpClient"/> apply this whatever the primary handler (see <c>SecretRedaction</c>);
     /// </description></item>
     /// <item><description>
-    /// the <see cref="IHttpClientFactory"/> <c>ClientHandler</c> and <c>LogicalHandler</c> logs: the primary handler,
-    /// whatever you made it (see Pipeline), is wrapped in a handler that applies the same rule before those loggers see
-    /// a failure, and removes a response header whose name shares 16 characters with the bearer value, in any letter
-    /// case (a bare JWT is a valid header name, which the factory would log; a server that reflects only part of the
-    /// value, or in another case, is caught the same way, at the cost of a real header whose name happens to share such
-    /// a run). Header values are redacted by the factory's default; do not turn that off for this client. The
-    /// <c>ClientHandler</c> logger sits directly above the wrapper, so it never sees a raw failure; a handler you add
-    /// sits above that logger and below <see cref="RetryHandler"/>, which cleans what it throws before the
-    /// <c>LogicalHandler</c> logs it;
+    /// the <see cref="IHttpClientFactory"/> logs: this client has none. The factory's built-in <c>LogicalHandler</c>
+    /// and <c>ClientHandler</c> loggers write every request and response header at Trace, and only their formatted
+    /// text replaces the values with <c>*</c>: the structured state they hand providers (what OpenTelemetry, Serilog
+    /// or Application Insights export) carries the raw values, the request's own <c>Authorization</c> on every call
+    /// included, and whatever a server echoes into <c>Location</c>, <c>WWW-Authenticate</c>, <c>Retry-After</c>, a
+    /// charset or any other value. So this method removes them (<c>RemoveAllLoggers</c>). To log this client's
+    /// traffic, add a logger of your own with <c>AddLogger&lt;T&gt;</c> on the returned builder, and do not log
+    /// headers in it. Adding the built-in ones back with <c>AddDefaultLogger</c> puts the header values into the
+    /// structured state again, which nothing here covers. What the client does for any logger or handler above the
+    /// primary handler: that handler, whatever you made it (see Pipeline), is wrapped in a handler that applies the
+    /// exception rule above before anything above it sees a failure, and that removes a response header whose name
+    /// shares 16 characters with the bearer value, in any letter case (a bare JWT is a valid header name; a server
+    /// that reflects only part of the value, or another case of it, is caught the same way, at the cost of a real
+    /// header whose name happens to share such a run). A handler you add sits above that wrapper and below
+    /// <see cref="RetryHandler"/>, which cleans what it throws;
     /// </description></item>
     /// <item><description>
     /// server text the client shows on purpose (error bodies and reason phrases mapped to exceptions): the bearer value
@@ -111,7 +117,7 @@ public static class NachosClientServiceCollectionExtensions
     /// <c>System.Net.NameResolution</c> events, which name the host being resolved: with your own primary handler that
     /// follows redirects, that is the host the server chose (the default pipeline follows none, see Pipeline);
     /// </description></item>
-    /// <item><description>what your own handlers log;</description></item>
+    /// <item><description>what your own handlers and loggers log;</description></item>
     /// <item><description>
     /// in mapped server text, echoes in another encoding (percent-encoding, base64), another letter case, or only part of
     /// the value, including a value the server splits by inserting the literal marker <c>[redacted]</c> into it (the
@@ -157,6 +163,10 @@ public static class NachosClientServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
 
         var http = services.AddHttpClient(HttpClientName);
+
+        // The factory's built-in loggers hand providers every header value as structured state, the request's own
+        // Authorization included; only their formatted text is redacted. This client has no factory loggers.
+        http.RemoveAllLoggers();
 
         // The filter finishes the primary handler when the chain is built, after the caller's configuration of it:
         // no redirects on a SocketsHttpHandler, and the redaction wrapper around whatever the primary handler is.

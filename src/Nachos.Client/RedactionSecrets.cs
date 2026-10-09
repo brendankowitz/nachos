@@ -37,7 +37,7 @@ internal sealed class RedactionSecrets
     /// <summary>
     /// The run of characters a response header <em>name</em> must share with the bearer value to count as an echo of
     /// it (<see cref="HeaderNameEchoes"/>), and so the shortest bearer value that is matched against names at all. A
-    /// name echoing the value is removed before the <see cref="IHttpClientFactory"/> loggers see it, so a short value
+    /// name echoing the value is removed before anything above the primary handler sees it, so a short value
     /// that is a substring of an ordinary name (a key of <c>e</c>, <c>ry</c> or <c>After</c> is inside
     /// <c>Retry-After</c>) would strip real headers and change retry behaviour. Real keys are JWTs, hundreds of
     /// characters long, so values shorter than this are never matched against names; mapped text keeps plain matching

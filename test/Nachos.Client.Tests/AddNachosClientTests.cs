@@ -418,8 +418,14 @@ public sealed class AddNachosClientTests
         AssertSingleHttpClient(services);
     }
 
+    /// <summary>
+    /// The factory's built-in loggers put every header value, the request's own <c>Authorization</c> included, into
+    /// the structured state of their Trace entries (only the formatted text is redacted), so <c>AddNachosClient</c>
+    /// removes them: at Trace, nothing is logged under the factory's categories for this client, and the bearer value
+    /// is nowhere in the capture. A caller who adds them back (<c>AddDefaultLogger</c>) takes that on, as documented.
+    /// </summary>
     [Fact]
-    public async Task AuthorizationValues_NeverReachTheLogs()
+    public async Task TheFactorysLoggers_AreRemoved_SoNoHeaderValueIsLogged()
     {
         var logs = new CapturingLoggerProvider();
         foreach (var credential in new TokenCredential?[] { null, new StaticCredential(Token) })
@@ -438,10 +444,33 @@ public sealed class AddNachosClientTests
             await provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1");
         }
 
-        var text = logs.Text;
-        text.ShouldContain("Authorization");
-        text.ShouldNotContain(ApiKey);
-        text.ShouldNotContain(Token);
+        logs.Categories.Where(c => c.StartsWith("System.Net.Http.HttpClient", StringComparison.Ordinal)).ShouldBeEmpty("the factory's loggers must be removed");
+        logs.Text.ShouldNotContain(ApiKey);
+        logs.Text.ShouldNotContain(Token);
+    }
+
+    /// <summary>
+    /// The capture itself must see what a structured provider sees: the factory's header log state holds each header's
+    /// values as a <c>string[]</c>, which a naive capture prints as its type name and misses.
+    /// </summary>
+    [Fact]
+    public void TheCapture_ExpandsStructuredCollections()
+    {
+        var logs = new CapturingLoggerProvider();
+        var logger = logs.CreateLogger("Probe");
+        var state = new List<KeyValuePair<string, object?>>
+        {
+            new("Authorization", new[] { "Bearer " + Token }),
+            new("Nested", new object[] { new KeyValuePair<string, object?>("k", new List<string> { "v1", "v2" }) }),
+        };
+
+        logger.Log(LogLevel.Trace, new EventId(1), state, null, (_, _) => "formatted only");
+
+        logs.Text.ShouldContain("Authorization=[Bearer " + Token + "]");
+        logs.Text.ShouldContain("Nested=[k=[v1, v2]]");
+        logs.Text.ShouldNotContain("System.String[]");
+        logs.FormattedText.ShouldContain("formatted only");
+        logs.FormattedText.ShouldNotContain(Token);
     }
 
     [Fact]
