@@ -196,6 +196,34 @@ public sealed class CredentialTests
         stub.Requests.ShouldBeEmpty();
     }
 
+    /// <summary>
+    /// A token holding the literal redaction marker could not be redacted where a server echoes it (matching never
+    /// looks inside the marker), so it is rejected before anything is sent, like a malformed token and like the same
+    /// API key is by the options; a token merely resembling it is sent.
+    /// </summary>
+    [Theory]
+    [InlineData("eyJ.[redacted].sig", false)]
+    [InlineData("[redacted]", false)]
+    [InlineData("eyJ.redacted.sig", true)]
+    [InlineData("eyJ.[redacted.sig", true)]
+    public async Task TokenContainingTheRedactionMarker_IsRejected_WithoutEchoingIt_AndNothingIsSent(string token, bool sent)
+    {
+        var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.OK, MessageJson));
+
+        if (sent)
+        {
+            await Client(stub, new FakeCredential(token)).GetMessageAsync("w1", "s1", "m1");
+            stub.Requests.Single().Authorization.ShouldBe("Bearer " + token);
+            return;
+        }
+
+        var ex = await Should.ThrowAsync<InvalidOperationException>(() => Client(stub, new FakeCredential(token)).GetMessageAsync("w1", "s1", "m1"));
+
+        ex.ToString().ShouldNotContain(token);
+        ex.Message.ShouldContain("redaction marker");
+        stub.Requests.ShouldBeEmpty();
+    }
+
     [Fact]
     public void CredentialWithoutScopes_IsRejected()
     {

@@ -418,10 +418,13 @@ public sealed class NachosHttpClient : INachosClient
 
         var token = (await _credential.GetTokenAsync(_tokenRequest, ct).ConfigureAwait(false)).Token;
 
-        // The message never echoes the token.
-        return token is not null && NachosClientOptions.IsBearerValue(token)
+        // The message never echoes the token. A token holding the redaction marker could not be redacted where a
+        // server echoes it (matching never looks inside the marker), so it is rejected like a malformed one, as the
+        // same API key is by the options.
+        return token is not null && NachosClientOptions.IsBearerValue(token) && !token.Contains(ErrorMapper.Redacted, StringComparison.Ordinal)
             ? token
-            : throw new InvalidOperationException("The token credential returned an empty access token or one that is not printable ASCII without whitespace.");
+            : throw new InvalidOperationException(
+                "The token credential returned an empty access token, one that is not printable ASCII without whitespace, or one containing the redaction marker.");
     }
 
     /// <summary>
