@@ -19,14 +19,20 @@ namespace Nachos.Client.Tests;
 /// </summary>
 public sealed class TransportRedactionTests
 {
-    private const string Token = "eyJ.CANARY-TRANSPORT-TOKEN-91c4.sig";
+    /// <summary>A JWT-shaped canary of 1555 characters (header.payload.signature, base64url alphabet).</summary>
+    private static readonly string Token = JwtShaped(1555);
 
-    private const string ApiKey = "nk-CANARY-TRANSPORT-APIKEY-6a0e";
+    /// <summary>A 34-character canary API key.</summary>
+    private const string ApiKey = "nk-CANARY-TRANSPORT-APIKEY-6a0e-34";
 
     public static TheoryData<string, string, string> RealSocketCases()
     {
         var data = new TheoryData<string, string, string>();
-        foreach (var failure in new[] { "invalid header name", "invalid header line", "invalid trailer after a chunked 200", "invalid trailer after a 503 with Retry-After" })
+        foreach (var failure in new[]
+        {
+            "invalid header name", "invalid header line", "invalid trailer after a chunked 200",
+            "invalid trailer after a 503 with Retry-After", "bearer where a chunk size belongs (hex-dumped)",
+        })
         {
             foreach (var auth in new[] { "credential", "api key" })
             {
@@ -50,6 +56,11 @@ public sealed class TransportRedactionTests
             "invalid header line" => $"HTTP/1.1 200 OK\r\n{authorization}\r\nContent-Length: 2\r\n\r\n{{}}",
             "invalid trailer after a chunked 200" =>
                 $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{{}}\r\n0\r\n{authorization}: x\r\n\r\n",
+
+            // .NET reads "Bea" as a hex chunk size and reports the rest of the line as an invalid chunk extension,
+            // hex-dumped: "72-65-72-20-65-79-4A-…".
+            "bearer where a chunk size belongs (hex-dumped)" =>
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{authorization}\r\n{{}}\r\n0\r\n\r\n",
             _ => "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
                  $"2\r\n{{}}\r\n0\r\n{authorization}: x\r\n\r\n",
         });
@@ -67,7 +78,7 @@ public sealed class TransportRedactionTests
         server.Authorizations.ShouldAllBe(a => a.EndsWith(Secret(auth), StringComparison.Ordinal));
         AssertNoSecret(ex, auth);
         Chain(ex).ShouldContain(e => e.Message.Contains(ErrorMapper.Redacted, StringComparison.Ordinal), "the echo must have been redacted, not absent");
-        logs.Text.ShouldNotContain(Secret(auth));
+        AssertNoSecretText(logs.Text, "logs");
         if (failure.Contains("503", StringComparison.Ordinal) && route == "GET message")
         {
             ex.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
@@ -75,6 +86,56 @@ public sealed class TransportRedactionTests
             delay.ShouldBe(TimeSpan.FromSeconds(1));
             ex.Message.ShouldEndWith(" Retry-After: 1s.");
         }
+    }
+
+    [Fact]
+    public async Task ApiKeyWithCommaAndQuote_IsRedactedOnEveryAttempt_InTheLogs()
+    {
+        // Retry copies carry the header unvalidated; a key with ',' or '"' must still be recognised on each attempt.
+        const string key = "nk-CANARY,\"quoted\"-key-77";
+        await using var server = new EchoingServer(authorization => $"HTTP/1.1 200 OK\r\n{authorization}\r\nContent-Length: 2\r\n\r\n{{}}");
+        var logs = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o =>
+        {
+            o.BaseAddress = server.BaseAddress;
+            o.ApiKey = key;
+        });
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        server.Requests.ShouldBe(RetryHandler.MaxAttempts);
+        server.Authorizations.ShouldAllBe(a => a == "Bearer " + key);
+        logs.Text.ShouldContain(ErrorMapper.Redacted);
+        logs.Text.ShouldNotContain(key);
+        ex.ToString().ShouldNotContain(key);
+    }
+
+    [Theory]
+    [InlineData("credential")]
+    [InlineData("api key")]
+    public async Task LongEchoedTrailer_After503_KeepsTheRetryAfterSuffixAndStatus(string auth)
+    {
+        await using var server = new EchoingServer(authorization =>
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n" +
+            $"2\r\n{{}}\r\n0\r\n{authorization}{new string('z', 2500)}: x\r\n\r\n");
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(new ZeroDelayTimeProvider());
+        services.AddNachosClient(o => Configure(o, server.BaseAddress, auth));
+        await using var provider = services.BuildServiceProvider();
+
+        var ex = await Should.ThrowAsync<HttpRequestException>(() => provider.GetRequiredService<INachosClient>().GetMessageAsync("w1", "s1", "m1"));
+
+        server.Requests.ShouldBe(RetryHandler.MaxAttempts);
+        ex.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
+        NachosExceptionData.TryGetRetryAfter(ex, out var delay).ShouldBeTrue();
+        delay.ShouldBe(TimeSpan.FromSeconds(1));
+        ex.Message.ShouldEndWith(" Retry-After: 1s.");
+        ex.Message.Length.ShouldBeLessThanOrEqualTo(ErrorMapper.MaxMessageLength);
+        AssertNoSecret(ex, auth);
     }
 
     public static TheoryData<string, string> StubCases() => new()
@@ -198,19 +259,47 @@ public sealed class TransportRedactionTests
 
     private static void AssertNoSecret(Exception ex, string auth)
     {
-        foreach (var secret in new[] { Secret(auth), Token, ApiKey })
+        Secret(auth).ShouldNotBeEmpty();
+        AssertNoSecretText(ex.ToString(), "ToString");
+        foreach (var current in Chain(ex))
         {
-            ex.ToString().ShouldNotContain(secret);
-            foreach (var current in Chain(ex))
+            AssertNoSecretText(current.Message, current.GetType().Name + ".Message");
+            AssertNoSecretText(current.ToString(), current.GetType().Name + ".ToString");
+            foreach (DictionaryEntry entry in current.Data)
             {
-                current.Message.ShouldNotContain(secret);
-                current.ToString().ShouldNotContain(secret);
-                foreach (DictionaryEntry entry in current.Data)
-                {
-                    $"{entry.Key}={entry.Value}".ShouldNotContain(secret);
-                }
+                AssertNoSecretText($"{entry.Key}={entry.Value}", "Data");
             }
         }
+    }
+
+    /// <summary>Neither canary appears as plain text, dash-separated hex or contiguous hex (hex in any case).</summary>
+    private static void AssertNoSecretText(string text, string where)
+    {
+        foreach (var secret in new[] { Token, ApiKey })
+        {
+            var bytes = Encoding.UTF8.GetBytes(secret);
+            text.Contains(secret, StringComparison.Ordinal).ShouldBeFalse($"{where} holds a secret in plain text");
+            text.Contains(BitConverter.ToString(bytes), StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"{where} holds a secret as dash-separated hex");
+            text.Contains(Convert.ToHexString(bytes), StringComparison.OrdinalIgnoreCase).ShouldBeFalse($"{where} holds a secret as contiguous hex");
+        }
+    }
+
+    private static string JwtShaped(int length)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        var text = new StringBuilder("eyJhbGciOiJSUzI1NiIsImtpZCI6IkNBTkFSWSJ9.");
+        for (var i = 0; text.Length < length - 44; i++)
+        {
+            text.Append(alphabet[(i * 7 + 3) % alphabet.Length]);
+        }
+
+        text.Append(".CANARYsig");
+        while (text.Length < length)
+        {
+            text.Append(alphabet[text.Length % alphabet.Length]);
+        }
+
+        return text.ToString();
     }
 
     private sealed class StaticCredential(string token) : TokenCredential

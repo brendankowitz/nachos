@@ -14,7 +14,7 @@ internal sealed class TransportRedactionHandler : DelegatingHandler
 {
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        var secrets = SecretRedaction.Secrets(request);
+        var secrets = RedactionSecrets.FromAuthorization(request);
         try
         {
             return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);

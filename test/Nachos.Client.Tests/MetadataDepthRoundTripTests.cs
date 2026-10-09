@@ -91,7 +91,7 @@ public sealed class MetadataDepthRoundTripTests
         var text = await response.Content.ReadAsStringAsync();
 
         ((int)response.StatusCode).ShouldBe(422, text);
-        var mapped = ErrorMapper.Map(response, text, "PUT /v3/workspaces/{workspace_id}", secret: null, TimeProvider.System);
+        var mapped = ErrorMapper.Map(response, text, "PUT /v3/workspaces/{workspace_id}", RedactionSecrets.None, TimeProvider.System);
         mapped.GetType().ShouldBe(inProcess.GetType());
         mapped.Message.ShouldBe(inProcess.Message);
     }

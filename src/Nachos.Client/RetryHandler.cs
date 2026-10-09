@@ -196,7 +196,7 @@ public sealed class RetryHandler : DelegatingHandler
 
         // Whatever surfaces from here (raw transport failures included) never carries the request's bearer value, so
         // handlers and loggers above this one cannot leak it either.
-        var secrets = SecretRedaction.Secrets(request);
+        var secrets = RedactionSecrets.FromAuthorization(request);
         try
         {
             return await SendCoreAsync(request, cancellationToken).ConfigureAwait(false);
@@ -220,7 +220,7 @@ public sealed class RetryHandler : DelegatingHandler
             }
             catch (OperationCanceledException ex) when (once.TimedOut)
             {
-                throw AttemptTimedOut(ex, status: null, retryAfter: null);
+                throw AttemptTimedOut(ex, request, status: null, retryAfter: null);
             }
         }
 
@@ -264,7 +264,7 @@ public sealed class RetryHandler : DelegatingHandler
         }
         catch (OperationCanceledException ex) when (scope.TimedOut)
         {
-            throw AttemptTimedOut(ex, status: null, retryAfter: null);
+            throw AttemptTimedOut(ex, original, status: null, retryAfter: null);
         }
 
         var status = response.StatusCode;
@@ -294,16 +294,19 @@ public sealed class RetryHandler : DelegatingHandler
             // attempt timeout. The caller's cancellation and anything else surface unchanged.
             if (ex is OperationCanceledException canceled && scope.TimedOut)
             {
-                throw AttemptTimedOut(canceled, status, retryAfter);
+                throw AttemptTimedOut(canceled, original, status, retryAfter);
             }
 
             if (ex is HttpRequestException or IOException)
             {
-                // If the read failure's text echoes the bearer value (a malformed trailer, say), SendAsync redacts this
-                // whole exception, message and inner chain, before it leaves the handler.
+                // The read failure's text may echo the bearer value (a malformed trailer, say): it is redacted and
+                // bounded first, then the library's suffix is appended, so the suffix is never cut off or rewritten.
+                var cause = SecretRedaction.Redact(ex, RedactionSecrets.FromAuthorization(original));
                 var error = (ex as HttpRequestException)?.HttpRequestError ?? HttpRequestError.ResponseEnded;
-                var message = retryAfter is { } delay ? ex.Message + RetryAfterHeader.Suffix(delay) : ex.Message;
-                throw RetryAfterHeader.WithDelay(new HttpRequestException(error, message, ex, status), retryAfter);
+                var suffix = retryAfter is { } delay ? RetryAfterHeader.Suffix(delay) : string.Empty;
+                var message = ErrorMapper.Bound(cause.Message, ErrorMapper.MaxMessageLength - suffix.Length) + suffix;
+                throw SecretRedaction.MarkSanitized(
+                    RetryAfterHeader.WithDelay(new HttpRequestException(error, message, cause, status), retryAfter));
             }
 
             throw;
@@ -383,13 +386,16 @@ public sealed class RetryHandler : DelegatingHandler
 
     // The attempt timeout surfaces like a transport failure: an HttpRequestException (with the received status and any
     // Retry-After delay, as for a body failure) whose inner TimeoutException keeps the cancellation as its cause.
-    private HttpRequestException AttemptTimedOut(OperationCanceledException cause, HttpStatusCode? status, TimeSpan? retryAfter)
+    // The cause is redacted with the request's secrets and the result is marked sanitized, like the body-failure wrap.
+    private HttpRequestException AttemptTimedOut(
+        OperationCanceledException cause, HttpRequestMessage request, HttpStatusCode? status, TimeSpan? retryAfter)
     {
         var timeout = string.Create(
             CultureInfo.InvariantCulture, $"The Nachos request attempt did not complete within {_attemptTimeout.TotalSeconds:0.###} s.");
         var message = retryAfter is { } delay ? timeout + RetryAfterHeader.Suffix(delay) : timeout;
-        return RetryAfterHeader.WithDelay(
-            new HttpRequestException(HttpRequestError.Unknown, message, new TimeoutException(timeout, cause), status), retryAfter);
+        var redactedCause = SecretRedaction.Redact(cause, RedactionSecrets.FromAuthorization(request));
+        return SecretRedaction.MarkSanitized(RetryAfterHeader.WithDelay(
+            new HttpRequestException(HttpRequestError.Unknown, message, new TimeoutException(timeout, redactedCause), status), retryAfter));
     }
 
     // Full jitter: a uniform wait in [0, BaseDelay * 2^(attempt-1)).

@@ -370,28 +370,34 @@ public sealed class NachosHttpClient : INachosClient
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
         }
 
-        // Transport failures can echo the bearer value (a server reflecting it into a malformed header or trailer);
-        // they are redacted like mapped server text. Exceptions that never mention it pass through unchanged.
-        string[] secrets = [.. new[] { bearer, _apiKey }.OfType<string>().Distinct(StringComparer.Ordinal)];
+        // Transport failures can echo the bearer value (a server reflecting it into a malformed header, trailer or chunk
+        // line); they are redacted like mapped server text. Exceptions that never mention it pass through unchanged.
+        var secrets = RedactionSecrets.Of(bearer, _apiKey);
         HttpResponseMessage? response = null;
+        string text;
         try
         {
             response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
-            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw ErrorMapper.Map(response, text, $"{method} {template}", bearer, _timeProvider);
-            }
-
-            return text;
+            text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (SecretRedaction.Mentions(ex, secrets))
-        {
-            throw SecretRedaction.Redact(ex, secrets);
-        }
-        finally
+        catch (Exception ex)
         {
             response?.Dispose();
+            if (SecretRedaction.Mentions(ex, secrets))
+            {
+                throw SecretRedaction.Redact(ex, secrets);
+            }
+
+            throw;
+        }
+
+        // The mapped exception is built from redacted server text, outside the redaction above, so its library-owned
+        // parts (the Retry-After suffix and data) are never rewritten.
+        using (response)
+        {
+            return response.IsSuccessStatusCode
+                ? text
+                : throw ErrorMapper.Map(response, text, $"{method} {template}", secrets, _timeProvider);
         }
     }
 

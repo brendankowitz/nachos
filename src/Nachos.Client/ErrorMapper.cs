@@ -13,8 +13,8 @@ namespace Nachos.Client;
 /// the in-process <see cref="INachosClient"/> would throw.
 /// </summary>
 /// <remarks>
-/// Server-supplied text is untrusted: if it echoes the API key back, the key is replaced with
-/// <see cref="Redacted"/>, and then the text is cut to <see cref="MaxMessageLength"/> (redaction first, so a key
+/// Server-supplied text is untrusted: if it echoes the call's bearer value or API key back (as text or as hex, see
+/// <see cref="RedactionSecrets"/>), it is replaced with <see cref="Redacted"/>, and then the text is cut to <see cref="MaxMessageLength"/> (redaction first, so a key
 /// straddling the cut is never partly kept). A body that is not valid JSON (including one with duplicate property
 /// names) is treated as having no detail, and the status alone picks the exception.
 /// </remarks>
@@ -52,7 +52,7 @@ internal static class ErrorMapper
     /// <see cref="RequestValidationException"/> has a fixed message, so it gets the data entry only, and a
     /// <see cref="NachosValidationException"/>'s <see cref="NachosValidationException.Detail"/> includes the suffix.
     /// </remarks>
-    public static Exception Map(HttpResponseMessage response, string body, string operation, string? secret, TimeProvider clock)
+    public static Exception Map(HttpResponseMessage response, string body, string operation, RedactionSecrets secrets, TimeProvider clock)
     {
         var status = response.StatusCode;
         var (detail, parsed, type) = Parse(body);
@@ -60,14 +60,14 @@ internal static class ErrorMapper
             CultureInfo.InvariantCulture, $"Nachos {operation} returned {(int)status} {response.ReasonPhrase}.");
         var retryAfter = RetryAfterHeader.Delay(response, clock);
         var suffix = retryAfter is { } delay ? RetryAfterHeader.Suffix(delay) : string.Empty;
-        string Message(string text) => Sanitize(text, secret, MaxMessageLength - suffix.Length) + suffix;
+        string Message(string text) => Sanitize(text, secrets, MaxMessageLength - suffix.Length) + suffix;
 
         Exception exception = status switch
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new AuthException(Message(detail ?? fallback)),
             HttpStatusCode.NotFound => new NotFoundException(Message(detail ?? fallback)),
             HttpStatusCode.Conflict => new ConflictException(Message(detail ?? fallback)),
-            HttpStatusCode.UnprocessableEntity when parsed is { } errors => new RequestValidationException(Sanitize(errors, secret)),
+            HttpStatusCode.UnprocessableEntity when parsed is { } errors => new RequestValidationException(Sanitize(errors, secrets)),
             HttpStatusCode.UnprocessableEntity when IsIdempotencyKeyReused(type) => new IdempotencyKeyReusedException(Message(detail ?? fallback)),
             HttpStatusCode.UnprocessableEntity => new NachosValidationException(Message(detail ?? fallback)),
             _ => new HttpRequestException(Message(detail is null ? fallback : $"{fallback} {detail}"), inner: null, status),
@@ -75,32 +75,38 @@ internal static class ErrorMapper
         return RetryAfterHeader.WithDelay(exception, retryAfter);
     }
 
-    /// <summary><paramref name="text"/> with <paramref name="secret"/> redacted, then cut to <paramref name="maxLength"/>.</summary>
-    internal static string Sanitize(string text, string? secret, int maxLength = MaxMessageLength)
+    /// <summary><paramref name="text"/> with the secrets redacted, then cut to <paramref name="maxLength"/>.</summary>
+    private static string Sanitize(string text, RedactionSecrets secrets, int maxLength = MaxMessageLength) =>
+        Bound(secrets.Redact(text), maxLength);
+
+    /// <summary>
+    /// <paramref name="text"/> cut to <paramref name="maxLength"/>, the cut marked with <see cref="TruncationMarker"/>
+    /// (counted in the length) and never splitting a surrogate pair.
+    /// </summary>
+    internal static string Bound(string text, int maxLength = MaxMessageLength)
     {
-        var redacted = string.IsNullOrEmpty(secret) ? text : text.Replace(secret, Redacted, StringComparison.Ordinal);
-        if (redacted.Length <= maxLength)
+        if (text.Length <= maxLength)
         {
-            return redacted;
+            return text;
         }
 
         var cut = maxLength - TruncationMarker.Length;
-        if (char.IsHighSurrogate(redacted[cut - 1]))
+        if (char.IsHighSurrogate(text[cut - 1]))
         {
             cut--; // never keep half of a surrogate pair
         }
 
-        return string.Concat(redacted.AsSpan(0, cut), TruncationMarker);
+        return string.Concat(text.AsSpan(0, cut), TruncationMarker);
     }
 
     // Every server-supplied string (msg, type, string loc parts) is redacted and bounded like the detail text.
-    private static ValidationError[] Sanitize((ValidationError[] Kept, int Omitted) errors, string? secret)
+    private static ValidationError[] Sanitize((ValidationError[] Kept, int Omitted) errors, RedactionSecrets secrets)
     {
         var sanitized = errors.Kept
             .Select(e => new ValidationError(
-                [.. e.Loc.Select(part => part is string text ? Sanitize(text, secret) : part)],
-                Sanitize(e.Msg, secret),
-                Sanitize(e.Type, secret)))
+                [.. e.Loc.Select(part => part is string text ? Sanitize(text, secrets) : part)],
+                Sanitize(e.Msg, secrets),
+                Sanitize(e.Type, secrets)))
             .ToList();
         if (errors.Omitted > 0)
         {
