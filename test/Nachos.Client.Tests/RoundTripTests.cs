@@ -409,6 +409,26 @@ public sealed class RoundTripTests
         { "id order", new[] { Sample, Sample with { Id = "id-B" } }, new[] { Sample with { Id = "id-B" }, Sample with { Content = "x" } } },
     };
 
+    /// <summary>
+    /// Aliasing is confined to the <c>id</c> property: two messages whose content repeats their own, different ids
+    /// stay different (a whole-text replacement would have made them equal), while the ids themselves are aliased.
+    /// </summary>
+    [Fact]
+    public void Normalization_LeavesAnIdLikeStringInContentAlone()
+    {
+        var a = new Steps(null!);
+        var b = new Steps(null!);
+
+        a.Record("m", Sample with { Content = "see " + Sample.Id });
+        b.Record("m", Sample with { Id = "id-B", Content = "see id-B" });
+
+        a.Entries.ShouldNotBe(b.Entries);
+        a.Entries.Single().ShouldContain("\"id\":\"<message#0>\"");
+        a.Entries.Single().ShouldContain("\"content\":\"see id-A\"");
+        b.Entries.Single().ShouldContain("\"id\":\"<message#0>\"");
+        b.Entries.Single().ShouldContain("\"content\":\"see id-B\"");
+    }
+
     [Theory]
     [MemberData(nameof(DeterministicChanges))]
     public void Normalization_DoesNotHideADeterministicField(string _, object left, object right)
@@ -621,8 +641,10 @@ public sealed class RoundTripTests
             }
         }
 
+        // Only an "id" property holding a generated id is aliased (a message's own, or a listed message's); the same
+        // characters inside content, metadata or any other string stay what they are, so they still compare.
         private string Normalize(string text) =>
-            _messageIds.Aggregate(text, (current, id) => current.Replace(id.Key, id.Value, StringComparison.Ordinal));
+            _messageIds.Aggregate(text, (current, id) => current.Replace($"\"id\":{JsonSerializer.Serialize(id.Key, Compare)}", $"\"id\":\"{id.Value}\"", StringComparison.Ordinal));
     }
 
     /// <summary>Forwards every call to the wrapped client and records the operation's name.</summary>
