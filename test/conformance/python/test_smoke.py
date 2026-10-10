@@ -168,8 +168,10 @@ def test_peer_scoped_key_reads_members_but_cannot_list_workspaces(nachos):
         scoped.session(session.id)
     assert ensure_denied.value.status == 401
 
-    # What a peer-scoped key may do is read the sessions its peer is an active member of, over the documented REST
-    # route, so that is exercised with a plain HTTP client (the SDK cannot make the request without the ensure above).
+    # REST AUTHORIZATION CHECK, not an SDK read: a peer-scoped key may read the sessions its peer is an active member
+    # of, over the documented REST route, so that is checked with a plain HTTP client. The public SDK reference
+    # documents no handle that avoids the get-or-create above ("`peer()` and `session()` always make a get-or-create
+    # API call"), so the SDK cannot make this read with a peer-scoped key (limitation tracked under issue #11).
     headers = {"Authorization": f"Bearer {nachos.peer_key}"}
     member_read = httpx.post(
         f"{nachos.base_url}/v3/workspaces/{workspace}/sessions/{session.id}/messages/list", json={}, headers=headers

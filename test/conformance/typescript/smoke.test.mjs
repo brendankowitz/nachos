@@ -192,8 +192,10 @@ test(
     const scoped = client(authWorkspace, { apiKey: env.NACHOS_PEER_KEY });
     await assert.rejects(scoped.session(session.id), isAuthenticationError401);
 
-    // What a peer-scoped key may do is read the sessions its peer is an active member of, over the documented REST
-    // route, so that is exercised with plain fetch (the SDK cannot make the request without the ensure above).
+    // REST AUTHORIZATION CHECK, not an SDK read: a peer-scoped key may read the sessions its peer is an active member
+    // of, over the documented REST route, so that is checked with plain fetch. The public SDK reference documents no
+    // handle that avoids the get-or-create above ("`peer()` and `session()` always make a get-or-create API call"),
+    // so the SDK cannot make this read with a peer-scoped key (limitation tracked under issue #11).
     const read = (sessionId) =>
       fetch(`${env.NACHOS_BASE_URL}/v3/workspaces/${authWorkspace}/sessions/${sessionId}/messages/list`, {
         method: 'POST',
