@@ -1,0 +1,2023 @@
+{
+  "source": "https://docs.honcho.dev/v3/openapi.json",
+  "sha256": "6aa5dd7fa958719e5f12565592617621141f0b9ae0a6b5450802dc152d2e3fe9",
+  "version": "3.3.0",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "query": [],
+      "statuses": [
+        200
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/keys",
+      "query": [
+        "expires_at",
+        "peer_id",
+        "session_id",
+        "workspace_id"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}",
+      "query": [],
+      "statuses": [
+        202,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/chat",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/conclusions",
+      "query": [],
+      "statuses": [
+        201,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/conclusions/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/conclusions/query",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}/conclusions/{conclusion_id}",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/conclusions/{conclusion_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/card",
+      "query": [
+        "target"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/card",
+      "query": [
+        "target"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/chat",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/context",
+      "query": [
+        "include_most_frequent",
+        "max_conclusions",
+        "search_max_distance",
+        "search_query",
+        "search_top_k",
+        "target"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/representation",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/search",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/sessions",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/queue/status",
+      "query": [
+        "observer_id",
+        "sender_id",
+        "session_id"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/schedule_dream",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/scopes",
+      "query": [],
+      "statuses": [
+        200,
+        201,
+        409,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/scopes/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/sessions",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/sessions/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/sessions/{session_id}",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/status",
+      "query": [],
+      "statuses": [
+        200,
+        404,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/search",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}",
+      "query": [],
+      "statuses": [
+        202,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/clone",
+      "query": [
+        "message_id"
+      ],
+      "statuses": [
+        201,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/context",
+      "query": [
+        "include_most_frequent",
+        "limit_to_session",
+        "max_conclusions",
+        "peer_perspective",
+        "peer_target",
+        "scope",
+        "search_max_distance",
+        "search_query",
+        "search_top_k",
+        "sessions",
+        "summary",
+        "tokens"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages",
+      "query": [],
+      "statuses": [
+        201,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/list",
+      "query": [
+        "page",
+        "reverse",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/upload",
+      "query": [],
+      "statuses": [
+        201,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers",
+      "query": [
+        "page",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers/{peer_id}/config",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers/{peer_id}/config",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/search",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/summaries",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/webhooks",
+      "query": [
+        "page",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/webhooks",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/webhooks/test",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/v3/workspaces/{workspace_id}/webhooks/{endpoint_id}",
+      "query": [],
+      "statuses": [
+        204,
+        422
+      ]
+    }
+  ],
+  "schemas": {
+    "Body_create_messages_with_file_v3_workspaces__workspace_id__sessions__session_id__messages_upload_post": {
+      "required": [
+        "file",
+        "peer_id"
+      ],
+      "properties": {
+        "configuration": {
+          "type": "string",
+          "nullable": true
+        },
+        "created_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "file": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "string",
+          "nullable": true
+        },
+        "peer_id": {
+          "type": "string"
+        }
+      }
+    },
+    "Conclusion": {
+      "required": [
+        "content",
+        "created_at",
+        "id",
+        "observed_id",
+        "observer_id"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "explicit",
+            "deductive",
+            "inductive",
+            "contradiction"
+          ]
+        },
+        "observed_id": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "source_ids": {
+          "type": "array"
+        },
+        "times_derived": {
+          "type": "integer"
+        }
+      }
+    },
+    "ConclusionBatchCreate": {
+      "required": [
+        "conclusions"
+      ],
+      "properties": {
+        "conclusions": {
+          "type": "array",
+          "min": 1,
+          "max": 100,
+          "ref": "ConclusionCreate"
+        }
+      }
+    },
+    "ConclusionCreate": {
+      "required": [
+        "content",
+        "observed_id",
+        "observer_id"
+      ],
+      "properties": {
+        "content": {
+          "type": "string",
+          "min": 1,
+          "max": 65535
+        },
+        "observed_id": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "ConclusionGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "ConclusionQuery": {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "distance": {
+          "type": "number",
+          "nullable": true,
+          "min": 0,
+          "max": 1
+        },
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "query": {
+          "type": "string"
+        },
+        "top_k": {
+          "type": "integer",
+          "min": 1,
+          "max": 100
+        }
+      }
+    },
+    "DialecticConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DialecticOptions": {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "include_evidence": {
+          "type": "boolean"
+        },
+        "query": {
+          "type": "string",
+          "min": 1,
+          "max": 10000
+        },
+        "reasoning_level": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max"
+          ]
+        },
+        "response_format": {
+          "type": "object",
+          "nullable": true
+        },
+        "scope": {
+          "type": "array|string",
+          "nullable": true,
+          "min": 1,
+          "max": 100
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "stream": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DreamConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "nullable": true
+        }
+      }
+    },
+    "DreamType": {
+      "required": [],
+      "properties": {},
+      "type": "string",
+      "enum": [
+        "omni",
+        "card_refresh"
+      ]
+    },
+    "ErrorResponse": {
+      "required": [
+        "detail"
+      ],
+      "properties": {
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "Evidence": {
+      "required": [],
+      "properties": {
+        "conclusions": {
+          "type": "array",
+          "ref": "EvidenceObservation"
+        },
+        "messages": {
+          "type": "array",
+          "ref": "EvidenceMessageRef"
+        },
+        "reasoning_trace_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "tool_calls": {
+          "type": "array",
+          "ref": "EvidenceToolCall"
+        }
+      }
+    },
+    "EvidenceMessageRef": {
+      "required": [
+        "created_at",
+        "id",
+        "peer_id",
+        "session_id"
+      ],
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "peer_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      }
+    },
+    "EvidenceObservation": {
+      "required": [
+        "content",
+        "created_at",
+        "id",
+        "level",
+        "observed_id",
+        "observer_id"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "explicit",
+            "deductive",
+            "inductive",
+            "contradiction"
+          ]
+        },
+        "observed_id": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "source_ids": {
+          "type": "array"
+        }
+      }
+    },
+    "EvidenceToolCall": {
+      "required": [
+        "tool_name"
+      ],
+      "properties": {
+        "tool_input": {
+          "type": "object"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      }
+    },
+    "HTTPValidationError": {
+      "required": [],
+      "properties": {
+        "detail": {
+          "type": "array",
+          "ref": "ValidationError"
+        }
+      }
+    },
+    "Message": {
+      "required": [
+        "content",
+        "created_at",
+        "id",
+        "peer_id",
+        "session_id",
+        "token_count",
+        "workspace_id"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "peer_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "token_count": {
+          "type": "integer"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      }
+    },
+    "MessageBatchCreate": {
+      "required": [
+        "messages"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "min": 1,
+          "max": 100,
+          "ref": "MessageCreate"
+        }
+      }
+    },
+    "MessageConfiguration": {
+      "required": [],
+      "properties": {
+        "reasoning": {
+          "nullable": true,
+          "ref": "ReasoningConfiguration"
+        }
+      }
+    },
+    "MessageCreate": {
+      "required": [
+        "content",
+        "peer_id"
+      ],
+      "properties": {
+        "configuration": {
+          "nullable": true,
+          "ref": "MessageConfiguration"
+        },
+        "content": {
+          "type": "string",
+          "min": 0,
+          "max": 25000
+        },
+        "created_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        },
+        "peer_id": {
+          "type": "string"
+        }
+      }
+    },
+    "MessageGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "MessageSearchOptions": {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "limit": {
+          "type": "integer",
+          "min": 1,
+          "max": 100
+        },
+        "query": {
+          "type": "string"
+        }
+      }
+    },
+    "MessageUpdate": {
+      "required": [],
+      "properties": {
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "Page_Conclusion_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Conclusion"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_Message_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Message"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_Peer_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Peer"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_Scope_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Scope"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_Session_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Session"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_WebhookEndpoint_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "WebhookEndpoint"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Page_Workspace_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "Workspace"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
+    "Peer": {
+      "required": [
+        "created_at",
+        "id",
+        "workspace_id"
+      ],
+      "properties": {
+        "configuration": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      }
+    },
+    "PeerCardConfiguration": {
+      "required": [],
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "nullable": true
+        },
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "use": {
+          "type": "boolean",
+          "nullable": true
+        }
+      }
+    },
+    "PeerCardResponse": {
+      "required": [],
+      "properties": {
+        "peer_card": {
+          "type": "array",
+          "nullable": true
+        }
+      }
+    },
+    "PeerCardSet": {
+      "required": [
+        "peer_card"
+      ],
+      "properties": {
+        "peer_card": {
+          "type": "array"
+        }
+      }
+    },
+    "PeerContext": {
+      "required": [
+        "peer_id",
+        "target_id"
+      ],
+      "properties": {
+        "peer_card": {
+          "type": "array",
+          "nullable": true
+        },
+        "peer_id": {
+          "type": "string"
+        },
+        "representation": {
+          "type": "string",
+          "nullable": true
+        },
+        "target_id": {
+          "type": "string"
+        }
+      }
+    },
+    "PeerCreate": {
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "configuration": {
+          "type": "object",
+          "nullable": true
+        },
+        "id": {
+          "type": "string",
+          "min": 1,
+          "max": 512,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "PeerGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "kind": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+            "scope",
+            "all"
+          ]
+        }
+      }
+    },
+    "PeerRepresentationGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "include_most_frequent": {
+          "type": "boolean",
+          "nullable": true
+        },
+        "max_conclusions": {
+          "type": "integer",
+          "nullable": true,
+          "min": 1,
+          "max": 100
+        },
+        "scope": {
+          "type": "array|string",
+          "nullable": true,
+          "min": 1,
+          "max": 100
+        },
+        "search_max_distance": {
+          "type": "number",
+          "nullable": true,
+          "min": 0,
+          "max": 1
+        },
+        "search_query": {
+          "type": "string",
+          "nullable": true
+        },
+        "search_top_k": {
+          "type": "integer",
+          "nullable": true,
+          "min": 1,
+          "max": 100
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "target": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "PeerUpdate": {
+      "required": [],
+      "properties": {
+        "configuration": {
+          "type": "object",
+          "nullable": true
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "QueueStatus": {
+      "required": [
+        "completed_work_units",
+        "in_progress_work_units",
+        "pending_work_units",
+        "total_work_units"
+      ],
+      "properties": {
+        "completed_work_units": {
+          "type": "integer"
+        },
+        "in_progress_work_units": {
+          "type": "integer"
+        },
+        "pending_work_units": {
+          "type": "integer"
+        },
+        "sessions": {
+          "type": "object",
+          "nullable": true,
+          "ref": "SessionQueueStatus"
+        },
+        "total_work_units": {
+          "type": "integer"
+        }
+      }
+    },
+    "ReasoningConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "nullable": true
+        }
+      }
+    },
+    "RepresentationResponse": {
+      "required": [
+        "representation"
+      ],
+      "properties": {
+        "representation": {
+          "type": "string"
+        }
+      }
+    },
+    "ScheduleDreamRequest": {
+      "required": [
+        "dream_type",
+        "observer"
+      ],
+      "properties": {
+        "dream_type": {
+          "ref": "DreamType"
+        },
+        "observed": {
+          "type": "string",
+          "nullable": true
+        },
+        "observer": {
+          "type": "string"
+        },
+        "rebuild": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "Scope": {
+      "required": [
+        "created_at",
+        "id"
+      ],
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "ScopeCreate": {
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "min": 1
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "ScopeSessionsAdd": {
+      "required": [
+        "session_ids"
+      ],
+      "properties": {
+        "session_ids": {
+          "type": "array",
+          "min": 1,
+          "max": 100
+        }
+      }
+    },
+    "ScopeStatus": {
+      "required": [],
+      "properties": {
+        "backfill_status": {
+          "type": "object"
+        }
+      }
+    },
+    "Session": {
+      "required": [
+        "created_at",
+        "id",
+        "is_active",
+        "workspace_id"
+      ],
+      "properties": {
+        "configuration": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "is_active": {
+          "type": "boolean"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      }
+    },
+    "SessionConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "dialectic": {
+          "nullable": true,
+          "ref": "DialecticConfiguration"
+        },
+        "dream": {
+          "nullable": true,
+          "ref": "DreamConfiguration"
+        },
+        "peer_card": {
+          "nullable": true,
+          "ref": "PeerCardConfiguration"
+        },
+        "reasoning": {
+          "nullable": true,
+          "ref": "ReasoningConfiguration"
+        },
+        "summary": {
+          "nullable": true,
+          "ref": "SummaryConfiguration"
+        }
+      }
+    },
+    "SessionContext": {
+      "required": [
+        "id",
+        "messages"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "array",
+          "ref": "Message"
+        },
+        "peer_card": {
+          "type": "array",
+          "nullable": true
+        },
+        "peer_representation": {
+          "type": "string",
+          "nullable": true
+        },
+        "summary": {
+          "nullable": true,
+          "ref": "Summary"
+        }
+      }
+    },
+    "SessionCreate": {
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "configuration": {
+          "nullable": true,
+          "ref": "SessionConfiguration"
+        },
+        "id": {
+          "type": "string",
+          "min": 1,
+          "max": 512,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        },
+        "peers": {
+          "type": "object",
+          "nullable": true,
+          "ref": "SessionPeerConfig"
+        },
+        "scopes": {
+          "type": "array",
+          "nullable": true,
+          "max": 100
+        }
+      }
+    },
+    "SessionGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "SessionPeerConfig": {
+      "required": [],
+      "properties": {
+        "observe_me": {
+          "type": "boolean",
+          "nullable": true
+        },
+        "observe_others": {
+          "type": "boolean",
+          "nullable": true
+        }
+      }
+    },
+    "SessionQueueStatus": {
+      "required": [
+        "completed_work_units",
+        "in_progress_work_units",
+        "pending_work_units",
+        "total_work_units"
+      ],
+      "properties": {
+        "completed_work_units": {
+          "type": "integer"
+        },
+        "in_progress_work_units": {
+          "type": "integer"
+        },
+        "pending_work_units": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "total_work_units": {
+          "type": "integer"
+        }
+      }
+    },
+    "SessionSummaries": {
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "long_summary": {
+          "nullable": true,
+          "ref": "Summary"
+        },
+        "short_summary": {
+          "nullable": true,
+          "ref": "Summary"
+        }
+      }
+    },
+    "SessionUpdate": {
+      "required": [],
+      "properties": {
+        "configuration": {
+          "nullable": true,
+          "ref": "SessionConfiguration"
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "Summary": {
+      "required": [
+        "content",
+        "created_at",
+        "message_id",
+        "summary_type",
+        "token_count"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "summary_type": {
+          "type": "string"
+        },
+        "token_count": {
+          "type": "integer"
+        }
+      }
+    },
+    "SummaryConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "nullable": true
+        },
+        "messages_per_long_summary": {
+          "type": "integer",
+          "nullable": true,
+          "min": 20
+        },
+        "messages_per_short_summary": {
+          "type": "integer",
+          "nullable": true,
+          "min": 10
+        }
+      }
+    },
+    "ValidationError": {
+      "required": [
+        "loc",
+        "msg",
+        "type"
+      ],
+      "properties": {
+        "ctx": {
+          "type": "object"
+        },
+        "input": {},
+        "loc": {
+          "type": "array"
+        },
+        "msg": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    },
+    "WebhookEndpoint": {
+      "required": [
+        "created_at",
+        "id",
+        "url",
+        "workspace_id"
+      ],
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "WebhookEndpointCreate": {
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      }
+    },
+    "Workspace": {
+      "required": [
+        "created_at",
+        "id"
+      ],
+      "properties": {
+        "configuration": {
+          "type": "object"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "WorkspaceChatOptions": {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "include_evidence": {
+          "type": "boolean"
+        },
+        "query": {
+          "type": "string",
+          "min": 1,
+          "max": 10000
+        },
+        "reasoning_level": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max"
+          ]
+        },
+        "response_format": {
+          "type": "object",
+          "nullable": true
+        },
+        "scope": {
+          "type": "array|string",
+          "nullable": true,
+          "min": 1,
+          "max": 100
+        },
+        "session_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "stream": {
+          "type": "boolean"
+        }
+      }
+    },
+    "WorkspaceConfiguration": {
+      "required": [],
+      "properties": {
+        "custom_instructions": {
+          "type": "string",
+          "nullable": true
+        },
+        "dialectic": {
+          "nullable": true,
+          "ref": "DialecticConfiguration"
+        },
+        "dream": {
+          "nullable": true,
+          "ref": "DreamConfiguration"
+        },
+        "peer_card": {
+          "nullable": true,
+          "ref": "PeerCardConfiguration"
+        },
+        "reasoning": {
+          "nullable": true,
+          "ref": "ReasoningConfiguration"
+        },
+        "summary": {
+          "nullable": true,
+          "ref": "SummaryConfiguration"
+        }
+      }
+    },
+    "WorkspaceCreate": {
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "configuration": {
+          "ref": "WorkspaceConfiguration"
+        },
+        "id": {
+          "type": "string",
+          "min": 1,
+          "max": 512,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "WorkspaceGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
+    "WorkspaceMessageSearchOptions": {
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "limit": {
+          "type": "integer",
+          "min": 1,
+          "max": 100
+        },
+        "query": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "WorkspaceUpdate": {
+      "required": [],
+      "properties": {
+        "configuration": {
+          "nullable": true,
+          "ref": "WorkspaceConfiguration"
+        },
+        "metadata": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    }
+  }
+}

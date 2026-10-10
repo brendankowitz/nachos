@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit" />
+    <PackageReference Include="Shouldly" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nachos.Abstractions\Nachos.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Api\Nachos.Api.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Filtering\filter-cases.json" LogicalName="Nachos.Testing.Filtering.filter-cases.json" />
+  </ItemGroup>
+</Project>

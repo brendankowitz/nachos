@@ -1,0 +1,7 @@
+from/LICENSE.APACHE2 -text
+from/LICENSE.MIT -text
+from/package.json.fixture -text
+through/LICENSE.APACHE2 -text
+through/LICENSE.MIT -text
+through/package.json.fixture -text
+streamjsonrpc/StreamJsonRpc.nuspec -text

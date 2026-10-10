@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Trimmed from a real DacFx report to the one operation under test: a constraint drop, nothing else. -->
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Drop">
+      <Item Value="[dbo].[CK_Sessions_LifecycleState]" Type="SqlCheckConstraint" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Create">
+      <Item Value="[dbo].[IdempotencyRecords]" Type="SqlTable" />
+      <Item Value="[dbo].[IdempotencyRecords].[IX_IdempotencyRecords_ExpiresAt]" Type="SqlIndex" />
+      <Item Value="[dbo].[Messages]" Type="SqlTable" />
+      <Item Value="[dbo].[Messages].[IX_Messages_Workspace_Peer]" Type="SqlIndex" />
+      <Item Value="[dbo].[Peers]" Type="SqlTable" />
+      <Item Value="[dbo].[Peers].[IX_Peers_Workspace_CreatedAt]" Type="SqlIndex" />
+      <Item Value="[dbo].[PrincipalGrants]" Type="SqlTable" />
+      <Item Value="[dbo].[PrincipalGrants].[IX_PrincipalGrants_Workspace]" Type="SqlIndex" />
+      <Item Value="[dbo].[SchemaVersion]" Type="SqlTable" />
+      <Item Value="[dbo].[SessionPeers]" Type="SqlTable" />
+      <Item Value="[dbo].[SessionPeers].[IX_SessionPeers_Workspace_Peer]" Type="SqlIndex" />
+      <Item Value="[dbo].[Sessions]" Type="SqlTable" />
+      <Item Value="[dbo].[Sessions].[IX_Sessions_Workspace_State]" Type="SqlIndex" />
+      <Item Value="[dbo].[Sessions].[IX_Sessions_Workspace_CreatedAt]" Type="SqlIndex" />
+      <Item Value="[dbo].[Workspaces]" Type="SqlTable" />
+      <Item Value="[dbo].[DF_Messages_Metadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Messages_InternalMetadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Peers_Metadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Peers_Configuration]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Peers_InternalMetadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Peers_IsInternal]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_SchemaVersion_AppliedAt]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_SessionPeers_Configuration]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Sessions_InternalMetadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Sessions_LifecycleVersion]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Sessions_NextMessageSeq]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Sessions_Metadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Sessions_Configuration]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Workspaces_Metadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Workspaces_LifecycleVersion]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Workspaces_InternalMetadata]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[DF_Workspaces_Configuration]" Type="SqlDefaultConstraint" />
+      <Item Value="[dbo].[FK_IdempotencyRecords_Workspaces]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_Messages_Sessions]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_Messages_Peers]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_Peers_Workspaces]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_PrincipalGrants_Workspaces]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_SessionPeers_Sessions]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_SessionPeers_Peers]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[FK_Sessions_Workspaces]" Type="SqlForeignKeyConstraint" />
+      <Item Value="[dbo].[CK_SchemaVersion_SingleRow]" Type="SqlCheckConstraint" />
+      <Item Value="[dbo].[CK_Sessions_LifecycleState]" Type="SqlCheckConstraint" />
+      <Item Value="[dbo].[CK_Workspaces_LifecycleState]" Type="SqlCheckConstraint" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

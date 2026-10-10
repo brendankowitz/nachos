@@ -426,3 +426,10 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Nachos
+bin/
+obj/
+*.dacpac
+.test-runs/
+node_modules/

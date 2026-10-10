@@ -79,6 +79,32 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
    - **Distributed artifacts** (NuGet packages, container images, CLI tools, the published docs site's assets, and any embedded third-party code) may use only: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, MS-PL, Unlicense, CC0-1.0, BlueOak-1.0.0, Zlib, PSF-2.0, or Python-2.0.
    - **Unmodified, non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0, through an explicitly reviewed, version-scoped exception recorded in `eng/license-exceptions.json` (package, version, license, purpose, reviewer). Example: `elkjs` used only by the docs Mermaid validator.
    - GPL, AGPL, LGPL, and SSPL are never allowed in either tier.
+   - **Owner-approved docs-tooling scope (2026-10-09, PR #6 comment 6084081762: "I don't think we need to worry about the libraries used for docs generation since we aren't 'distributing' them").** Build-time libraries used only to *generate* the docs site (for example Astro's optional Sharp/libvips image stack) are not distributed, so they are not blocked by this rule's license tiers, including the GPL/LGPL prohibition above. Conditions:
+     - they stay in the license inventory with their license evidence, for visibility; they are not hidden or reclassified;
+     - anything they **emit into the published site** (copied assets, fonts, icon sets, bundled scripts, generated images that embed third-party content) is a distributed artifact and stays fully gated;
+     - the scope is docs generation only; other development, build or CI dependencies keep the tiers above;
+     - the docs site still prefers no image optimizer (Astro `passthroughImageService()`), so Sharp/libvips are not executed.
+   - **Owner-approved shipped-tier exception (2026-10-07):** `Microsoft.SqlServer.DacFx` (pinned version only, currently `170.4.83`) may ship in distributed artifacts (the API image and the CLI) under its **Microsoft Software License Terms, "Distributable Code"** section. It's required for the in-app dacpac schema deployment (§7.3). Conditions:
+     - a version-scoped entry in `eng/license-exceptions.json` with `tier: "shipped"`, the license-text evidence path, and the owner approval reference;
+     - its license terms reproduced or linked in `THIRD-PARTY-NOTICES.md`;
+     - Nachos must comply with the Distributable Code conditions;
+     - **any version change needs a fresh license-text review**;
+     - other Microsoft-licensed packages are covered by the separate owner approval below, not by this exception.
+   - **Owner-approved Microsoft-library acceptance (2026-10-09, PR #6 comment 6083936795: "I'm ok accepting any of the Ms library licenses").** A package published by Microsoft whose *primary* license is Microsoft's own license terms (for example `Microsoft.Data.SqlClient.SNI.runtime`, `Microsoft.SqlServer.Types`) may ship in distributed artifacts. Conditions:
+     - each accepted package is recorded by exact package, version and license-text evidence (with this approval reference) in the license-check evidence; there is no name-prefix bypass and no acceptance of missing license text;
+     - required notices are reproduced or linked in `THIRD-PARTY-NOTICES.md`, and the terms' redistribution conditions are complied with;
+     - third-party components bundled inside a Microsoft package keep their own license obligations and are evaluated under this rule's tiers;
+     - the acceptance does not resolve which terms govern a package whose embedded license document looks wrong or expired (currently `Microsoft.SqlServer.Types` 170.1000.7, which carries a pre-release evaluation document); that remains a release-gate provenance question;
+     - non-Microsoft licenses (including LGPL components and OR-license choices) are unaffected.
+   - **Owner-approved container platform-layer carve-out (2026-10-07).** The base OS layer of a container image from an **approved base** is evaluated as unmodified third-party platform, not under this rule's package allowlist. Approved bases are:
+     - Microsoft .NET images on `mcr.microsoft.com` (for example `dotnet/aspnet`, `dotnet/runtime-deps`), used by Nachos images;
+     - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2). Nachos neither modifies nor redistributes this image: it is a third-party runtime dependency that Container Apps pulls from its upstream registry, and it is replaced by the first deploy. It is therefore approved **as a whole**, application layer included, provided its full package and license inventory is recorded as evidence (`infra/evidence/placeholder-<digest>/`). Changing its digest requires refreshing that evidence.
+
+     Conditions:
+     - Base images are referenced **by digest** in release evidence, together with their OS package license inventory.
+     - Bases are **never modified**: Nachos adds layers but never patches base packages.
+     - **Everything Nachos adds** (NuGet assemblies, npm or docs assets, app files, and any extra OS packages installed on top) remains subject to this rule in full.
+     - Changing to a different base image family requires a fresh review.
    - Required license texts and notices go in `THIRD-PARTY-NOTICES.md` (for example PdfPig, Apache-2.0).
    - **CI enforcement:**
      - Check the locked direct and transitive dependencies **and the emitted artifacts**. `devDependencies` is not treated as a distribution boundary. Bundler module provenance for every docs-site chunk, plus package and image contents, must prove that excepted packages don't ship.
@@ -99,7 +125,7 @@ Legend for the **M** column: milestone in §20. Δ marks an intentional deviatio
 | Peer: human or agent participant; per-peer config (`observe_me`) | `Peers` table. Typed `PeerConfiguration`. | M1 |
 | Session: conversation container, `is_active`, many-to-many peers | `Sessions` table, plus an explicit join entity `SessionPeers` with `JoinedAt`/`LeftAt` and membership config (`observe_me`, `observe_others`). | M1 |
 | Message: ordered by `seq_in_session`; public ID; token count; batch create 1–100; metadata-only update | `Messages` table. Sequence numbers are allocated atomically from `Sessions.NextMessageSeq`. Public ID is a nanoid. Token count comes from `Microsoft.ML.Tokenizers` (`o200k_base`). | M1 |
-| Public `metadata` vs `internal_metadata` vs `configuration` | Three separate columns, all using the native `json` type. Public APIs can never write internal metadata. | M1 |
+| Public `metadata` vs `internal_metadata` vs `configuration` | Three separate columns, each `nvarchar(max)` with an `ISJSON` object check (§7.3). Public APIs can never write internal metadata. | M1 |
 | Hierarchical config: message → session → workspace → global | `IConfigurationResolver` returns a `ResolvedConfiguration` and records the source of each value. | M1 |
 | Collections keyed by (observer, observed) | `Collections` table, internal only (no public route). | M2 |
 | Documents exposed publicly as **Conclusions**; levels `explicit`/`deductive`/`inductive`/`contradiction`; `times_derived`; provenance | `Conclusions` + `ConclusionSources` (ordered derived → source edges). Soft-delete tombstone `DeletedAt`, then hard delete by the reconciler. | M2 |
@@ -269,7 +295,7 @@ Providers register through `NachosBuilder.UseSqlServer(...)` and `UseInMemory()`
 
 ### 7.2 Schema (SQL Server; `Nachos.DataLayer.SqlServer.Database`)
 
-All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped through `WorkspaceId` and have a unique `(WorkspaceId, Name)` or public ID. Child tables carry composite FKs that include `WorkspaceId`, so cross-workspace references are structurally impossible (this keeps Honcho's guarantee). JSON columns use the native `json` type. **Identifiers are case-sensitive:** every `Name`, `PublicId`, and key column uses `COLLATE Latin1_General_100_BIN2_UTF8`, so `alice` and `Alice` are different peers, matching Honcho's behavior.
+All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped through `WorkspaceId` and have a unique `(WorkspaceId, Name)` or public ID. Child tables carry composite FKs that include `WorkspaceId`, so cross-workspace references are structurally impossible (this keeps Honcho's guarantee). JSON columns are `nvarchar(max)` with a `CHECK` that the value is a JSON object (`ISJSON`). The native `json` type is not used: SQL Server 2025 rounds exponent literals through floating point and limits numbers to 38 digits with 10 decimal places, which would silently change stored metadata (finding from Task 7). **Numbers are stored exactly as the strict JSON-data helper emits them** (number text, including exponent forms, is preserved byte for byte), and the SQL filter compiler compares them by exact value. Number text is not normalized (agreed on PR #6). For long `in` operands (strings over 16 UTF-16 code units, number order keys over 100 characters) the compiler uses a SHA-256 + kind + length prefilter, and every candidate is confirmed by exact comparison, so membership results equal the in-memory provider's. Inherent SQL limits (owner-accepted, PR #6 comment 6093551697): the SQL provider rejects **storing** metadata with a key longer than 4000 UTF-16 code units (422; `OPENJSON` truncates keys at 4000; the in-memory provider accepts such keys, a known divergence), and a filter that names such a key is accepted and evaluates as if the key were unset; a filter needing more than 2000 distinct parameters is rejected (422), and so is a filter SQL Server refuses as too complex to compile; very large unshareable filters (observed from roughly 5,000-7,000 unshared conditions on a dev host, fewer on slower tiers) can reach the 30 s command timeout first and surface as a timeout (500) rather than a 422; this is an owner-accepted, documented residual (tracked in issue #18). A second timeout residual: `contains`/`icontains` cost grows with text length times operand length on highly repetitive text, so long operands (thousands of code units) over very long or repetitive stored text can reach the 30 s command timeout and surface as a 500; it is not translated; this is also an owner-accepted, documented residual (tracked in #18). Measured on a dev host: 100 rows of 25,000-character content with a ~4,000-character operand took 13-30 s, and 5 MB of repetitive metadata with such an operand timed out. **Identifiers are case-sensitive:** every `Name`, `PublicId`, and key column uses `COLLATE Latin1_General_100_BIN2_UTF8`, so `alice` and `Alice` are different peers, matching Honcho's behavior.
 
 | Table | Key columns / notes |
 |---|---|
@@ -313,8 +339,9 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
   - **Behind current version:** generate a DeployReport and classify it as `AutoSafe`, `Unsafe`, or `Unclassifiable`. Apply only `AutoSafe` changes, and only with `BlockOnPossibleDataLoss = true`. Everything else fails closed with a message pointing to `nachos schema upgrade`.
   - The check runs on first data access, not at startup.
 - **CI:** build **both** dacpacs and publish both as artifacts. CI publishes a `sqlpackage /Action:DeployReport` for the **Sql2025** dacpac against an empty SQL Server 2025 service container. An Azure dacpac DeployReport needs a real Azure SQL target, which is an owner-gated action (§18.3), and `AllowIncompatiblePlatform` is banned. So the Azure report is produced by `nachos schema report` during owner-approved runs. CI never runs `Publish` unattended.
-- **azd:** a `postprovision` hook runs `nachos schema upgrade --report-only` and then applies the change only if it is auto-safe. Otherwise the hook stops and prints the report.
+- **azd:** a `postprovision` hook runs `nachos schema upgrade` with no flags (`AutoSafeOnly`). It applies the change only if it is auto-safe. Otherwise the CLI refuses (exit 2) and prints the reasons and the advice, and the hook stops. The operator then runs `nachos schema report` (report XML on stdout, or `--out <file>`) to review the change before re-running with `--approve-reviewed` (and `--allow-data-loss` if needed).
 - Test containers (SQL Server 2025) deploy the **Sql2025 dacpac** through the same `SchemaDeployer` code path that self-hosted production uses. `AllowIncompatiblePlatform` is never set, in tests or production.
+- **Pre-release databases (M1, schema version 1).** The version stays 1 until the first release, so a database deployed by an earlier M1 build reads as current, and the schema gate does not look for changes. The Task 7 partner review added two to the version-1 schema: `GRANT EXECUTE` on `dbo.JsonNumberOrderKey` and `dbo.JsonNumberOrderKeyLong` to `public` (numeric metadata filters need it when the app identity has only `db_datareader`, `db_datawriter` and `db_ddladmin`), and a binary, case-exact collation on `PrincipalGrants.Role`. The collation change drops and re-creates `UQ_PrincipalGrants_Object_Workspace_Role` and alters the column, which is not auto-safe, so `nachos schema upgrade` without flags refuses it. Such a database needs `nachos schema upgrade --approve-reviewed` once (after reviewing `nachos schema report`); it loses no data. New databases get both on their first deploy. **Any** existing pre-release database, wherever it was deployed, must take this reviewed path: review `nachos schema report`, then run `nachos schema upgrade --approve-reviewed` once. That no such databases exist outside ephemeral test containers is an unverified assumption, not something the transition tests establish.
 
 ### 7.4 Postgres-feature equivalents
 
@@ -324,7 +351,7 @@ Queue claim, sequence allocation, and status aggregation live in stored procedur
 | `to_tsvector('english')` + GIN | SQL full-text index + `CONTAINSTABLE`. If `SERVERPROPERTY('IsFullTextInstalled') = 0`, `ILexicalIndex` falls back to `LIKE` with tokenized `AND`. |
 | `FOR UPDATE SKIP LOCKED` / `ON CONFLICT DO NOTHING` | Under `READ COMMITTED` with RCSI ON (Azure SQL default): `WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK)`. **No `ROWLOCK`**: it is in the same mutually exclusive hint group as `READCOMMITTEDLOCK`, and `READPAST` under RCSI requires `READCOMMITTEDLOCK`. Lease insert is guarded by a unique PK (catch 2627/2601). See §10.3. |
 | Advisory lock for message seq | Atomic `UPDATE Sessions SET NextMessageSeq += @n OUTPUT inserted…` |
-| JSONB metadata filters | `json` type + `JSON_VALUE`/`JSON_QUERY` predicates generated by the filter compiler (§9.3) |
+| JSONB metadata filters | `nvarchar(max)` JSON + `JSON_VALUE`/`OPENJSON` predicates generated by the filter compiler (§9.3); numbers compare exactly via a variable-length exact order key (`dbo.JsonNumberOrderKey`, mirrored in C#) |
 | nanoid text PKs | Surrogate `bigint` PKs. Nanoid `PublicId`/`Name` are used on the wire. |
 
 Embedding dimensions: default 1536 (`text-embedding-3-small`). `VECTOR` float32 supports up to 1998 dimensions. Larger models must use the `dimensions` request parameter, or float16 where it is GA.
@@ -340,6 +367,11 @@ Embedding dimensions: default 1536 (`text-embedding-3-small`). `VECTOR` float32 
 - **Deployment defaults** are `IOptions<NachosOptions>`, bound from `appsettings`, environment variables, and Azure App Configuration (optional). Sections: `Database`, `Llm` (model profiles), `Embeddings`, `Deriver`, `Summary`, `Dialectic` (levels), `Dream`, `Webhooks`, `Auth`, `Limits`, `Telemetry`.
 - **Resource configuration** follows the Honcho v3 shape so SDKs work: `reasoning`, `peer_card`, `summary`, `dream`, `dialectic`, `custom_instructions`. It can be set on Workspace and Session. Message-level config supports `reasoning` only. Peer and session-peer configs carry `observe_me` and `observe_others`.
 - `IConfigurationResolver.Resolve(workspace, session?, message?)` returns `ResolvedConfiguration`, applying precedence message > session > workspace > global. Custom-instruction text is capped (`Deriver.MaxCustomInstructionsTokens`, default 2000).
+  - **Validation happens at admission, not on read (Δ, recorded on PR #6).**
+    - **Wire schema constraints** are checked when a create or update request is admitted, and fail as array-shaped `HTTPValidationError` with the full `loc` (for example `["body","configuration","summary","messages_per_short_summary"]`). This covers `summary` minimums and the other manifest-declared ranges.
+    - **Deployment-tunable budgets** are also admission-only: `Deriver.MaxCustomInstructionsTokens` and other token budgets, which fail as a domain `NachosValidationException`.
+    - **Lowering a budget later** never invalidates stored resources. Reads and `Resolve` return the stored values unchanged; nothing is clamped, rejected, or relabelled as a request error. Prompt-time hard budgets (§11.6) are a separate guard at the point of use.
+    - **Corrupt stored configuration** that violates a structural invariant the admission path guarantees (shape, types, strict JSON data) makes `Resolve` throw a non-request configuration error. That is a logged server error (`500`), never a `422` with a `body.*` location.
 
 Key defaults (parity values):
 
@@ -379,7 +411,13 @@ Key defaults (parity values):
     - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
     The same body sent to a different session or endpoint therefore never matches.
   - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal `401` (§9.2), never the stored response.
+  - **Request identity:**
+    - Over HTTP, the payload hashed is the **original request body**, canonicalized as sorted-key compact JSON with every field kept: unknown fields, explicit `null` versus omitted, and `configuration`.
+    - In-process callers (the typed `INachosClient`) hash the documented JSON projection of their typed request. Both paths go through one Core operation.
+    - Both route aliases share one canonical target.
+  - **Replay returns the exact status and body captured inside the original mutation's transaction**, never a later re-read or re-serialization. A racing duplicate re-reads the winner's record. If that record expired before the re-read, the request is a fresh atomic attempt.
   - A replay with the same key and same request hash returns the stored response and performs no second mutation. The same key with a different hash returns `422`.
+  - The problem `type` for a reused key is `urn:nachos:problem:idempotency-key-reused`, defined as `ProblemTypes.IdempotencyKeyReused`; both server and client reference that constant. It shares status `422` with validation errors, so clients use `type` to tell them apart.
   - Requests without the header behave exactly like Honcho. Upstream SDKs do not send the header, so their retries of these calls can still duplicate a batch. This is documented as a client-side risk.
 - OpenAPI is generated with `Microsoft.AspNetCore.OpenApi`. Contract tests check every route and DTO against the pinned wire manifest `test/contracts/honcho-v3-wire.json` (R4). Each route is either implemented or returns `501`, and each DTO's fields equal the manifest's fields, except for an allowlist of known deviations.
 
@@ -388,7 +426,7 @@ Key defaults (parity values):
 **Scheme `NachosKey`** (Honcho-compatible):
 
 - HS256 JWT. Claims: `t` (timestamp), `exp?`, `ad?` (admin), `w?`, `p?`, `s?`. Signing secret is stored in Key Vault and read through managed identity. Key rotation is supported through a `kid` header (additive) and a list of active secrets.
-- `POST /v3/keys` (admin only) mints scoped keys. `nachos keys create` does the same offline, and also bootstraps the first admin key.
+- `POST /v3/keys` (admin only) mints scoped keys, following Honcho's public Create Key docs. At least one of `workspace_id`/`peer_id`/`session_id` is required (an absent scope never mints admin), and a peer or session scope requires `workspace_id`. Each violation returns 422. When signing keys aren't configured, it returns 422 and never invents a secret. `nachos keys create` does the same offline, and also bootstraps the first admin key (`--admin`).
 - **Narrowest-scope rule:** a key with `w` + `p` is peer-scoped. It never gains workspace-wide access because `w` matches.
 - **Member-read:** a peer-scoped key may *read* specific session routes when its peer is an active member. The allowlist is an explicit route list, enforced by a test that fails when a mutating route is added to it. Sub-resource reads (for example `peers/{peer_id}/config`) also require `p == peer_id`.
 
@@ -449,6 +487,8 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 **Filter compiler:** `FilterCompiler` translates Honcho's JSON filter DSL (field equality, `gt/gte/lt/lte/ne/in/contains/icontains`, nested `metadata`, `AND/OR/NOT`) into parameterized SQL. Each resource has its own field allowlist, and `source_ids` filtering on conclusions gets special handling. The in-memory provider evaluates the same AST.
 
+- **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. A value is classified by its backing runtime value, so any other CLR value (collections, POCOs, enums, `TimeSpan` and so on), including an interface or base-type projection of a non-allowlisted runtime type, is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well formed: `SerializeToNode` has already turned a lone surrogate into U+FFFD, so callers who need that guarantee must build `JsonObject`/`JsonArray` with literal strings. Every provider and in-process client **must** pass constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and store or parse only its result (see the strict-data cases in the shared store contract tests). The HTTP path is unchanged.
+
 ### 9.4 Intentional deviations (Δ summary)
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
@@ -460,6 +500,9 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 7. Health endpoints are split into `/health/live` and `/health/ready`. `/health` is kept.
 8. The Entra auth scheme.
 9. The optional `Idempotency-Key` header on non-idempotent mutations (§9.1).
+10. `POST /v3/keys` rejects `peer_id` together with `session_id` (422). Honcho's public docs don't forbid the combination; Nachos keeps keys to a single narrowest scope.
+11. A JSON request body that is not valid UTF-8 is rejected as a whole, before JSON parsing, with `422` and `[{"loc":["body"],"type":"json_invalid",…}]`. This applies even when the invalid bytes are in a field Nachos would otherwise ignore. **Inference, not measured:** FastAPI, which Honcho uses, most likely returns `400` for an undecodable body. Nachos keeps its existing `422 json_invalid` family. ASCII-escaped surrogates (`\uD800`) are valid UTF-8 and follow the strict JSON-data rules (#9), not this rule.
+12. The `Idempotency-Key` header (§9.1) is taken exactly as sent. Nachos does not trim, split on commas, fold case or otherwise normalize it. A single value that contains a comma is one literal key. Core's existing rule (1–255 ASCII characters) is the only validation applied, and no new rule for whitespace, control characters or printable characters is added. If the header appears more than once, Nachos rejects the request after authorization with `422` and `loc ["header","idempotency-key"]`; it does not join the values into a different key. CR/LF can never reach the application, because Kestrel rejects them at the transport.
 
 ---
 
@@ -815,6 +858,11 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
   - idempotent writes: `PUT`, get-or-create `POST` keyed by `id`, and `DELETE`.
   `GET H/test` and all chat calls are never auto-retried.
   Non-idempotent mutations (message batch create, upload, conclusion create, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically.
+  Retry policy details (Δ, recorded on PR #6):
+  - **Never auto-retried:** `501` (permanent "not implemented", §9.1); `POST /v3/keys` and `/v3/admin/grants`; linking sessions to a scope (`POST …/scopes/{id}/sessions`) until its `scope_backfill` enqueue (§14) is shown to be idempotent.
+  - **Status precedence:** once a response status is received, that status decides. A non-retryable status (`4xx` other than `408`/`429`, and `501`) is final even if reading its body then fails; the client surfaces it without resending. A transport failure while reading the body of a `2xx` or retryable status may be retried, but only for operations that are retryable under the rules above, so a lost successful response to a keyed mutation is replayed safely.
+  - **`Retry-After`:** honored as seconds or an HTTP-date. A delay longer than 30 s is not waited out; the error is surfaced to the caller with the requested delay.
+  - **Problem identity:** clients match problem `type` exactly against the constants in `ProblemTypes` (for example `ProblemTypes.IdempotencyKeyReused`), never by suffix.
 - Typed handles: `Workspace` → `Peer` / `Session`.
 - `GetOrCreateAsync`.
 - `IAsyncEnumerable<T>` auto-pagination.

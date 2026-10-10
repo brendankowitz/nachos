@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nachos.Core\Nachos.Core.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Abstractions\Nachos.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Client\Nachos.Client.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Hosting\Nachos.Hosting.csproj" />
+  </ItemGroup>
+</Project>

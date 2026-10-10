@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-authored: a well-formed report with an operation name this classifier does not know. -->
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Create">
+      <Item Value="[dbo].[Workspaces]" Type="SqlTable" />
+    </Operation>
+    <Operation Name="Frobnicate">
+      <Item Value="[dbo].[Workspaces]" Type="SqlTable" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

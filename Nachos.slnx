@@ -1,0 +1,32 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DataLayer/Nachos.DataLayer.InMemory/Nachos.DataLayer.InMemory.csproj" />
+    <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer/Nachos.DataLayer.SqlServer.csproj" />
+    <Project Path="src/Nachos.Abstractions/Nachos.Abstractions.csproj" />
+    <Project Path="src/Nachos.Api/Nachos.Api.csproj" />
+    <Project Path="src/Nachos.AppHost/Nachos.AppHost.csproj" />
+    <Project Path="src/Nachos.Cli/Nachos.Cli.csproj" />
+    <Project Path="src/Nachos.Client/Nachos.Client.csproj" />
+    <Project Path="src/Nachos.Core/Nachos.Core.csproj" />
+    <Project Path="src/Nachos.Hosting/Nachos.Hosting.csproj" />
+    <Project Path="src/Nachos.ServiceDefaults/Nachos.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/src/DataLayer/">
+    <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj" Type="42ea0dbd-9cf1-443e-919e-be9c484e4577" />
+    <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer.Database/Nachos.DataLayer.SqlServer.Database.sqlproj" Type="42ea0dbd-9cf1-443e-919e-be9c484e4577" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Nachos.Abstractions.Tests/Nachos.Abstractions.Tests.csproj" />
+    <Project Path="test/Nachos.Api.Tests/Nachos.Api.Tests.csproj" />
+    <Project Path="test/Nachos.AppHost.Tests/Nachos.AppHost.Tests.csproj" />
+    <Project Path="test/Nachos.Architecture.Tests/Nachos.Architecture.Tests.csproj" />
+    <Project Path="test/Nachos.Cli.Tests/Nachos.Cli.Tests.csproj" />
+    <Project Path="test/Nachos.Client.Tests/Nachos.Client.Tests.csproj" />
+    <Project Path="test/Nachos.Core.Tests/Nachos.Core.Tests.csproj" />
+    <Project Path="test/Nachos.DataLayer.InMemory.Tests/Nachos.DataLayer.InMemory.Tests.csproj" />
+    <Project Path="test/Nachos.DataLayer.SqlServer.Tests/Nachos.DataLayer.SqlServer.Tests.csproj" />
+    <Project Path="test/Nachos.Infra.Tests/Nachos.Infra.Tests.csproj" />
+    <Project Path="test/Nachos.LicenseCheck.Tests/Nachos.LicenseCheck.Tests.csproj" />
+    <Project Path="test/Nachos.Testing/Nachos.Testing.csproj" />
+  </Folder>
+</Solution>

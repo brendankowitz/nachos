@@ -1,0 +1,270 @@
+name: Source MVP CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+# Independent jobs intentionally expose current auth/token/SDK/license failures.
+# No residual-license baseline, distribution, Azure, registry, or Pages lane.
+jobs:
+  build-test:
+    name: Release and portable tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - name: Test CI guards
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          ./eng/ci/Test-CiSummary.ps1
+      - name: Release solution build (warnings are errors)
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          dotnet restore Nachos.slnx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build Nachos.slnx -c Release --no-restore -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify parsed workflow event and concurrency policy
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          dotnet build test/Nachos.LicenseCheck.Tests -c Release --no-restore -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./eng/ci/Test-WorkflowPolicy.ps1 -YamlAssembly ./eng/license-check/bin/Release/net10.0/YamlDotNet.dll
+      - name: All portable suites, with fresh per-project counts
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          ./eng/ci/Invoke-CheckedTests.ps1 -Slice Portable
+      - name: Windows portable infrastructure contracts
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          . ./eng/ci/Install-Bicep.ps1
+          . ./eng/ci/Enter-CiEnvironment.ps1 -OfflineInfra
+          ./eng/ci/Invoke-CheckedTests.ps1 -Slice Infra
+
+  sql-integration:
+    name: Complete SQL, CLI, and AppHost suites (Docker)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - name: Docker and Release build
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          docker info --format '{{.ServerVersion}}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore Nachos.slnx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build Nachos.slnx -c Release --no-restore -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run all three mixed projects without filters
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          ./eng/ci/Invoke-CheckedTests.ps1 -Slice Sql
+
+  schema:
+    name: Both dacpacs, real schema reports, and FTS image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - name: Build both schema targets and their real test producers
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          foreach ($project in @(
+            'src/DataLayer/Nachos.DataLayer.SqlServer.Database/Nachos.DataLayer.SqlServer.Database.sqlproj',
+            'src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj',
+            'test/Nachos.DataLayer.SqlServer.Tests',
+            'test/Nachos.Cli.Tests'
+          )) {
+            dotnet build $project -c Release -warnaserror
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: DacFx deployment/report and CLI report-only integration
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          ./eng/ci/Invoke-CheckedTests.ps1 -Slice Schema
+      - name: Build the existing FTS image and query the running engine
+        if: ${{ !cancelled() }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          bash eng/ci/test-fts-image.sh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  licenses:
+    name: Actual dependency and API/CLI publish audit (fail closed)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        id: python
+        with:
+          python-version: '3.13'
+      - name: Verify selected Python and venv after clearing the environment
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          $selectedPython = $env:CI_PYTHON_EXECUTABLE
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $selectedPython
+          Test-CiPythonRuntime -PythonExecutable $selectedPython
+      - name: Restore the full solution and produce local publish evidence
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          dotnet restore Nachos.slnx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build test/Nachos.LicenseCheck.Tests -c Release --no-restore -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish src/Nachos.Api -c Release --no-restore -o artifacts/ci/publish/api
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish src/Nachos.Cli -c Release --no-restore -o artifacts/ci/publish/cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install locked npm producers and collect non-host archive evidence
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          foreach ($producer in @('.github/scripts', 'test/conformance/typescript')) {
+            npm --prefix $producer ci --ignore-scripts --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll fetch-npm --lock "$producer/package-lock.json" --npm-archives artifacts/ci/npm-archives
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Download every Python audit identity from a hash-locked projection
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          $selectedPython = $env:CI_PYTHON_EXECUTABLE
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $selectedPython
+          $projection = dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll project-python --lock test/conformance/python/requirements.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $projectionDirectory = "artifacts/ci/projection/$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $projectionDirectory | Out-Null
+          $projectionPath = Join-Path $projectionDirectory 'requirements.txt'
+          $projection | Set-Content -LiteralPath $projectionPath -Encoding utf8NoBOM
+          & $selectedPython -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r $projectionPath --dest artifacts/ci/python-archives
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run the production audit and propagate its raw failure
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          # Report output is outside src/test/.github, cache, policy and publish roots.
+          & ./eng/license-check/Check-Licenses.ps1 `
+            -ApiPublishRoot ./artifacts/ci/publish/api `
+            -CliPublishRoot ./artifacts/ci/publish/cli `
+            -NpmArchives ./artifacts/ci/npm-archives `
+            -PythonArchives ./artifacts/ci/python-archives `
+            -OutputDirectory ./artifacts/ci/audit
+          exit $LASTEXITCODE
+      - name: Retain only textual audit evidence, including failing diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: license-audit-text
+          path: |
+            artifacts/ci/audit/license-report.json
+            artifacts/ci/audit/nuget-inventory.json
+          if-no-files-found: error
+          retention-days: 7
+
+  infra:
+    name: Offline infrastructure build, lint, and complete Linux tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - name: Pinned standalone Bicep; no real Azure CLI on test PATH
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          . ./eng/ci/Install-Bicep.ps1
+          . ./eng/ci/Enter-CiEnvironment.ps1 -OfflineInfra
+          bicep build infra/main.bicep --stdout > artifacts/ci/main.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bicep lint infra/main.bicep
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build test/Nachos.Infra.Tests -c Release -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # NACHOS_REQUIRE_INFRA_TOOLS=1 is set by the isolated Linux environment.
+          # Existing tests also reject compiler/linter warnings and run the digest-pinned placeholder.
+          ./eng/ci/Invoke-CheckedTests.ps1 -Slice Infra
+
+  conformance:
+    name: Required authenticated Python and TypeScript SDK smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        id: python
+        with:
+          python-version: '3.13'
+      - name: Verify selected Python and venv after clearing the environment
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          $selectedPython = $env:CI_PYTHON_EXECUTABLE
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $selectedPython
+          Test-CiPythonRuntime -PythonExecutable $selectedPython
+      - name: Salsa's strict entrypoint, both languages and scoped denial required
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          # Require authenticated execution in both languages, including scoped denial.
+          ./eng/ci/Invoke-SdkSmoke.ps1

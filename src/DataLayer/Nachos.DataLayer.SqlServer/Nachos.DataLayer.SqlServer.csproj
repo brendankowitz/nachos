@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Nachos.DataLayer.SqlServer.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <PackageReference Include="Microsoft.SqlServer.DacFx" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Nachos.Hosting\Nachos.Hosting.csproj" />
+    <ProjectReference Include="..\..\Nachos.Core\Nachos.Core.csproj" />
+    <ProjectReference Include="..\..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
+  </ItemGroup>
+
+  <!-- The dacpacs are the single source of truth for DDL. The project references make MSBuild build them
+       first (ReferenceOutputAssembly=false: there is no assembly to reference); the embedded paths below are
+       the sqlproj default output location, <ProjectDir>bin\$(Configuration)\<Name>.dacpac. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Nachos.DataLayer.SqlServer.Database\Nachos.DataLayer.SqlServer.Database.sqlproj"
+                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Nachos.DataLayer.SqlServer.Database.Sql2025\Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj"
+                      ReferenceOutputAssembly="false" />
+    <EmbeddedResource Include="..\Nachos.DataLayer.SqlServer.Database\bin\$(Configuration)\Nachos.DataLayer.SqlServer.Database.dacpac"
+                      LogicalName="Nachos.Azure.dacpac" />
+    <EmbeddedResource Include="..\Nachos.DataLayer.SqlServer.Database.Sql2025\bin\$(Configuration)\Nachos.DataLayer.SqlServer.Database.Sql2025.dacpac"
+                      LogicalName="Nachos.Sql2025.dacpac" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,40 @@
+image: ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4
+platform: linux/amd64
+created: 2026-09-18T07:27:47.16009355Z
+user: 1000
+entrypoint: [docker-entrypoint.sh]
+cmd: [node ./index.js]
+workdir: /app
+exposed_ports: map[8080/tcp:map[] 8443/tcp:map[]]
+image_id: sha256:d1f6b5907461931fb0d3ee38d8abfee16d5922f4087696dc99875c5f60c8b153
+
+== os-release
+NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.24.2
+PRETTY_NAME="Alpine Linux v3.24"
+HOME_URL="https://alpinelinux.org/"
+BUG_REPORT_URL="https://gitlab.alpinelinux.org/alpine/aports/-/issues"
+
+== node / yarn
+v22.23.2
+1.22.22
+
+== docker history (newest first)
+CMD ["node" "./index.js"]
+USER 1000
+EXPOSE [8443/tcp 8080/tcp]
+ENV HTTP_PORT=8080 HTTPS_PORT=8443
+COPY /app /app # buildkit
+RUN /bin/sh -c apk upgrade --no-cache && rm -rf /usr/local/lib/node_modules # buildkit
+WORKDIR /app
+LABEL org.opencontainers.image.title=http-https-echo org.opencontainers.image.description=Docker image that echoes request data as JSON; listens on HTTP/S, with various extra features, useful for debugging. org.opencontainers.image.url=http
+CMD ["node"]
+ENTRYPOINT ["docker-entrypoint.sh"]
+COPY docker-entrypoint.sh /usr/local/bin/ # buildkit
+RUN /bin/sh -c apk add --no-cache --virtual .build-deps-yarn curl gnupg tar   && export GNUPGHOME="$(mktemp -d)"   && for key in     6A010C5166006599AA17F08146C2130DFD2497F5   ; do     { gpg --batch --keyserver hkps://keys.openpgp.org --rec
+ENV YARN_VERSION=1.22.22
+RUN /bin/sh -c addgroup -g 1000 node     && adduser -u 1000 -G node -s /bin/sh -D node     && apk add --no-cache         libstdc++     && apk add --no-cache --virtual .build-deps         curl     && ARCH= OPENSSL_ARCH='linux*' && alpineArch
+ENV NODE_VERSION=22.23.2
+CMD ["/bin/sh"]
+ADD alpine-minirootfs-3.24.2-x86_64.tar.gz / # buildkit

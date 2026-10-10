@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Trimmed from a real DacFx report to the one operation under test: a table rebuild with no alert and nothing else. -->
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="TableRebuild">
+      <Item Value="[dbo].[Peers]" Type="SqlTable" />
+    </Operation>
+  </Operations>
+</DeploymentReport>
