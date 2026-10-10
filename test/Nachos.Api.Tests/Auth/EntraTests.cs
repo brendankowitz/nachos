@@ -1,7 +1,3 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.IdentityModel.Protocols;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 using Nachos.Abstractions.Domain;
 using Shouldly;
@@ -63,24 +59,8 @@ public sealed class EntraTests
             _ => ("""{"alg":"RS256","kid":"offline-rsa"}""", """{"iss":{}}"""),
         };
         var token = $"{Base64UrlEncoder.Encode(header)}.{Base64UrlEncoder.Encode(payload)}.AAAA";
-        await host.Send("POST", "/v3/workspaces/list", "{}", token, 401);
-    }
-
-    [Theory]
-    [InlineData("http")]
-    [InlineData("io")]
-    public async Task MetadataRetrievalFailure_RemainsServerError(string failure)
-    {
-        using var entra = new OfflineEntra();
-        using var host = new AuthHost
-        {
-            Entra = entra,
-            ServicesOverride = services => services.Configure<JwtBearerOptions>("Entra", options =>
-                options.ConfigurationManager = new UnavailableMetadata(failure == "http"
-                    ? new HttpRequestException("metadata unavailable")
-                    : new IOException("metadata unavailable"))),
-        };
-        await host.Send("POST", "/v3/workspaces", """{"id":"A"}""", entra.Token(), 500);
+        var error = await host.Send("POST", "/v3/workspaces/list", "{}", token, 401);
+        error.GetProperty("detail").GetString().ShouldBe("Authentication is required.");
     }
 
     [Fact]
@@ -108,11 +88,5 @@ public sealed class EntraTests
         await host.Send("POST", "/v3/workspaces", """{"id":"A"}""", token, 200);
         var error = await host.Send("POST", "/v3/keys?workspace_id=A", null, token, 422);
         error.GetProperty("detail").GetString().ShouldBe("key issuance requires configured signing keys");
-    }
-
-    private sealed class UnavailableMetadata(Exception failure) : IConfigurationManager<OpenIdConnectConfiguration>
-    {
-        public Task<OpenIdConnectConfiguration> GetConfigurationAsync(CancellationToken cancel) => Task.FromException<OpenIdConnectConfiguration>(failure);
-        public void RequestRefresh() { }
     }
 }

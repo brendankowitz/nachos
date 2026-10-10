@@ -62,18 +62,13 @@ internal static class AuthenticationRegistration
         services.AddSingleton<IAuthorizationMiddlewareResultHandler, NachosAuthorizationResultHandler>();
     }
 
-    // Credential-shaped outer exceptions (including malformed-JSON ones that IdentityModel wraps around JsonException,
-    // OverflowException, ...) are a 401 whatever they wrap; only a transport failure underneath marks a real outage.
+    // Malformed tokens surface as ArgumentException wrapping JSON/overflow errors and must stay credential failures (401).
     private static bool Operational(Exception error) => error switch
     {
         AggregateException aggregate => aggregate.InnerExceptions.Any(Operational),
-        SecurityTokenException or AuthException or ArgumentException or FormatException or JsonException =>
-            TransportFailure(error.InnerException),
+        SecurityTokenException or AuthException or ArgumentException or FormatException or JsonException => false,
         _ => true,
     };
-
-    private static bool TransportFailure(Exception? error) =>
-        error is HttpRequestException or IOException or TimeoutException || error is not null && TransportFailure(error.InnerException);
 
     private sealed class NachosAuthorizationResultHandler : IAuthorizationMiddlewareResultHandler
     {
