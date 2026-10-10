@@ -850,7 +850,8 @@ internal sealed class AuditFixture : IDisposable
         assets.Add(name + "/" + version, new { type = "package" });
         Inventory();
         var lower = name.ToLowerInvariant();
-        var path = Full($"cache/{lower}/{version}/{lower}.{version}.nupkg");
+        var cacheVersion = version.ToLowerInvariant();
+        var path = Full($"cache/{lower}/{cacheVersion}/{lower}.{cacheVersion}.nupkg");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
         var licenseMetadata = licenseType == "url" ? $"<licenseUrl>{license}</licenseUrl>" : $"<license type=\"{licenseType}\">{license}</license>";
@@ -872,7 +873,8 @@ internal sealed class AuditFixture : IDisposable
     public void NugetEntry(string name, string path, string text, string version = "1.0.0")
     {
         var lower = name.ToLowerInvariant();
-        using var zip = ZipFile.Open(Full($"cache/{lower}/{version}/{lower}.{version}.nupkg"), ZipArchiveMode.Update);
+        var cacheVersion = version.ToLowerInvariant();
+        using var zip = ZipFile.Open(Full($"cache/{lower}/{cacheVersion}/{lower}.{cacheVersion}.nupkg"), ZipArchiveMode.Update);
         Entry(zip, path, text);
     }
 

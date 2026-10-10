@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Xml.Linq;
 using Nachos.LicenseCheck;
 using Shouldly;
@@ -108,10 +109,58 @@ public sealed class NugetBuildMetadataTests
         errors.ShouldContain(error => error.Contains("nupkg identity disagrees with resolved inventory", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void PackageFixture_UsesLiteralLowercaseCachePathWithoutRewritingIdentity()
+    {
+        using var fixture = new AuditFixture();
+        var archive = Package(fixture, "2.25.29+RR", "2.25.29");
+        var directory = Directory.EnumerateDirectories(fixture.Full("cache/example")).Single();
+        Path.GetFileName(directory).ShouldBe("2.25.29+rr");
+        Path.GetFileName(Directory.EnumerateFiles(directory).Single()).ShouldBe("example.2.25.29+rr.nupkg");
+        archive.ShouldBe(fixture.Full("cache/example/2.25.29+rr/example.2.25.29+rr.nupkg"));
+        using var inventory = JsonDocument.Parse(File.ReadAllText(fixture.Full("nuget.json")));
+        inventory.RootElement.GetProperty("projects")[0].GetProperty("frameworks")[0]
+            .GetProperty("transitivePackages")[0].GetProperty("resolvedVersion").GetString().ShouldBe("2.25.29+RR");
+        using (var zip = ZipFile.OpenRead(archive))
+        using (var stream = zip.GetEntry("example.nuspec")!.Open())
+            XDocument.Load(stream).Descendants("version").Single().Value.ShouldBe("2.25.29");
+        var errors = new List<string>();
+        Collectors.Collect(Apache2DocumentTests.Inputs(fixture), errors).ShouldNotContain(package => package.Name == "example");
+        errors.ShouldHaveSingleItem().ShouldBe("example@2.25.29+RR: nupkg identity disagrees with resolved inventory.");
+    }
+
+    [Fact]
+    public void NugetFixture_CreatesAndUpdatesCanonicalArchiveWithRawVersion()
+    {
+        using var fixture = new AuditFixture();
+        fixture.Nuget("EXAMPLE", "MIT", AuditFixture.Mit, version: "1.2.3-PRE+Build");
+        var packageDirectory = Directory.EnumerateDirectories(fixture.Full("cache")).Single();
+        Path.GetFileName(packageDirectory).ShouldBe("example");
+        var directory = Directory.EnumerateDirectories(packageDirectory).Single();
+        Path.GetFileName(directory).ShouldBe("1.2.3-pre+build");
+        var archive = Directory.EnumerateFiles(directory).Single();
+        Path.GetFileName(archive).ShouldBe("example.1.2.3-pre+build.nupkg");
+        fixture.NugetEntry("EXAMPLE", "NOTICE.txt", AuditFixture.Mit, version: "1.2.3-PRE+Build");
+        using (var zip = ZipFile.OpenRead(archive))
+        {
+            using var stream = zip.GetEntry("EXAMPLE.nuspec")!.Open();
+            XDocument.Load(stream).Descendants("version").Single().Value.ShouldBe("1.2.3-PRE+Build");
+            using var reader = new StreamReader(zip.GetEntry("NOTICE.txt")!.Open());
+            reader.ReadToEnd().ShouldBe(AuditFixture.Mit);
+        }
+        var errors = new List<string>();
+        var packages = Collectors.Collect(Apache2DocumentTests.Inputs(fixture), errors);
+        errors.ShouldBeEmpty();
+        var package = packages.Single(item => item.Name == "EXAMPLE");
+        package.Version.ShouldBe("1.2.3-PRE+Build");
+        package.Archive.ShouldBe(archive);
+    }
+
     private static string Package(AuditFixture fixture, string inventory, string nuspec)
     {
         fixture.Nuget("example", "MIT", AuditFixture.Mit, version: inventory);
-        var archive = fixture.Full($"cache/example/{inventory}/example.{inventory}.nupkg");
+        var cacheVersion = inventory.ToLowerInvariant();
+        var archive = fixture.Full($"cache/example/{cacheVersion}/example.{cacheVersion}.nupkg");
         var document = new XDocument(new XElement("package", new XElement("metadata",
             new XElement("id", "example"), new XElement("version", nuspec),
             new XElement("license", new XAttribute("type", "expression"), "MIT"))));
