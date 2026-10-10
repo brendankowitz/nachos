@@ -1,11 +1,14 @@
 # UNVERIFIED on this host: pwsh is not installed here, so this script has never been run. The tested implementation is
 # start-nachos-for-conformance.sh; this is a deliberately thin twin with the same flags and behaviour (see that file's
-# header for the auth probe and the environment file contents).
+# header for the strict auth probe and the environment file contents). Authentication is strict by default: a refused
+# admin probe is an error and no suite runs. -AllowAuthDisabled is the development-only fallback for a branch where auth
+# is not published yet.
 #
-# Usage: Start-NachosForConformance.ps1 [-Run] [-EnvFile <path>] [-TimeoutSeconds <n>]
+# Usage: Start-NachosForConformance.ps1 [-Run] [-AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
 [CmdletBinding()]
 param(
     [switch]$Run,
+    [switch]$AllowAuthDisabled,
     [string]$EnvFile,
     [int]$TimeoutSeconds = 90
 )
@@ -83,9 +86,12 @@ try {
     $status = try {
         (Invoke-WebRequest "$baseUrl/v3/workspaces/list" -Method Post -Body '{}' -ContentType 'application/json' `
             -Headers @{ Authorization = "Bearer $adminKey" } -UseBasicParsing -TimeoutSec 5).StatusCode
-    } catch { [int]$_.Exception.Response.StatusCode }
+    } catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 } }
     if ($status -ne 200) {
-        Write-Host 'note: the API refused an admin key; restarting with authentication disabled (scoped-key scenario will not execute)'
+        if (-not $AllowAuthDisabled) {
+            throw "authentication does not work: the API answered an admin key with HTTP $status instead of 200. No suite was run. Pass -AllowAuthDisabled only while auth is not published on this branch."
+        }
+        Write-Host "note: the API answered an admin key with HTTP $status; -AllowAuthDisabled restarts it with authentication disabled (scoped-key scenario will not execute)"
         Stop-Api
         $authMode = 'disabled'
         $baseUrl = Start-Api $false

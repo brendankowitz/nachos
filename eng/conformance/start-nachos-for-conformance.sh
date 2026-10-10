@@ -3,22 +3,26 @@
 # file. With --run it also runs both suites and always tears the API down; without it, the API stays up until this
 # script is interrupted. Twin: Start-NachosForConformance.ps1.
 #
-# Auth: the script first starts the API with authentication enforced and probes it with an admin key. While the API
-# still fails closed for every /v3 route (before auth/Task 11 is published) the probe is refused, and the script
-# restarts the API with authentication disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled so
-# the scoped-key scenario reports "not executed" rather than passing against an open server.
+# Auth is strict by default: the script starts the API with authentication enforced and probes it with an admin key.
+# If the probe is refused it prints an error and exits non-zero before any suite runs, so a CI gate cannot go green
+# on an authentication regression. --allow-auth-disabled is the development-only escape hatch for a branch where auth
+# is not published yet (every /v3 route still fails closed): the script then restarts the API with authentication
+# disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled, so the scoped-key scenario reports
+# "not executed" rather than passing against an open server.
 #
-# Usage: start-nachos-for-conformance.sh [--run] [--env-file PATH] [--timeout SECONDS]
+# Usage: start-nachos-for-conformance.sh [--run] [--allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
 set -euo pipefail
 
 usage() { sed -n '/^# Usage:/s/^# //p' "${BASH_SOURCE[0]}" >&2; }
 
 run=0
+allow_auth_disabled=0
 env_file=""
 timeout_seconds=90
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run) run=1; shift ;;
+    --allow-auth-disabled) allow_auth_disabled=1; shift ;;
     --env-file) env_file="${2:?--env-file needs a path}"; shift 2 ;;
     --timeout) timeout_seconds="${2:?--timeout needs a number of seconds}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -119,8 +123,14 @@ admin_status() {
 
 auth_mode=enforced
 start_api true
-if [[ "$(admin_status)" != 200 ]]; then
-  echo "note: the API refused an admin key; restarting with authentication disabled (scoped-key scenario will not execute)" >&2
+probe_status="$(admin_status)"
+if [[ "$probe_status" != 200 ]]; then
+  if ((allow_auth_disabled == 0)); then
+    echo "error: authentication does not work: the API answered an admin key with HTTP $probe_status instead of 200." >&2
+    echo "       No suite was run. Pass --allow-auth-disabled only while auth is not published on this branch." >&2
+    exit 1
+  fi
+  echo "note: the API answered an admin key with HTTP $probe_status; --allow-auth-disabled restarts it with authentication disabled (scoped-key scenario will not execute)" >&2
   stop_api
   auth_mode=disabled
   start_api false
