@@ -1,5 +1,9 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$summaryWasPresent = Test-Path Env:GITHUB_STEP_SUMMARY
+$previousSummary = $env:GITHUB_STEP_SUMMARY
+try {
+Remove-Item Env:GITHUB_STEP_SUMMARY -ErrorAction SilentlyContinue
 . (Join-Path $PSScriptRoot 'TestResults.ps1')
 $directory = Join-Path $PSScriptRoot "../../artifacts/ci/helper-tests/$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -124,3 +128,8 @@ try {
     Write-Host "CI helper checks: $count passed."
 }
 finally { Remove-Item -LiteralPath $directory -Recurse -Force }
+}
+finally {
+    if ($summaryWasPresent) { $env:GITHUB_STEP_SUMMARY = $previousSummary }
+    else { Remove-Item Env:GITHUB_STEP_SUMMARY -ErrorAction SilentlyContinue }
+}

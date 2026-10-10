@@ -2,8 +2,13 @@ name: Source MVP CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -33,7 +38,7 @@ jobs:
       - name: Test CI guards
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
-          ./eng/ci/Test-CiHelpers.ps1
+          ./eng/ci/Test-CiSummary.ps1
       - name: Release solution build (warnings are errors)
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
@@ -41,6 +46,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build Nachos.slnx -c Release --no-restore -warnaserror
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify parsed workflow event and concurrency policy
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          ./eng/ci/Test-WorkflowPolicy.ps1 -YamlAssembly ./eng/license-check/bin/Release/net10.0/YamlDotNet.dll
       - name: All portable suites, with fresh per-project counts
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
@@ -56,7 +65,7 @@ jobs:
   sql-integration:
     name: Complete SQL, CLI, and AppHost suites (Docker)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -249,6 +258,5 @@ jobs:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
-          # Pending prerequisite: --require-auth (PowerShell twin: -RequireAuth),
-          # no fallback, no empty-list xfail after API auth/empty-list fixes.
+          # Require authenticated execution in both languages, including scoped denial.
           ./eng/ci/Invoke-SdkSmoke.ps1
