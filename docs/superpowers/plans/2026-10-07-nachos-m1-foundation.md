@@ -704,13 +704,13 @@ These are the input classes most likely to bite users. Each line names the test 
 
 ## Status and MVP scope (updated 2026-10-10)
 
-PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "escalate to astra to answer. its ok to have followup, this is our mvp and only our first pr". Astra's rulings and merge checklist are in PR #6 comment 6090696557. **Until the owner confirms that delegation in an untagged PR comment, the scope changes marked † below are proposals, not decisions.**
+PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "escalate to astra to answer. its ok to have followup, this is our mvp and only our first pr". Astra's rulings and merge checklist are in PR #6 comment 6090696557. **The owner confirmed in an untagged PR comment (6093551697, 2026-10-10): "I sign off on everything needed to get the pr merged in and file follow-up items". The scope changes marked † below are therefore owner-confirmed.** Per-run Azure consent, the clean-room rules and the §3 license tiers are unchanged.
 
 | Task | State on the branch | Remaining for this PR | Follow-up |
 |---|---|---|---|
 | 1, 2, 3, 5, 6 | Landed, reviewed | — | — |
 | 4a, 4b | Landed, reviewed | — | #8, #9 |
-| 7 SQL provider | Landed; partner fixes pushed (`aa40554`) | Salsa's runtime re-review; SQL limits (d)† | #18 (extreme-filter timeout) |
+| 7 SQL provider | Landed; partner fixes pushed (`aa40554`); SQL limits (d)† accepted | Final residual-documentation round (Salsa 5477443513) | #18 (extreme-filter and repetitive-text `contains` timeout residuals, accepted as documented 500s) |
 | 8 In-memory provider | Landed, reviewed | — | — |
 | 9 API | Landed, reviewed | — | — |
 | 10 Auth, 11 Idempotency adapter | Reviewed privately, not published | Publish after the HTTP nesting cap (c)† | — |
@@ -722,9 +722,9 @@ PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "e
 | 17 CI | `validate` only | Real build/test, SQL/schema, license, infra and docs-validate jobs | #13 (credential policy) |
 | 18 README, docs site, DocsGen, Pages | No README on the branch; site/DocsGen private | README (§22.1 M1 subset) | #16 (site + Pages)†, #12 |
 | Tokenizer (I1) | Known `TokenCount_UsesOrdinaryTextForSpecialSpellings` failure | Ordinary-text counting fix (a)† | #10 (managed counter, release gate) |
-| Licensing | Full-origin audit red (1,080 diagnostics) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
+| Licensing | A private full-origin composition (unmerged generated site + published consumer) was red with 1,080 diagnostics; that is **not** this PR's committed tree. The committed-tree audit runs separately (Cedar) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
 
-**† Proposed MVP deviations from the checklist below** (pending owner confirmation): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
+**† Owner-confirmed MVP deviations from the checklist below** (6093551697): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
 
 ---
 
