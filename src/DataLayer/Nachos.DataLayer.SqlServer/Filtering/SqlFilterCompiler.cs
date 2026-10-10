@@ -50,9 +50,12 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// all of them, and identical conditions share one flag. The parser sets no cap on the number of conditions, but SQL
 /// Server bounds what it can compile: a filtered list whose statement fails with an expression-services or optimizer
 /// resource limit (errors 8632, 8623, 8621, 191) is a <see cref="NachosValidationException"/> with the fixed detail
-/// <see cref="TooComplex"/>, like a filter beyond the parameter limit. Measured: tens of thousands of conditions that
-/// share their tests run (10,000 in seconds), while about 3,500 conditions that share nothing (an OR of ANDs on distinct
-/// keys) are refused. The largest filters cost mostly compile time.
+/// <see cref="TooComplex"/>, like a filter beyond the parameter limit. Measured on a dev host: conditions that share their
+/// tests run by the ten thousand, while conditions that share nothing (an OR of ANDs on distinct keys) were refused from
+/// about 3,500; where SQL Server gives up depends on the server. The largest filters cost mostly compile time, so very
+/// large unshareable filters (observed from roughly 5,000-7,000 unshared conditions on a dev host, fewer on slower tiers)
+/// can reach the 30 s command timeout before SQL Server refuses them, and then surface as a timeout (500) rather than a
+/// 422; tracked in issue #18.
 /// </para>
 /// <para>
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into

@@ -1,11 +1,13 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.InMemory;
 using Nachos.DataLayer.SqlServer.Filtering;
+using Nachos.DataLayer.SqlServer.Schema;
 using Shouldly;
 
 namespace Nachos.DataLayer.SqlServer.Tests;
@@ -57,9 +59,17 @@ public sealed class SqlFilterLimitTests(SqlServerFixture fixture)
     public async Task FilterSqlServerCannotCompile_IsAValidationError()
     {
         // 1750 ANDs of two conditions on their own keys (one operand, so few parameters): nothing to merge or share, 3500
-        // separate flags. SQL Server stops with
-        // an expression-services limit (8632) or runs out of resources (8623, 8621); the store reports it as a 422.
-        var store = await SeedAsync();
+        // separate flags. SQL Server stops with an expression-services limit (8632) or runs out of resources (8623, 8621);
+        // the store reports it as a 422. Measured on a dev host: 1600 ANDs still compile (8.4 s), 1750 are refused after
+        // 8.9 s. The refusal comes after seconds of compiling, so this store gets a 120 s command timeout: a slower host must
+        // reach the refusal, not the default 30 s timeout (issue #18).
+        await SeedAsync();
+        var database = await SqlTestDatabase.GetAsync(fixture, "filter-limits");
+        var options = new SqlServerOptions
+        {
+            ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { CommandTimeout = 120 }.ConnectionString,
+        };
+        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System);
         var filter = FilterParser.Parse(
             "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 1750).Select(i => "{\"metadata\":{\"k" + I(i) + "\":1,\"c" + I(i) + "\":{\"contains\":\"secret\"}}}")) + "]}",
             ResourceKind.Peer);
