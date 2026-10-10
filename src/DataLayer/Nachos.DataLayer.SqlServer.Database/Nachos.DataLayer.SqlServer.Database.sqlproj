@@ -2,6 +2,9 @@
 <Project DefaultTargets="Build">
   <Sdk Name="Microsoft.Build.Sql" Version="2.2.0" />
   <PropertyGroup>
+    <!-- The pinned SDK otherwise checks NuGet for a newer version on every restore and warns when one exists; with
+         warnings as errors that makes builds depend on the feed's current state. Upgrades are deliberate pin changes. -->
+    <SkipCheckForNewSDKVersion>true</SkipCheckForNewSDKVersion>
     <Name>Nachos.DataLayer.SqlServer.Database</Name>
     <!-- Azure SQL Database is the production target. DacFx treats it as its own platform, so a
          dacpac built for a Sql1xx provider cannot be published to it. The Sql2025 sibling project

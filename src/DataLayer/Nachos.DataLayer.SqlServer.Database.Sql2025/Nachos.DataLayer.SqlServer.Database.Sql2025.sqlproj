@@ -2,6 +2,9 @@
 <Project DefaultTargets="Build">
   <Sdk Name="Microsoft.Build.Sql" Version="2.2.0" />
   <PropertyGroup>
+    <!-- The pinned SDK otherwise checks NuGet for a newer version on every restore and warns when one exists; with
+         warnings as errors that makes builds depend on the feed's current state. Upgrades are deliberate pin changes. -->
+    <SkipCheckForNewSDKVersion>true</SkipCheckForNewSDKVersion>
     <Name>Nachos.DataLayer.SqlServer.Database.Sql2025</Name>
     <!-- SQL Server 2025 (box). Contains NO DDL of its own: it compiles the same table files as the
          Azure project so both dacpacs always describe the same schema. -->
