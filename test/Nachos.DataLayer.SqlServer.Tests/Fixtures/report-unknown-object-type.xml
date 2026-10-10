@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-authored: a well-formed report with a known operation on an object type outside the allowlist. -->
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Create">
+      <Item Value="[dbo].[Workspaces]" Type="SqlTable" />
+      <Item Value="[Nachos.Clr]" Type="SqlAssembly" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

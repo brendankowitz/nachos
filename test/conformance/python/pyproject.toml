@@ -1,0 +1,13 @@
+[project]
+name = "nachos-conformance-python"
+version = "0.0.0"
+description = "Upstream honcho-ai SDK smoke conformance against Nachos"
+requires-python = ">=3.11"
+dependencies = ["honcho-ai==2.5.1"]
+
+[project.optional-dependencies]
+test = ["httpx==0.28.1", "pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+addopts = "-p no:cacheprovider"
+testpaths = ["."]

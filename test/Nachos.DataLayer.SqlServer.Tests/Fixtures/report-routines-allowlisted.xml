@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-authored: the model has no routines yet, so DacFx has no real report to capture. Element and attribute
+     names are those of real reports; the Type values are DacFx's model element names. -->
+<DeploymentReport xmlns="http://schemas.microsoft.com/sqlserver/dac/DeployReport/2012/02">
+  <Alerts />
+  <Operations>
+    <Operation Name="Create">
+      <Item Value="[dbo].[AllocateMessageSeq]" Type="SqlProcedure" />
+      <Item Value="[dbo].[Tokens]" Type="SqlScalarFunction" />
+      <Item Value="[dbo].[RecentMessages]" Type="SqlInlineTableValuedFunction" />
+      <Item Value="[dbo].[MessageView]" Type="SqlView" />
+    </Operation>
+    <Operation Name="Alter">
+      <Item Value="[dbo].[GetQueueStatus]" Type="SqlProcedure" />
+      <Item Value="[dbo].[Tokens]" Type="SqlScalarFunction" />
+      <Item Value="[dbo].[MessageView]" Type="SqlView" />
+    </Operation>
+  </Operations>
+</DeploymentReport>

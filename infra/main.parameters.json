@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "${AZURE_ENV_NAME}" },
+    "location": { "value": "${AZURE_LOCATION}" },
+    "principalId": { "value": "${AZURE_PRINCIPAL_ID}" },
+    "principalLogin": { "value": "${AZURE_PRINCIPAL_LOGIN}" },
+    "principalType": { "value": "${AZURE_PRINCIPAL_TYPE=User}" },
+    "openAiEndpoint": { "value": "${AZURE_OPENAI_ENDPOINT=}" },
+    "apiExists": { "value": "${SERVICE_API_RESOURCE_EXISTS=false}" },
+    "placeholderImage": { "value": "${NACHOS_PLACEHOLDER_IMAGE=ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4}" }
+  }
+}

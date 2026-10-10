@@ -49,16 +49,17 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 | 1 Solution skeleton, ServiceDefaults, wire manifest | Cortado | — |
 | 2 Abstractions: contracts, records, store interfaces, store contract tests | Cortado | 1 |
 | 3 Filter AST, parser, conformance cases | Cortado | 2 |
-| 4 Core: services, validation, tokens, config resolver, hosting | Cedar | 2, 3 |
+| 4a Core helpers: validation, tokens, config resolver, `NachosBuilder`/hosting, key issuer, request hasher | Cedar | 2, 3 |
+| 4b Core service: `NachosService` (`INachosClient` + `CreateMessagesResponseAsync`) | Cedar | 4a |
 | 5 Database projects (Azure + Sql2025) | Cortado | 1 |
 | 6 SchemaDeployer | Cortado | 5 |
-| 7 SQL Server provider | Cortado | 2, 3, 4 (`NachosBuilder`), 6 |
-| 8 In-memory provider | Salsa | 2, 3, 4 (`NachosBuilder`) |
-| 9 API: routes, JSON, errors, pagination, health, 501s | Cedar | 4, 8 |
-| 10 Auth: NachosKey + Entra, keys and grants routes | Cedar | 9 |
-| 11 Idempotency-Key on message create | Cedar | 9; 7 for SQL |
+| 7 SQL Server provider | Cortado | 2, 3, 4a (`NachosBuilder`), 6 |
+| 8 In-memory provider | Salsa | 2, 3, 4a (`NachosBuilder`) |
+| 9 API: routes, JSON, errors, pagination, health, 501s | Cedar | 4b, 8 |
+| 10 Auth: NachosKey + Entra HTTP schemes, keys and grants routes | Cedar | 4a (`IKeyIssuer`), 9 |
+| 11 Idempotency-Key HTTP adapter on message create | Cedar | 4b, 9, 10 (auth-before-replay); 7 for SQL |
 | 12 .NET client | Salsa | 9, 10, 11 |
-| 13 Bootstrap CLI | Cortado | 6, 7, 10 (`IKeyIssuer`) |
+| 13 Bootstrap CLI | Cortado | 4a (`IKeyIssuer`), 6, 7 |
 | 14 Aspire AppHost + FTS image recipe | Cortado | 7, 9 |
 | 15 Bicep + azd (offline) | Salsa | 1 (Bicep, `azure.yaml`, `InfraTests`); 13 (hook CLI verbs; until 13 lands, hooks are written against the documented verbs and only syntax-checked) |
 | 16 Upstream-SDK conformance | Salsa | 10, 11, 13 |
@@ -67,8 +68,8 @@ The [roadmap's Global Constraints](2026-10-07-nachos-roadmap.md#global-constrain
 
 Parallel tracks after Task 2:
 - **Cortado:** 3 → 5 → 6 → 7 → 13 → 14.
-- **Cedar:** 17 and the 18 scaffold can start right after Task 1. Then 4 → 9 → 10 → 11 → 18 content.
-- **Salsa:** 15 can start right after Task 1. Then 8 (after Task 4) → 12 → 16.
+- **Cedar:** 17 and the 18 scaffold can start right after Task 1. Then 4a → 4b → 9 → 10 → 11 → 18 content.
+- **Salsa:** 15 can start right after Task 1. Then 8 (after Task 4a) → 12 → 16.
 
 **Three agents (Cortado, Cedar, Salsa).** Each agent owns exactly the files in its tasks' **Files** lists. Shared files are assigned as follows:
 - `Directory.Packages.props` and `Nachos.slnx`: owned by Cortado. Other agents request additions in a PR comment, and Cortado applies them within one heartbeat.
@@ -100,6 +101,23 @@ These are recorded in the spec by Cortado in the same PR, and need agreement fro
 4. **Auth status codes:** every auth failure is 401, matching Honcho's public docs.
 5. **Case-sensitive IDs** (binary collation), matching Honcho's behavior on Postgres.
 
+## Interface amendments during implementation
+
+These were made while executing Tasks 2 and 3, and the review rounds requested them. The interface blocks below already reflect them. Rationale is in #6 comments 6046778985 and 6046944483.
+
+- **Grants:** `GetWorkspacesAsync → GetWorkspaceGrantsAsync`, returning `WorkspaceGrants`. A null-workspace grant would otherwise silently grant nothing, because the old return type couldn't express "all workspaces".
+- **`IPeerStore.ListAsync` parameter order** changed to `(ws, kind, filter, …)` to match `INachosClient.ListPeersAsync`. `isInternal` was added so the `PeerKind` filters are testable.
+- **`NachosPaging.EnumerateAsync`** takes a cancellation-aware fetch delegate.
+- **`PageRequest`** validates in its init accessors and throws `RequestValidationException`. The resulting 422 uses the array-`detail` shape, and the check can't be bypassed through `with`.
+- **`INachosClient.AddGrantAsync`** was added for the M1 route `POST /v3/admin/grants`.
+- **Store semantics are pinned by `StoreContractTests`** (see the store interface XML docs):
+  - missing parents throw `NotFoundException`;
+  - updates replace;
+  - lists use creation order;
+  - JSON is deep-cloned on input and output;
+  - stores are safe for concurrent use;
+  - all times come from the app clock.
+- **`FilterNode` subtypes are nested** (`FilterNode.And`, and so on). Field values are normalized: `created_at` → UTC `DateTimeOffset`, `token_count` → integral `decimal` (accepts `5`, `5.0`, `1e2`, and integers beyond `long`; out-of-range values are folded by the parser), `is_active` → `bool`.
 ## Review Focus
 
 These are the input classes most likely to bite users. Each line names the test that pins it.
@@ -190,7 +208,7 @@ These are the input classes most likely to bite users. Each line names the test 
     - `GetAsync(name, ct) → Task<WorkspaceRecord?>`
     - `UpdateAsync(name, JsonObject? metadata, JsonObject? configuration, ct) → Task<WorkspaceRecord>`; a null argument leaves that field unchanged; throws `NotFoundException`
     - `ListAsync(FilterNode? filter, PageRequest page, ct) → Task<Page<WorkspaceRecord>>`
-  - `IPeerStore`: `GetOrCreateAsync(ws, name, metadata, configuration, ct)`, `GetAsync`, `UpdateAsync`, `ListAsync(ws, FilterNode?, PeerKind, PageRequest, ct)`, and `ListSessionsForPeerAsync(ws, peer, FilterNode?, PageRequest, ct) → Page<SessionRecord>`.
+  - `IPeerStore`: `GetOrCreateAsync(ws, name, metadata, configuration, ct, bool isInternal = false)` (`isInternal` applies only on create; scopes use it in M6), `GetAsync`, `UpdateAsync`, `ListAsync(ws, PeerKind kind, FilterNode? filter, PageRequest page, ct)` (`kind`: Regular means `IsInternal = false`, Scope means `true`, All means both), and `ListSessionsForPeerAsync(ws, peer, FilterNode?, PageRequest, ct) → Page<SessionRecord>` (active memberships only).
   - `ISessionStore`:
     - `GetOrCreateAsync(ws, name, metadata, configuration, IReadOnlyDictionary<string, SessionPeerConfig>? peers, ct)`, `GetAsync`
     - `UpdateAsync(ws, name, metadata, configuration, ct)`, `ListAsync(ws, FilterNode?, PageRequest, ct)`
@@ -206,10 +224,10 @@ These are the input classes most likely to bite users. Each line names the test 
     - `UpdateMetadataAsync(ws, session, publicId, JsonObject metadata, ct)`
     - `ListAsync(ws, session, FilterNode?, PageRequest, ct)`
   - `IIdempotencyStore`: `TryGetAsync(ws, key, ct) → Task<IdempotencyRecord?>` (ignores expired records). **Expired keys are reclaimed atomically inside `AppendAsync`:** in the same transaction, delete the expired row for `(workspace, key)` under an update/range lock, then insert. A key whose record has expired is therefore immediately reusable for a fresh operation, without relying on a cleanup worker.
-  - `IGrantStore`: `AddAsync(GrantRecord, ct)`, `RemoveAsync(GrantRecord, ct)`, `ListAsync(string? objectId, ct)`, `GetWorkspacesAsync(string objectId, ct) → Task<IReadOnlySet<string>>`.
+  - `IGrantStore`: `AddAsync(GrantRecord, ct)` (an unknown workspace throws `NotFoundException`; a duplicate is a no-op), `RemoveAsync(GrantRecord, ct)` (a missing grant is a no-op), `ListAsync(string? objectId, ct)`, and `GetWorkspaceGrantsAsync(string objectId, ct) → Task<WorkspaceGrants>`, where `WorkspaceGrants(bool AllWorkspaces, IReadOnlySet<string> Workspaces)`. Only grants with `Role == GrantRoles.Workspace` (`"Nachos.Workspace"`) count, and a null workspace sets `AllWorkspaces`. **`AllWorkspaces` is workspace-wide access, never admin authority.**
 - **Exceptions:** `NachosException` (base) → `NotFoundException`, `ConflictException`, `NachosValidationException(string Detail)`, `RequestValidationException(IReadOnlyList<ValidationError>)`, `AuthException`, `IdempotencyKeyReusedException` (→ 422), and `IdempotencyDuplicateException(string Key)`. Stores throw the last one when an `IdempotencyWrite` key already exists. It is never surfaced over HTTP.
 - **`PublicId.New() → string`:** 21 characters, alphabet `A-Za-z0-9_-`, from `RandomNumberGenerator`.
-- **`INachosClient`:** one async method per M1 route, with names matching the routes. For example: `GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default) → Task<Workspace>`, `ListWorkspacesAsync(JsonObject? filters, PageRequest page, ct) → Task<Page<Workspace>>`, and `CreateMessagesAsync(string workspaceId, string sessionId, IReadOnlyList<MessageCreate> messages, string? idempotencyKey = null, ct) → Task<IReadOnlyList<Message>>`. Also provide the extension `NachosPaging.EnumerateAsync<T>(Func<PageRequest, Task<Page<T>>>) → IAsyncEnumerable<T>`.
+- **`INachosClient`:** one async method per M1 route, with names matching the routes. For example: `GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null, WorkspaceConfiguration? configuration = null, CancellationToken ct = default) → Task<Workspace>`, `ListWorkspacesAsync(JsonObject? filters, PageRequest page, ct) → Task<Page<Workspace>>`, and `CreateMessagesAsync(string workspaceId, string sessionId, IReadOnlyList<MessageCreate> messages, string? idempotencyKey = null, ct) → Task<IReadOnlyList<Message>>`. Also provide the extension `NachosPaging.EnumerateAsync<T>(this Func<PageRequest, CancellationToken, Task<Page<T>>> fetch, int pageSize = 50, CancellationToken ct = default) → IAsyncEnumerable<T>`, and `AddGrantAsync(string objectId, string? workspaceId, string role, ct)` for `POST /v3/admin/grants`.
 - **`abstract class StoreContractTests`** with `protected abstract IMemoryStore CreateStore(TimeProvider clock)`. Its tests are named in the steps below and use `FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`).
 - **Clock rule (both providers):** stores take `TimeProvider` from DI. Every time-based value is computed from the **app clock** and passed to SQL as a parameter (`@now`), never from the database clock (`SYSDATETIMEOFFSET()`/`SYSUTCDATETIME()`) in a query. That covers `CreatedAt` defaults, `JoinedAt`/`LeftAt`, `IdempotencyRecord.ExpiresAt = clock.GetUtcNow() + Ttl`, and expiry comparisons. The same `FakeTimeProvider`-driven contract test therefore behaves identically on SQL and in memory. The post-deploy `SchemaVersion.AppliedAt` is the only exception.
 
@@ -245,7 +263,7 @@ These are the input classes most likely to bite users. Each line names the test 
 
 **Interfaces:**
 - Produces:
-  - `abstract record FilterNode` with the subtypes `And(IReadOnlyList<FilterNode>)`, `Or(...)`, `Not(IReadOnlyList<FilterNode>)` (meaning NOT any), `MatchAll`, `MatchNone`, `Field(string Column, FilterOp Op, JsonNode? Value)`, and `MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value)`.
+  - `abstract record FilterNode` with **nested** sealed subtypes (call sites write `new FilterNode.And(...)`): `And(IReadOnlyList<FilterNode>)`, `Or(...)`, `Not(IReadOnlyList<FilterNode>)` (meaning NOT any), `MatchAll`, `MatchNone`, `Field(string Column, FilterOp Op, JsonNode? Value)`, and `MetadataPath(IReadOnlyList<string> Path, FilterOp Op, JsonNode? Value)`.
   - `enum FilterOp { Eq, Ne, Gt, Gte, Lt, Lte, In, Contains, IContains, IsNull, NotNull, JsonContains }`.
   - `enum ResourceKind { Workspace, Peer, Session, Message }`.
   - `FilterParser.Parse(JsonNode? filters, ResourceKind kind) → FilterNode?`; throws `NachosValidationException` on value errors.
@@ -271,10 +289,14 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 5:** Run it again. Expected: PASS.
 - [ ] **Step 6:** Commit `feat(abstractions): filter AST, parser, shared conformance cases`.
 
-### Task 4: Core: services, validation, tokens, config resolver, hosting (Cedar)
+### Task 4: Core (Cedar). Delivered as 4a (helpers) then 4b (service)
+
+**Split (agreed on #6, 2026-10-07):**
+- **4a** delivers every helper below plus `NachosBuilder`/`AddNachos` hosting, the **key issuer** (moved here from Task 10), and the **request hasher / canonical JSON** (moved here from Task 11). Tasks 7, 8 and 13 consume 4a.
+- **4b** delivers the complete `NachosService`. There is no partial `INachosClient` registration and no fake methods. Task 9 consumes 4b.
 
 **Files:**
-- Create: `src/Nachos.Core/NachosService.cs` (implements `INachosClient`), `Validation/IdValidator.cs`, `Validation/RequestValidator.cs`, `Tokens/ITokenCounter.cs`, `Tokens/TiktokenTokenCounter.cs`, `Configuration/IConfigurationResolver.cs`, `ConfigurationResolver.cs`, `ResolvedConfiguration.cs`, `NachosOptions.cs`; `src/Nachos.Hosting/NachosServiceCollectionExtensions.cs`, `NachosBuilder.cs`; `test/Nachos.Core.Tests/*`.
+- Create: `src/Nachos.Core/NachosService.cs` (implements `INachosClient`), `Validation/IdValidator.cs`, `Validation/RequestValidator.cs`, `Tokens/ITokenCounter.cs`, `Tokens/TiktokenTokenCounter.cs`, `Configuration/IConfigurationResolver.cs`, `ConfigurationResolver.cs`, `ResolvedConfiguration.cs`, `NachosOptions.cs`, `Keys/{IKeyIssuer,HmacKeyIssuer,NachosKeyClaims,SigningKeyOptions}.cs` (4a; moved from Task 10), `Idempotency/{RequestHasher,CanonicalJson,CapturedResponse}.cs` (4a; moved from Task 11); `src/Nachos.Hosting/NachosServiceCollectionExtensions.cs`, `NachosBuilder.cs`; `test/Nachos.Core.Tests/*`. The key-issuer tests (`KeyIssuerTests`: round-trip, expired, rotated-out kid, unknown kid, tampered, and missing-configuration behavior) move to `Nachos.Core.Tests`.
 
 **Interfaces:**
 - Consumes: everything from Tasks 2 and 3.
@@ -287,7 +309,7 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 1:** Write the tests:
   - `IdValidatorTests.Rejects` (`""`, 513 characters, `"a b"`, `"é"`) and `.Accepts` (`"a-Z_9"`);
   - `TokenCounterTests.KnownStrings` (`"hello world"` → 2; `""` → 0);
-  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`, `.SummaryMinimumsEnforced` (short 9 → `NachosValidationException`);
+  - `ConfigurationResolverTests.MessageOverridesSessionOverridesWorkspace`, `.MessageConfigOnlyAffectsReasoning`; `ConfigurationAdmissionTests.SummaryMinimumsEnforced` (admission, not the resolver: stored data that violates a minimum is a non-request error per spec §9; short 9 → `RequestValidationException` with `loc` `["body","configuration","summary","messages_per_short_summary"]`; amended on #6, see spec §9 "Validation happens at admission"). `IdValidator` keeps the documented domain `NachosValidationException`, and Task 9 owns body-`id` schema checks;
   - `NachosServiceTests`, which use an NSubstitute `IMemoryStore` so that Task 4 never depends on Task 8: `CreateMessages_101_Throws422`, `CreateMessages_ComputesTokenCount`, `GetOrCreateSession_WithPeers_EnsuresMembership`, `ListPeers_DefaultKindExcludesInternal`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement. `NachosService` maps records to wire DTOs: `Session.IsActive = State == Active`, and `Message.Id = PublicId`. Filter JSON goes through `FilterParser.Parse`.
@@ -437,16 +459,16 @@ These are the input classes most likely to bite users. Each line names the test 
 ### Task 10: Auth: NachosKey + Entra, keys and grants routes (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Core/Keys/{IKeyIssuer,HmacKeyIssuer,NachosKeyClaims,SigningKeyOptions}.cs`; `src/Nachos.Api/Auth/{NachosPrincipal,NachosKeyAuthenticationHandler,EntraPrincipalMapper,NachosAuthorizationHandler,RouteRequirements,MemberReadRoutes}.cs`; `Endpoints/{Key,Grant}Endpoints.cs`; `test/Nachos.Api.Tests/Auth/{ScopeMatrixTests,KeyIssuerTests,MemberReadPolicyTests,EntraMappingTests,KeyEndpointTests}.cs`.
+- Create (the Core key issuer now ships in **Task 4a**; Task 10 consumes it): `src/Nachos.Api/Auth/{NachosPrincipal,NachosKeyAuthenticationHandler,EntraPrincipalMapper,NachosAuthorizationHandler,RouteRequirements,MemberReadRoutes}.cs`; `Endpoints/{Key,Grant}Endpoints.cs`; `test/Nachos.Api.Tests/Auth/{ScopeMatrixTests,KeyIssuerTests,MemberReadPolicyTests,EntraMappingTests,KeyEndpointTests}.cs`.
 
 **Interfaces:**
 - Produces:
   - `IKeyIssuer.Issue(NachosKeyClaims claims) → string`, where `NachosKeyClaims(bool Admin, string? Workspace, string? Peer, string? Session, DateTimeOffset? ExpiresAt)`. The token is an HS256 JWT with claims `t` (ISO-8601 UTC string), `exp?`, `ad?`, `w?`, `p?`, `s?`, and a `kid` header.
   - `IKeyIssuer.Validate(string token) → NachosKeyClaims`, which throws `AuthException`.
-  - `SigningKeyOptions { IReadOnlyList<SigningKey> Keys }`, where `SigningKey(string Kid, string Secret)`. `Keys[0]` signs; all keys validate. A missing `kid` validates against `Keys[0]`.
+  - `SigningKeyOptions { IReadOnlyList<SigningKey> Keys }`, where `SigningKey(string? Kid, string? Secret)` with a parameterless constructor so the configuration binder keeps incomplete entries and the issuer rejects them (amended on #6, N1). `Keys[0]` signs; all keys validate. A missing `kid` validates against `Keys[0]`.
   - `NachosPrincipal(bool IsAdmin, IReadOnlySet<string> Workspaces, string? Peer, string? Session)`.
   - Auth options bound from `Nachos:Auth`: `{ bool Enabled = true; SigningKeyOptions NachosKey; MicrosoftIdentityOptions? Entra }`. `Enabled = false` outside Development throws at startup.
-  - Entra mapping: app role `Nachos.Admin` → admin. App role `Nachos.Workspace` → the workspaces from `IGrantStore.GetWorkspacesAsync(oid)`. Entra never maps to a peer or session.
+  - Entra mapping: app role `Nachos.Admin` → admin. App role `Nachos.Workspace` → `IGrantStore.GetWorkspaceGrantsAsync(oid)`. `WorkspaceGrants.AllWorkspaces` gives access to every workspace and is carried separately from `IsAdmin`; it never grants admin-only routes such as `POST /v3/keys`, `/v3/workspaces/list`, or `/v3/admin/grants`. Add `NachosPrincipal.AllWorkspaces` (bool), alongside `Workspaces`. Entra never maps to a peer or session.
   - Route requirements, one per route:
 
 | Route(s) | Allowed |
@@ -460,7 +482,12 @@ These are the input classes most likely to bite users. Each line names the test 
 | `GET S/peers/{p}/config` | admin; workspace; session; member-read **with `p == peer_id`** |
 
   - `MemberReadRoutes.All` lists exactly the member-read routes above.
-  - `POST /v3/keys` rejects `peer_id` without `workspace_id`, and rejects `peer_id` together with `session_id`, with 422. It returns `KeyResponse`.
+  - `POST /v3/keys` (admin only) follows Honcho's **public** Create Key docs (https://honcho.dev/docs/v3/api-reference/endpoint/keys/create-key.md):
+    - A request with **none** of `workspace_id`, `peer_id`, `session_id` is rejected with 422. An absent scope **never** mints an admin key; admin keys come only from `nachos keys create --admin`.
+    - A `peer_id` or `session_id` without `workspace_id` returns 422.
+    - `peer_id` together with `session_id` returns 422. This is a Nachos restriction, listed in spec §9.4.
+    - When the signing ring isn't configured, or auth is disabled, it returns `422 {"detail": "key issuance requires configured signing keys"}`. A secret is never invented.
+    - On success it returns `KeyResponse`.
   - `POST /v3/admin/grants` takes a body `{ "object_id", "workspace_id"?, "role": "Nachos.Admin" | "Nachos.Workspace" }` and returns 204.
 
 - [ ] **Step 1:** Write the tests:
@@ -475,14 +502,22 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 4:** Run it again. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(auth): NachosKey + Entra schemes, scope matrix, keys and grants routes`.
 
-### Task 11: Idempotency-Key on message create (Cedar)
+### Task 11: Idempotency-Key HTTP adapter on message create (Cedar)
 
 **Files:**
-- Create: `src/Nachos.Api/Idempotency/{IdempotencyFilter,RequestHasher}.cs`; `test/Nachos.Api.Tests/IdempotencyTests.cs`.
+- Create: `src/Nachos.Api/Idempotency/IdempotencyEndpointAdapter.cs`; `test/Nachos.Api.Tests/IdempotencyTests.cs`. `RequestHasher` and the canonical-JSON operation live in Core (Task 4a), and the replay/append logic lives in `NachosService.CreateMessagesResponseAsync` (Task 4b).
 
 **Interfaces:**
 - Produces:
-  - `RequestHasher.Hash(string method, string routeTemplate, IReadOnlyDictionary<string,string> routeValues, ReadOnlySpan<byte> canonicalBody) → string` (lowercase hex SHA-256). The canonical body is compact JSON with recursively sorted keys.
+  - (Task 4a) `RequestHasher.Hash(string method, string routeTemplate, IReadOnlyDictionary<string,string> routeValues, ReadOnlySpan<byte> canonicalBody) → string` (lowercase hex SHA-256). The canonical body is compact JSON with recursively sorted keys that keeps **every** field: unknown fields, explicit `null` versus omitted, and message `configuration`. Both route aliases (`M` and `M/`) map to one canonical target.
+  - (Task 4b) `NachosService.CreateMessagesResponseAsync(string workspaceId, string sessionId, JsonElement requestBody, string? idempotencyKey, CancellationToken ct) → Task<CapturedResponse(int Status, string Body)>`. This is the single validation, token, append, and replay path.
+    - The HTTP adapter passes the **original request envelope** **after authorization**.
+    - The typed `CreateMessagesAsync` forms its documented JSON projection and calls the same method.
+    - The concrete service and `INachosClient` are registered as the same scoped instance.
+    - Replays return the exact `Body`/`Status` **captured inside the original append transaction**, never a later re-read or re-serialization.
+    - A duplicate race re-reads the winner's record. If that record expired before the re-read, the call makes a cancellation-aware fresh atomic attempt, never a false different-hash 422.
+    - Reusing a key for a different session returns 422, and the workspace/key namespace is unchanged.
+    - The HTTP adapter writes the captured UTF-8 JSON and status directly.
   - The filter applies to `POST M` and to the trailing-slash alias. It runs **after authorization** (spec §9.1). The idempotency record's TTL is 24 h.
 
 - [ ] **Step 1:** Write the tests:
@@ -663,6 +698,33 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 3:** Implement. The README follows the spec §22.1 section order. Every shell command in the README and in getting-started is exercised by CI (quick start via the AppHost smoke test, plus the Task 16 conformance flow).
 - [ ] **Step 4:** Run `dotnet run --project eng/DocsGen && npm --prefix docs/site ci && npm --prefix docs/site run build`, then `npm --prefix .github/scripts run check`. Expected: the site builds with zero link errors, and the validator passes.
 - [ ] **Step 5:** Commit `docs: README, logo, Starlight site, generated reference, Pages workflow`.
+
+
+---
+
+## Status and MVP scope (updated 2026-10-10)
+
+PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "escalate to astra to answer. its ok to have followup, this is our mvp and only our first pr". Astra's rulings and merge checklist are in PR #6 comment 6090696557. **The owner confirmed in an untagged PR comment (6093551697, 2026-10-10): "I sign off on everything needed to get the pr merged in and file follow-up items". The scope changes marked † below are therefore owner-confirmed.** Per-run Azure consent, the clean-room rules and the §3 license tiers are unchanged.
+
+| Task | State on the branch | Remaining for this PR | Follow-up |
+|---|---|---|---|
+| 1, 2, 3, 5, 6 | Landed, reviewed | — | — |
+| 4a, 4b | Landed, reviewed | — | #8, #9 |
+| 7 SQL provider | Landed; partner fixes pushed (`aa40554`); SQL limits (d)† accepted | Final residual-documentation round (Salsa 5477443513) | #18 (extreme-filter and repetitive-text `contains` timeout residuals, accepted as documented 500s) |
+| 8 In-memory provider | Landed, reviewed | — | — |
+| 9 API | Landed, reviewed | — | — |
+| 10 Auth, 11 Idempotency adapter | Reviewed privately, not published | Publish after the HTTP nesting cap (c)† | — |
+| 12 .NET client | Landed (A + B), reviewed | Auth/replay round trips after 10/11 | — |
+| 13 CLI (13a schema/keys, 13b grants) | Landed, reviewed | — | — |
+| 14 AppHost + FTS image (parts A + B) | Landed, reviewed | — | — |
+| 15 Bicep + azd (offline) | Landed; I1/I2 test-helper residuals | Ship as documented limitations (b)† | #17, #13, #7 |
+| 16 SDK conformance | Not started | Minimal pinned Python + TypeScript smoke† | #11 (full conformance)† |
+| 17 CI | `validate` only | Real build/test, SQL/schema, license, infra and docs-validate jobs | #13 (credential policy) |
+| 18 README, docs site, DocsGen, Pages | No README on the branch; site/DocsGen private | README (§22.1 M1 subset) | #16 (site + Pages)†, #12 |
+| Tokenizer (I1) | Ordinary-text counting fix (a)† landed (`08ff1c3`); `TokenCount_UsesOrdinaryTextForSpecialSpellings` passes | Partner review follow-through | #10 (managed counter; quadratic work, cancellation and Unicode residuals; release gate) |
+| Licensing | A private full-origin composition (unmerged generated site + published consumer) was red with 1,080 diagnostics; that is **not** this PR's committed tree. The committed-tree audit runs separately (Cedar) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
+
+**† Owner-confirmed MVP deviations from the checklist below** (6093551697): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
 
 ---
 

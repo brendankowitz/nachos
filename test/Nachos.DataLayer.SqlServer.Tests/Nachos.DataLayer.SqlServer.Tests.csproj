@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Testcontainers.MsSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.SqlServer\Nachos.DataLayer.SqlServer.csproj" />
+    <!-- The in-memory provider is the executable reference for the differential filter tests. -->
+    <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.InMemory\Nachos.DataLayer.InMemory.csproj" />
+    <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Fixtures\*.xml;Fixtures\*.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

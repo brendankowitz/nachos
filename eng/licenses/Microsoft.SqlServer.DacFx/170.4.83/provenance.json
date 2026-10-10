@@ -1,0 +1,16 @@
+{
+  "ecosystem": "nuget",
+  "package": "Microsoft.SqlServer.DacFx",
+  "version": "170.4.83",
+  "packageUrl": "https://api.nuget.org/v3-flatcontainer/microsoft.sqlserver.dacfx/170.4.83/microsoft.sqlserver.dacfx.170.4.83.nupkg",
+  "packageSha256": "4175889d55a44394e00848f3e36b0617a9ab523113d508a3da63ade9841a11d4",
+  "packageContentHash": "SPwaGEBj+OboDFRXwEhmw2jJ4Z0VQFI7QWD8vlpWdFq+dA7i5CRg1dMYpJDnzk11JShFJNkRlmffW21VolBGQw==",
+  "cacheSource": "https://api.nuget.org/v3/index.json",
+  "packageLicenseEntry": "license.txt",
+  "licenseUrl": "https://www.nuget.org/packages/Microsoft.SqlServer.DacFx/170.4.83/License",
+  "licenseSha256": "f6b3be3e53b8b6836b9c08fee9e9fb24e698df2ab2a7e4afd1f77ebf10c22a83",
+  "licenseByteLength": 10918,
+  "ownerApproval": "https://github.com/brendankowitz/nachos/issues/2#issuecomment-6048060868",
+  "policySourceCommit": "b8f04881b8137cf87acb95c347a0d2a1dd487cce",
+  "collection": "Extracted license.txt byte-for-byte from the existing NuGet cache archive; no package installation, restore, execution, or source-code review."
+}

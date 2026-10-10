@@ -1,0 +1,16 @@
+{
+  "name": "nachos-conformance-typescript",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Upstream @honcho-ai/sdk smoke conformance against Nachos",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@honcho-ai/sdk": "2.5.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
