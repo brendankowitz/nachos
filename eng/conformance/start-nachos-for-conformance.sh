@@ -5,7 +5,8 @@
 #
 # Auth is strict by default: the script starts the API with authentication enforced and probes it with an admin key.
 # If the probe is refused it prints an error and exits non-zero before any suite runs, so a CI gate cannot go green
-# on an authentication regression. --allow-auth-disabled is the development-only escape hatch for a branch where auth
+# on an authentication regression. --require-auth selects that default explicitly, so a CI line documents itself
+# (`--run --require-auth`); it cannot be combined with --allow-auth-disabled (usage error, exit 2). --allow-auth-disabled is the development-only escape hatch for a branch where auth
 # is not published yet (every /v3 route still fails closed): the script then restarts the API with authentication
 # disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled, so the scoped-key scenario reports
 # "not executed" rather than passing against an open server.
@@ -16,18 +17,20 @@
 # the in-memory, offline run. (The build steps and the suites keep the caller's environment: they need its package
 # feeds and proxies.)
 #
-# Usage: start-nachos-for-conformance.sh [--run] [--allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
+# Usage: start-nachos-for-conformance.sh [--run] [--require-auth | --allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
 set -euo pipefail
 
 usage() { sed -n '/^# Usage:/s/^# //p' "${BASH_SOURCE[0]}" >&2; }
 
 run=0
+require_auth=0
 allow_auth_disabled=0
 env_file=""
 timeout_seconds=90
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run) run=1; shift ;;
+    --require-auth) require_auth=1; shift ;;
     --allow-auth-disabled) allow_auth_disabled=1; shift ;;
     --env-file) env_file="${2:?--env-file needs a path}"; shift 2 ;;
     --timeout) timeout_seconds="${2:?--timeout needs a number of seconds}"; shift 2 ;;
@@ -35,6 +38,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "error: unknown argument '$1'" >&2; usage; exit 2 ;;
   esac
 done
+if ((require_auth && allow_auth_disabled)); then
+  echo "error: --require-auth and --allow-auth-disabled contradict each other; pass at most one" >&2
+  usage
+  exit 2
+fi
 [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || { echo "error: --timeout must be a whole number of seconds" >&2; exit 2; }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

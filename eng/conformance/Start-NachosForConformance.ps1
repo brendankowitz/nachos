@@ -2,22 +2,29 @@
 # pwsh 7.6.6 (a dotnet tool) with -Run -AllowAuthDisabled. The reference implementation is
 # start-nachos-for-conformance.sh; this is a deliberately thin twin with the same flags and behaviour (see that file's
 # header for the strict auth probe and the environment file contents). Authentication is strict by default: a refused
-# admin probe is an error and no suite runs. -AllowAuthDisabled is the development-only fallback for a branch where auth
-# is not published yet.
+# admin probe is an error and no suite runs. -RequireAuth selects that default explicitly, so a CI line documents itself
+# (`-Run -RequireAuth`); combining it with -AllowAuthDisabled is a usage error (exit 2). -AllowAuthDisabled is the
+# development-only fallback for a branch where auth is not published yet.
 #
 # Hermetic: the API and the CLI key-minting commands get an explicit allow-listed environment built from scratch, so
 # an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect the in-memory, offline run. The caller's
 # own environment is never modified for them; the suites' NACHOS_* settings are restored in a finally block.
 #
-# Usage: Start-NachosForConformance.ps1 [-Run] [-AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
+# Usage: Start-NachosForConformance.ps1 [-Run] [-RequireAuth | -AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
 [CmdletBinding()]
 param(
     [switch]$Run,
+    [switch]$RequireAuth,
     [switch]$AllowAuthDisabled,
     [string]$EnvFile,
     [int]$TimeoutSeconds = 90
 )
 $ErrorActionPreference = 'Stop'
+
+if ($RequireAuth -and $AllowAuthDisabled) {
+    [Console]::Error.WriteLine('error: -RequireAuth and -AllowAuthDisabled contradict each other; pass at most one')
+    exit 2
+}
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..' '..')
 $workDir = Join-Path ([IO.Path]::GetTempPath()) ("nachos-conformance." + [Guid]::NewGuid().ToString('N').Substring(0, 8))
