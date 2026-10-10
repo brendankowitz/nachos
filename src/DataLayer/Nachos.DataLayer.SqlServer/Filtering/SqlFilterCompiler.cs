@@ -55,7 +55,11 @@ namespace Nachos.DataLayer.SqlServer.Filtering;
 /// about 3,500; where SQL Server gives up depends on the server. The largest filters cost mostly compile time, so very
 /// large unshareable filters (observed from roughly 5,000-7,000 unshared conditions on a dev host, fewer on slower tiers)
 /// can reach the 30 s command timeout before SQL Server refuses them, and then surface as a timeout (500) rather than a
-/// 422; tracked in issue #18.
+/// 422; tracked in issue #18. A second timeout residual: the cost of <c>contains</c>/<c>icontains</c> grows with text length
+/// times operand length on highly repetitive text, so long operands (thousands of code units) over very long or
+/// repetitive stored text can also reach the 30 s command timeout and surface as a 500 (not translated; #18). Measured on a
+/// dev host: 100 rows of 25,000-character content with a ~4,000-character operand took 13-30 s, and 5 MB of repetitive
+/// metadata with such an operand timed out.
 /// </para>
 /// <para>
 /// <b>Metadata <c>in</c> lists</b> are packed so that a row's cost does not grow with the list: entries are sorted into
