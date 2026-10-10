@@ -185,17 +185,17 @@ public sealed class ReviewRegressionTests
     }
 
     [Theory]
-    [InlineData("License: GPL-3.0-only\n")]
-    [InlineData("License: Example proprietary terms\n")]
-    [InlineData("Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)\n")]
-    [InlineData("Classifier: License :: Other/Proprietary License\n")]
-    public void CI2_LegacyPythonDeclarations_AreNotIgnored(string declaration)
+    [InlineData("License: GPL-3.0-only\n", "prohibited")]
+    [InlineData("License: Example proprietary terms\n", "SPDX")]
+    [InlineData("Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)\n", "prohibited")]
+    [InlineData("Classifier: License :: Other/Proprietary License\n", "SPDX")]
+    public void CI2_LegacyPythonDeclarations_AreNotIgnored(string declaration, string diagnostic)
     {
         using var fixture = new AuditFixture();
         fixture.Python("client", "MIT", AuditFixture.Mit);
         ReplaceMetadata(fixture, "client", "client-1.0.0.dist-info/METADATA",
             $"Metadata-Version: 2.1\nName: client\nVersion: 1.0.0\n{declaration}\n");
-        fixture.Check().Errors.ShouldNotBeEmpty();
+        AssertPythonFailure(fixture, diagnostic);
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public sealed class ReviewRegressionTests
     {
         using var fixture = new AuditFixture();
         fixture.Python("client", "MIT", AuditFixture.Mit, "License: Apache-2.0\n");
-        fixture.Check().Errors.ShouldNotBeEmpty();
+        AssertPythonFailure(fixture, "Conflicting Python licensing declarations");
     }
 
     [Fact]
@@ -214,7 +214,7 @@ public sealed class ReviewRegressionTests
         ReplaceMetadata(fixture, "client", "client-1.0.0.dist-info/METADATA",
             "Metadata-Version: 2.1\nName: client\nVersion: 1.0.0\n\n");
         AddWheelEntry(fixture, "client", "client/_vendor/foo/LICENSE", AuditFixture.Mit);
-        fixture.Check().Errors.ShouldNotBeEmpty();
+        AssertPythonFailure(fixture, "primary license text unavailable");
     }
 
     [Fact]
@@ -224,7 +224,7 @@ public sealed class ReviewRegressionTests
         fixture.Python("client", "MIT", AuditFixture.Mit);
         AddWheelEntry(fixture, "client", "other-2.0.0.dist-info/METADATA",
             "Metadata-Version: 2.4\nName: other\nVersion: 2.0.0\nLicense-Expression: GPL-3.0-only\n\n");
-        fixture.Check().Errors.ShouldNotBeEmpty();
+        AssertPythonFailure(fixture, "exactly one authoritative top-level");
     }
 
     [Fact]
@@ -248,14 +248,14 @@ public sealed class ReviewRegressionTests
     }
 
     [Theory]
-    [InlineData("other", "MIT")]
-    [InlineData("client", "GPL-3.0-only")]
-    public void CI5_ConflictingSdistMetadata_Fails(string name, string license)
+    [InlineData("other", "MIT", "Conflicting Python archive metadata")]
+    [InlineData("client", "GPL-3.0-only", "prohibited")]
+    public void CI5_ConflictingSdistMetadata_Fails(string name, string license, string diagnostic)
     {
         using var fixture = new AuditFixture();
         fixture.PythonSdist("client", "MIT", AuditFixture.Mit, extraMetadata:
             $"Metadata-Version: 2.4\nName: {name}\nVersion: 1.0.0\nLicense-Expression: {license}\nLicense-File: LICENSE\n\n");
-        fixture.Check().Errors.ShouldNotBeEmpty();
+        AssertPythonFailure(fixture, diagnostic);
     }
 
     [Fact]
@@ -300,12 +300,23 @@ public sealed class ReviewRegressionTests
         JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(
             Path.Combine(AppContext.BaseDirectory, "Fixtures", "complete-licenses.json")))![id];
 
+    private static void AssertPythonFailure(AuditFixture fixture, string diagnostic)
+    {
+        var report = fixture.Check();
+        report.Errors.ShouldContain(error => error.Contains(diagnostic, StringComparison.Ordinal));
+        report.Errors.ShouldNotContain(error => error.Contains("SHA256", StringComparison.Ordinal));
+    }
+
     internal static void ReplaceMetadata(AuditFixture fixture, string name, string entryName, string text)
     {
-        using var zip = ZipFile.Open(fixture.Full($"python-archives/{name.Replace('-', '_')}-1.0.0-py3-none-any.whl"), ZipArchiveMode.Update);
-        zip.GetEntry(entryName)?.Delete();
-        using var writer = new StreamWriter(zip.CreateEntry(entryName).Open());
-        writer.Write(text);
+        var path = fixture.Full($"python-archives/{name.Replace('-', '_')}-1.0.0-py3-none-any.whl");
+        using (var zip = ZipFile.Open(path, ZipArchiveMode.Update))
+        {
+            zip.GetEntry(entryName)?.Delete();
+            using var writer = new StreamWriter(zip.CreateEntry(entryName).Open());
+            writer.Write(text);
+        }
+        fixture.SealPythonArchive(name, path);
     }
 
     internal static void AddWheelEntry(AuditFixture fixture, string name, string entryName, string text) =>

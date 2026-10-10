@@ -170,13 +170,19 @@ jobs:
             dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll fetch-npm --lock "$producer/package-lock.json" --npm-archives artifacts/ci/npm-archives
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-      - name: Download the existing hash-locked Python requirements
+      - name: Download every Python audit identity from a hash-locked projection
         env:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
         run: |
           $selectedPython = $env:CI_PYTHON_EXECUTABLE
           . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $selectedPython
-          & $selectedPython -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: -r test/conformance/python/requirements.lock --dest artifacts/ci/python-archives
+          $projection = dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll project-python --lock test/conformance/python/requirements.lock
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $projectionDirectory = "artifacts/ci/projection/$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $projectionDirectory | Out-Null
+          $projectionPath = Join-Path $projectionDirectory 'requirements.txt'
+          $projection | Set-Content -LiteralPath $projectionPath -Encoding utf8NoBOM
+          & $selectedPython -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r $projectionPath --dest artifacts/ci/python-archives
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the production audit and propagate its raw failure
         env:

@@ -376,29 +376,7 @@ internal static class Collectors
         {
             throw new InvalidDataException("Python lock exists; downloaded wheels/sdists directory is required.");
         }
-        var lockText = Regex.Replace(File.ReadAllText(path), @"\\\r?\n", " ");
-        var requirements = new Dictionary<string, (string Name, string Version, string[] Hashes)>(StringComparer.Ordinal);
-        foreach (var raw in lockText.Split('\n'))
-        {
-            var line = raw.Split('#')[0].Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-            var match = Regex.Match(line, @"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.!+_-]*)(\s+--hash=sha256:[a-fA-F0-9]{64})*$");
-            if (!match.Success)
-            {
-                throw new InvalidDataException($"Unsupported or unpinned Python requirement: {line}");
-            }
-            var name = match.Groups[1].Value;
-            var version = match.Groups[2].Value;
-            requirements.Add(PackageEvidence.Identity("python", name, version),
-                (name, version, Regex.Matches(line, @"--hash=sha256:([a-fA-F0-9]{64})").Select(hash => hash.Groups[1].Value).ToArray()));
-        }
-        if (requirements.Count == 0)
-        {
-            throw new InvalidDataException("Python requirements.lock is empty.");
-        }
+        var requirements = PythonLock.Read(path);
         var found = new HashSet<string>(StringComparer.Ordinal);
         foreach (var archive in Directory.EnumerateFiles(inputs.PythonArchives))
         {
@@ -473,9 +451,8 @@ internal static class Collectors
                 {
                     throw new InvalidDataException($"Downloaded Python archive is not in requirements.lock: {name}@{version}");
                 }
-                if (requirement.Hashes.Length > 0)
+                using (var stream = File.OpenRead(archive))
                 {
-                    using var stream = File.OpenRead(archive);
                     var hash = Convert.ToHexString(SHA256.HashData(stream));
                     if (!requirement.Hashes.Contains(hash, StringComparer.OrdinalIgnoreCase))
                     {

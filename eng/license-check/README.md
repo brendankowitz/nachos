@@ -79,14 +79,36 @@ temporary package installations and archives; real source manifests still requir
 - Python: each `requirements.lock` requires `-PythonArchives <directory>`.
   The collector reads wheel/zip-sdist/tar.gz-sdist metadata and license entries
   only, **never SDK implementation source**. Exact `name==version` lines and
-  continued `--hash=sha256:...` values are supported; ambiguous requirements,
-  unsupported formats, missing archives, identity and hash mismatches fail.
+  continued `--hash=sha256:...` values are supported; **every record requires
+  at least one SHA256 hash**. The shared parser accepts only the current optional
+  `sys_platform == 'win32'` marker (single/double quotes, spaces/tabs), never a
+  general PEP 508 expression. Markers are not evaluated for auditing: **all locked
+  identities and hash choices are retained on every host**. Empty/malformed or
+  other markers, duplicates, URL/VCS/include/index options, unpinned requirements,
+  missing identities, unlisted archives and hash mismatches fail explicitly.
+  Archive counts are not coverage: each downloaded archive must match a locked
+  identity and one of its hashes, and every identity needs a verified archive.
   Modern `License-Expression`, legacy `License` and licensing classifiers are
   reconciled; conflicting, ambiguous or prohibited declarations are not ignored.
   Wheels require one top-level metadata identity. Repeated sdist metadata must
   agree on identity, licensing and declared evidence paths. Vendored licenses
   are supplemental, not package-primary evidence.
   No Python lock means no Python audit is claimed.
+  For download provisioning only, after building the checker:
+  ```powershell
+  dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll project-python --lock test/conformance/python/requirements.lock
+  ```
+  This read-only mode emits requirements to stdout after validating the entire
+  lock with the same parser as the collector. It retains names, versions and all
+  hash values, stripping only supported markers, comments and formatting.
+  Input/argument errors go to stderr with exit code 2 and no partial stdout;
+  success is exit code 0. There is no output-file option. CI captures successful
+  output into a fresh `artifacts/ci/projection` directory and invokes its selected
+  Python with `pip download --require-hashes --only-binary=:all: --no-deps`.
+  The universal SDK lock and conditional installation behavior stay unchanged.
+  This binds the actual downloaded artifact for each identity; it does **not**
+  audit every alternative wheel/sdist hash or every target. Broader artifact
+  variant coverage remains the explicit #19 gap, not a license-policy waiver.
 - API/CLI: explicit publish roots require their respective `Nachos.Api.deps.json`
   and `Nachos.Cli.deps.json`, their project-library entries, and application
   assemblies. An empty substitute deps file is not provenance. All package libraries are distributed. Copied files

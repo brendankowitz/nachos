@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Nachos.LicenseCheck;
 using Shouldly;
@@ -906,38 +907,49 @@ internal sealed class AuditFixture : IDisposable
 
     public void Python(string name, string license, string? text, string extraHeaders = "")
     {
-        WriteText("test/conformance/python/requirements.lock", name + "==1.0.0\n");
         var path = Full($"python-archives/{name.Replace('-', '_')}-1.0.0-py3-none-any.whl");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
-        Entry(zip, name + "-1.0.0.dist-info/METADATA", $"Metadata-Version: 2.4\nName: {name}\nVersion: 1.0.0\nLicense-Expression: {license}\nLicense-File: licenses/LICENSE\n{extraHeaders}\n");
-        if (text is not null)
+        using (var zip = ZipFile.Open(path, ZipArchiveMode.Create))
         {
-            Entry(zip, name + "-1.0.0.dist-info/licenses/LICENSE", text);
+            Entry(zip, name + "-1.0.0.dist-info/METADATA", $"Metadata-Version: 2.4\nName: {name}\nVersion: 1.0.0\nLicense-Expression: {license}\nLicense-File: licenses/LICENSE\n{extraHeaders}\n");
+            if (text is not null)
+            {
+                Entry(zip, name + "-1.0.0.dist-info/licenses/LICENSE", text);
+            }
+            Entry(zip, name + "/implementation.py", "DO NOT READ IMPLEMENTATION SOURCE");
         }
-        Entry(zip, name + "/implementation.py", "DO NOT READ IMPLEMENTATION SOURCE");
+        SealPythonArchive(name, path);
     }
 
     public void PythonSdist(string name, string license, string text, string licenseFile = "LICENSE", string? extraMetadata = null)
     {
-        WriteText("test/conformance/python/requirements.lock", name + "==1.0.0\n");
         var path = Full($"python-archives/{name}-1.0.0.tar.gz");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        using var file = File.Create(path);
-        using var gzip = new GZipStream(file, CompressionMode.Compress);
-        using var tar = new TarWriter(gzip);
-        void Add(string entryName, string content)
+        using (var file = File.Create(path))
+        using (var gzip = new GZipStream(file, CompressionMode.Compress))
+        using (var tar = new TarWriter(gzip))
         {
-            using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
-            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, $"{name}-1.0.0/{entryName}") { DataStream = stream });
+            void Add(string entryName, string content)
+            {
+                using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
+                tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, $"{name}-1.0.0/{entryName}") { DataStream = stream });
+            }
+            Add("PKG-INFO", $"Metadata-Version: 2.4\nName: {name}\nVersion: 1.0.0\nLicense-Expression: {license}\nLicense-File: {licenseFile}\n\n");
+            Add(licenseFile, text);
+            if (extraMetadata is not null)
+            {
+                Add(name + ".egg-info/PKG-INFO", extraMetadata);
+            }
+            Add("implementation.py", "DO NOT READ IMPLEMENTATION SOURCE");
         }
-        Add("PKG-INFO", $"Metadata-Version: 2.4\nName: {name}\nVersion: 1.0.0\nLicense-Expression: {license}\nLicense-File: {licenseFile}\n\n");
-        Add(licenseFile, text);
-        if (extraMetadata is not null)
-        {
-            Add(name + ".egg-info/PKG-INFO", extraMetadata);
-        }
-        Add("implementation.py", "DO NOT READ IMPLEMENTATION SOURCE");
+        SealPythonArchive(name, path);
+    }
+
+    public void SealPythonArchive(string name, string path)
+    {
+        using var stream = File.OpenRead(path);
+        WriteText("test/conformance/python/requirements.lock",
+            $"{name}==1.0.0 --hash=sha256:{Convert.ToHexString(SHA256.HashData(stream))}\n");
     }
 
     private static void Entry(ZipArchive archive, string name, string text)

@@ -8,11 +8,12 @@ try
     var fetch = command is "fetch-npm" or "fetch-pnpm";
     var inventory = command == "inventory-pnpm";
     var verifyDocs = command == "verify-docs";
+    var projectPython = command == "project-python";
     var known = new HashSet<string>(verifyDocs ? ["--site-root", "--asset-root", "--npm-root", "--output-root", "--site", "--base", "--report"]
-        : fetch ? ["--lock", "--npm-archives"] : inventory ? ["--lock", "--report"]
+        : fetch ? ["--lock", "--npm-archives"] : inventory ? ["--lock", "--report"] : projectPython ? ["--lock"]
         : ["--repo", "--nuget-inventory", "--nuget-cache", "--api-publish", "--cli-publish", "--python-archives", "--npm-archives",
             "--docs-output", "--docs-site", "--docs-base", "--report"], StringComparer.Ordinal);
-    for (var index = fetch || inventory || verifyDocs ? 1 : 0; index < args.Length; index += 2)
+    for (var index = fetch || inventory || verifyDocs || projectPython ? 1 : 0; index < args.Length; index += 2)
     {
         if (!known.Contains(args[index]) || index + 1 >= args.Length || !options.TryAdd(args[index], args[index + 1]))
         {
@@ -21,6 +22,11 @@ try
     }
     string Required(string name) => options.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value)
         ? Path.GetFullPath(value) : throw new InvalidDataException($"Required argument: {name}");
+    if (projectPython)
+    {
+        Console.Write(PythonLock.Project(Required("--lock")));
+        return 0;
+    }
     if (verifyDocs)
     {
         var docsInputs = new DocsProvenanceInputs(Required("--site-root"), Required("--asset-root"),
