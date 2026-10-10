@@ -99,3 +99,47 @@ not release clearance, and does not automatically enforce that separate hold.
 This package is not relicensed MIT. Any applicable third-party terms and
 required notices remain obligations. Copying this notice and the license
 document neither resolves the governing-terms question nor waives it.
+
+## Ordinary o200k_base tokenization
+
+`TiktokenTokenCounter` uses the existing MIT-licensed
+`Microsoft.ML.Tokenizers` and `Microsoft.ML.Tokenizers.Data.O200kBase` 2.0.0
+packages. Its ordinary-text pretokenization pattern comes from OpenAI tiktoken;
+the vocabulary remains in Microsoft's package, not a new vendored data file.
+Both special-token recognition and special-aware pretokenization are disabled.
+
+The non-public resource name `o200k_base.tiktoken.deflate` is an explicit
+compatibility dependency. Initialization fails closed unless its compressed
+SHA-256 is `88b2a54dcedc68d39b1af4b8dc744adba8eca01310b7d07a687f1add3be75524`.
+The frozen [feasibility evidence](research/token-feasibility/README.md) records
+its equivalence to the canonical vocabulary with SHA-256
+`446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d`.
+Dependency/resource changes require renewed identity verification, not a
+fallback to special-token counting.
+
+The existing packages' complete licenses and third-party notices must still
+accompany redistribution. Their OpenAI tokenizer/vocabulary notice and the
+retained tiktoken 0.14.0 license in the frozen bundle give the following terms
+for the copied pattern:
+
+MIT License
+
+Copyright (c) 2022 OpenAI, Shantanu Jain
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

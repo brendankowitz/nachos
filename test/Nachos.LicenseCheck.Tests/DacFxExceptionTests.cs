@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Shouldly;
@@ -276,6 +277,79 @@ public sealed class DacFxExceptionTests
     }
 
     [Fact]
+    public void ReviewedTokenNotice_MatchingApiAndCliCopies_PassCopyContract()
+    {
+        using var fixture = Fixture(scope: "both");
+        NoticeFingerprint(File.ReadAllText(fixture.Full(Notices))).ShouldBe(
+            "B2E32D1A404894B10CE933A820007CD28AF66701D5B5E33DCE7563A93B85BFB6");
+
+        fixture.Check().Errors.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("api", false)]
+    [InlineData("api", true)]
+    [InlineData("cli", false)]
+    [InlineData("cli", true)]
+    public void ReviewedTokenNotice_BadOrMissingPublishedCopy_IsRejected(string scope, bool tamper)
+    {
+        using var fixture = Fixture(scope: "both");
+        fixture.Check().Errors.ShouldBeEmpty();
+        var copy = fixture.Full(Path.Combine("artifacts", scope, Notices));
+        if (tamper)
+        {
+            File.AppendAllText(copy, "\nUnreviewed copied content.");
+        }
+        else
+        {
+            File.Delete(copy);
+        }
+
+        var report = fixture.Check();
+
+        report.Errors.ShouldContain(error => error.Contains(tamper
+            ? "Required source notice content differs in artifact"
+            : "Required DacFx evidence or notice is missing", StringComparison.Ordinal));
+        report.Packages.ShouldNotContain(package => package.Package == Package);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReviewedTokenNotice_UnreviewedSourceAppend_IsRejectedEvenWithMatchingCopies(bool copyChangedSource)
+    {
+        using var fixture = Fixture(scope: "both");
+        fixture.Check().Errors.ShouldBeEmpty();
+        var changed = File.ReadAllText(fixture.Full(Notices)) + "\nUnreviewed additional notice.";
+        fixture.WriteText(Notices, changed);
+        if (copyChangedSource)
+        {
+            fixture.WriteText(Path.Combine("artifacts", "api", Notices), changed);
+            fixture.WriteText(Path.Combine("artifacts", "cli", Notices), changed);
+        }
+
+        fixture.Check().Errors.Count(error => error.Contains("its copy contract needs review", StringComparison.Ordinal))
+            .ShouldBe(3);
+    }
+
+    [Fact]
+    public void ReviewedTokenNotice_PreviousNoticeWithoutPatternLicense_IsRejected()
+    {
+        using var fixture = Fixture(scope: "both");
+        fixture.Check().Errors.ShouldBeEmpty();
+        var reviewed = File.ReadAllText(fixture.Full(Notices)).Replace("\r\n", "\n", StringComparison.Ordinal);
+        var previous = reviewed[..reviewed.IndexOf("\n## Ordinary o200k_base tokenization", StringComparison.Ordinal)];
+        NoticeFingerprint(previous).ShouldBe(
+            "D727A48B88EBA908F2F52B0809277E3F55D27BB322641FB8DFB779B6B9034A04");
+        fixture.WriteText(Notices, previous);
+        fixture.WriteText(Path.Combine("artifacts", "api", Notices), previous);
+        fixture.WriteText(Path.Combine("artifacts", "cli", Notices), previous);
+
+        fixture.Check().Errors.Count(error => error.Contains("its copy contract needs review", StringComparison.Ordinal))
+            .ShouldBe(3);
+    }
+
+    [Fact]
     public void ArbitraryMarkdownIsNotFirstPartyNoticeEvidence()
     {
         using var fixture = new AuditFixture();
@@ -331,6 +405,9 @@ public sealed class DacFxExceptionTests
     };
 
     private static string Evidence(string file) => Path.Combine(AppContext.BaseDirectory, "DacFxEvidence", file);
+
+    private static string NoticeFingerprint(string text) => Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes(text.Replace("\r\n", "\n", StringComparison.Ordinal))));
 
     private static void ReplaceEntry(AuditFixture fixture, string entryName, byte[] bytes)
     {
