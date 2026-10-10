@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Options;
+using Microsoft.ML.Tokenizers;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Core.Configuration;
@@ -106,6 +107,49 @@ public sealed class TokenCounterTests
         rank.ShouldBe(199998);
         Convert.ToHexString(SHA256.HashData(canonical.ToArray())).ShouldBe(
             "446A9538CB6C348E3516120D7C08B09F57C36495E2ACFFFE59A5BF8B0CFB1A2D");
+    }
+
+    [Fact]
+    public void TokenizerFactory_MissingResource_IsRejected()
+    {
+        var exception = Should.Throw<InvalidOperationException>(() => TiktokenTokenCounter.CreateTokenizer(null));
+
+        exception.Message.ShouldBe("The pinned o200k_base vocabulary resource is missing.");
+    }
+
+    [Fact]
+    public void TokenizerFactory_ChangedResource_IsRejectedBeforeInflation()
+    {
+        using var resource = Assembly.Load("Microsoft.ML.Tokenizers.Data.O200kBase")
+            .GetManifestResourceStream("o200k_base.tiktoken.deflate");
+        resource.ShouldNotBeNull();
+        using var copy = new MemoryStream();
+        resource.CopyTo(copy);
+        var bytes = copy.ToArray();
+        // Reserved DEFLATE block type: inflation would fail if the hash guard were bypassed.
+        bytes[0] |= 0b110;
+        using var changed = new MemoryStream(bytes);
+
+        var exception = Should.Throw<InvalidOperationException>(() => TiktokenTokenCounter.CreateTokenizer(changed));
+
+        exception.Message.ShouldBe("The embedded o200k_base vocabulary does not match the pinned SHA-256.");
+        changed.CanRead.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void TokenizerFactory_ValidResource_IsOrdinaryAfterCallerDisposesStream()
+    {
+        TiktokenTokenizer tokenizer;
+        using (var resource = Assembly.Load("Microsoft.ML.Tokenizers.Data.O200kBase")
+            .GetManifestResourceStream("o200k_base.tiktoken.deflate"))
+        {
+            resource.ShouldNotBeNull();
+            tokenizer = TiktokenTokenCounter.CreateTokenizer(resource);
+            resource.CanRead.ShouldBeTrue();
+        }
+
+        tokenizer.CountTokens(string.Concat(Enumerable.Repeat("<|endoftext|>", 10))).ShouldBe(61);
+        tokenizer.CountTokens("hello world").ShouldBe(2);
     }
 
     [Fact]

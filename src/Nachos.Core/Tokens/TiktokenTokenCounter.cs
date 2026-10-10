@@ -27,17 +27,26 @@ public sealed class TiktokenTokenCounter : ITokenCounter
 
     private static TiktokenTokenizer CreateTokenizer()
     {
-        // The embedded resource name/format is not a public contract; reject changed bytes, never fall back.
         using var resource = Assembly.Load("Microsoft.ML.Tokenizers.Data.O200kBase")
-            .GetManifestResourceStream(VocabularyResource)
-            ?? throw new InvalidOperationException("The pinned o200k_base vocabulary resource is missing.");
+            .GetManifestResourceStream(VocabularyResource);
+        return CreateTokenizer(resource);
+    }
+
+    // The caller owns the compressed stream, positioned at its start; the tokenizer retains no stream.
+    internal static TiktokenTokenizer CreateTokenizer(Stream? resource)
+    {
+        // The embedded resource name/format is not a public contract; reject changed bytes, never fall back.
+        if (resource is null)
+        {
+            throw new InvalidOperationException("The pinned o200k_base vocabulary resource is missing.");
+        }
         if (Convert.ToHexString(SHA256.HashData(resource)) != VocabularySha256)
         {
             throw new InvalidOperationException("The embedded o200k_base vocabulary does not match the pinned SHA-256.");
         }
 
         resource.Position = 0;
-        using var vocabulary = new DeflateStream(resource, CompressionMode.Decompress);
+        using var vocabulary = new DeflateStream(resource, CompressionMode.Decompress, leaveOpen: true);
         // Ordinary IDs alone are insufficient: special-aware pretokens also alter adjacent spellings.
         var preTokenizer = new RegexPreTokenizer(
             new Regex(O200kPattern, RegexOptions.CultureInvariant), specialTokens: null);
