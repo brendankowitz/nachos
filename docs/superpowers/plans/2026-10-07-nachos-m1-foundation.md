@@ -699,6 +699,33 @@ These are the input classes most likely to bite users. Each line names the test 
 - [ ] **Step 4:** Run `dotnet run --project eng/DocsGen && npm --prefix docs/site ci && npm --prefix docs/site run build`, then `npm --prefix .github/scripts run check`. Expected: the site builds with zero link errors, and the validator passes.
 - [ ] **Step 5:** Commit `docs: README, logo, Starlight site, generated reference, Pages workflow`.
 
+
+---
+
+## Status and MVP scope (updated 2026-10-10)
+
+PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "escalate to astra to answer. its ok to have followup, this is our mvp and only our first pr". Astra's rulings and merge checklist are in PR #6 comment 6090696557. **Until the owner confirms that delegation in an untagged PR comment, the scope changes marked † below are proposals, not decisions.**
+
+| Task | State on the branch | Remaining for this PR | Follow-up |
+|---|---|---|---|
+| 1, 2, 3, 5, 6 | Landed, reviewed | — | — |
+| 4a, 4b | Landed, reviewed | — | #8, #9 |
+| 7 SQL provider | Landed; partner fixes pushed (`aa40554`) | Salsa's runtime re-review; SQL limits (d)† | #18 (extreme-filter timeout) |
+| 8 In-memory provider | Landed, reviewed | — | — |
+| 9 API | Landed, reviewed | — | — |
+| 10 Auth, 11 Idempotency adapter | Reviewed privately, not published | Publish after the HTTP nesting cap (c)† | — |
+| 12 .NET client | Landed (A + B), reviewed | Auth/replay round trips after 10/11 | — |
+| 13 CLI (13a schema/keys, 13b grants) | Landed, reviewed | — | — |
+| 14 AppHost + FTS image (parts A + B) | Landed, reviewed | — | — |
+| 15 Bicep + azd (offline) | Landed; I1/I2 test-helper residuals | Ship as documented limitations (b)† | #17, #13, #7 |
+| 16 SDK conformance | Not started | Minimal pinned Python + TypeScript smoke† | #11 (full conformance)† |
+| 17 CI | `validate` only | Real build/test, SQL/schema, license, infra and docs-validate jobs | #13 (credential policy) |
+| 18 README, docs site, DocsGen, Pages | No README on the branch; site/DocsGen private | README (§22.1 M1 subset) | #16 (site + Pages)†, #12 |
+| Tokenizer (I1) | Known `TokenCount_UsesOrdinaryTextForSpecialSpellings` failure | Ordinary-text counting fix (a)† | #10 (managed counter, release gate) |
+| Licensing | Full-origin audit red (1,080 diagnostics) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
+
+**† Proposed MVP deviations from the checklist below** (pending owner confirmation): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
+
 ---
 
 ## M1 Done checklist
