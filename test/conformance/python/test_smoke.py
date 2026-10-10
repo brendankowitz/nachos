@@ -3,6 +3,7 @@
 import time
 import uuid
 
+import httpx
 import pytest
 from honcho import AuthenticationError, Honcho, ServerError
 from honcho.api_types import SessionPeerConfig
@@ -144,7 +145,7 @@ def test_unimplemented_call_surfaces_501_promptly(nachos, workspace_id: str):
 
 def test_peer_scoped_key_reads_members_but_cannot_list_workspaces(nachos):
     if nachos.auth_mode != "enforced":
-        pytest.skip("awaiting auth/Task 11 publication")
+        pytest.skip("authentication is disabled (launcher run with --allow-auth-disabled)")
 
     workspace, peer_id = nachos.auth_workspace, nachos.auth_peer
     suffix = uuid.uuid4().hex[:8]
@@ -153,10 +154,34 @@ def test_peer_scoped_key_reads_members_but_cannot_list_workspaces(nachos):
     session = admin.session(f"py-auth-{suffix}")
     session.add_peers([member])
     session.add_messages([member.message("visible to the member")])
+    # A session the key's peer is not a member of.
+    stranger = admin.peer(f"stranger-{suffix}")
+    other = admin.session(f"py-auth-other-{suffix}")
+    other.add_peers([stranger])
+    other.add_messages([stranger.message("not for the member")])
 
+    # The SDK's high-level handles (`session()`, `peer()`) first get-or-create the workspace, which is a write. A
+    # peer-scoped key must not have workspace-wide access (narrowest-scope rule), so Nachos answers 401 and the SDK
+    # raises its authentication error.
     scoped = nachos.client(workspace, api_key=nachos.peer_key, timeout=10)
-    scoped_session = scoped.session(session.id)
-    assert [m.content for m in scoped_session.messages(filters=MATCH_ALL)] == ["visible to the member"]
+    with pytest.raises(AuthenticationError) as ensure_denied:
+        scoped.session(session.id)
+    assert ensure_denied.value.status == 401
+
+    # What a peer-scoped key may do is read the sessions its peer is an active member of, over the documented REST
+    # route, so that is exercised with a plain HTTP client (the SDK cannot make the request without the ensure above).
+    headers = {"Authorization": f"Bearer {nachos.peer_key}"}
+    member_read = httpx.post(
+        f"{nachos.base_url}/v3/workspaces/{workspace}/sessions/{session.id}/messages/list", json={}, headers=headers
+    )
+    assert member_read.status_code == 200
+    assert [m["content"] for m in member_read.json()["items"]] == ["visible to the member"]
+
+    # A session the peer is not a member of is refused with the same 401 as a missing one, so membership cannot be probed.
+    stranger_read = httpx.post(
+        f"{nachos.base_url}/v3/workspaces/{workspace}/sessions/{other.id}/messages/list", json={}, headers=headers
+    )
+    assert stranger_read.status_code == 401
 
     with pytest.raises(AuthenticationError) as denied:
         list(scoped.workspaces(filters=MATCH_ALL))

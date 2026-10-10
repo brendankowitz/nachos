@@ -166,22 +166,47 @@ test('an unimplemented call surfaces 501 promptly', async () => {
 
 test(
   'a peer-scoped key reads member messages but cannot list workspaces',
-  { skip: authMode === 'enforced' ? false : 'awaiting auth/Task 11 publication' },
+  { skip: authMode === 'enforced' ? false : 'authentication is disabled (launcher run with --allow-auth-disabled)' },
   async () => {
+    const suffix = randomUUID().slice(0, 8);
     const admin = client(authWorkspace);
     const member = await admin.peer(authPeer);
-    const session = await admin.session(`ts-auth-${randomUUID().slice(0, 8)}`);
+    const session = await admin.session(`ts-auth-${suffix}`);
     await session.addPeers([member]);
     await session.addMessages([member.message('visible to the member')]);
+    // A session the key's peer is not a member of.
+    const stranger = await admin.peer(`stranger-${suffix}`);
+    const other = await admin.session(`ts-auth-other-${suffix}`);
+    await other.addPeers([stranger]);
+    await other.addMessages([stranger.message('not for the member')]);
 
-    const scoped = client(authWorkspace, { apiKey: env.NACHOS_PEER_KEY });
-    const scopedSession = await scoped.session(session.id);
-    assert.deepEqual((await (await scopedSession.messages()).toArray()).map((m) => m.content), ['visible to the member']);
-
-    await assert.rejects(scoped.workspaces(), (error) => {
+    const isAuthenticationError401 = (error) => {
       assert.ok(error instanceof AuthenticationError, `expected AuthenticationError, got ${error?.constructor?.name}`);
       assert.equal(error.status, 401);
       return true;
-    });
+    };
+
+    // The SDK's high-level handles (`session()`, `peer()`) first get-or-create the workspace, which is a write. A
+    // peer-scoped key must not have workspace-wide access (narrowest-scope rule), so Nachos answers 401 and the SDK
+    // throws its authentication error.
+    const scoped = client(authWorkspace, { apiKey: env.NACHOS_PEER_KEY });
+    await assert.rejects(scoped.session(session.id), isAuthenticationError401);
+
+    // What a peer-scoped key may do is read the sessions its peer is an active member of, over the documented REST
+    // route, so that is exercised with plain fetch (the SDK cannot make the request without the ensure above).
+    const read = (sessionId) =>
+      fetch(`${env.NACHOS_BASE_URL}/v3/workspaces/${authWorkspace}/sessions/${sessionId}/messages/list`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.NACHOS_PEER_KEY}`, 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+    const memberRead = await read(session.id);
+    assert.equal(memberRead.status, 200);
+    assert.deepEqual((await memberRead.json()).items.map((m) => m.content), ['visible to the member']);
+
+    // A session the peer is not a member of is refused with the same 401 as a missing one, so membership cannot be probed.
+    assert.equal((await read(other.id)).status, 401);
+
+    await assert.rejects(scoped.workspaces(), isAuthenticationError401);
   },
 );
