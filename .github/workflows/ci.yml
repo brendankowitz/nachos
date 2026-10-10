@@ -49,6 +49,8 @@ jobs:
       - name: Verify parsed workflow event and concurrency policy
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
+          dotnet build test/Nachos.LicenseCheck.Tests -c Release --no-restore -warnaserror
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./eng/ci/Test-WorkflowPolicy.ps1 -YamlAssembly ./eng/license-check/bin/Release/net10.0/YamlDotNet.dll
       - name: All portable suites, with fresh per-project counts
         run: |
