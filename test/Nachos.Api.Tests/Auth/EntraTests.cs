@@ -1,3 +1,4 @@
+using Microsoft.IdentityModel.Tokens;
 using Nachos.Abstractions.Domain;
 using Shouldly;
 
@@ -35,6 +36,31 @@ public sealed class EntraTests
         using var host = new AuthHost { Entra = entra };
         await host.Store.Grants.AddAsync(new("object-id", null, GrantRoles.Workspace), default);
         await host.Send("POST", "/v3/workspaces", """{"id":"A"}""", entra.Token(invalid: invalid), 401);
+    }
+
+    [Theory]
+    [InlineData("header-truncated-json")]
+    [InlineData("header-array")]
+    [InlineData("header-kid-number")]
+    [InlineData("payload-exp-string")]
+    [InlineData("payload-exp-overflow")]
+    [InlineData("payload-iss-object")]
+    public async Task MalformedEntraRoutedToken_IsUnauthorized_NotServerError(string malformed)
+    {
+        using var entra = new OfflineEntra();
+        using var host = new AuthHost { Entra = entra };
+        var (header, payload) = malformed switch
+        {
+            "header-truncated-json" => ("{", """{"iss":"x"}"""),
+            "header-array" => ("[]", """{"iss":"x"}"""),
+            "header-kid-number" => ("""{"alg":"RS256","kid":5}""", """{"iss":"x"}"""),
+            "payload-exp-string" => ("""{"alg":"RS256","kid":"offline-rsa"}""", """{"iss":"x","exp":"abc"}"""),
+            "payload-exp-overflow" => ("""{"alg":"RS256","kid":"offline-rsa"}""", """{"iss":"x","exp":99999999999999999999999}"""),
+            _ => ("""{"alg":"RS256","kid":"offline-rsa"}""", """{"iss":{}}"""),
+        };
+        var token = $"{Base64UrlEncoder.Encode(header)}.{Base64UrlEncoder.Encode(payload)}.AAAA";
+        var error = await host.Send("POST", "/v3/workspaces/list", "{}", token, 401);
+        error.GetProperty("detail").GetString().ShouldBe("Authentication is required.");
     }
 
     [Fact]
