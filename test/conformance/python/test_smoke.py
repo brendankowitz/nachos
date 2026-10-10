@@ -4,7 +4,7 @@ import time
 import uuid
 
 import pytest
-from honcho import AuthenticationError, Honcho, ServerError, UnprocessableEntityError
+from honcho import AuthenticationError, Honcho, ServerError
 from honcho.api_types import SessionPeerConfig
 
 from conftest import MATCH_ALL
@@ -51,11 +51,8 @@ def test_list_auto_paginates_over_25_sessions(honcho: Honcho):
     assert honcho.workspaces(filters=MATCH_ALL).total >= 1
 
 
-# MISMATCH M1: honcho-ai 2.5.1 sends `POST .../list` with Content-Length 0 when no filters are given. Honcho accepts that;
-# Nachos answers 422 json_invalid ("Invalid JSON body."). The assertion states the expected behaviour; strict, so the
-# suite goes red (XPASS) the day Nachos accepts an empty list body, and this marker must then be removed. `raises` keeps a
-# dead server or any other error from being counted as the expected mismatch.
-@pytest.mark.xfail(strict=True, raises=UnprocessableEntityError, reason="M1: Nachos answers 422 json_invalid to the empty body the SDK sends for an unfiltered list")
+# honcho-ai 2.5.1 sends `POST .../list` with Content-Length 0 when no filters are given. Honcho accepts that, and so
+# does Nachos (a zero-byte body is `{}`; a malformed or whitespace-only body is still a 422).
 def test_list_without_filters(honcho: Honcho):
     honcho.session("s1")
     assert [s.id for s in honcho.sessions()] == ["s1"]

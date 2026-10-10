@@ -70,7 +70,7 @@ test('list auto-paginates over 25 sessions', async () => {
   }
   assert.deepEqual(seen, expected);
 
-  // Unlike honcho-ai 2.5.1 (mismatch M1 in the Python suite), this SDK's unfiltered list is accepted by Nachos.
+  // This SDK's unfiltered list is accepted by Nachos, as honcho-ai 2.5.1's empty-body list is (test_list_without_filters).
   assert.deepEqual((await honcho.sessions()).items.length, 25);
   assert.ok((await honcho.workspaces()).total >= 1);
 });

@@ -12,9 +12,9 @@ from dataclasses import dataclass
 import pytest
 from honcho import Honcho
 
-# Honcho accepts a list call with no body; Nachos answers 422 json_invalid to the empty body that honcho-ai 2.5.1 sends
-# when `filters` is None or empty (mismatch M1, see test_list_without_filters). Every other list call passes this
-# filter, which matches every row, so the scenarios stay meaningful.
+# honcho-ai 2.5.1 sends an empty body for a list call when `filters` is None or empty; Honcho and Nachos both accept it
+# (see test_list_without_filters). The other list calls pass this filter, which matches every row, so they exercise an
+# explicit filter.
 MATCH_ALL: dict[str, object] = {"metadata": {}}
 
 
