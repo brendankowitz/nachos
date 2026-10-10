@@ -30,6 +30,11 @@
 #     to $buildEnvironment, never by passing the caller's whole environment.
 #     Never Nachos__*, ConnectionStrings__*, SQLAZURECONNSTR_*, SQLCONNSTR_*, AZURE_*, ASPNETCORE_*, DOTNET_ENVIRONMENT,
 #     DOTNET_STARTUP_HOOKS, APPLICATIONINSIGHTS_* or OTEL_*.
+#   * builds also never reuse shared build servers, MSBuild worker nodes or the Roslyn compiler server
+#     (--disable-build-servers -m:1 -nr:false -p:UseSharedCompilation=false), because a worker started earlier keeps
+#     the environment it was started with (on Windows, one started under an incomplete environment reproduced the NuGet
+#     path1 failure even with a complete start info). The launcher never stops other processes' build servers (no
+#     `dotnet build-server shutdown`: the host may be shared).
 #   * the suites (pip, npm, pytest, node) keep the caller's environment; their NACHOS_* settings are restored in a
 #     finally block.
 #
@@ -84,6 +89,9 @@ $buildEnvironment = 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_
     'HOMEDRIVE', 'HOMEPATH', 'SystemDrive', 'windir', 'ComSpec', 'PATHEXT', 'OS', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME',
     'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION'
 
+# Builds never reuse shared build servers, MSBuild worker nodes or the Roslyn compiler server (see the header).
+$noSharedWorkers = '--disable-build-servers', '-m:1', '-nr:false', '-p:UseSharedCompilation=false'
+
 # A `dotnet <arguments>` start description whose environment is cleared and rebuilt from the allow-list, the names in
 # $inherit and $settings.
 function New-HermeticStartInfo([string[]]$arguments, [hashtable]$settings = @{}, [string[]]$inherit = @(), [string]$workingDirectory = $PWD.Path) {
@@ -105,7 +113,7 @@ function New-HermeticStartInfo([string[]]$arguments, [hashtable]$settings = @{},
 # Runs a build-tier dotnet command in the hermetic environment. Returns its trimmed standard output with -Capture;
 # otherwise the output goes to the console. Throws on a non-zero exit code.
 function Invoke-BuildStep([string]$what, [string[]]$arguments, [switch]$Capture) {
-    $info = New-HermeticStartInfo $arguments -inherit $buildEnvironment
+    $info = New-HermeticStartInfo ($arguments + $noSharedWorkers) -inherit $buildEnvironment
     if ($Capture) { $info.RedirectStandardOutput = $true }
     $process = [Diagnostics.Process]::Start($info)
     $output = if ($Capture) { $process.StandardOutput.ReadToEndAsync() }

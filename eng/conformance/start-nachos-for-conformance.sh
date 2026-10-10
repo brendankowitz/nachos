@@ -26,6 +26,10 @@
 #     REQUESTS_CA_BUNDLE, NUGET_PACKAGES, NUGET_HTTP_CACHE_PATH, DOTNET_NUGET_SIGNATURE_VERIFICATION, DOTNET_CLI_HOME.
 #     Never Nachos__*, ConnectionStrings__*, SQLAZURECONNSTR_*, SQLCONNSTR_*, AZURE_*, ASPNETCORE_*, DOTNET_ENVIRONMENT,
 #     DOTNET_STARTUP_HOOKS, APPLICATIONINSIGHTS_* or OTEL_*.
+#   * builds also never reuse shared build servers, MSBuild worker nodes or the Roslyn compiler server
+#     (--disable-build-servers -m:1 -nr:false -p:UseSharedCompilation=false), because a worker started earlier keeps
+#     the environment it was started with. The launcher never stops other processes' build servers (no
+#     `dotnet build-server shutdown`: the host may be shared).
 #   * the suites (pip, npm, pytest, node) keep the caller's environment, plus the NACHOS_* settings from the env file.
 #
 # Usage: start-nachos-for-conformance.sh [--run] [--require-auth | --allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
@@ -107,12 +111,17 @@ hermetic_exec() {
 # What a build step may additionally see (package-feed access only), when the caller has it set.
 build_environment="HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE NUGET_PACKAGES NUGET_HTTP_CACHE_PATH DOTNET_NUGET_SIGNATURE_VERIFICATION DOTNET_CLI_HOME"
 
-# Build once; the output paths are asked of MSBuild rather than guessed.
+# Build once; the output paths are asked of MSBuild rather than guessed. Builds never reuse shared build servers, MSBuild
+# worker nodes or the Roslyn compiler server: a worker started earlier keeps the environment it was started with, so
+# it could carry an ambient SQL/auth setting (or lack a needed one) into the "hermetic" build.
+no_shared_workers=(--disable-build-servers -m:1 -nr:false -p:UseSharedCompilation=false)
 build_output() (
-  hermetic_exec "$build_environment" dotnet msbuild "$repo_root/src/$1/$1.csproj" -p:Configuration=Release -getProperty:TargetPath | tr -d '\r'
+  hermetic_exec "$build_environment" dotnet msbuild "$repo_root/src/$1/$1.csproj" -p:Configuration=Release -getProperty:TargetPath \
+    "${no_shared_workers[@]}" | tr -d '\r'
 )
 build_project() (
-  hermetic_exec "$build_environment" dotnet build "$repo_root/src/$1/$1.csproj" -c Release -v q --nologo >&2
+  hermetic_exec "$build_environment" dotnet build "$repo_root/src/$1/$1.csproj" -c Release -v q --nologo \
+    "${no_shared_workers[@]}" >&2
 )
 build_project Nachos.Api || fail "building Nachos.Api failed"
 build_project Nachos.Cli || fail "building Nachos.Cli failed"
