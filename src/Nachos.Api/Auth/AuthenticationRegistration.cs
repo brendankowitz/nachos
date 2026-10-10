@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -61,12 +62,18 @@ internal static class AuthenticationRegistration
         services.AddSingleton<IAuthorizationMiddlewareResultHandler, NachosAuthorizationResultHandler>();
     }
 
-    private static bool Operational(Exception error)
+    // Credential-shaped outer exceptions (including malformed-JSON ones that IdentityModel wraps around JsonException,
+    // OverflowException, ...) are a 401 whatever they wrap; only a transport failure underneath marks a real outage.
+    private static bool Operational(Exception error) => error switch
     {
-        if (error is AggregateException aggregate) return aggregate.InnerExceptions.Any(Operational);
-        return error.InnerException is not null && Operational(error.InnerException) ||
-            error is not (SecurityTokenException or AuthException or ArgumentException or FormatException);
-    }
+        AggregateException aggregate => aggregate.InnerExceptions.Any(Operational),
+        SecurityTokenException or AuthException or ArgumentException or FormatException or JsonException =>
+            TransportFailure(error.InnerException),
+        _ => true,
+    };
+
+    private static bool TransportFailure(Exception? error) =>
+        error is HttpRequestException or IOException or TimeoutException || error is not null && TransportFailure(error.InnerException);
 
     private sealed class NachosAuthorizationResultHandler : IAuthorizationMiddlewareResultHandler
     {
