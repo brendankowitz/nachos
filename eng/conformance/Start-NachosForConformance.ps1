@@ -12,6 +12,7 @@
 # own environment is never modified for them; the suites' NACHOS_* settings are restored in a finally block.
 #
 # Usage: Start-NachosForConformance.ps1 [-Run] [-RequireAuth | -AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
+#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [switch]$Run,
@@ -176,7 +177,13 @@ try {
         'NACHOS_AUTH_WORKSPACE=conformance-auth'
         'NACHOS_AUTH_PEER=member'
     ) | Set-Content -Path $EnvFile -Encoding ascii
-    if (-not $IsWindows) { chmod 600 $EnvFile }
+    # The file holds the keys: owner-only, like the mode 600 the bash twin sets.
+    if ($IsWindows) {
+        icacls $EnvFile /inheritance:r /grant:r "${env:USERNAME}:(R,W)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "restricting the permissions of $EnvFile failed" }
+    } else {
+        chmod 600 $EnvFile
+    }
     Write-Host "Nachos is ready at $baseUrl (auth: $authMode); environment file: $EnvFile"
 
     if (-not $Run) {
