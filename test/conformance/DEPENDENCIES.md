@@ -1,8 +1,8 @@
 # Conformance suite dependencies
 
-Identity and licence evidence for every package resolved by `python/requirements.lock` and
-`typescript/package-lock.json`. These packages are test tooling for the upstream-SDK conformance suites: nothing here is
-shipped in a Nachos artifact.
+Identity and licence evidence for every package resolved by `python/requirements.lock` (18 packages) and
+`typescript/package-lock.json` (2 packages). These packages are test tooling for the upstream-SDK conformance suites:
+nothing here is shipped in a Nachos artifact.
 
 Generated from the archives themselves, not from memory, on 2026-10-10. Only package metadata (`METADATA`,
 `package.json`) and licence files inside the archives were read; no SDK or package source module was opened.
@@ -10,17 +10,24 @@ Generated from the archives themselves, not from memory, on 2026-10-10. Only pac
 ```bash
 # pip: download each locked artifact; pip rejects any whose sha256 is not in the lock.
 python3 -m pip download --no-deps --require-hashes -r test/conformance/python/requirements.lock -d <scratch>/pip
+# colorama is locked only for Windows (sys_platform == 'win32'), so pip skips it on Linux: its lock entry was
+# downloaded the same way from a copy with the marker removed.
 # npm: fetch each tarball and compare its sha512 with the integrity value in package-lock.json.
 npm pack @honcho-ai/sdk@2.5.1 zod@4.0.0     # run in <scratch>/npm
 ```
 
+* The Python lock is universal (`uv pip compile --universal --python-version 3.11`): it resolves for every platform
+  and Python 3.11 or newer, and lists the hashes of every published artifact. Only the artifact the author's host
+  selects was downloaded and inspected (`pydantic-core` is a platform wheel, so another platform installs a different,
+  equally locked wheel of the same release).
 * "Declared licence" is the `License-Expression` field of the wheel's `METADATA` (pip) or the `license` field of
-  `package.json` (npm), copied verbatim. Compound expressions are not interpreted and no choice is recorded.
-* "Archive hash" is the sha256 of the downloaded wheel (pip; the lock lists the hashes of every published artifact, and
-  `pydantic-core` is a platform wheel, so a different host may install a different, equally locked wheel) or the
-  `integrity` value of the tarball (npm).
-* "Licence file(s)" are the files whose names match licence (either spelling), copying or notice inside the dist-info directory
-  (pip) or at the package root (npm), with the sha256 of each file's bytes.
+  `package.json` (npm), copied verbatim. When a wheel has no such field (colorama), the trove classifier is given.
+  Compound expressions are not interpreted and no choice is recorded.
+* "Archive hash" is the sha256 of the downloaded wheel (pip) or the `integrity` value of the tarball (npm).
+* "Licence file(s)" are the files whose names match licence (either spelling), copying or notice inside the dist-info
+  directory (pip) or at the package root (npm), with the sha256 of each file's bytes.
+* CI behind a package mirror may need `PIP_INDEX_URL` (and the npm registry setting) pointed at it; the hashes and
+  integrity values stay the same.
 
 | Ecosystem | Package | Version | Artifact | Archive hash | Declared licence | Licence file(s) in archive | Flag |
 |---|---|---|---|---|---|---|---|
@@ -29,6 +36,7 @@ npm pack @honcho-ai/sdk@2.5.1 zod@4.0.0     # run in <scratch>/npm
 | pip | annotated-types | 0.8.0 | `annotated_types-0.8.0-py3-none-any.whl` | `sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0` | MIT | `annotated_types-0.8.0.dist-info/licenses/LICENSE` sha256:`fe1049884b1a0d9342901e88e07f32925d24b3121d9972b6a6805fb9824b095d` | - |
 | pip | anyio | 4.15.1 | `anyio-4.15.1-py3-none-any.whl` | `sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101` | MIT | `anyio-4.15.1.dist-info/licenses/LICENSE` sha256:`5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0` | - |
 | pip | certifi | 2026.7.22 | `certifi-2026.7.22-py3-none-any.whl` | `sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775` | MPL-2.0 | `certifi-2026.7.22.dist-info/licenses/LICENSE` sha256:`e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7` | NOT plainly MIT/Apache-2.0/BSD/ISC/PSF |
+| pip | colorama | 0.4.6 | `colorama-0.4.6-py2.py3-none-any.whl` | `sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6` | License :: OSI Approved :: BSD License | `colorama-0.4.6.dist-info/licenses/LICENSE.txt` sha256:`cac35c02686e5d04a5a7140bfb3b36e73aed496656e891102e428886d7930318` | licence declared only as a trove classifier; BSD variant not stated (no SPDX expression) |
 | pip | h11 | 0.16.0 | `h11-0.16.0-py3-none-any.whl` | `sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86` | MIT | `h11-0.16.0.dist-info/licenses/LICENSE.txt` sha256:`37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361` | - |
 | pip | honcho-ai | 2.5.1 | `honcho_ai-2.5.1-py3-none-any.whl` | `sha256:ef354c086b05d911b8f9db14cc552488ffd332e57947ee0378bbb3657f51cd7e` | Apache-2.0 | no licence file in archive | no licence file in archive |
 | pip | httpcore | 1.0.9 | `httpcore-1.0.9-py3-none-any.whl` | `sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55` | BSD-3-Clause | `httpcore-1.0.9.dist-info/licenses/LICENSE.md` sha256:`fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5` | - |
@@ -46,7 +54,8 @@ npm pack @honcho-ai/sdk@2.5.1 zod@4.0.0     # run in <scratch>/npm
 
 ## Flags
 
+* npm `@honcho-ai/sdk` 2.5.1: no licence file in archive.
 * pip `certifi` 2026.7.22: NOT plainly MIT/Apache-2.0/BSD/ISC/PSF.
+* pip `colorama` 0.4.6: licence declared only as a trove classifier; BSD variant not stated (no SPDX expression).
 * pip `honcho-ai` 2.5.1: no licence file in archive.
 * pip `packaging` 26.3: NOT plainly MIT/Apache-2.0/BSD/ISC/PSF (compound expression, recorded verbatim; not interpreted).
-* npm `@honcho-ai/sdk` 2.5.1: no licence file in archive.
