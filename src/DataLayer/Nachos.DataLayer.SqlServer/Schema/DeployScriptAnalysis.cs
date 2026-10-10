@@ -174,7 +174,7 @@ internal sealed partial class DeployScriptAnalysis
         && grant.Permissions[0].Identifiers.Count == 1
         && grant.Permissions[0].Identifiers[0].Value.Equals("EXECUTE", StringComparison.OrdinalIgnoreCase)
         && grant.Permissions[0].Columns.Count == 0
-        && grant.SecurityTargetObject is { ObjectKind: SecurityObjectKind.Object or SecurityObjectKind.NotSpecified, ObjectName.MultiPartIdentifier: { Count: 2 } name }
+        && grant.SecurityTargetObject is { ObjectKind: SecurityObjectKind.Object or SecurityObjectKind.NotSpecified, ObjectName.MultiPartIdentifier: { Count: 2 } name, Columns.Count: 0 }
         && name[0].Value.Equals("dbo", StringComparison.OrdinalIgnoreCase)
         && grant.Principals.Count == 1
         && grant.Principals[0] is { } principal
