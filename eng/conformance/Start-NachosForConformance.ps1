@@ -7,9 +7,22 @@
 # development-only fallback for a branch where auth is not published yet and applies only to the fail-closed answers
 # 401 and 501; any other probe result (5xx, no connection, timeout) is a hard failure.
 #
-# Hermetic: the API and the CLI key-minting commands get an explicit allow-listed environment built from scratch, so
-# an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect the in-memory, offline run. The caller's
-# own environment is never modified for them; the suites' NACHOS_* settings are restored in a finally block.
+# Hermetic: every dotnet process that can start application code runs inside an allow-listed environment, so an ambient
+# SQL, Key Vault, Entra, Azure, auth or telemetry setting cannot redirect or break the in-memory, offline run. That
+# includes the builds: building src/Nachos.Api runs its OpenAPI document generation, which starts the application's
+# startup code. Each child's environment is built from scratch (ProcessStartInfo.Environment is cleared, then filled);
+# the caller's own environment is never modified for them.
+#   * API and CLI (runtime) steps see: PATH, HOME, DOTNET_ROOT, LANG, LC_ALL, TMPDIR, SystemRoot, USERPROFILE, TEMP,
+#     TMP, DOTNET_CLI_TELEMETRY_OPTOUT=1, DOTNET_NOLOGO=1, plus the synthetic settings this script sets itself
+#     (ASPNETCORE_ENVIRONMENT, ASPNETCORE_URLS, Logging__LogLevel__Default, Nachos__Auth__*; the CLI gets only the
+#     signing secret variable).
+#   * build steps (dotnet build, dotnet msbuild -getProperty) see the runtime list plus, only when set, package-feed
+#     access: HTTP_PROXY, HTTPS_PROXY, NO_PROXY, ALL_PROXY and their lower-case forms, SSL_CERT_FILE, SSL_CERT_DIR,
+#     REQUESTS_CA_BUNDLE, NUGET_PACKAGES, NUGET_HTTP_CACHE_PATH, DOTNET_NUGET_SIGNATURE_VERIFICATION, DOTNET_CLI_HOME.
+#     Never Nachos__*, ConnectionStrings__*, SQLAZURECONNSTR_*, SQLCONNSTR_*, AZURE_*, ASPNETCORE_*, DOTNET_ENVIRONMENT,
+#     DOTNET_STARTUP_HOOKS, APPLICATIONINSIGHTS_* or OTEL_*.
+#   * the suites (pip, npm, pytest, node) keep the caller's environment; their NACHOS_* settings are restored in a
+#     finally block.
 #
 # Usage: Start-NachosForConformance.ps1 [-Run] [-RequireAuth | -AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
 #Requires -Version 7.0
@@ -47,22 +60,23 @@ function Invoke-Checked([string]$what, [scriptblock]$command) {
     if ($LASTEXITCODE -ne 0) { throw "$what failed (exit code $LASTEXITCODE)" }
 }
 
-function Get-TargetPath([string]$project) {
-    (& dotnet msbuild (Join-Path $repoRoot "src/$project/$project.csproj") -p:Configuration=Release -getProperty:TargetPath).Trim()
-}
-
-# The names a child process may inherit. Everything else the caller exported is dropped (same list as the bash twin,
-# plus the Windows basics .NET needs).
+# The names a runtime child process (API, CLI) may inherit. Everything else the caller exported is dropped (same list
+# as the bash twin, plus the Windows basics .NET needs).
 $allowedEnvironment = 'PATH', 'HOME', 'DOTNET_ROOT', 'LANG', 'LC_ALL', 'TMPDIR', 'SystemRoot', 'USERPROFILE', 'TEMP', 'TMP'
+# What a build step may additionally inherit (package-feed access only), when the caller has it set.
+$buildEnvironment = 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH',
+    'DOTNET_NUGET_SIGNATURE_VERIFICATION', 'DOTNET_CLI_HOME'
 
-# A `dotnet <dll>` start description whose environment is cleared and rebuilt from the allow-list plus $settings.
-function New-HermeticStartInfo([string]$dll, [hashtable]$settings) {
+# A `dotnet <arguments>` start description whose environment is cleared and rebuilt from the allow-list, the names in
+# $inherit and $settings.
+function New-HermeticStartInfo([string[]]$arguments, [hashtable]$settings = @{}, [string[]]$inherit = @(), [string]$workingDirectory = $PWD.Path) {
     $info = [Diagnostics.ProcessStartInfo]::new('dotnet')
-    $info.ArgumentList.Add($dll)
-    $info.WorkingDirectory = Split-Path $dll
+    foreach ($argument in $arguments) { $info.ArgumentList.Add($argument) }
+    $info.WorkingDirectory = $workingDirectory
     $info.UseShellExecute = $false
     $info.Environment.Clear()
-    foreach ($name in $allowedEnvironment) {
+    foreach ($name in $allowedEnvironment + $inherit) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($value) { $info.Environment[$name] = $value }
     }
@@ -70,6 +84,22 @@ function New-HermeticStartInfo([string]$dll, [hashtable]$settings) {
     $info.Environment['DOTNET_NOLOGO'] = '1'
     foreach ($name in $settings.Keys) { $info.Environment[$name] = $settings[$name] }
     $info
+}
+
+# Runs a build-tier dotnet command in the hermetic environment. Returns its trimmed standard output with -Capture;
+# otherwise the output goes to the console. Throws on a non-zero exit code.
+function Invoke-BuildStep([string]$what, [string[]]$arguments, [switch]$Capture) {
+    $info = New-HermeticStartInfo $arguments -inherit $buildEnvironment
+    if ($Capture) { $info.RedirectStandardOutput = $true }
+    $process = [Diagnostics.Process]::Start($info)
+    $output = if ($Capture) { $process.StandardOutput.ReadToEndAsync() }
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "$what failed (exit code $($process.ExitCode))" }
+    if ($Capture) { $output.GetAwaiter().GetResult().Trim() }
+}
+
+function Get-TargetPath([string]$project) {
+    Invoke-BuildStep "locating $project" @('msbuild', (Join-Path $repoRoot "src/$project/$project.csproj"), '-p:Configuration=Release', '-getProperty:TargetPath') -Capture
 }
 
 # Runs $body with $settings applied to this process's environment and always restores the previous values.
@@ -90,10 +120,8 @@ function Invoke-WithEnvironment([hashtable]$settings, [scriptblock]$body) {
 }
 
 function New-Key([string[]]$keyArguments) {
-    $info = New-HermeticStartInfo $cliDll @{ NACHOS_CONFORMANCE_SECRET = $conformanceSecret }
-    foreach ($argument in @('keys', 'create', '--signing-secret-env', 'NACHOS_CONFORMANCE_SECRET', '--kid', 'dev') + $keyArguments) {
-        $info.ArgumentList.Add($argument)
-    }
+    $info = New-HermeticStartInfo (@($cliDll, 'keys', 'create', '--signing-secret-env', 'NACHOS_CONFORMANCE_SECRET', '--kid', 'dev') + $keyArguments) `
+        @{ NACHOS_CONFORMANCE_SECRET = $conformanceSecret } -workingDirectory (Split-Path $cliDll)
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
     $process = [Diagnostics.Process]::Start($info)
@@ -113,7 +141,7 @@ function Start-Api([bool]$authEnabled) {
     $listener.Stop()
     $baseUrl = "http://127.0.0.1:$port"
 
-    $info = New-HermeticStartInfo $apiDll @{
+    $info = New-HermeticStartInfo @($apiDll) -workingDirectory (Split-Path $apiDll) -settings @{
         ASPNETCORE_ENVIRONMENT                     = 'Development'
         ASPNETCORE_URLS                            = $baseUrl
         Logging__LogLevel__Default                 = 'Warning'
@@ -136,8 +164,9 @@ function Start-Api([bool]$authEnabled) {
 }
 
 try {
-    Invoke-Checked 'building Nachos.Api' { dotnet build (Join-Path $repoRoot 'src/Nachos.Api/Nachos.Api.csproj') -c Release -v q --nologo }
-    Invoke-Checked 'building Nachos.Cli' { dotnet build (Join-Path $repoRoot 'src/Nachos.Cli/Nachos.Cli.csproj') -c Release -v q --nologo }
+    foreach ($project in 'Nachos.Api', 'Nachos.Cli') {
+        Invoke-BuildStep "building $project" @('build', (Join-Path $repoRoot "src/$project/$project.csproj"), '-c', 'Release', '-v', 'q', '--nologo')
+    }
     $apiDll = Get-TargetPath 'Nachos.Api'
     $cliDll = Get-TargetPath 'Nachos.Cli'
 
@@ -177,7 +206,8 @@ try {
         'NACHOS_AUTH_WORKSPACE=conformance-auth'
         'NACHOS_AUTH_PEER=member'
     ) | Set-Content -Path $EnvFile -Encoding ascii
-    # The file holds the keys: owner-only, like the mode 600 the bash twin sets.
+    # The file holds the keys: inheritance is removed and the current user gets read/write (SYSTEM and Administrators keep
+    # their access too), the closest Windows analogue of the mode 600 the bash twin sets.
     if ($IsWindows) {
         icacls $EnvFile /inheritance:r /grant:r "${env:USERNAME}:(R,W)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "restricting the permissions of $EnvFile failed" }

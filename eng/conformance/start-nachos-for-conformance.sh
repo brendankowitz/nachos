@@ -14,11 +14,19 @@
 # scenario reports "not executed" rather than passing against an open server. Any other probe result (a 5xx, a
 # refused connection, a timeout) is a hard failure with or without the flag.
 #
-# Hermetic: the API and the CLI key-minting commands run with an allow-listed environment (PATH, HOME, DOTNET_ROOT,
-# LANG, LC_ALL, TMPDIR, the two DOTNET_* opt-outs and the synthetic settings this script sets itself). Everything else
-# the caller exported is dropped, so an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect
-# the in-memory, offline run. (The build steps and the suites keep the caller's environment: they need its package
-# feeds and proxies.)
+# Hermetic: every dotnet process that can start application code runs inside an allow-listed environment, so an ambient
+# SQL, Key Vault, Entra, Azure, auth or telemetry setting cannot redirect or break the in-memory, offline run. That
+# includes the builds: building src/Nachos.Api runs its OpenAPI document generation, which starts the application's
+# startup code. Variables not on the lists below are dropped (unset; the signing secret never reaches a command line).
+#   * API and CLI (runtime) steps see: PATH, HOME, DOTNET_ROOT, LANG, LC_ALL, TMPDIR, DOTNET_CLI_TELEMETRY_OPTOUT=1,
+#     DOTNET_NOLOGO=1, plus the synthetic settings this script sets itself (ASPNETCORE_ENVIRONMENT, ASPNETCORE_URLS,
+#     Nachos__Auth__*; the CLI gets only the signing secret variable).
+#   * build steps (dotnet build, dotnet msbuild -getProperty) see the runtime list plus, only when set, package-feed
+#     access: HTTP_PROXY, HTTPS_PROXY, NO_PROXY, ALL_PROXY and their lower-case forms, SSL_CERT_FILE, SSL_CERT_DIR,
+#     REQUESTS_CA_BUNDLE, NUGET_PACKAGES, NUGET_HTTP_CACHE_PATH, DOTNET_NUGET_SIGNATURE_VERIFICATION, DOTNET_CLI_HOME.
+#     Never Nachos__*, ConnectionStrings__*, SQLAZURECONNSTR_*, SQLCONNSTR_*, AZURE_*, ASPNETCORE_*, DOTNET_ENVIRONMENT,
+#     DOTNET_STARTUP_HOOKS, APPLICATIONINSIGHTS_* or OTEL_*.
+#   * the suites (pip, npm, pytest, node) keep the caller's environment, plus the NACHOS_* settings from the env file.
 #
 # Usage: start-nachos-for-conformance.sh [--run] [--require-auth | --allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
 set -euo pipefail
@@ -79,18 +87,6 @@ trap 'exit 143' TERM
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-# Build once; the output paths are asked of MSBuild rather than guessed.
-build_output() {
-  dotnet msbuild "$repo_root/src/$1/$1.csproj" -p:Configuration=Release -getProperty:TargetPath | tr -d '\r'
-}
-dotnet build "$repo_root/src/Nachos.Api/Nachos.Api.csproj" -c Release -v q --nologo >&2 || fail "building Nachos.Api failed"
-dotnet build "$repo_root/src/Nachos.Cli/Nachos.Cli.csproj" -c Release -v q --nologo >&2 || fail "building Nachos.Cli failed"
-api_dll="$(build_output Nachos.Api)"
-cli_dll="$(build_output Nachos.Cli)"
-
-# The signing secret is exported only into the API and CLI processes below; it is never printed or written.
-conformance_secret="$(openssl rand -base64 32)"
-
 # Replaces the calling process (call it inside a subshell) with "$2…" running under the allow-listed environment.
 # $1 names the extra variables to keep, space separated. Variables are unset rather than passed to `env -i` so that
 # the signing secret never appears on a command line, and exported shell functions are dropped too.
@@ -107,6 +103,24 @@ hermetic_exec() {
   export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
   exec "$@"
 }
+
+# What a build step may additionally see (package-feed access only), when the caller has it set.
+build_environment="HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE NUGET_PACKAGES NUGET_HTTP_CACHE_PATH DOTNET_NUGET_SIGNATURE_VERIFICATION DOTNET_CLI_HOME"
+
+# Build once; the output paths are asked of MSBuild rather than guessed.
+build_output() (
+  hermetic_exec "$build_environment" dotnet msbuild "$repo_root/src/$1/$1.csproj" -p:Configuration=Release -getProperty:TargetPath | tr -d '\r'
+)
+build_project() (
+  hermetic_exec "$build_environment" dotnet build "$repo_root/src/$1/$1.csproj" -c Release -v q --nologo >&2
+)
+build_project Nachos.Api || fail "building Nachos.Api failed"
+build_project Nachos.Cli || fail "building Nachos.Cli failed"
+api_dll="$(build_output Nachos.Api)"
+cli_dll="$(build_output Nachos.Cli)"
+
+# The signing secret is exported only into the API and CLI processes below; it is never printed or written.
+conformance_secret="$(openssl rand -base64 32)"
 
 mint_key() (
   export NACHOS_CONFORMANCE_SECRET="$conformance_secret"
