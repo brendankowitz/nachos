@@ -26,3 +26,4 @@ public sealed record ResourceGet(JsonObject? Filters = null);
 public sealed record MessageUpdate(JsonObject? Metadata = null);
 public sealed record MessageBatchCreate(
     [property: MinLength(1), MaxLength(100)] IReadOnlyList<MessageCreate> Messages);
+public sealed record GrantCreate(string ObjectId, string? WorkspaceId, string Role);

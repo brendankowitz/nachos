@@ -19,7 +19,7 @@ internal static class PeerEndpoints
         }).Accepts<PeerCreate>("application/json").Produces<Peer>();
         group.MapPost("/list", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
-            using var body = await RequestBody.ReadAsync(http.Request);
+            using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
             var kind = body.Optional("kind", NachosJsonContext.Default.String) switch
             {
                 null => (PeerKind?)null,
@@ -38,7 +38,7 @@ internal static class PeerEndpoints
         }).Accepts<PeerUpdate>("application/json").Produces<Peer>();
         group.MapPost("/{peer_id}/sessions", async (string workspace_id, string peer_id, HttpContext http, INachosClient client) =>
         {
-            using var body = await RequestBody.ReadAsync(http.Request);
+            using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
             return TypedResults.Ok(await client.ListPeerSessionsAsync(workspace_id, peer_id, body.Object("filters"),
                 PagingParameters.Read(http.Request), http.RequestAborted));
         }).Accepts<ResourceGet>("application/json").Produces<Page<Session>>().WithPaging();

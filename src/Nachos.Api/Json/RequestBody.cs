@@ -14,12 +14,16 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
 {
     public JsonElement Root => document.RootElement;
 
-    public static async Task<RequestBody> ReadAsync(HttpRequest request, bool requireObject = true)
+    public static async Task<RequestBody> ReadAsync(HttpRequest request, bool requireObject = true, bool allowEmpty = false)
     {
         using var buffer = new MemoryStream();
         await request.Body.CopyToAsync(buffer, request.HttpContext.RequestAborted);
         // JsonDocument retains this managed buffer after the stream is disposed.
         ReadOnlyMemory<byte> utf8 = buffer.GetBuffer().AsMemory(0, (int)buffer.Length);
+        if (allowEmpty && utf8.IsEmpty)
+        {
+            return new(JsonDocument.Parse("{}"));
+        }
         if (!Utf8.IsValid(utf8.Span))
         {
             throw Invalid(["body"], "Invalid JSON body.", "json_invalid");
@@ -32,8 +36,8 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         JsonDocument document;
         try
         {
-            // Core owns the per-value depth limits; the HTTP envelope must not consume that allowance.
-            document = JsonDocument.Parse(utf8, new JsonDocumentOptions { MaxDepth = int.MaxValue });
+            // HTTP admission is separate from Core's per-value depth allowance.
+            document = JsonDocument.Parse(utf8, new JsonDocumentOptions { MaxDepth = 1000 });
         }
         catch (JsonException error)
         {

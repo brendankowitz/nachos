@@ -11,6 +11,7 @@ public sealed partial class WireCoverageTests : ApiTest
     private static readonly HashSet<string> Implemented = new(StringComparer.Ordinal)
     {
         "GET /health",
+        "POST /v3/keys", "POST /v3/admin/grants",
         "POST /v3/workspaces", "POST /v3/workspaces/list", "PUT /v3/workspaces/{workspace_id}",
         "POST /v3/workspaces/{workspace_id}/peers", "POST /v3/workspaces/{workspace_id}/peers/list",
         "PUT /v3/workspaces/{workspace_id}/peers/{peer_id}", "POST /v3/workspaces/{workspace_id}/peers/{peer_id}/sessions",

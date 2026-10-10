@@ -24,9 +24,10 @@ namespace Nachos.Client.Tests;
 /// </summary>
 /// <remarks>
 /// Coverage is enforced: <see cref="EveryOperation_HasARoundTrip"/> fails when an <see cref="INachosClient"/> method is
-/// neither declared by a scenario nor listed as a staged gap, and each scenario fails unless it actually calls every
-/// operation it declares. Operations the M1 API answers with 501 (<see cref="StagedGaps"/>) are checked for the mapped
-/// exception and a single request instead of equality.
+/// neither declared by a scenario nor listed in <see cref="AdminOperations"/>, and each scenario fails unless it actually
+/// calls every operation it declares. The two admin operations (<c>POST /v3/keys</c>, <c>POST /v3/admin/grants</c>) need
+/// authentication state the equality scenarios do not set up, so their HTTP outcomes are asserted on their own, each
+/// with a single request.
 /// </remarks>
 public sealed class RoundTripTests
 {
@@ -34,12 +35,8 @@ public sealed class RoundTripTests
 
     private static readonly PageRequest FirstPage = new();
 
-    /// <summary>Operations the M1 API intentionally answers with 501, mapped to the route they use.</summary>
-    private static readonly Dictionary<string, Func<INachosClient, Task>> StagedGaps = new()
-    {
-        [nameof(INachosClient.CreateKeyAsync)] = c => c.CreateKeyAsync("w"),
-        [nameof(INachosClient.AddGrantAsync)] = c => c.AddGrantAsync("00000000-0000-0000-0000-000000000001", null, GrantRoles.Workspace),
-    };
+    /// <summary>Admin operations asserted individually below instead of compared with the in-process client.</summary>
+    private static readonly string[] AdminOperations = [nameof(INachosClient.CreateKeyAsync), nameof(INachosClient.AddGrantAsync)];
 
     private static readonly Scenario[] Scenarios =
     [
@@ -244,8 +241,6 @@ public sealed class RoundTripTests
 
     public static TheoryData<string> ScenarioNames => [.. Scenarios.Select(s => s.Name)];
 
-    public static TheoryData<string> StagedGapNames => [.. StagedGaps.Keys];
-
     [Theory]
     [MemberData(nameof(ScenarioNames))]
     public async Task Http_MatchesInProcess(string name)
@@ -280,23 +275,32 @@ public sealed class RoundTripTests
     public void EveryOperation_HasARoundTrip()
     {
         var operations = typeof(INachosClient).GetMethods().Select(m => m.Name).Distinct().Order().ToArray();
-        var covered = Scenarios.SelectMany(s => s.Covers).Concat(StagedGaps.Keys).ToHashSet();
+        var covered = Scenarios.SelectMany(s => s.Covers).Concat(AdminOperations).ToHashSet();
 
         operations.Where(o => !covered.Contains(o)).ShouldBeEmpty("INachosClient operations without a round trip");
         covered.Where(c => !operations.Contains(c)).ShouldBeEmpty("covered names that are not operations");
     }
 
-    [Theory]
-    [MemberData(nameof(StagedGapNames))]
-    public async Task StagedGap_Is501_MappedToHttpRequestException_AndNotRetried(string operation)
+    [Fact]
+    public async Task AddGrant_IsNoContent_AndSentOnce()
     {
         using var harness = new RoundTripHarness();
 
-        var ex = await Should.ThrowAsync<HttpRequestException>(() => StagedGaps[operation](harness.Http));
+        await harness.Http.AddGrantAsync("00000000-0000-0000-0000-000000000001", null, GrantRoles.Workspace);
 
-        ex.StatusCode.ShouldBe(HttpStatusCode.NotImplemented);
-        ex.Message.ShouldContain("Not implemented in this Nachos version");
-        harness.Wire.Requests.Count.ShouldBe(1);
+        harness.Wire.Requests.ShouldBe(["POST /v3/admin/grants"]);
+    }
+
+    [Fact]
+    public async Task CreateKey_WithoutConfiguredSigningKeys_Is422_AndNotRetried()
+    {
+        using var harness = new RoundTripHarness();
+
+        var ex = await Should.ThrowAsync<NachosValidationException>(() => harness.Http.CreateKeyAsync("w"));
+
+        ex.Message.ShouldNotBeNullOrWhiteSpace();
+        ex.Message.ShouldNotContain("Not implemented in this Nachos version");
+        harness.Wire.Requests.ShouldBe(["POST /v3/keys?workspace_id=w"]);
     }
 
     [Fact]

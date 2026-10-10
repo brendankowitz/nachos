@@ -31,7 +31,7 @@ internal static class SessionEndpoints
                 "Omitted, null or empty scopes are accepted; named-scope creation remains M6.");
         group.MapPost("/list", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
-            using var body = await RequestBody.ReadAsync(http.Request);
+            using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
             return TypedResults.Ok(await client.ListSessionsAsync(workspace_id, body.Object("filters"),
                 PagingParameters.Read(http.Request), http.RequestAborted));
         }).Accepts<ResourceGet>("application/json").Produces<Page<Session>>().WithPaging();

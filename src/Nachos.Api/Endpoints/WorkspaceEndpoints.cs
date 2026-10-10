@@ -27,7 +27,7 @@ internal static class WorkspaceEndpoints
         }).Accepts<WorkspaceCreate>("application/json").Produces<Workspace>();
         group.MapPost("/list", async (HttpContext http, INachosClient client) =>
         {
-            using var body = await RequestBody.ReadAsync(http.Request);
+            using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
             return TypedResults.Ok(await client.ListWorkspacesAsync(body.Object("filters"),
                 PagingParameters.Read(http.Request), http.RequestAborted));
         }).Accepts<ResourceGet>("application/json").Produces<Page<Workspace>>().WithPaging();

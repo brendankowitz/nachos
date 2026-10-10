@@ -35,4 +35,6 @@ namespace Nachos.Api.Json;
 [JsonSerializable(typeof(ResourceGet))]
 [JsonSerializable(typeof(MessageUpdate))]
 [JsonSerializable(typeof(MessageBatchCreate))]
+[JsonSerializable(typeof(GrantCreate))]
+[JsonSerializable(typeof(KeyResponse))]
 public partial class NachosJsonContext : JsonSerializerContext;
