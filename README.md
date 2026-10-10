@@ -259,10 +259,15 @@ These routes exist so that clients get a stable, explicit answer rather than a 4
   earlier M1 build reads as current. Any existing pre-release database must take the reviewed path once: run
   `schema report`, review it, then `schema upgrade --approve-reviewed` (no data is lost). New databases need nothing.
   See section 7.3 of the design spec.
-- **Honcho SDK compatibility is not yet verified.** Conformance runs of the upstream SDKs are tracked in
+- **Honcho SDK compatibility is only minimally verified.** A minimal smoke suite that drives the upstream Python
+  (`honcho-ai` 2.5.1) and TypeScript (`@honcho-ai/sdk` 2.5.1) SDKs against Nachos lives in
+  [`test/conformance`](test/conformance). Broader conformance is tracked in
   [#11](https://github.com/brendankowitz/nachos/issues/11); legacy `/v2` compatibility is tracked in
   [#4](https://github.com/brendankowitz/nachos/issues/4). Intentional deviations from Honcho's behavior are listed in
   section 9.4 of the design spec.
+- **Known gap: the Python SDK's unfiltered list calls fail.** The Python SDK sends an empty `POST` body for a list
+  call without filters, and Nachos currently answers it with `422 json_invalid`. The smoke suite records this as an
+  expected failure (`xfail`); a fix is pending.
 
 ## Licensing and release holds
 
