@@ -253,7 +253,10 @@ These routes exist so that clients get a stable, explicit answer rather than a 4
 - **SQL provider limits.** A metadata object key longer than 4000 UTF-16 code units cannot be stored by the SQL Server
   provider (the request is rejected with a `422`). A single filter may use at most 2000 SQL parameters (also a `422`). A pathological,
   unmergeable filter of roughly 10,000 conditions can reach the 30 s command timeout before SQL Server reports its
-  complexity error, so the client sees a timeout rather than a `422`:
+  complexity error, so the client sees a timeout rather than a `422`. Separately, `contains`/`icontains` cost grows
+  with text length times operand length on highly repetitive text, so even a filter with few conditions, using a long
+  operand (thousands of characters) over long or repetitive stored content, can reach the same timeout. Both residuals
+  surface as a `500` timeout, not a translated `422`, and are tracked in
   [#18](https://github.com/brendankowitz/nachos/issues/18).
 - **Pre-release database upgrade.** The schema version stays `1` until the first release, so a database created by an
   earlier M1 build reads as current. Any existing pre-release database must take the reviewed path once: run
@@ -283,6 +286,11 @@ the SqlClient SNI runtime and `Microsoft.SqlServer.Types`. It is not a complete 
 - The governing terms of `Microsoft.SqlServer.Types` 170.1000.7 are unresolved (its embedded licence is a pre-release
   evaluation document), which blocks distribution of artifacts that contain it:
   [#15](https://github.com/brendankowitz/nachos/issues/15).
+- `Microsoft.Identity.Client.NativeInterop` 0.20.6, observed transitively in the API and CLI outputs, has unresolved
+  distribution terms, separate from `Microsoft.SqlServer.Types`. The license audit of the committed tree is not yet
+  clean, and the remaining licensing evidence and notices are tracked in
+  [#19](https://github.com/brendankowitz/nachos/issues/19). Accepting a license as engineering policy is not the same
+  as having the publisher's distribution rights.
 - The tokenizer above is a production-release gate ([#10](https://github.com/brendankowitz/nachos/issues/10)).
 
 **Azure.** [`infra/`](infra) and [`azure.yaml`](azure.yaml) define an `azd` deployment, but they have only been validated
@@ -295,7 +303,8 @@ Tracked as GitHub issues:
 
 - Umbrella: [#2](https://github.com/brendankowitz/nachos/issues/2) (full Honcho v3 parity on .NET and Azure).
 - Production gates: [#10](https://github.com/brendankowitz/nachos/issues/10) (exact managed tokenizer),
-  [#15](https://github.com/brendankowitz/nachos/issues/15) (`Microsoft.SqlServer.Types` terms).
+  [#15](https://github.com/brendankowitz/nachos/issues/15) (`Microsoft.SqlServer.Types` terms),
+  [#19](https://github.com/brendankowitz/nachos/issues/19) (licensing evidence and distribution terms).
 - Conformance and docs: [#11](https://github.com/brendankowitz/nachos/issues/11) (SDK conformance),
   [#16](https://github.com/brendankowitz/nachos/issues/16) (generated docs site and Pages),
   [#12](https://github.com/brendankowitz/nachos/issues/12) (docs tooling).
