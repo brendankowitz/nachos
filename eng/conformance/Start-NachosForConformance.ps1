@@ -18,7 +18,16 @@
 #     signing secret variable).
 #   * build steps (dotnet build, dotnet msbuild -getProperty) see the runtime list plus, only when set, package-feed
 #     access: HTTP_PROXY, HTTPS_PROXY, NO_PROXY, ALL_PROXY and their lower-case forms, SSL_CERT_FILE, SSL_CERT_DIR,
-#     REQUESTS_CA_BUNDLE, NUGET_PACKAGES, NUGET_HTTP_CACHE_PATH, DOTNET_NUGET_SIGNATURE_VERIFICATION, DOTNET_CLI_HOME.
+#     REQUESTS_CA_BUNDLE, NUGET_PACKAGES, NUGET_HTTP_CACHE_PATH, DOTNET_NUGET_SIGNATURE_VERIFICATION, DOTNET_CLI_HOME,
+#     and, for Windows (build steps only, never the API or CLI): APPDATA, LOCALAPPDATA, ProgramData, ALLUSERSPROFILE,
+#     PUBLIC, ProgramFiles, ProgramFiles(x86), ProgramW6432, CommonProgramFiles, CommonProgramFiles(x86),
+#     CommonProgramW6432, HOMEDRIVE, HOMEPATH, SystemDrive, windir, ComSpec, PATHEXT, OS, USERNAME, USERDOMAIN,
+#     COMPUTERNAME, NUMBER_OF_PROCESSORS, PROCESSOR_ARCHITECTURE, PROCESSOR_IDENTIFIER, PROCESSOR_LEVEL,
+#     PROCESSOR_REVISION.
+#     UNCONFIRMED: the Windows additions are a first hypothesis of the OS prerequisites NuGet and MSBuild need (the
+#     first protected build on Windows failed with "Value cannot be null. (Parameter 'path1')" while loading NuGet
+#     settings); they must be confirmed on a Windows host. If a build still fails, bisect by adding names one at a time
+#     to $buildEnvironment, never by passing the caller's whole environment.
 #     Never Nachos__*, ConnectionStrings__*, SQLAZURECONNSTR_*, SQLCONNSTR_*, AZURE_*, ASPNETCORE_*, DOTNET_ENVIRONMENT,
 #     DOTNET_STARTUP_HOOKS, APPLICATIONINSIGHTS_* or OTEL_*.
 #   * the suites (pip, npm, pytest, node) keep the caller's environment; their NACHOS_* settings are restored in a
@@ -63,10 +72,17 @@ function Invoke-Checked([string]$what, [scriptblock]$command) {
 # The names a runtime child process (API, CLI) may inherit. Everything else the caller exported is dropped (same list
 # as the bash twin, plus the Windows basics .NET needs).
 $allowedEnvironment = 'PATH', 'HOME', 'DOTNET_ROOT', 'LANG', 'LC_ALL', 'TMPDIR', 'SystemRoot', 'USERPROFILE', 'TEMP', 'TMP'
-# What a build step may additionally inherit (package-feed access only), when the caller has it set.
+# What a build step may additionally inherit, when the caller has it set: package-feed access, then Windows OS and
+# profile prerequisites (NuGet and MSBuild resolve well-known folders from them and throw on an empty one). Names are
+# copied only when set, so on Linux the Windows names simply do nothing; on Windows the environment is
+# case-insensitive. Nothing application- or credential-related belongs here.
 $buildEnvironment = 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',
     'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH',
-    'DOTNET_NUGET_SIGNATURE_VERIFICATION', 'DOTNET_CLI_HOME'
+    'DOTNET_NUGET_SIGNATURE_VERIFICATION', 'DOTNET_CLI_HOME',
+    'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ALLUSERSPROFILE', 'PUBLIC',
+    'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+    'HOMEDRIVE', 'HOMEPATH', 'SystemDrive', 'windir', 'ComSpec', 'PATHEXT', 'OS', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME',
+    'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION'
 
 # A `dotnet <arguments>` start description whose environment is cleared and rebuilt from the allow-list, the names in
 # $inherit and $settings.
