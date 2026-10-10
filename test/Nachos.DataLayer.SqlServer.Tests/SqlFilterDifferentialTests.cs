@@ -15,8 +15,8 @@ namespace Nachos.DataLayer.SqlServer.Tests;
 /// in-memory provider (the executable reference) and in SQL Server, and every filter must select the same rows from
 /// both. The inputs target SQL's known divergences from .NET: space padding in <c>=</c>/<c>&lt;</c>, UTF-16 ordinal
 /// order against supplementary characters, control characters below space, exact numbers beyond <c>decimal</c> and
-/// <c>double</c>, JSON kinds, <c>UPPER</c> folding, <c>LIKE</c> metacharacters and operands longer than a
-/// <c>LIKE</c> pattern may be.
+/// <c>double</c>, JSON kinds, <c>UPPER</c> folding, <c>LIKE</c> metacharacters (which <c>contains</c>, using
+/// <c>CHARINDEX</c>, must treat literally) and operands longer than <c>CHARINDEX</c> may search for (4000 code units).
 /// </summary>
 [Collection(SqlServerDockerGroup.Name)]
 public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
@@ -201,7 +201,7 @@ public sealed class SqlFilterDifferentialTests(SqlServerFixture fixture)
         (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":10e999999999999999999998}}"""))).ShouldBe(["p054"]);
         (await ListAsync(store, ResourceKind.Peer, Parse("""{"metadata":{"k":1500.00}}"""))).ShouldBe(["p056"]);
 
-        // An operand longer than a LIKE pattern may be still matches exactly.
+        // An operand longer than CHARINDEX may search for (4000 code units) still matches exactly.
         (await ListAsync(store, ResourceKind.Message, Parse(new JsonObject { ["content"] = new JsonObject { ["contains"] = new string('x', 4100) + "need" } }.ToJsonString())))
             .ShouldBe(["23"]);
 

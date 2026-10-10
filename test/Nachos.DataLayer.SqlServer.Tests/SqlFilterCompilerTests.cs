@@ -144,6 +144,29 @@ public sealed class SqlFilterCompilerTests
         parameters.Select(p => p.Value).ShouldContain(operand);
     }
 
+    [Theory]
+    [InlineData("content", "contains", 3, ResourceKind.Message)]
+    [InlineData("content", "icontains", 3, ResourceKind.Message)]
+    [InlineData("id", "contains", 7, ResourceKind.Peer)]
+    [InlineData("content", "contains", 4100, ResourceKind.Message)]
+    public void Contains_ChecksTheTextLength_BeforeSearching(string field, string op, int length, ResourceKind kind)
+    {
+        // Text shorter than the operand is ruled out by its length before CHARINDEX (or, past 4000 code units, the prefix
+        // search and the scan) can run on it: the guard is the outer CASE (partner review I3).
+        var (sql, _) = Compile(new JsonObject { [field] = new JsonObject { [op] = new string('x', length) } }, kind);
+
+        sql.ShouldMatch($@"CASE WHEN DATALENGTH\([^()]+\) >= {2 * length} THEN CASE WHEN CHARINDEX\(");
+    }
+
+    [Fact]
+    public void MetadataContains_ChecksTheTextLength_BeforeSearching()
+    {
+        var (sql, _) = Compile(
+            new JsonObject { ["metadata"] = new JsonObject { ["k"] = new JsonObject { ["icontains"] = "abcd" } } }, ResourceKind.Peer);
+
+        sql.ShouldMatch(@"CASE WHEN DATALENGTH\([^()]+\) >= 8 THEN CASE WHEN CHARINDEX\(");
+    }
+
     [Fact]
     public void MetadataContains_SearchesTheOperandAsIs_AndItsHexInArrays()
     {

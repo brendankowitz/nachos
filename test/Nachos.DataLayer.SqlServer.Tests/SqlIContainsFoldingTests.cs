@@ -80,7 +80,7 @@ public sealed class SqlIContainsFoldingTests(SqlServerFixture fixture)
         (await store.Messages.ListAsync(workspace, "s", FilterParser.Parse("{\"content\":{\"icontains\":" + quoted + "}}", ResourceKind.Message), new PageRequest(), Ct))
             .Total.ShouldBe(expected, $"{provider}: content");
 
-        // SQL's exact fallback for operands too long for LIKE folds the same way.
+        // SQL's exact fallback for operands too long for CHARINDEX (over 4000 code units) folds the same way.
         var padding = new string('a', 4100);
         await store.Messages.AppendAsync(workspace, "s", [new NewMessage("p", padding + stored, 1, null, null)], null, Ct);
         var longOperand = JsonValue.Create(padding.ToUpperInvariant() + operand)!.ToJsonString();
