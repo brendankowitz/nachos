@@ -1,8 +1,13 @@
-# UNVERIFIED on this host: pwsh is not installed here, so this script has never been run. The tested implementation is
+# UNVERIFIED on Windows by its author: the only host available was Linux, where this script was exercised under
+# pwsh 7.6.6 (a dotnet tool) with -Run -AllowAuthDisabled. The reference implementation is
 # start-nachos-for-conformance.sh; this is a deliberately thin twin with the same flags and behaviour (see that file's
 # header for the strict auth probe and the environment file contents). Authentication is strict by default: a refused
 # admin probe is an error and no suite runs. -AllowAuthDisabled is the development-only fallback for a branch where auth
 # is not published yet.
+#
+# Hermetic: the API and the CLI key-minting commands get an explicit allow-listed environment built from scratch, so
+# an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect the in-memory, offline run. The caller's
+# own environment is never modified for them; the suites' NACHOS_* settings are restored in a finally block.
 #
 # Usage: Start-NachosForConformance.ps1 [-Run] [-AllowAuthDisabled] [-EnvFile <path>] [-TimeoutSeconds <n>]
 [CmdletBinding()]
@@ -37,31 +42,85 @@ function Get-TargetPath([string]$project) {
     (& dotnet msbuild (Join-Path $repoRoot "src/$project/$project.csproj") -p:Configuration=Release -getProperty:TargetPath).Trim()
 }
 
-# Starts the API on a kernel-chosen port and waits for /health/ready. Returns the base URL.
+# The names a child process may inherit. Everything else the caller exported is dropped (same list as the bash twin,
+# plus the Windows basics .NET needs).
+$allowedEnvironment = 'PATH', 'HOME', 'DOTNET_ROOT', 'LANG', 'LC_ALL', 'TMPDIR', 'SystemRoot', 'USERPROFILE', 'TEMP', 'TMP'
+
+# A `dotnet <dll>` start description whose environment is cleared and rebuilt from the allow-list plus $settings.
+function New-HermeticStartInfo([string]$dll, [hashtable]$settings) {
+    $info = [Diagnostics.ProcessStartInfo]::new('dotnet')
+    $info.ArgumentList.Add($dll)
+    $info.WorkingDirectory = Split-Path $dll
+    $info.UseShellExecute = $false
+    $info.Environment.Clear()
+    foreach ($name in $allowedEnvironment) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value) { $info.Environment[$name] = $value }
+    }
+    $info.Environment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
+    $info.Environment['DOTNET_NOLOGO'] = '1'
+    foreach ($name in $settings.Keys) { $info.Environment[$name] = $settings[$name] }
+    $info
+}
+
+# Runs $body with $settings applied to this process's environment and always restores the previous values.
+function Invoke-WithEnvironment([hashtable]$settings, [scriptblock]$body) {
+    $saved = @{}
+    foreach ($name in $settings.Keys) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name)
+        [Environment]::SetEnvironmentVariable($name, $settings[$name])
+    }
+    try { & $body }
+    finally {
+        # PowerShell turns a plain $null into "", which would leave an empty variable behind; NullString removes it.
+        foreach ($name in $saved.Keys) {
+            $previous = if ($null -eq $saved[$name]) { [NullString]::Value } else { $saved[$name] }
+            [Environment]::SetEnvironmentVariable($name, $previous)
+        }
+    }
+}
+
+function New-Key([string[]]$keyArguments) {
+    $info = New-HermeticStartInfo $cliDll @{ NACHOS_CONFORMANCE_SECRET = $conformanceSecret }
+    foreach ($argument in @('keys', 'create', '--signing-secret-env', 'NACHOS_CONFORMANCE_SECRET', '--kid', 'dev') + $keyArguments) {
+        $info.ArgumentList.Add($argument)
+    }
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($info)
+    $output = $process.StandardOutput.ReadToEndAsync()
+    $errors = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "minting a key failed: $($errors.GetAwaiter().GetResult().Trim())" }
+    $output.GetAwaiter().GetResult().Trim()
+}
+
+# Starts the API and waits for /health/ready. Returns the base URL. The port is picked up front (a tiny race, unlike
+# port 0 in the bash twin) because the API's output stays on the console instead of being parsed for its address.
 function Start-Api([bool]$authEnabled) {
-    $log = Join-Path $workDir 'api.log'
-    $env:ASPNETCORE_ENVIRONMENT = 'Development'
-    $env:ASPNETCORE_URLS = 'http://127.0.0.1:0'
-    $env:Nachos__Auth__Enabled = "$authEnabled".ToLowerInvariant()
-    $env:Nachos__Auth__NachosKey__Keys__0__Kid = 'dev'
-    $env:Nachos__Auth__NachosKey__Keys__0__Secret = $env:NACHOS_CONFORMANCE_SECRET
-    $script:apiProcess = Start-Process dotnet -ArgumentList "`"$apiDll`"" -WorkingDirectory (Split-Path $apiDll) `
-        -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $port = $listener.LocalEndpoint.Port
+    $listener.Stop()
+    $baseUrl = "http://127.0.0.1:$port"
+
+    $info = New-HermeticStartInfo $apiDll @{
+        ASPNETCORE_ENVIRONMENT                     = 'Development'
+        ASPNETCORE_URLS                            = $baseUrl
+        Logging__LogLevel__Default                 = 'Warning'
+        Nachos__Auth__Enabled                      = "$authEnabled".ToLowerInvariant()
+        Nachos__Auth__NachosKey__Keys__0__Kid      = 'dev'
+        Nachos__Auth__NachosKey__Keys__0__Secret   = $conformanceSecret
+    }
+    $script:apiProcess = [Diagnostics.Process]::Start($info)
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $baseUrl = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($script:apiProcess.HasExited) { throw 'the API exited during startup' }
-        if (-not $baseUrl -and (Test-Path $log)) {
-            $match = Select-String -Path $log -Pattern 'http://127\.0\.0\.1:\d+' | Select-Object -First 1
-            if ($match) { $baseUrl = $match.Matches[0].Value }
-        }
-        if ($baseUrl) {
-            try {
-                Invoke-WebRequest "$baseUrl/health/ready" -UseBasicParsing -TimeoutSec 2 | Out-Null
-                return $baseUrl
-            } catch { }
-        }
+        try {
+            Invoke-WebRequest "$baseUrl/health/ready" -UseBasicParsing -TimeoutSec 2 | Out-Null
+            return $baseUrl
+        } catch { }
         Start-Sleep -Milliseconds 200
     }
     throw "the API was not ready within $TimeoutSeconds s"
@@ -73,13 +132,13 @@ try {
     $apiDll = Get-TargetPath 'Nachos.Api'
     $cliDll = Get-TargetPath 'Nachos.Cli'
 
-    # The signing secret lives only in this process's environment and the API's; it is never printed or written.
+    # The signing secret is handed only to the API and CLI processes; it is never printed or written.
     $bytes = [byte[]]::new(32)
     [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    $env:NACHOS_CONFORMANCE_SECRET = [Convert]::ToBase64String($bytes)
+    $conformanceSecret = [Convert]::ToBase64String($bytes)
 
-    $adminKey = (& dotnet $cliDll keys create --signing-secret-env NACHOS_CONFORMANCE_SECRET --kid dev --admin).Trim()
-    $peerKey = (& dotnet $cliDll keys create --signing-secret-env NACHOS_CONFORMANCE_SECRET --kid dev --workspace conformance-auth --peer member).Trim()
+    $adminKey = New-Key @('--admin')
+    $peerKey = New-Key @('--workspace', 'conformance-auth', '--peer', 'member')
 
     $authMode = 'enforced'
     $baseUrl = Start-Api $true
@@ -114,9 +173,10 @@ try {
         return
     }
 
+    $suiteSettings = @{}
     foreach ($line in Get-Content $EnvFile) {
         $name, $value = $line -split '=', 2
-        Set-Item "env:$name" $value
+        $suiteSettings[$name] = $value
     }
 
     # Both suites always run, so one language's failure does not hide the other's.
@@ -127,17 +187,18 @@ try {
     Write-Host '== Python (honcho-ai) =='
     $python = if ($IsWindows) { Join-Path $workDir 'venv/Scripts/python.exe' } else { Join-Path $workDir 'venv/bin/python' }
     try {
-        Invoke-Checked 'creating the venv' { python -m venv (Join-Path $workDir 'venv') }
+        $systemPython = (Get-Command python, python3 -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        Invoke-Checked 'creating the venv' { & $systemPython -m venv (Join-Path $workDir 'venv') }
         Invoke-Checked 'installing the Python suite' { & $python -m pip install -q --disable-pip-version-check --require-hashes -r (Join-Path $pythonDir 'requirements.lock') }
         Push-Location $pythonDir
-        Invoke-Checked 'the Python suite' { & $python -m pytest -rs }
+        Invoke-WithEnvironment $suiteSettings { Invoke-Checked 'the Python suite' { & $python -m pytest -rs } }
     } catch { Write-Host "error: $_"; $failed = $true } finally { Pop-Location -ErrorAction SilentlyContinue }
 
     Write-Host '== TypeScript (@honcho-ai/sdk) =='
     try {
         Push-Location $typescriptDir
         Invoke-Checked 'installing the TypeScript suite' { npm ci --ignore-scripts --no-audit --no-fund --silent }
-        Invoke-Checked 'the TypeScript suite' { node --test --test-reporter=spec }
+        Invoke-WithEnvironment $suiteSettings { Invoke-Checked 'the TypeScript suite' { node --test --test-reporter=spec } }
     } catch { Write-Host "error: $_"; $failed = $true } finally { Pop-Location -ErrorAction SilentlyContinue }
 
     if ($failed) { exit 1 }

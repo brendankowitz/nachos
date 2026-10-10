@@ -10,6 +10,12 @@
 # disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled, so the scoped-key scenario reports
 # "not executed" rather than passing against an open server.
 #
+# Hermetic: the API and the CLI key-minting commands run with an allow-listed environment (PATH, HOME, DOTNET_ROOT,
+# LANG, LC_ALL, TMPDIR, the two DOTNET_* opt-outs and the synthetic settings this script sets itself). Everything else
+# the caller exported is dropped, so an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect
+# the in-memory, offline run. (The build steps and the suites keep the caller's environment: they need its package
+# feeds and proxies.)
+#
 # Usage: start-nachos-for-conformance.sh [--run] [--allow-auth-disabled] [--env-file PATH] [--timeout SECONDS]
 set -euo pipefail
 
@@ -71,13 +77,31 @@ dotnet build "$repo_root/src/Nachos.Cli/Nachos.Cli.csproj" -c Release -v q --nol
 api_dll="$(build_output Nachos.Api)"
 cli_dll="$(build_output Nachos.Cli)"
 
-# The signing secret lives only in this shell's environment and the API's; it is never printed or written.
-NACHOS_CONFORMANCE_SECRET="$(openssl rand -base64 32)"
-export NACHOS_CONFORMANCE_SECRET
+# The signing secret is exported only into the API and CLI processes below; it is never printed or written.
+conformance_secret="$(openssl rand -base64 32)"
 
-mint_key() {
-  dotnet "$cli_dll" keys create --signing-secret-env NACHOS_CONFORMANCE_SECRET --kid dev "$@"
+# Replaces the calling process (call it inside a subshell) with "$2…" running under the allow-listed environment.
+# $1 names the extra variables to keep, space separated. Variables are unset rather than passed to `env -i` so that
+# the signing secret never appears on a command line, and exported shell functions are dropped too.
+hermetic_exec() {
+  local keep=" PATH HOME DOTNET_ROOT DOTNET_CLI_TELEMETRY_OPTOUT DOTNET_NOLOGO LANG LC_ALL TMPDIR $1 "
+  shift
+  local name
+  for name in $(compgen -e); do
+    [[ "$keep" == *" $name "* ]] || unset "$name" 2>/dev/null || true
+  done
+  for name in $(compgen -A function); do
+    unset -f "$name"
+  done
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+  exec "$@"
 }
+
+mint_key() (
+  export NACHOS_CONFORMANCE_SECRET="$conformance_secret"
+  hermetic_exec "NACHOS_CONFORMANCE_SECRET" \
+    dotnet "$cli_dll" keys create --signing-secret-env NACHOS_CONFORMANCE_SECRET --kid dev "$@"
+)
 
 # Starts the API on a kernel-chosen port (no race for a free one) and waits for /health/ready.
 # Sets api_pid and base_url.
@@ -90,8 +114,9 @@ start_api() {
     export ASPNETCORE_URLS="http://127.0.0.1:0"
     export Nachos__Auth__Enabled="$auth_enabled"
     export Nachos__Auth__NachosKey__Keys__0__Kid=dev
-    export Nachos__Auth__NachosKey__Keys__0__Secret="$NACHOS_CONFORMANCE_SECRET"
-    exec dotnet "$api_dll"
+    export Nachos__Auth__NachosKey__Keys__0__Secret="$conformance_secret"
+    hermetic_exec "ASPNETCORE_ENVIRONMENT ASPNETCORE_URLS Nachos__Auth__Enabled Nachos__Auth__NachosKey__Keys__0__Kid Nachos__Auth__NachosKey__Keys__0__Secret" \
+      dotnet "$api_dll"
   ) >"$api_log" 2>&1 &
   api_pid=$!
 
