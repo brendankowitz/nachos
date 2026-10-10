@@ -4,7 +4,7 @@ import time
 import uuid
 
 import pytest
-from honcho import AuthenticationError, Honcho, ServerError
+from honcho import AuthenticationError, Honcho, ServerError, UnprocessableEntityError
 from honcho.api_types import SessionPeerConfig
 
 from conftest import MATCH_ALL
@@ -53,8 +53,9 @@ def test_list_auto_paginates_over_25_sessions(honcho: Honcho):
 
 # MISMATCH M1: honcho-ai 2.5.1 sends `POST .../list` with Content-Length 0 when no filters are given. Honcho accepts that;
 # Nachos answers 422 json_invalid ("Invalid JSON body."). The assertion states the expected behaviour; strict, so the
-# suite goes red (XPASS) the day Nachos accepts an empty list body, and this marker must then be removed.
-@pytest.mark.xfail(strict=True, reason="M1: Nachos answers 422 json_invalid to the empty body the SDK sends for an unfiltered list")
+# suite goes red (XPASS) the day Nachos accepts an empty list body, and this marker must then be removed. `raises` keeps a
+# dead server or any other error from being counted as the expected mismatch.
+@pytest.mark.xfail(strict=True, raises=UnprocessableEntityError, reason="M1: Nachos answers 422 json_invalid to the empty body the SDK sends for an unfiltered list")
 def test_list_without_filters(honcho: Honcho):
     honcho.session("s1")
     assert [s.id for s in honcho.sessions()] == ["s1"]
@@ -119,6 +120,18 @@ def test_idempotent_replay_returns_same_batch(nachos, workspace_id: str):
 
     assert [m.id for m in second] == [m.id for m in first]
     assert len(list(session.messages(filters=MATCH_ALL))) == 3
+
+    # Contrast: without the header the same batch is stored twice (spec 9.1: such requests behave exactly like Honcho),
+    # so the assertions above are not satisfied by a server that merely ignores repeated batches.
+    plain = nachos.client(workspace_id, timeout=10)
+    plain_alice = plain.peer("alice")
+    plain_session = plain.session("s2")
+    plain_session.add_peers([plain_alice])
+    unkeyed = [plain_alice.message(f"unkeyed {n}") for n in range(3)]
+    unkeyed_first = plain_session.add_messages(unkeyed)
+    unkeyed_second = plain_session.add_messages(unkeyed)
+    assert {m.id for m in unkeyed_second}.isdisjoint(m.id for m in unkeyed_first)
+    assert len(list(plain_session.messages(filters=MATCH_ALL))) == 6
 
 
 def test_unimplemented_call_surfaces_501_promptly(nachos, workspace_id: str):

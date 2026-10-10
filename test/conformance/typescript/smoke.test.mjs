@@ -1,6 +1,7 @@
 // Smoke conformance: the unmodified @honcho-ai/sdk, used through its documented API, against a running Nachos.
-// Configured only by the environment file that eng/conformance/start-nachos-for-conformance.sh writes (exported by
-// `--run`; to run by hand: `set -a; . <file>; set +a; npm ci; npm test`).
+// Configured only by the environment file that eng/conformance/start-nachos-for-conformance.sh (Linux/macOS) or
+// eng/conformance/Start-NachosForConformance.ps1 (Windows) writes; `--run` / `-Run` exports it. To run by hand in bash:
+// `set -a; . <file>; set +a; npm ci; npm test`.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
@@ -136,6 +137,18 @@ test('idempotent replay returns the same batch', async () => {
 
   assert.deepEqual(second.map((m) => m.id), first.map((m) => m.id));
   assert.equal((await (await session.messages()).toArray()).length, 3);
+
+  // Contrast: without the header the same batch is stored twice (spec 9.1: such requests behave exactly like Honcho),
+  // so the assertions above are not satisfied by a server that merely ignores repeated batches.
+  const plain = client(freshWorkspace());
+  const plainAlice = await plain.peer('alice');
+  const plainSession = await plain.session('s2');
+  await plainSession.addPeers([plainAlice]);
+  const unkeyed = Array.from({ length: 3 }, (_, n) => plainAlice.message(`unkeyed ${n}`));
+  const unkeyedFirst = await plainSession.addMessages(unkeyed);
+  const unkeyedSecond = await plainSession.addMessages(unkeyed);
+  assert.equal(new Set([...unkeyedFirst, ...unkeyedSecond].map((m) => m.id)).size, 6);
+  assert.equal((await (await plainSession.messages()).toArray()).length, 6);
 });
 
 test('an unimplemented call surfaces 501 promptly', async () => {

@@ -1,7 +1,8 @@
 """Shared setup for the upstream-SDK smoke suite.
 
 The suite is configured only through the environment file that
-eng/conformance/start-nachos-for-conformance.sh writes (it is exported by `--run`; to run by hand, `set -a; . <file>`).
+eng/conformance/start-nachos-for-conformance.sh (Linux/macOS) or eng/conformance/Start-NachosForConformance.ps1
+(Windows) writes; `--run` / `-Run` exports it. To run by hand in bash: `set -a; . <file>`.
 """
 
 import os
