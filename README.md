@@ -48,10 +48,8 @@ dotnet build Nachos.slnx -c Release
 dotnet test Nachos.slnx -c Release
 ```
 
-The test suites that use SQL Server start containers, so Docker must be running. On this commit
-`Nachos.Api.Tests.MessageEndpointsTests.TokenCount_UsesOrdinaryTextForSpecialSpellings` is a known failure
-(the interim tokenizer, [#10](https://github.com/brendankowitz/nachos/issues/10)), and the infrastructure tests that
-build the Bicep files need a recent Bicep CLI on your `PATH`.
+The test suites that use SQL Server start containers, so Docker must be running. The infrastructure tests that
+build the Bicep files need a recent Bicep CLI (0.48.1 or later) on your `PATH`.
 
 ### Run the API locally (in-memory store)
 
@@ -247,7 +245,9 @@ These routes exist so that clients get a stable, explicit answer rather than a 4
 
 - **Authentication and idempotency are pending.** `/v3` fails closed (see above). The planned idempotency adapter
   (M1 task 11) is not published on this branch, so do not rely on `Idempotency-Key` replay behaviour over HTTP.
-- **Tokenizer.** Message `token_count` uses an interim `Microsoft.ML.Tokenizers` o200k counter. It has known
+- **Tokenizer.** Message `token_count` uses an interim `Microsoft.ML.Tokenizers` o200k counter in ordinary-text mode:
+  special-token spellings such as `<|endoftext|>` are counted as ordinary text, and the embedded vocabulary is checked
+  against a pinned SHA-256 before use (a missing or altered resource fails closed). It still has known
   residuals (work that grows quadratically per pre-token segment, ignored cancellation, supplementary-Unicode parity)
   that are a production-release gate: [#10](https://github.com/brendankowitz/nachos/issues/10).
 - **SQL provider limits.** A metadata object key longer than 4000 UTF-16 code units cannot be stored by the SQL Server

@@ -721,7 +721,7 @@ PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "e
 | 16 SDK conformance | Not started | Minimal pinned Python + TypeScript smoke† | #11 (full conformance)† |
 | 17 CI | `validate` only | Real build/test, SQL/schema, license, infra and docs-validate jobs | #13 (credential policy) |
 | 18 README, docs site, DocsGen, Pages | No README on the branch; site/DocsGen private | README (§22.1 M1 subset) | #16 (site + Pages)†, #12 |
-| Tokenizer (I1) | Known `TokenCount_UsesOrdinaryTextForSpecialSpellings` failure | Ordinary-text counting fix (a)† | #10 (managed counter, release gate) |
+| Tokenizer (I1) | Ordinary-text counting fix (a)† landed (`08ff1c3`); `TokenCount_UsesOrdinaryTextForSpecialSpellings` passes | Partner review follow-through | #10 (managed counter; quadratic work, cancellation and Unicode residuals; release gate) |
 | Licensing | A private full-origin composition (unmerged generated site + published consumer) was red with 1,080 diagnostics; that is **not** this PR's committed tree. The committed-tree audit runs separately (Cedar) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
 
 **† Owner-confirmed MVP deviations from the checklist below** (6093551697): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
