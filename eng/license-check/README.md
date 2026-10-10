@@ -28,9 +28,28 @@ errors are explicit in `license-report.json` and stderr.
 
 ## Evidence and distribution boundaries
 
+Documentary suffixes include `.apache2` (case-insensitive), for installed,
+archived and explicitly declared license paths. This permits reading the
+document, not identifying or approving Apache terms. For example, the short
+`LICENSE.APACHE2` notices in `from@0.1.7` and `through@2.3.8` remain unrecognized;
+their separate MIT documents are retained without choosing an OR branch.
+Unknown/binary suffixes still fail collection. Known implementation suffixes
+such as `LICENSE.APACHE2.js` are excluded from implicit npm evidence and rejected
+when explicitly declared as license documents.
+
 - NuGet: inventory must cover every solution project and match each
   `obj/project.assets.json` restore graph. Identity, metadata and license entries
   are read from each resolved `.nupkg`; no metadata-only approval.
+  In addition to exact raw version equality, a nuspec may add valid SemVer build
+  metadata to the inventory's exact three-component core and prerelease text
+  (for example, `2.25.29+RR` versus `2.25.29`). This narrow fallback validates the
+  whole suffix, nonnegative Int32 core components and prerelease identifiers;
+  it does not normalize omitted components, a fourth revision, leading zeros,
+  prerelease case or build metadata on both sides. Inventory/restore identity,
+  cache paths and original nuspec/archive bytes are not rewritten. Collected
+  evidence still refers to the original inventory and archive; it does not add
+  new report-schema fields. Exact Microsoft archive/nuspec approval pins remain
+  independent of this collection-only equivalence.
 - npm: discover every `package-lock.json` outside dependency/build outputs.
   Require a root record matching the manifest and closure of required dependency
   and peer edges, resolving nested/hoisted locations. Missing optional edges and

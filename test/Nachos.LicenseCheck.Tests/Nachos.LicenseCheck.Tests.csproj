@@ -18,6 +18,7 @@
     <None Include="Fixtures\docs-provenance-positive.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\docs-provenance-negative.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\docs-libvips-evidence.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\collector-formats\**\*" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\eng\licenses\Microsoft.SqlServer.DacFx\170.4.83\license.txt" Link="DacFxEvidence\license.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="DacFxEvidence\THIRD-PARTY-NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\eng\license-exceptions.json" Link="DacFxEvidence\license-exceptions.json" CopyToOutputDirectory="PreserveNewest" />

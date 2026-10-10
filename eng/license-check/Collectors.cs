@@ -183,7 +183,7 @@ internal static class Collectors
         }
         var metadata = ReadXml(ReadEntry(nuspecs[0])).Descendants().Single(element => element.Name.LocalName == "metadata");
         string? Value(string field) => metadata.Elements().SingleOrDefault(element => element.Name.LocalName == field)?.Value;
-        if (!string.Equals(Value("id"), name, StringComparison.OrdinalIgnoreCase) || Value("version") != version)
+        if (!string.Equals(Value("id"), name, StringComparison.OrdinalIgnoreCase) || !MatchesNugetVersion(Value("version"), version))
         {
             throw new InvalidDataException("nupkg identity disagrees with resolved inventory.");
         }
@@ -205,6 +205,21 @@ internal static class Collectors
         }
         return new PackageEvidence("nuget", name, version, inputs.NugetInventory,
             license?.Attribute("type")?.Value == "expression" ? license.Value : null, texts, archive);
+    }
+
+    private static bool MatchesNugetVersion(string? declared, string resolved)
+    {
+        if (declared == resolved) return true;
+        if (declared is null) return false;
+        const string number = @"(?:0|[1-9][0-9]*)";
+        const string prerelease = @"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
+        var match = Regex.Match(declared,
+            @"\A(?<base>(?<core>" + number + @"\." + number + @"\." + number + @")"
+            + "(?:-" + prerelease + @"(?:\." + prerelease + @")*)?)\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*\z",
+            RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+        return match.Success && match.Groups["base"].Value == resolved
+            && match.Groups["core"].Value.Split('.').All(part =>
+                int.TryParse(part, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _));
     }
 
     private static void Npm(AuditInputs inputs, string path, List<PackageEvidence> packages, List<string> errors)

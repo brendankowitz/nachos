@@ -98,7 +98,7 @@ internal static class LicenseText
     public static bool IsDocumentationPath(string path)
     {
         var extension = Path.GetExtension(path).ToLowerInvariant();
-        return extension is "" or ".txt" or ".md" or ".rst" or ".markdown" or ".html" or ".license" or ".apache" or ".mit" or ".bsd"
+        return extension is "" or ".txt" or ".md" or ".rst" or ".markdown" or ".html" or ".license" or ".apache" or ".apache2" or ".mit" or ".bsd"
             || Regex.IsMatch(extension, @"^\.\d+$");
     }
 

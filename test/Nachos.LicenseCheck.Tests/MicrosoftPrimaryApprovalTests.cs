@@ -468,6 +468,30 @@ public sealed class MicrosoftPrimaryApprovalTests
         report.Packages.ShouldNotContain(package => package.Ecosystem == "nuget");
     }
 
+    [Theory]
+    [InlineData("sni")]
+    [InlineData("sni603")]
+    [InlineData("types")]
+    public void BuildMetadataEquivalenceDoesNotBroadenExactArchiveApproval(string identity)
+    {
+        using var fixture = Fixture(identity);
+        var record = Record(identity);
+        var archive = Archive(fixture, record);
+        var entry = Text(record, "package") + ".nuspec";
+        var version = Text(record, "version");
+        var raw = Encoding.UTF8.GetString(ReadEntry(archive, entry));
+        var modified = raw.Replace($"<version>{version}</version>", $"<version>{version}+build</version>", StringComparison.Ordinal);
+        modified.ShouldNotBe(raw);
+        ReplaceEntry(archive, entry, Encoding.UTF8.GetBytes(modified));
+        var errors = new List<string>();
+        Nachos.LicenseCheck.Collectors.Collect(Apache2DocumentTests.Inputs(fixture), errors)
+            .ShouldContain(package => package.Name == Text(record, "package"));
+        errors.ShouldBeEmpty();
+        var report = fixture.Check();
+        report.Packages.ShouldNotContain(package => package.Ecosystem == "nuget");
+        report.Errors.ShouldContain(error => error.Contains("Microsoft primary archive SHA256 differs from the reviewed package", StringComparison.Ordinal));
+    }
+
     private static AuditFixture Fixture(string identity, string scope = "api")
     {
         var fixture = new AuditFixture();
