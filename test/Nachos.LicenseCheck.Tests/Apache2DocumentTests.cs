@@ -12,6 +12,44 @@ namespace Nachos.LicenseCheck.Tests;
 public sealed class Apache2DocumentTests
 {
     [Theory]
+    [InlineData("from", "0.1.7", "013BEB0B51DA94546EEF2DFFC2A894F30FA2ED828EEB2CEAC6317F82B29F8C7B")]
+    [InlineData("through", "2.3.8", "6580A473CF2F91C6752A01D2C31F729CB14F7E042B830BA46F8949F89E26BDB4")]
+    public void CommittedMetadata_IsDocumentaryDataNotASourceProducer(string name, string version, string hash)
+    {
+        using var fixture = new AuditFixture();
+        var source = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..",
+            "Fixtures", "collector-formats", name));
+        var target = fixture.Full("test/documentary-fixtures/" + name);
+        Directory.CreateDirectory(target);
+        foreach (var file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(target, Path.GetFileName(file)));
+
+        var errors = new List<string>();
+        var packages = Collectors.Collect(Inputs(fixture), errors);
+        errors.ShouldBeEmpty();
+        packages.ShouldHaveSingleItem().Name.ShouldBe("baseline");
+        File.Exists(Path.Combine(source, "package.json")).ShouldBeFalse();
+        var bytes = File.ReadAllBytes(Path.Combine(source, "package.json.fixture"));
+        Convert.ToHexString(SHA256.HashData(bytes)).ShouldBe(hash);
+        File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "collector-formats", name, "package.json.fixture"))
+            .ShouldBe(bytes);
+        using var metadata = JsonDocument.Parse(bytes);
+        metadata.RootElement.GetProperty("name").GetString().ShouldBe(name);
+        metadata.RootElement.GetProperty("version").GetString().ShouldBe(version);
+        metadata.RootElement.GetProperty("license").GetString().ShouldBe("MIT");
+    }
+
+    [Fact]
+    public void ActualTestSourceProducer_StillRequiresItsLock()
+    {
+        using var fixture = new AuditFixture();
+        fixture.Write("test/actual-producer/package.json", new { name = "actual-producer", version = "1.0.0" });
+        var errors = new List<string>();
+        Collectors.Collect(Inputs(fixture), errors);
+        errors.ShouldHaveSingleItem().ShouldContain(fixture.Full("test/actual-producer/package-lock.json"));
+    }
+
+    [Theory]
     [InlineData("from", "0.1.7", false, "LICENSE.APACHE2", false)]
     [InlineData("from", "0.1.7", true, "LICENSE.APACHE2", false)]
     [InlineData("through", "2.3.8", false, "LICENSE.APACHE2", false)]
@@ -29,7 +67,7 @@ public sealed class Apache2DocumentTests
         var mit = Document(name, "LICENSE.MIT",
             "D72DEA1A8CDF3F4DFA2F594253D0C5B37BAEFC76E806F5ECB0E426393EDCD505");
         var metadata = JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
-            "Fixtures", "collector-formats", name, "package.json")))!;
+            "Fixtures", "collector-formats", name, "package.json.fixture")))!;
         var license = declared ? "SEE LICENSE IN " + path : "MIT";
         metadata["license"] = license;
         fixture.Npm(name, license, null, version);

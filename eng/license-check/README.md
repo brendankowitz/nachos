@@ -37,6 +37,11 @@ Unknown/binary suffixes still fail collection. Known implementation suffixes
 such as `LICENSE.APACHE2.js` are excluded from implicit npm evidence and rejected
 when explicitly declared as license documents.
 
+Raw package metadata used as documentary test data is named `package.json.fixture`
+and retained with exact `-text` attributes, so it is not discovered as a source
+dependency producer. Tests create real `package.json` files only inside their
+temporary package installations and archives; real source manifests still require locks.
+
 - NuGet: inventory must cover every solution project and match each
   `obj/project.assets.json` restore graph. Identity, metadata and license entries
   are read from each resolved `.nupkg`; no metadata-only approval.
