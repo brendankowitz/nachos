@@ -4,7 +4,8 @@
 # header for the strict auth probe and the environment file contents). Authentication is strict by default: a refused
 # admin probe is an error and no suite runs. -RequireAuth selects that default explicitly, so a CI line documents itself
 # (`-Run -RequireAuth`); combining it with -AllowAuthDisabled is a usage error (exit 2). -AllowAuthDisabled is the
-# development-only fallback for a branch where auth is not published yet.
+# development-only fallback for a branch where auth is not published yet and applies only to the fail-closed answers
+# 401 and 501; any other probe result (5xx, no connection, timeout) is a hard failure.
 #
 # Hermetic: the API and the CLI key-minting commands get an explicit allow-listed environment built from scratch, so
 # an ambient SQL, Key Vault, Entra, Azure or telemetry setting cannot redirect the in-memory, offline run. The caller's
@@ -154,6 +155,10 @@ try {
             -Headers @{ Authorization = "Bearer $adminKey" } -UseBasicParsing -TimeoutSec 5).StatusCode
     } catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 } }
     if ($status -ne 200) {
+        if ($status -notin 401, 501) {
+            # A 5xx, a refused connection (0) or a timeout is a broken API, not an unpublished feature: no fallback.
+            throw "the authentication probe got HTTP $status (0 means no answer); only 401 or 501 count as 'auth not published', so -AllowAuthDisabled does not apply."
+        }
         if (-not $AllowAuthDisabled) {
             throw "authentication does not work: the API answered an admin key with HTTP $status instead of 200. No suite was run. Pass -AllowAuthDisabled only while auth is not published on this branch."
         }

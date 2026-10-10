@@ -6,10 +6,13 @@
 # Auth is strict by default: the script starts the API with authentication enforced and probes it with an admin key.
 # If the probe is refused it prints an error and exits non-zero before any suite runs, so a CI gate cannot go green
 # on an authentication regression. --require-auth selects that default explicitly, so a CI line documents itself
-# (`--run --require-auth`); it cannot be combined with --allow-auth-disabled (usage error, exit 2). --allow-auth-disabled is the development-only escape hatch for a branch where auth
-# is not published yet (every /v3 route still fails closed): the script then restarts the API with authentication
-# disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled, so the scoped-key scenario reports
-# "not executed" rather than passing against an open server.
+# (`--run --require-auth`); combining it with --allow-auth-disabled is a usage error (exit 2).
+#
+# --allow-auth-disabled is the development-only escape hatch for a branch where auth is not published yet. It applies
+# only to the two answers a fail-closed API gives (HTTP 401 or 501 from the probe): the script then restarts the API
+# with authentication disabled (allowed in Development only) and records NACHOS_AUTH_MODE=disabled, so the scoped-key
+# scenario reports "not executed" rather than passing against an open server. Any other probe result (a 5xx, a
+# refused connection, a timeout) is a hard failure with or without the flag.
 #
 # Hermetic: the API and the CLI key-minting commands run with an allow-listed environment (PATH, HOME, DOTNET_ROOT,
 # LANG, LC_ALL, TMPDIR, the two DOTNET_* opt-outs and the synthetic settings this script sets itself). Everything else
@@ -157,17 +160,26 @@ admin_status() {
 auth_mode=enforced
 start_api true
 probe_status="$(admin_status)"
-if [[ "$probe_status" != 200 ]]; then
-  if ((allow_auth_disabled == 0)); then
-    echo "error: authentication does not work: the API answered an admin key with HTTP $probe_status instead of 200." >&2
-    echo "       No suite was run. Pass --allow-auth-disabled only while auth is not published on this branch." >&2
+case "$probe_status" in
+  200) ;;
+  401|501)
+    # The two answers a fail-closed API gives (401: the placeholder gate; 501: auth routes not implemented).
+    if ((allow_auth_disabled == 0)); then
+      echo "error: authentication does not work: the API answered an admin key with HTTP $probe_status instead of 200." >&2
+      echo "       No suite was run. Pass --allow-auth-disabled only while auth is not published on this branch." >&2
+      exit 1
+    fi
+    echo "note: the API answered an admin key with HTTP $probe_status; --allow-auth-disabled restarts it with authentication disabled (scoped-key scenario will not execute)" >&2
+    stop_api
+    auth_mode=disabled
+    start_api false
+    ;;
+  *)
+    # A 5xx, a refused connection (000) or a timeout is a broken API, not an unpublished feature: no fallback.
+    echo "error: the authentication probe got HTTP $probe_status (000 means no answer); only 401 or 501 count as 'auth not published', so --allow-auth-disabled does not apply." >&2
     exit 1
-  fi
-  echo "note: the API answered an admin key with HTTP $probe_status; --allow-auth-disabled restarts it with authentication disabled (scoped-key scenario will not execute)" >&2
-  stop_api
-  auth_mode=disabled
-  start_api false
-fi
+    ;;
+esac
 
 {
   printf 'NACHOS_BASE_URL=%s\n' "$base_url"
