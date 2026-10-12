@@ -1,0 +1,3 @@
+# Third-party evidence and the generated notices must stay byte-exact on every OS.
+notices/** -text
+public/THIRD-PARTY-NOTICES.txt -text

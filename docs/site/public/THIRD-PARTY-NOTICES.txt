@@ -8,7 +8,7 @@ Redistributed npm package notices
 ---------------------------------
 
 ## astro@7.3.5
-File: docs\site\node_modules\astro\LICENSE
+File: docs/site/node_modules/astro/LICENSE
 SHA-256: 4AA72BE797AAD0E5E21827EAAE6A1DF9E122D7A401F07D2C308A6B9A5F0E1278
 
 MIT License
@@ -72,7 +72,7 @@ SOFTWARE.
 """
 
 ## @astrojs/sitemap@3.7.4
-File: docs\site\node_modules\@astrojs\sitemap\LICENSE
+File: docs/site/node_modules/@astrojs/sitemap/LICENSE
 SHA-256: 4AA72BE797AAD0E5E21827EAAE6A1DF9E122D7A401F07D2C308A6B9A5F0E1278
 
 MIT License
@@ -136,7 +136,7 @@ SOFTWARE.
 """
 
 ## @astrojs/starlight@0.42.4
-File: docs\site\node_modules\@astrojs\starlight\LICENSE
+File: docs/site/node_modules/@astrojs/starlight/LICENSE
 SHA-256: A0EE39C239B80F632B663FC02A44893BE6C8489815A776E231A2FFF17C12EF42
 
 MIT License
@@ -162,7 +162,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## @expressive-code/core@0.44.2
-File: docs\site\node_modules\@expressive-code\core\LICENSE
+File: docs/site/node_modules/@expressive-code/core/LICENSE
 SHA-256: 4C81807AC60EC0314F5E65727C13039D1210020E063142CEDE98F4F67A4785FB
 
 MIT License
@@ -188,7 +188,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## @expressive-code/plugin-frames@0.44.2
-File: docs\site\node_modules\@expressive-code\plugin-frames\LICENSE
+File: docs/site/node_modules/@expressive-code/plugin-frames/LICENSE
 SHA-256: 4C81807AC60EC0314F5E65727C13039D1210020E063142CEDE98F4F67A4785FB
 
 MIT License
@@ -214,7 +214,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## @expressive-code/plugin-shiki@0.44.2
-File: docs\site\node_modules\@expressive-code\plugin-shiki\LICENSE
+File: docs/site/node_modules/@expressive-code/plugin-shiki/LICENSE
 SHA-256: 4C81807AC60EC0314F5E65727C13039D1210020E063142CEDE98F4F67A4785FB
 
 MIT License
@@ -240,7 +240,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## @expressive-code/plugin-text-markers@0.44.2
-File: docs\site\node_modules\@expressive-code\plugin-text-markers\LICENSE
+File: docs/site/node_modules/@expressive-code/plugin-text-markers/LICENSE
 SHA-256: 4C81807AC60EC0314F5E65727C13039D1210020E063142CEDE98F4F67A4785FB
 
 MIT License
@@ -266,7 +266,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## astro-expressive-code@0.44.2
-File: docs\site\node_modules\astro-expressive-code\LICENSE
+File: docs/site/node_modules/astro-expressive-code/LICENSE
 SHA-256: 4C81807AC60EC0314F5E65727C13039D1210020E063142CEDE98F4F67A4785FB
 
 MIT License
@@ -292,7 +292,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## mermaid@11.17.2
-File: docs\site\node_modules\mermaid\LICENSE
+File: docs/site/node_modules/mermaid/LICENSE
 SHA-256: EC9FB67DCB25ECCC416ED56E1AAB819222C805A2A4BFE4CB19E7556BF2FFDE80
 
 The MIT License (MIT)
@@ -318,7 +318,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## starlight-openapi@0.27.0
-File: docs\site\node_modules\starlight-openapi\LICENSE
+File: docs/site/node_modules/starlight-openapi/LICENSE
 SHA-256: E18006EC386CD205BE72223930895C17A98683CD14DDB3F3E066E2A154BC0A55
 
 MIT License
@@ -344,7 +344,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ## vite@8.3.1
-File: docs\site\node_modules\vite\LICENSE.md
+File: docs/site/node_modules/vite/LICENSE.md
 SHA-256: 387DD7BAA307083401A27C58C362C30832F5BA1DBA84F10CC22C33401523F45C
 
 # Vite core license
@@ -2671,7 +2671,7 @@ Repository: https://github.com/sveltejs/zimmerframe
 > SOFTWARE.
 
 ## pagefind@1.5.2
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -2683,7 +2683,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## @pagefind/default-ui@1.5.2
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -2695,7 +2695,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## @pagefind/linux-x64@1.5.2
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -2707,7 +2707,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## @pagefind/windows-x64@1.5.2
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -2723,7 +2723,7 @@ Embedded Pagefind bundle component notices
 
 ## bit-set@0.10.0
 Source: https://static.crates.io/crates/bit-set/bit-set-0.10.0.crate
-File: docs\site\notices\bit-set-0.10.0-LICENSE-APACHE
+File: docs/site/notices/bit-set-0.10.0-LICENSE-APACHE
 SHA-256: 8173D5C29B4F956D532781D2B86E4E30F83E6B7878DCE18C919451D6BA707C90
 
                               Apache License
@@ -2929,7 +2929,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/bit-set/bit-set-0.10.0.crate
-File: docs\site\notices\bit-set-0.10.0-LICENSE-MIT
+File: docs/site/notices/bit-set-0.10.0-LICENSE-MIT
 SHA-256: 6B56DDC7CD80419E5E22E075F2252D720F6CBE17E3E2C17383095EE2712BCFFA
 
 Copyright (c) 2026 The Rust Project Developers
@@ -2960,7 +2960,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## bit-vec@0.9.1
 Source: https://static.crates.io/crates/bit-vec/bit-vec-0.9.1.crate
-File: docs\site\notices\bit-vec-0.9.1-LICENSE-APACHE
+File: docs/site/notices/bit-vec-0.9.1-LICENSE-APACHE
 SHA-256: 8173D5C29B4F956D532781D2B86E4E30F83E6B7878DCE18C919451D6BA707C90
 
                               Apache License
@@ -3166,7 +3166,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/bit-vec/bit-vec-0.9.1.crate
-File: docs\site\notices\bit-vec-0.9.1-LICENSE-MIT
+File: docs/site/notices/bit-vec-0.9.1-LICENSE-MIT
 SHA-256: F51AC2C59A222F7476CE507CA879960E2B64EA64BB2786EEFDBEB7B0B538D1B7
 
 Copyright (c) 2023 The Rust Project Developers
@@ -3197,7 +3197,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## bumpalo@3.20.2
 Source: https://static.crates.io/crates/bumpalo/bumpalo-3.20.2.crate
-File: docs\site\notices\bumpalo-3.20.2-LICENSE-APACHE
+File: docs/site/notices/bumpalo-3.20.2-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -3403,7 +3403,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/bumpalo/bumpalo-3.20.2.crate
-File: docs\site\notices\bumpalo-3.20.2-LICENSE-MIT
+File: docs/site/notices/bumpalo-3.20.2-LICENSE-MIT
 SHA-256: 65F94E99DDAF4F5D1782A6DAE23F35D4293A9A01444A13135A6887017D353CEE
 
 Copyright (c) 2019 Nick Fitzgerald
@@ -3434,7 +3434,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## cfg-if@1.0.4
 Source: https://static.crates.io/crates/cfg-if/cfg-if-1.0.4.crate
-File: docs\site\notices\cfg-if-1.0.4-LICENSE-APACHE
+File: docs/site/notices/cfg-if-1.0.4-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -3640,7 +3640,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/cfg-if/cfg-if-1.0.4.crate
-File: docs\site\notices\cfg-if-1.0.4-LICENSE-MIT
+File: docs/site/notices/cfg-if-1.0.4-LICENSE-MIT
 SHA-256: 378F5840B258E2779C39418F3F2D7B2BA96F1C7917DD6BE0713F88305DBDA397
 
 Copyright (c) 2014 Alex Crichton
@@ -3671,7 +3671,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## mark.js@8.11.1
 Source: https://registry.npmjs.org/mark.js/-/mark.js-8.11.1.tgz
-File: docs\site\notices\mark.js-8.11.1-build-templates-copyright.hbs
+File: docs/site/notices/mark.js-8.11.1-build-templates-copyright.hbs
 SHA-256: EA10980D615D7925E61F5742A32D839D6E12E90C0152BCB44A5DA8851CE93006
 
 /*!***************************************************
@@ -3682,7 +3682,7 @@ SHA-256: EA10980D615D7925E61F5742A32D839D6E12E90C0152BCB44A5DA8851CE93006
 *****************************************************/
 
 Source: https://registry.npmjs.org/mark.js/-/mark.js-8.11.1.tgz
-File: docs\site\notices\mark.js-8.11.1-LICENSE
+File: docs/site/notices/mark.js-8.11.1-LICENSE
 SHA-256: 402936BCC8F1B6947750EB9193183D7D0C4DBCA3C0BA06398571D94EE85C24BE
 
 The MIT License (MIT)
@@ -3709,7 +3709,7 @@ SOFTWARE.
 
 ## minicbor@2.2.1
 Source: https://static.crates.io/crates/minicbor/minicbor-2.2.1.crate
-File: docs\site\notices\minicbor-2.2.1-LICENSE.md
+File: docs/site/notices/minicbor-2.2.1-LICENSE.md
 SHA-256: 8A1AF140FDFBF5AFD3DF27F7E662F989C5B963A300020DFAFCE42033CAE9E004
 
 # Blue Oak Model License
@@ -3770,7 +3770,7 @@ software or this license, under any kind of legal claim.***
 
 ## once_cell@1.21.4
 Source: https://static.crates.io/crates/once_cell/once_cell-1.21.4.crate
-File: docs\site\notices\once_cell-1.21.4-LICENSE-APACHE
+File: docs/site/notices/once_cell-1.21.4-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -3976,7 +3976,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/once_cell/once_cell-1.21.4.crate
-File: docs\site\notices\once_cell-1.21.4-LICENSE-MIT
+File: docs/site/notices/once_cell-1.21.4-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -4005,7 +4005,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## pagefind_microjson@0.1.4
 Source: https://static.crates.io/crates/pagefind_microjson/pagefind_microjson-0.1.4.crate
-File: docs\site\notices\pagefind_microjson-0.1.4-LICENCE
+File: docs/site/notices/pagefind_microjson-0.1.4-LICENCE
 SHA-256: 1B3782CCAD7B8614100CDA30D3FAF42FC39F2E97932908C543005053B654CA68
 
                     GNU GENERAL PUBLIC LICENSE
@@ -4631,9 +4631,74 @@ copy of the Program in return for a fee.
                      END OF TERMS AND CONDITIONS
 
 ## pagefind_stem@1.0.0
+Source: https://static.crates.io/crates/pagefind_stem/pagefind_stem-1.0.0.crate
+Note: verbatim embedded rust-stemmers MIT and Snowball BSD-3-Clause notices from src/lib.rs lines 6-64; crate archive SHA-256 8DFA810B158F3AC364E5ACD43CA4A6020A6E729D40C15CE1BED1D911237A52E5
+File: docs/site/notices/pagefind_stem-1.0.0-src-lib.rs-NOTICES.txt
+SHA-256: 0F7CDDC0220A4C8B44208667C745F58B689486F6CB530352CF57A2E5CA31655E
+
+/**
+ * Stemmer API derived from https://github.com/CurrySoftware/rust-stemmers :
+ * ---
+ * MIT License
+ *
+ * Copyright (c) 2017 Jakob Demler
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * ---
+ *
+ * Snowball module generated from https://github.com/snowballstem/snowball :
+ * ---
+ * Copyright (c) 2001, Dr Martin Porter
+ * Copyright (c) 2004,2005, Richard Boulton
+ * Copyright (c) 2013, Yoshiki Shibukawa
+ * Copyright (c) 2006,2007,2009,2010,2011,2014-2019, Olly Betts
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *   1. Redistributions of source code must retain the above copyright notice,
+ *      this list of conditions and the following disclaimer.
+ *   2. Redistributions in binary form must reproduce the above copyright notice,
+ *      this list of conditions and the following disclaimer in the documentation
+ *      and/or other materials provided with the distribution.
+ *   3. Neither the name of the Snowball project nor the names of its contributors
+ *      may be used to endorse or promote products derived from this software
+ *      without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * ---
+ */
+
 Source: https://raw.githubusercontent.com/Pagefind/pagefind/v1.5.2/LICENSE
 Note: crate archive has license = MIT metadata but no license file; Pagefind repository tag license is included
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -4646,7 +4711,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Pagefind@1.5.2
 Source: https://raw.githubusercontent.com/Pagefind/pagefind/v1.5.2/LICENSE
-File: docs\site\notices\pagefind-1.5.2-LICENSE.txt
+File: docs/site/notices/pagefind-1.5.2-LICENSE.txt
 SHA-256: 4736929BFDED122BD969F0621A0D917484B126D981270D68A63ED42CB55503D5
 
 Copyright 2022 Pagefind
@@ -4659,7 +4724,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## proc-macro2@1.0.106
 Source: https://static.crates.io/crates/proc-macro2/proc-macro2-1.0.106.crate
-File: docs\site\notices\proc-macro2-1.0.106-LICENSE-APACHE
+File: docs/site/notices/proc-macro2-1.0.106-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -4840,7 +4905,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/proc-macro2/proc-macro2-1.0.106.crate
-File: docs\site\notices\proc-macro2-1.0.106-LICENSE-MIT
+File: docs/site/notices/proc-macro2-1.0.106-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -4869,7 +4934,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## quote@1.0.45
 Source: https://static.crates.io/crates/quote/quote-1.0.45.crate
-File: docs\site\notices\quote-1.0.45-LICENSE-APACHE
+File: docs/site/notices/quote-1.0.45-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -5050,7 +5115,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/quote/quote-1.0.45.crate
-File: docs\site\notices\quote-1.0.45-LICENSE-MIT
+File: docs/site/notices/quote-1.0.45-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -5079,7 +5144,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## rustversion@1.0.22
 Source: https://static.crates.io/crates/rustversion/rustversion-1.0.22.crate
-File: docs\site\notices\rustversion-1.0.22-LICENSE-APACHE
+File: docs/site/notices/rustversion-1.0.22-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -5260,7 +5325,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/rustversion/rustversion-1.0.22.crate
-File: docs\site\notices\rustversion-1.0.22-LICENSE-MIT
+File: docs/site/notices/rustversion-1.0.22-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -5289,7 +5354,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## serde_core@1.0.228
 Source: https://static.crates.io/crates/serde_core/serde_core-1.0.228.crate
-File: docs\site\notices\serde_core-1.0.228-LICENSE-APACHE
+File: docs/site/notices/serde_core-1.0.228-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -5470,7 +5535,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/serde_core/serde_core-1.0.228.crate
-File: docs\site\notices\serde_core-1.0.228-LICENSE-MIT
+File: docs/site/notices/serde_core-1.0.228-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -5499,7 +5564,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## serde_derive@1.0.228
 Source: https://static.crates.io/crates/serde_derive/serde_derive-1.0.228.crate
-File: docs\site\notices\serde_derive-1.0.228-LICENSE-APACHE
+File: docs/site/notices/serde_derive-1.0.228-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -5680,7 +5745,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/serde_derive/serde_derive-1.0.228.crate
-File: docs\site\notices\serde_derive-1.0.228-LICENSE-MIT
+File: docs/site/notices/serde_derive-1.0.228-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -5709,7 +5774,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## serde@1.0.228
 Source: https://static.crates.io/crates/serde/serde-1.0.228.crate
-File: docs\site\notices\serde-1.0.228-LICENSE-APACHE
+File: docs/site/notices/serde-1.0.228-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -5890,7 +5955,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/serde/serde-1.0.228.crate
-File: docs\site\notices\serde-1.0.228-LICENSE-MIT
+File: docs/site/notices/serde-1.0.228-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -5919,7 +5984,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## Svelte@4.2.20
 Source: https://registry.npmjs.org/svelte/-/svelte-4.2.20.tgz
-File: docs\site\notices\svelte-4.2.20-LICENSE.md
+File: docs/site/notices/svelte-4.2.20-LICENSE.md
 SHA-256: 97A941BAE1C510C556C5DAF017180E4939EA392357D9A7BAE2657E3E20C69C42
 
 Copyright (c) 2016-23 [these people](https://github.com/sveltejs/svelte/graphs/contributors)
@@ -5932,7 +5997,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## syn@2.0.117
 Source: https://static.crates.io/crates/syn/syn-2.0.117.crate
-File: docs\site\notices\syn-2.0.117-LICENSE-APACHE
+File: docs/site/notices/syn-2.0.117-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -6113,7 +6178,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/syn/syn-2.0.117.crate
-File: docs\site\notices\syn-2.0.117-LICENSE-MIT
+File: docs/site/notices/syn-2.0.117-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -6142,7 +6207,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## unicode-ident@1.0.24
 Source: https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.24.crate
-File: docs\site\notices\unicode-ident-1.0.24-LICENSE-APACHE
+File: docs/site/notices/unicode-ident-1.0.24-LICENSE-APACHE
 SHA-256: 62C7A1E35F56406896D7AA7CA52D0CC0D272AC022B5D2796E7D6905DB8A3636A
 
                               Apache License
@@ -6323,7 +6388,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 Source: https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.24.crate
-File: docs\site\notices\unicode-ident-1.0.24-LICENSE-MIT
+File: docs/site/notices/unicode-ident-1.0.24-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any
@@ -6351,7 +6416,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 Source: https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.24.crate
-File: docs\site\notices\unicode-ident-1.0.24-LICENSE-UNICODE
+File: docs/site/notices/unicode-ident-1.0.24-LICENSE-UNICODE
 SHA-256: F7DB81051789B729FEA528A63EC4C938FDCB93D9D61D97DC8CC2E9DF6D47F2A1
 
 UNICODE LICENSE V3
@@ -6396,7 +6461,7 @@ authorization of the copyright holder.
 
 ## wasm-bindgen-macro-support@0.2.117
 Source: https://static.crates.io/crates/wasm-bindgen-macro-support/wasm-bindgen-macro-support-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-macro-support-0.2.117-LICENSE-APACHE
+File: docs/site/notices/wasm-bindgen-macro-support-0.2.117-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -6602,7 +6667,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/wasm-bindgen-macro-support/wasm-bindgen-macro-support-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-macro-support-0.2.117-LICENSE-MIT
+File: docs/site/notices/wasm-bindgen-macro-support-0.2.117-LICENSE-MIT
 SHA-256: 378F5840B258E2779C39418F3F2D7B2BA96F1C7917DD6BE0713F88305DBDA397
 
 Copyright (c) 2014 Alex Crichton
@@ -6633,7 +6698,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## wasm-bindgen-macro@0.2.117
 Source: https://static.crates.io/crates/wasm-bindgen-macro/wasm-bindgen-macro-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-macro-0.2.117-LICENSE-APACHE
+File: docs/site/notices/wasm-bindgen-macro-0.2.117-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -6839,7 +6904,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/wasm-bindgen-macro/wasm-bindgen-macro-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-macro-0.2.117-LICENSE-MIT
+File: docs/site/notices/wasm-bindgen-macro-0.2.117-LICENSE-MIT
 SHA-256: 378F5840B258E2779C39418F3F2D7B2BA96F1C7917DD6BE0713F88305DBDA397
 
 Copyright (c) 2014 Alex Crichton
@@ -6870,7 +6935,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## wasm-bindgen-shared@0.2.117
 Source: https://static.crates.io/crates/wasm-bindgen-shared/wasm-bindgen-shared-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-shared-0.2.117-LICENSE-APACHE
+File: docs/site/notices/wasm-bindgen-shared-0.2.117-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -7076,7 +7141,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/wasm-bindgen-shared/wasm-bindgen-shared-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-shared-0.2.117-LICENSE-MIT
+File: docs/site/notices/wasm-bindgen-shared-0.2.117-LICENSE-MIT
 SHA-256: 378F5840B258E2779C39418F3F2D7B2BA96F1C7917DD6BE0713F88305DBDA397
 
 Copyright (c) 2014 Alex Crichton
@@ -7107,7 +7172,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## wasm-bindgen@0.2.117
 Source: https://static.crates.io/crates/wasm-bindgen/wasm-bindgen-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-0.2.117-LICENSE-APACHE
+File: docs/site/notices/wasm-bindgen-0.2.117-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -7313,7 +7378,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/wasm-bindgen/wasm-bindgen-0.2.117.crate
-File: docs\site\notices\wasm-bindgen-0.2.117-LICENSE-MIT
+File: docs/site/notices/wasm-bindgen-0.2.117-LICENSE-MIT
 SHA-256: 378F5840B258E2779C39418F3F2D7B2BA96F1C7917DD6BE0713F88305DBDA397
 
 Copyright (c) 2014 Alex Crichton
@@ -7344,7 +7409,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## write-json@0.1.4
 Source: https://static.crates.io/crates/write-json/write-json-0.1.4.crate
-File: docs\site\notices\write-json-0.1.4-LICENSE-APACHE
+File: docs/site/notices/write-json-0.1.4-LICENSE-APACHE
 SHA-256: A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2
 
                               Apache License
@@ -7550,7 +7615,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Source: https://static.crates.io/crates/write-json/write-json-0.1.4.crate
-File: docs\site\notices\write-json-0.1.4-LICENSE-MIT
+File: docs/site/notices/write-json-0.1.4-LICENSE-MIT
 SHA-256: 23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3
 
 Permission is hereby granted, free of charge, to any

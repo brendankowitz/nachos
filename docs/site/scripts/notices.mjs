@@ -66,7 +66,7 @@ function recordsByComponent(records) {
 
 function renderFile(path) {
   const text = readNoticeFile(path);
-  return `File: ${relative(root, path).replaceAll('\\\\', '/')}\nSHA-256: ${sha256(text + '\n')}\n\n${text}\n`;
+  return `File: ${relative(root, path).replaceAll('\\', '/')}\nSHA-256: ${sha256(text + '\n')}\n\n${text}\n`;
 }
 
 function generate() {

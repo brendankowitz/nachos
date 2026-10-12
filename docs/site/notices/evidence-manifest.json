@@ -307,5 +307,13 @@
     "sourceUrl": "https://static.crates.io/crates/write-json/write-json-0.1.4.crate",
     "path": "docs/site/notices/write-json-0.1.4-LICENSE-MIT",
     "sha256": "23F18E03DC49DF91622FE2A76176497404E46CED8A715D9D2B67A7446571CCA3"
+  },
+  {
+    "component": "pagefind_stem",
+    "version": "1.0.0",
+    "sourceUrl": "https://static.crates.io/crates/pagefind_stem/pagefind_stem-1.0.0.crate",
+    "path": "docs/site/notices/pagefind_stem-1.0.0-src-lib.rs-NOTICES.txt",
+    "sha256": "0F7CDDC0220A4C8B44208667C745F58B689486F6CB530352CF57A2E5CA31655E",
+    "note": "verbatim embedded rust-stemmers MIT and Snowball BSD-3-Clause notices from src/lib.rs lines 6-64; crate archive SHA-256 8DFA810B158F3AC364E5ACD43CA4A6020A6E729D40C15CE1BED1D911237A52E5"
   }
 ]
