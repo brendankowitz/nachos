@@ -11,7 +11,7 @@ $portableProjects = @(
     'Nachos.Abstractions.Tests', 'Nachos.Api.Tests', 'Nachos.Architecture.Tests',
     'Nachos.Client.Tests', 'Nachos.Core.Tests', 'Nachos.DataLayer.InMemory.Tests',
     'Nachos.LicenseCheck.Tests', 'Nachos.DataLayer.SqlServer.Tests',
-    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests'
+    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests'
 )
 [xml] $solution = Get-Content (Join-Path $root 'Nachos.slnx') -Raw
 $declaredTests = @($solution.SelectNodes('//Project/@Path') | Where-Object {
@@ -24,6 +24,7 @@ if (Compare-Object ($portableProjects + 'Nachos.Infra.Tests' | Sort-Object) ($de
     throw 'Solution test projects changed: update the complete CI lane mapping.'
 }
 $filters = @{}
+$env:NACHOS_DOCSGEN_TEST_ROOT = $root
 switch ($Slice) {
     Portable {
         $projects = $portableProjects

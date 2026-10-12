@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nachos.Core\Nachos.Core.csproj" />
+    <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.SqlServer\Nachos.DataLayer.SqlServer.csproj" />
+    <InternalsVisibleTo Include="Nachos.DocsGen.Tests" />
+  </ItemGroup>
+  <!-- Build actual XML separately from normal library builds, which remove XML on rebuild.
+       Keep the snapshot in this producer's obj directory, not in a product source project. -->
+  <Target Name="CaptureOptionsXml" AfterTargets="Build">
+    <ItemGroup>
+      <OptionsProject Include="..\..\src\Nachos.Abstractions\Nachos.Abstractions.csproj;..\..\src\Nachos.Core\Nachos.Core.csproj;..\..\src\DataLayer\Nachos.DataLayer.SqlServer\Nachos.DataLayer.SqlServer.csproj" />
+    </ItemGroup>
+    <MSBuild Projects="@(OptionsProject)" Targets="Build" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);BuildProjectReferences=false;GenerateDocumentationFile=true;NoWarn=CS1591;WarningsNotAsErrors=CS1573%3BCS0419;UseSharedCompilation=false" />
+    <Copy SourceFiles="@(OptionsProject->'%(RootDir)%(Directory)bin\$(Configuration)\net10.0\%(Filename).xml')"
+          DestinationFolder="$(BaseIntermediateOutputPath)options-xml\$(Configuration)" />
+  </Target>
+</Project>

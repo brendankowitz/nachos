@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="..\..\Directory.Build.props" />
+  <PropertyGroup>
+    <!-- Set paths before SDK/NuGet imports; eng is scanned as executable source. -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)..\..\artifacts\docsgen\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\..\artifacts\docsgen\obj\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

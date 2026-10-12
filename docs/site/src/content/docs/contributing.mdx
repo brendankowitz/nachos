@@ -1,0 +1,30 @@
+---
+title: Contributing
+---
+
+Work from the approved specification and the milestone plan. Keep documentation
+claims tied to executable evidence, not to project names or unchecked tasks.
+
+## Clean-room boundary
+
+Honcho / Plastic Labs inspired the concepts and public API design.
+Nachos shares no implementation source with Honcho.
+Use public documentation and black-box observations, not Honcho implementation
+files. Write original documentation rather than copying upstream text.
+
+## Documentation checks
+
+Follow the [documentation quick start](/nachos/getting-started/quick-start/#build-this-site) to run
+the site and Markdown checks. Add a failing regression before changing validator
+or artifact-provenance behavior. Every new internal link must pass the real build.
+
+The site's [maintainer notes](https://github.com/brendankowitz/nachos/blob/main/docs/site/README.md)
+describe dependency provenance, license boundaries, and reference generation.
+Never hide an unknown shipped package by returning an empty manifest.
+
+## Deployment consent
+
+Documentation changes do not authorize GitHub Pages configuration, secret
+creation, Azure provisioning, or resource deletion. Site publication remains
+disabled until the separate credential-profile and license gates (#13/#19)
+are reviewed. Merely enabling a Pages setting cannot activate deployment.

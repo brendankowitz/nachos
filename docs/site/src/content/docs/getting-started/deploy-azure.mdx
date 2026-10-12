@@ -1,0 +1,22 @@
+---
+title: Deploy to Azure
+sidebar:
+  order: 3
+---
+
+The repository contains Bicep, `azure.yaml` and bootstrap hooks for Container
+Apps, Azure SQL, managed identities and Key Vault. Offline build/lint and
+infrastructure tests exist. They are **not evidence of a successful live
+deployment** or production-release approval.
+
+There is no published deployment button. Creating or changing Azure resources
+requires explicit owner approval for the specific run, subscription and scope.
+Review infrastructure, credential handling, costs and cleanup before requesting
+that approval; do not run `azd up` merely to build documentation.
+
+Credential-bearing automation remains gated by
+[#13](https://github.com/brendankowitz/nachos/issues/13). Full dependency/license
+compliance is tracked separately in
+[#19](https://github.com/brendankowitz/nachos/issues/19).
+The docsite workflow is source-only: it does not upload Pages content, enable
+Pages, obtain OIDC credentials or deploy Azure.

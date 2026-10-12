@@ -1,0 +1,19 @@
+---
+title: Sessions and messages
+---
+
+The source MVP stores sessions, membership and messages with both the in-memory
+and SQL providers.
+
+A session groups an interaction and its peer membership. Messages carry the
+conversation content within that session. The design separates message order
+from timestamps: server-assigned sequence numbers determine ordering, while
+timestamps may describe earlier events.
+
+Membership configuration governs which peers participate and how later memory
+processing interprets their activity. A stored message is not itself a derived
+conclusion, summary, or evidence that a worker has finished processing.
+
+Reasoning, summaries, conclusions, peer cards, and context generation are outside
+the current foundation. See the [design and roadmap](/nachos/architecture/) rather
+than inferring these capabilities from the documentation navigation.

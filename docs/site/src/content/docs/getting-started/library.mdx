@@ -1,0 +1,54 @@
+---
+title: Use as a .NET library
+sidebar:
+  order: 5
+---
+
+Both the in-process `INachosClient` and the .NET HTTP client exist in source.
+Use project references; no published NuGet release is promised.
+
+## In-process, in-memory
+
+Reference `src/Nachos.Hosting/Nachos.Hosting.csproj` and
+`src/DataLayer/Nachos.DataLayer.InMemory/Nachos.DataLayer.InMemory.csproj`.
+The latter extension selects a volatile singleton store shared by scopes:
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Nachos.Abstractions;
+
+var services = new ServiceCollection();
+services.AddLogging();
+services.AddNachos(nachos => nachos.UseInMemory());
+await using var provider = services.BuildServiceProvider();
+await using var scope = provider.CreateAsyncScope();
+var client = scope.ServiceProvider.GetRequiredService<INachosClient>();
+var workspace = await client.GetOrCreateWorkspaceAsync("demo");
+Console.WriteLine(workspace.Id);
+```
+
+`AddNachos` selects no provider itself. In-process callers are trusted application
+code: the HTTP authentication/authorization middleware is not part of this mode.
+In-memory storage is for tests and development, not durable production data.
+The store and client behavior are covered by the in-memory and client suites.
+
+## HTTP client
+
+Reference `src/Nachos.Client/Nachos.Client.csproj` and register the transport
+**instead of** in-process `AddNachos`:
+
+```csharp
+services.AddNachosClient(options =>
+{
+    options.BaseAddress = new Uri("http://127.0.0.1:5080");
+    options.ApiKey = Environment.GetEnvironmentVariable("NACHOS_API_KEY");
+});
+```
+
+Resolve the same `INachosClient` interface in a scope. Supply a key for an
+authenticated server; do not embed credentials in code. Typed errors,
+cancellation and bounded retries are implemented in the transport. Preserve
+its default redaction pipeline when customizing HTTP handlers.
+
+This API performs CRUD, not reasoning or memory synthesis. A successful message
+write does not mean a worker derived a summary or conclusion.

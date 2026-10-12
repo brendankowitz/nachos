@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/eng/">
+    <Project Path="eng/DocsGen/DocsGen.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/DataLayer/Nachos.DataLayer.InMemory/Nachos.DataLayer.InMemory.csproj" />
     <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer/Nachos.DataLayer.SqlServer.csproj" />
@@ -25,6 +28,7 @@
     <Project Path="test/Nachos.Core.Tests/Nachos.Core.Tests.csproj" />
     <Project Path="test/Nachos.DataLayer.InMemory.Tests/Nachos.DataLayer.InMemory.Tests.csproj" />
     <Project Path="test/Nachos.DataLayer.SqlServer.Tests/Nachos.DataLayer.SqlServer.Tests.csproj" />
+    <Project Path="test/Nachos.DocsGen.Tests/Nachos.DocsGen.Tests.csproj" />
     <Project Path="test/Nachos.Infra.Tests/Nachos.Infra.Tests.csproj" />
     <Project Path="test/Nachos.LicenseCheck.Tests/Nachos.LicenseCheck.Tests.csproj" />
     <Project Path="test/Nachos.Testing/Nachos.Testing.csproj" />

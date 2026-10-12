@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <StartupObject>Nachos.DocsGen.Tests.ProcessFixture</StartupObject>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\eng\DocsGen\DocsGen.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Cli\Nachos.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Api\Nachos.Api.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.InMemory\Nachos.DataLayer.InMemory.csproj" />
+  </ItemGroup>
+</Project>

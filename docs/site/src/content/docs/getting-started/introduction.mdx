@@ -1,0 +1,37 @@
+---
+title: Introduction
+sidebar:
+  order: 1
+---
+
+Nachos is a clean-room .NET source MVP targeting Honcho v3 API behavior.
+The repository is MIT licensed; dependency redistribution has separate,
+unresolved license gates. Source availability is not production-release approval.
+
+## What exists today
+
+- Get-or-create, update and list operations for workspaces, peers and sessions;
+  session membership and message batches, reads and metadata updates.
+- Ordered messages, metadata filters, pagination and idempotent batch replay.
+- NachosKey and Microsoft Entra authentication with scoped authorization and grants.
+- In-memory and SQL storage, a schema/bootstrap CLI, Aspire orchestration,
+  offline-validated Azure infrastructure and a .NET HTTP client.
+- Pinned Python and TypeScript SDK smoke suites. These are not full conformance.
+- This site, with fresh REST, CLI, options and compatibility references, local
+  search, light/dark themes and build-time SVG diagrams.
+
+## What is not implemented
+
+Reasoning/chat, conclusions, representations, peer cards, summaries, context,
+dreaming, workers and native MCP remain future milestones. Their staged routes
+return **501**. Some operations have both implemented and staged variants;
+inspect the [compatibility matrix](/nachos/reference/compatibility/).
+
+Do not assume production durability, complete upstream compatibility or a
+published NuGet/container release. The managed tokenizer and SQL extreme-filter
+limits remain tracked release concerns ([#10](https://github.com/brendankowitz/nachos/issues/10),
+[#18](https://github.com/brendankowitz/nachos/issues/18)).
+
+Start with the [local API](/nachos/getting-started/quick-start/) or
+[in-process library](/nachos/getting-started/library/), then read
+[authentication](/nachos/guides/auth/) before exposing any endpoint.

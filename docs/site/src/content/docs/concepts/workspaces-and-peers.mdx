@@ -1,0 +1,20 @@
+---
+title: Workspaces and peers
+---
+
+Workspace and peer CRUD are implemented in the source MVP.
+
+A workspace is a namespace for related memory. A peer identifies a participant
+within that workspace: an agent, a person, or another conversational actor.
+A peer is not automatically an authenticated identity.
+
+Workspace boundaries separate data; authentication and grants must establish
+which caller may use each boundary. Choosing an identifier is not authorization.
+The design treats identifiers as case-sensitive.
+
+Sessions bring peers together for an interaction. The same peer may
+participate in more than one session without merging those sessions' message streams.
+
+Continue with [sessions and messages](/nachos/concepts/sessions-and-messages/) and
+[authentication](/nachos/guides/auth/). Deriving long-term memory from these
+entities remains future work.
