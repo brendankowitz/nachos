@@ -1,6 +1,7 @@
 param([Parameter(Mandatory)] [string] $YamlAssembly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Add-Type -Path $YamlAssembly
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $runnerAst = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot 'Invoke-DocsSite.ps1'), [ref]$null, [ref]$null)
@@ -23,13 +24,16 @@ try {
     & (Join-Path $PSScriptRoot 'Test-WorkflowPolicy.ps1') -YamlAssembly $YamlAssembly -SourceRoot $fixture
     $count = 0
     foreach ($mutation in @(
-        @{ Name='workflow pages permission'; File='docs-site.yml'; From='permissions:'; To="permissions:`n  pages: write" },
-        @{ Name='workflow OIDC permission'; File='docs-site.yml'; From='permissions:'; To="permissions:`n  id-token: write" },
+        @{ Name='workflow pages permission'; File='docs-site.yml'; From="permissions:`n  contents: read`n`ndefaults:"; To="permissions:`n  contents: read`n  pages: write`n`ndefaults:" },
+        @{ Name='workflow OIDC permission'; File='docs-site.yml'; From="permissions:`n  contents: read`n`ndefaults:"; To="permissions:`n  contents: read`n  id-token: write`n`ndefaults:" },
         @{ Name='source job pages permission'; File='docs-site.yml'; From="  source:`n"; To="  source:`n    permissions:`n      pages: write`n" },
-        @{ Name='pages job OIDC permission'; File='docs-site.yml'; From="  pages:`n    name: Build and verify Pages artifact"; To="  pages:`n    name: Build and verify Pages artifact`n    permissions:`n      id-token: write" },
+        @{ Name='pages job OIDC permission'; File='docs-site.yml'; From="    needs: source`n    permissions:`n      contents: read`n"; To="    needs: source`n    permissions:`n      contents: read`n      id-token: write`n" },
+        @{ Name='pages extra run before upload'; File='docs-site.yml'; From="        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication`n"; To="        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication`n      - run: npm --prefix docs/site run build`n" },
+        @{ Name='pages unsealed build'; File='docs-site.yml'; From='run: ./eng/ci/Invoke-DocsSite.ps1 -Publication'; To='run: npm --prefix docs/site ci && npm --prefix docs/site run build' },
+        @{ Name='pages publication env override'; File='docs-site.yml'; From="        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication`n"; To="        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication`n        working-directory: docs`n" },
         @{ Name='deploy extra permission'; File='docs-site.yml'; From="      id-token: write`n"; To="      id-token: write`n      contents: write`n" },
         @{ Name='deploy missing environment'; File='docs-site.yml'; From="    environment:`n      name: github-pages`n      url: `${{ steps.deployment.outputs.page_url }}`n"; To='' },
-        @{ Name='deploy unguarded if'; File='docs-site.yml'; From="    if: `${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}`n"; To='' },
+        @{ Name='deploy unguarded if'; File='docs-site.yml'; From="    needs: [source, pages]`n    if: `${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}`n"; To="    needs: [source, pages]`n" },
         @{ Name='deploy checkout step'; File='docs-site.yml'; From="    steps:`n      - id: deployment"; To="    steps:`n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`n      - id: deployment" },
         @{ Name='deploy run step'; File='docs-site.yml'; From="    steps:`n      - id: deployment"; To="    steps:`n      - run: echo no`n      - id: deployment" },
         @{ Name='deploy step inputs'; File='docs-site.yml'; From="      - id: deployment`n        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346"; To="      - id: deployment`n        with:`n          preview: true`n        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346" },
@@ -63,7 +67,13 @@ try {
             $normalized = (Get-Content (Join-Path $workflows $mutation.File) -Raw).Replace("`r`n", "`n")
         }
         if (-not $normalized.Contains($mutation.From)) { throw "Mutation target missing: $($mutation.Name)" }
-        $normalized.Replace($mutation.From, $mutation.To) | Set-Content (Join-Path $workflows $mutation.File) -Encoding utf8NoBOM
+        $mutated = $normalized.Replace($mutation.From, $mutation.To)
+        # A mutant that does not parse would be "rejected" for the wrong reason and prove nothing.
+        $mutantReader = [IO.StringReader]::new($mutated)
+        try { [YamlDotNet.RepresentationModel.YamlStream]::new().Load($mutantReader) }
+        catch { throw "Mutation $($mutation.Name) produced invalid YAML, so it cannot test the policy: $($_.Exception.Message)" }
+        finally { $mutantReader.Dispose() }
+        $mutated | Set-Content (Join-Path $workflows $mutation.File) -Encoding utf8NoBOM
         $rejected = $false
         try {
             & (Join-Path $PSScriptRoot 'Test-WorkflowPolicy.ps1') -YamlAssembly $YamlAssembly -SourceRoot $fixture | Out-Null

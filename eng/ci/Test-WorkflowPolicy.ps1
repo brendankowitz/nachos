@@ -164,6 +164,23 @@ foreach ($workflowFile in $workflowFiles) {
                 }
                 $needs = Child $job 'needs'
                 if ($needs.Value -ne 'source') { throw 'Pages artifact job must need source.' }
+                # The upload must ship the dist sealed and verified by the single publication run,
+                # so the whole step sequence is pinned; nothing may run between verify and upload.
+                $pagesSteps = (Child $job 'steps').Children
+                $expectedActions = @('actions/checkout@', 'actions/setup-dotnet@', 'actions/setup-node@')
+                if ($pagesSteps.Count -ne 5) { throw 'Pages artifact job must have exactly checkout, setup-dotnet, setup-node, publication run and upload steps.' }
+                for ($index = 0; $index -lt 3; $index++) {
+                    if (-not (HasKey $pagesSteps[$index] 'uses') -or -not (Scalar $pagesSteps[$index] 'uses').StartsWith($expectedActions[$index])) {
+                        throw "Pages artifact job step $($index + 1) must be $($expectedActions[$index].TrimEnd('@'))."
+                    }
+                }
+                Assert-KeySet $pagesSteps[3] @('name', 'run') 'Pages publication run step'
+                if ((Scalar $pagesSteps[3] 'run').Trim() -cne './eng/ci/Invoke-DocsSite.ps1 -Publication') {
+                    throw 'Pages publication step must run exactly ./eng/ci/Invoke-DocsSite.ps1 -Publication.'
+                }
+                if (-not (HasKey $pagesSteps[4] 'uses') -or -not (Scalar $pagesSteps[4] 'uses').StartsWith('actions/upload-pages-artifact@')) {
+                    throw 'Pages artifact upload must be the final step, directly after the publication run.'
+                }
             }
             elseif ($jobName -eq 'deploy') {
                 Assert-KeySet $job @('name', 'runs-on', 'needs', 'if', 'permissions', 'environment', 'concurrency', 'steps') 'Deploy job'
