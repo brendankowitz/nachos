@@ -66,10 +66,11 @@ test('private-home generation replaces stale OpenAPI even on repeated no-op buil
     const configuration = process.env.DOCS_CONFIGURATION ?? 'Debug';
     assert.ok((await stat(join(repository, `artifacts/docsgen/bin/${configuration}/net10.0/DocsGen.dll`))).isFile());
     assert.ok((await stat(join(repository, 'artifacts/docsgen/obj/site-home'))).isDirectory());
-    for (const name of ['bin', 'obj']) {
-      await assert.rejects(stat(join(repository, 'eng/DocsGen', name)), { code: 'ENOENT' },
-        'reference generation must not recreate products or private homes under automation source');
-    }
+    await assert.rejects(stat(join(repository, 'eng/DocsGen/bin')), { code: 'ENOENT' },
+      'reference generation must not recreate products under automation source');
+    assert.ok((await stat(join(repository, 'eng/DocsGen/obj/project.assets.json'))).isFile());
+    await assert.rejects(stat(join(repository, 'eng/DocsGen/obj/site-home')), { code: 'ENOENT' },
+      'reference generation must not recreate private homes under automation source');
   } catch (error) {
     if (previous) await writeFile(api, previous);
     throw error;
