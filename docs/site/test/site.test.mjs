@@ -48,9 +48,29 @@ test('real references build with rendered Mermaid, search and exact distribution
   assert.match(architecture, /<svg[^>]+.*mermaid/s);
   assert.ok(!architecture.includes('language-mermaid'), 'diagram must render, not remain a code block');
   await readFile(join(site, 'dist', 'pagefind', 'pagefind.js'));
+  const notices = await readFile(join(site, 'dist', 'THIRD-PARTY-NOTICES.txt'), 'utf8');
   const manifest = JSON.parse(await readFile(join(site, 'dist', '.nachos', 'bundle-modules.json')));
   for (const name of ['@astrojs/starlight', '@pagefind/default-ui', 'pagefind', 'mermaid', '@expressive-code/plugin-shiki']) {
     assert.ok(manifest.some((entry) => entry.package === name), `missing shipping package ${name}`);
+  }
+  for (const [name, version] of [
+    ['astro', '7.3.5'], ['@astrojs/sitemap', '3.7.4'], ['@astrojs/starlight', '0.42.4'],
+    ['@expressive-code/core', '0.44.2'], ['@expressive-code/plugin-frames', '0.44.2'],
+    ['@expressive-code/plugin-shiki', '0.44.2'], ['@expressive-code/plugin-text-markers', '0.44.2'],
+    ['astro-expressive-code', '0.44.2'], ['mermaid', '11.17.2'], ['starlight-openapi', '0.27.0'],
+    ['vite', '8.3.1'], ['pagefind', '1.5.2'], ['@pagefind/default-ui', '1.5.2'],
+    ['@pagefind/linux-x64', '1.5.2'], ['@pagefind/windows-x64', '1.5.2'],
+  ]) {
+    assert.match(notices, new RegExp(`## ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@${version}`),
+      `missing emitted notice for ${name}@${version}`);
+  }
+  for (const [name, version] of [
+    ['Svelte', '4.2.20'], ['mark.js', '8.11.1'], ['pagefind_stem', '1.0.0'],
+    ['pagefind_microjson', '0.1.4'], ['write-json', '0.1.4'], ['wasm-bindgen', '0.2.117'],
+    ['bit-set', '0.10.0'], ['bit-vec', '0.9.1'], ['minicbor', '2.2.1'],
+  ]) {
+    assert.match(notices, new RegExp(`## ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@${version}`),
+      `missing embedded notice for ${name}@${version}`);
   }
   for (const name of ['elkjs', 'rehype-mermaid', 'playwright', 'sharp', 'starlight-links-validator']) {
     assert.ok(!manifest.some((entry) => entry.package === name), `build-only package mislabeled: ${name}`);
