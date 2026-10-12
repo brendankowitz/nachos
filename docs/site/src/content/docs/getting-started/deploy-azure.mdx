@@ -18,5 +18,6 @@ Credential-bearing automation remains gated by
 [#13](https://github.com/brendankowitz/nachos/issues/13). Full dependency/license
 compliance is tracked separately in
 [#19](https://github.com/brendankowitz/nachos/issues/19).
-The docsite workflow is source-only: it does not upload Pages content, enable
-Pages, obtain OIDC credentials or deploy Azure.
+The docsite workflow's credential grant is bounded to GitHub Pages publication
+from `main` after its artifact gate passes; it does not deploy Azure or grant
+Azure credentials.

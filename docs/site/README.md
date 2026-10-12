@@ -147,10 +147,10 @@ and tree mutations before/during archiving. It never rebuilds audited output.
 
 ## Full audit and publication gates
 
-`.github/workflows/docs-site.yml` has independent source and full-license jobs.
-Both are source-only on main, PRs and manual dispatch, with read-only contents
-permission, pinned setup actions and credential-free checkout. There is **no**
-upload, Pages deployment, Pages environment, OIDC or live Pages-setting probe.
+`.github/workflows/docs-site.yml` has independent source, full-license and
+Pages-publication jobs. Source validation and the fail-closed full audit keep
+their existing behavior on main, PRs and manual dispatch, with read-only
+contents permission, pinned setup actions and credential-free checkout.
 
 The license job calls `Invoke-DocsSite.ps1 -Audit -PythonExecutable <selected-python>`.
 It performs one final site build and seal; prepares actual API/CLI publish
@@ -162,18 +162,43 @@ or inherited source-merge waiver is changed. Source CI can be green while the
 full audit remains honestly red.
 
 On audit success, the same tree is reverified, archived and checked again.
-The source-only job also exercises these local artifact mechanics without
-claiming license approval. Nothing is uploaded in either job.
+The source job also exercises these local artifact mechanics without claiming
+license approval.
 
-Before any separate release workflow is introduced:
+The separate `pages` job runs `Invoke-DocsSite.ps1 -Publication` on PRs and
+main. That mode performs one final build, seal and `verify-docs`, runs the full
+audit while preserving its exit code as visible evidence, then propagates only
+the structured `verify-publication` gate. The gate requires successful docs
+provenance for the same sealed dist, accepted distributed license decisions for
+every emitted docs package, no docs-provenance input errors, and the emitted
+`THIRD-PARTY-NOTICES.txt` to name every emitted package and embedded Pagefind
+component. Non-emitted tooling and API/CLI baseline audit errors remain visible
+in the summary instead of being hidden.
 
-- Review a Pages-only credential/execution profile under
-  [#13](https://github.com/brendankowitz/nachos/issues/13).
-- Resolve emitted-assets and full dependency compliance under
+Only `push` or `workflow_dispatch` on `refs/heads/main` uploads
+`docs/site/dist` with the SHA-pinned `actions/upload-pages-artifact` action.
+The `deploy` job needs both `source` and `pages`, runs only on that same main
+condition, has exactly `pages: write` and `id-token: write`, targets the
+`github-pages` environment, and contains only the SHA-pinned
+`actions/deploy-pages` step. To redeploy without a source change, run the
+**Documentation source CI** workflow manually from the `main` branch; PR and
+non-main manual runs exercise the gate but do not upload or deploy.
+
+`npm --prefix docs/site run notices` regenerates
+`docs/site/public/THIRD-PARTY-NOTICES.txt` from installed exact npm license
+files and committed `docs/site/notices` evidence for embedded Pagefind bundle
+components. `npm --prefix docs/site run notices -- --check` fails if the
+committed notices are stale.
+
+Before any future release workflow or artifact class is introduced:
+
+- Keep the Pages-only credential/execution profile bounded to
+  [#13](https://github.com/brendankowitz/nachos/issues/13); do not add blanket
+  workflow-level OIDC or Pages grants.
+- Resolve any new emitted-assets and full dependency compliance findings under
   [#19](https://github.com/brendankowitz/nachos/issues/19), including inherited
   Microsoft/distribution findings; a provenance pass is insufficient.
 - Independently review the source and final generated artifact.
 - Preserve build → seal → full audit → verify → archive → verify → upload
   ordering, with no rebuilding after audit.
-- Obtain owner authorization for Pages activation. Enabling a repository
-  setting alone cannot activate this workflow. Azure requires separate consent.
+- Azure requires separate consent.

@@ -173,6 +173,40 @@ unreviewed entries fail. Overrides can supply missing text or resolve metadata
 disagreement, but cannot erase observed components, declared AND obligations or
 prohibited licenses. **The checker never writes reviews or exceptions.**
 
+`eng/license-overrides.json` is also where the reviewed emitted-docsite package
+records live. Those records are exact-version npm identities only, with review
+evidence pointing at the owner-reviewed issue comment and exact locked tarball
+URLs, except Pagefind packages whose npm archives ship no license file and
+therefore point at the exact upstream `v1.5.2` license. The records do not
+approve non-emitted docs tooling and do not change the docs-generation exemption
+below.
+
+## Documentation publication gate
+
+The `verify-publication` command is a narrow release gate for the GitHub Pages
+site artifact:
+
+```powershell
+dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll verify-publication `
+  --repo . `
+  --report artifacts/ci/docs/audit/license-report.json `
+  --docs-report artifacts/ci/docs/provenance-report.json `
+  --site-output docs/site/dist
+```
+
+It requires the full audit report to contain docs provenance matching the
+standalone `verify-docs` report for the same immutable `dist`, requires every
+provenance package identity to have exactly one accepted npm decision in the
+`distributed` tier with only allowlisted selected license components, rejects
+docs-provenance input errors and errors attributed to emitted packages, and
+requires `dist/THIRD-PARTY-NOTICES.txt` to name every emitted package identity
+and embedded Pagefind bundle component recorded in `docs/site/notices`.
+
+This command intentionally does **not** turn the full audit green. Non-emitted
+docs tooling and unrelated API/CLI baseline findings remain in the report and
+the command prints a one-line count of remaining full-audit errors. The
+fail-closed full audit job still propagates the production audit exit code.
+
 ## Complete docs-output v1 consumer and docs-generation policy
 
 The [owner decision](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6084081762)
