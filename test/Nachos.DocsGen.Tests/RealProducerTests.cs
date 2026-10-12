@@ -27,6 +27,18 @@ public sealed class RealProducerTests
     }
 
     [Fact]
+    public void BuiltProducer_KeepsGeneratedProductsOutsideAutomationSources()
+    {
+        var artifacts = Path.Combine(Root, "artifacts", "docsgen");
+        File.Exists(Path.Combine(artifacts, "bin", Configuration, "net10.0", "DocsGen.dll")).ShouldBeTrue();
+        File.Exists(Path.Combine(artifacts, "obj", "project.assets.json")).ShouldBeTrue();
+        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
+            File.Exists(Path.Combine(artifacts, "obj", "options-xml", Configuration, name + ".xml")).ShouldBeTrue();
+        Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "bin")).ShouldBeFalse();
+        Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "obj")).ShouldBeFalse();
+    }
+
+    [Fact]
     public async Task GeneratesAllReferenceFiles_FromRealBuiltProducers()
     {
         var output = Path.Combine(Root, "test", "Nachos.DocsGen.Tests", "obj", "real-output");
@@ -80,7 +92,7 @@ public sealed class RealProducerTests
             SHA256.HashData(File.ReadAllBytes(Path.Combine(Root, cliPath)))));
         foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
         {
-            var xmlPath = $"eng/DocsGen/obj/options-xml/{Configuration}/{name}.xml";
+            var xmlPath = $"artifacts/docsgen/obj/options-xml/{Configuration}/{name}.xml";
             evidence[xmlPath]!.GetValue<string>().ShouldBe(Convert.ToHexStringLower(
                 SHA256.HashData(File.ReadAllBytes(Path.Combine(Root, xmlPath)))));
         }

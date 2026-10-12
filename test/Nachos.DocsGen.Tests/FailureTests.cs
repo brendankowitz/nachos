@@ -47,7 +47,7 @@ public sealed class FailureTests
     {
         using var directory = new TestDirectory();
         directory.PrepareOptions();
-        File.Delete(Path.Combine(directory.Root, $"eng/DocsGen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml"));
+        File.Delete(Path.Combine(directory.Root, $"artifacts/docsgen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml"));
         Should.Throw<InvalidDataException>(() => OptionsReference.Render(
             Inputs.Parse(["--configuration", RealProducerTests.Configuration, "--root", directory.Root])));
     }
@@ -57,7 +57,7 @@ public sealed class FailureTests
     {
         using var directory = new TestDirectory();
         directory.PrepareOptions();
-        directory.Write($"eng/DocsGen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml",
+        directory.Write($"artifacts/docsgen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml",
             Inputs.Utf8.GetBytes("<doc><assembly><name>Wrong</name></assembly><members/></doc>"));
         Should.Throw<InvalidDataException>(() => OptionsReference.Render(
             Inputs.Parse(["--configuration", RealProducerTests.Configuration, "--root", directory.Root])));
@@ -68,7 +68,7 @@ public sealed class FailureTests
     {
         using var directory = new TestDirectory();
         directory.PrepareOptions();
-        directory.Write($"eng/DocsGen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml",
+        directory.Write($"artifacts/docsgen/obj/options-xml/{RealProducerTests.Configuration}/Nachos.Core.xml",
             Inputs.Utf8.GetBytes("""<!DOCTYPE doc [<!ENTITY secret SYSTEM "file:///secret">]><doc>&secret;</doc>"""));
         Should.Throw<System.Xml.XmlException>(() => OptionsReference.Render(
             Inputs.Parse(["--configuration", RealProducerTests.Configuration, "--root", directory.Root])));

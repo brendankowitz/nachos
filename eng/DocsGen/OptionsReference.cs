@@ -26,7 +26,7 @@ internal static class OptionsReference
             var stem = $"{project}/bin/{inputs.Configuration}/net10.0/{name}";
             var binary = inputs.Read(stem + ".dll");
             if (!binary.AsSpan().SequenceEqual(File.ReadAllBytes(assembly.Location))) throw new InvalidDataException();
-            using var stream = new MemoryStream(inputs.Read($"eng/DocsGen/obj/options-xml/{inputs.Configuration}/{name}.xml"));
+            using var stream = new MemoryStream(inputs.Read($"artifacts/docsgen/obj/options-xml/{inputs.Configuration}/{name}.xml"));
             using var reader = XmlReader.Create(stream, new XmlReaderSettings
             {
                 DtdProcessing = DtdProcessing.Prohibit,

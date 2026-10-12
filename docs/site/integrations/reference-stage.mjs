@@ -28,7 +28,8 @@ export async function generateReferences(repository, site) {
   } catch {
     throw new Error('Mandatory reference generation requires all actual source producers.');
   }
-  const home = join(repository, 'eng/DocsGen/obj/site-home');
+  const artifacts = join(repository, 'artifacts/docsgen');
+  const home = join(artifacts, 'obj/site-home');
   await mkdir(home, { recursive: true });
   const env = {};
   for (const key of ['SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
@@ -69,7 +70,8 @@ export async function generateReferences(repository, site) {
     try {
       // Restored props can use $(UserProfile) for NuGetPackageRoot. Changing the
       // child home must not silently drop the API's build-time OpenAPI targets.
-      const assets = JSON.parse(await readFile(join(repository, dirname(project), 'obj/project.assets.json'), 'utf8'));
+      const intermediate = project === projects[2] ? join(artifacts, 'obj') : join(repository, dirname(project), 'obj');
+      const assets = JSON.parse(await readFile(join(intermediate, 'project.assets.json'), 'utf8'));
       packages = assets.project.restore.packagesPath;
       if (typeof packages !== 'string' || !isAbsolute(packages)) throw new Error('Invalid restored package root.');
     } catch (error) {
@@ -90,7 +92,7 @@ export async function generateReferences(repository, site) {
       catch { throw new Error('Mandatory reference generation: the API build did not emit fresh OpenAPI.'); }
     }
   }
-  if (run([join(repository, `eng/DocsGen/bin/${configuration}/net10.0/DocsGen.dll`),
+  if (run([join(artifacts, `bin/${configuration}/net10.0/DocsGen.dll`),
     '--root', repository, '--configuration', configuration]).status !== 0) {
     throw new Error('Mandatory reference generation failed.');
   }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { verifyProvenance } from '../integrations/output-evidence.mjs';
@@ -166,15 +166,33 @@ test('a late failing real build hook cannot leave success-shaped output evidence
   });
 });
 
-test('custom-domain base override also updates authored links', { timeout: 360_000 }, async () => {
-  await fixture(async (root) => {
-    const result = build(root, { DOCS_SITE: 'https://docs.example.org', DOCS_BASE: '/' });
-    assert.equal(result.status, 0, result.output);
-    const html = await readFile(join(root, 'dist', 'index.html'), 'utf8');
-    assert.ok(!html.includes('href="/nachos/'), 'authored links must follow the configured base');
-    assert.match(html, /href="\/concepts\/workspaces-and-peers\/"/);
+test('custom-domain build passes the documented Node and C# verification commands', { timeout: 570_000 }, async () => {
+  const env = { ...process.env, DOCS_SITE: 'https://docs.example.org', DOCS_BASE: '/' };
+  const checker = spawnSync('dotnet', ['build', 'eng/license-check', '-c', 'Release', '--no-restore',
+    '-m:1', '-nr:false', '-p:UseSharedCompilation=false'], {
+    cwd: resolve(site, '../..'), encoding: 'utf8', timeout: 120_000, env,
   });
+  assert.ifError(checker.error);
+  assert.equal(checker.status, 0, checker.stdout + checker.stderr);
+  const result = build(site, env);
+  assert.equal(result.status, 0, result.output);
+  const html = await readFile(join(site, 'dist', 'index.html'), 'utf8');
+  assert.ok(!html.includes('href="/nachos/'), 'authored links must follow the configured base');
+  assert.match(html, /href="\/concepts\/workspaces-and-peers\/"/);
 
+  const readme = await readFile(join(site, 'README.md'), 'utf8');
+  const instructions = readme.slice(readme.indexOf('After the final build:'));
+  const commands = [...instructions.matchAll(/```powershell\r?\n([\s\S]*?)```/g)];
+  assert.equal(commands.length, 2, 'execute both documented verifier blocks');
+  const verification = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true;\n"
+      + commands.map((match) => match[1]).join('\n')], {
+    cwd: resolve(site, '../..'), encoding: 'utf8', timeout: 120_000, env,
+  });
+  assert.ifError(verification.error);
+  assert.equal(verification.status, 0, verification.stdout + verification.stderr);
+  assert.match(verification.stdout, /Verified complete output provenance/);
+  assert.match(verification.stdout, /Docs provenance verified/);
 });
 
 test('site renders Mermaid with image/font tooling imports explicitly rejected', { timeout: 150_000 }, async () => {

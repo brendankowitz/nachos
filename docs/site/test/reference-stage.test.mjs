@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { digest } from '../integrations/output-evidence.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +62,13 @@ test('private-home generation replaces stale OpenAPI even on repeated no-op buil
       const actual = await readFile(api);
       assert.ok(JSON.parse(actual).paths['/v3/keys']);
       assert.deepEqual(await readFile(join(site, 'src/content/docs/reference/_generated/rest-api.json')), actual);
+    }
+    const configuration = process.env.DOCS_CONFIGURATION ?? 'Debug';
+    assert.ok((await stat(join(repository, `artifacts/docsgen/bin/${configuration}/net10.0/DocsGen.dll`))).isFile());
+    assert.ok((await stat(join(repository, 'artifacts/docsgen/obj/site-home'))).isDirectory());
+    for (const name of ['bin', 'obj']) {
+      await assert.rejects(stat(join(repository, 'eng/DocsGen', name)), { code: 'ENOENT' },
+        'reference generation must not recreate products or private homes under automation source');
     }
   } catch (error) {
     if (previous) await writeFile(api, previous);

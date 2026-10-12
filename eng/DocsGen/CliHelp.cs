@@ -16,7 +16,7 @@ internal static partial class CliHelp
         if (!File.Exists(assembly) || Path.GetExtension(assembly) != ".dll" ||
             timeout <= TimeSpan.Zero || timeout > TimeSpan.FromSeconds(30))
             throw new InvalidDataException();
-        var home = Path.Combine(repository, "eng", "DocsGen", "obj", "help-" + Guid.NewGuid().ToString("N"));
+        var home = Path.Combine(repository, "artifacts", "docsgen", "obj", "help-" + Guid.NewGuid().ToString("N"));
         Inputs.RejectLinks(home);
         Directory.CreateDirectory(home);
         try

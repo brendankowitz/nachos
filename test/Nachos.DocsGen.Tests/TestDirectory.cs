@@ -38,7 +38,7 @@ internal sealed class TestDirectory : IDisposable
         {
             var name = assembly.GetName().Name!;
             Write($"{project}/bin/{RealProducerTests.Configuration}/net10.0/{name}.dll", File.ReadAllBytes(assembly.Location));
-            var xml = $"eng/DocsGen/obj/options-xml/{RealProducerTests.Configuration}/{name}.xml";
+            var xml = $"artifacts/docsgen/obj/options-xml/{RealProducerTests.Configuration}/{name}.xml";
             Write(xml, File.ReadAllBytes(Path.Combine(RealProducerTests.Root, xml)));
         }
         Write("src/Nachos.Api/Program.cs", File.ReadAllBytes(Path.Combine(RealProducerTests.Root, "src/Nachos.Api/Program.cs")));
