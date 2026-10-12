@@ -176,9 +176,8 @@ public static class PublicationGate
         {
             return [];
         }
-        var records = JsonSerializer.Deserialize<EmbeddedComponent[]>(File.ReadAllText(path), JsonOptions.CaseInsensitive)
+        return JsonSerializer.Deserialize<EmbeddedComponent[]>(File.ReadAllText(path), JsonOptions.CaseInsensitive)
             ?? throw new InvalidDataException("Invalid embedded notice evidence manifest.");
-        return records.DistinctBy(record => (record.Component, record.Version)).ToArray();
     }
 
     private sealed record EmbeddedComponent(string Component, string Version, string Path, string Sha256);

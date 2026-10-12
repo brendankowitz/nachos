@@ -107,6 +107,21 @@ public sealed class PublicationGateTests : IDisposable
         Verify().Messages.ShouldContain(message => message.Contains("manifestSha256 mismatch", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void EveryEvidenceFileOfAComponentIsRequired()
+    {
+        WriteReport();
+        File.WriteAllText(Full("docs/site/notices/svelte-notice.txt"), "fixture svelte embedded notice\n");
+        Write(Full("docs/site/notices/evidence-manifest.json"), new[]
+        {
+            new { component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte.txt",
+                sha256 = "A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1" },
+            new { component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte-notice.txt",
+                sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData("fixture svelte embedded notice\n"u8)) }
+        });
+        Verify().Messages.ShouldContain(message => message.Contains("notices missing license text for Svelte@4.2.20", StringComparison.Ordinal));
+    }
+
     private PublicationGateResult Verify() => PublicationGate.Verify(new PublicationGateInputs(
         root, Full("license-report.json"), Full("docs-report.json"), Full("dist")));
 
