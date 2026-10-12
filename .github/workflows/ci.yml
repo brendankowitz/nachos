@@ -166,7 +166,7 @@ jobs:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
-          foreach ($producer in @('.github/scripts', 'test/conformance/typescript')) {
+          foreach ($producer in @('.github/scripts', 'test/conformance/typescript', 'docs/site')) {
             npm --prefix $producer ci --ignore-scripts --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll fetch-npm --lock "$producer/package-lock.json" --npm-archives artifacts/ci/npm-archives
