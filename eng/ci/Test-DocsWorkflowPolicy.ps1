@@ -2,6 +2,15 @@ param([Parameter(Mandatory)] [string] $YamlAssembly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$runnerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'Invoke-DocsSite.ps1'), [ref]$null, [ref]$null)
+$reservedAssignments = $runnerAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    $node.Left.VariablePath.UserPath -ieq 'HOME'
+}, $true)
+if ($reservedAssignments.Count) { throw 'The docs runner must not assign PowerShell read-only $HOME; use a named private-home variable.' }
 $fixture = Join-Path $root "artifacts/ci/docs-policy/$([guid]::NewGuid().ToString('N'))"
 $workflows = Join-Path $fixture '.github/workflows'
 New-Item -ItemType Directory -Path $workflows -Force | Out-Null

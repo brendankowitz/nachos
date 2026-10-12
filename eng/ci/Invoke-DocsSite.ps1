@@ -27,10 +27,10 @@ function Invoke-DocsCommand {
 $work = Join-Path $root 'artifacts/ci/docs'
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $env:NUGET_PACKAGES ??= Join-Path $work 'nuget'
-$home = Join-Path $work 'home'
-New-Item -ItemType Directory -Path $home -Force | Out-Null
+$privateHome = Join-Path $work 'home'
+New-Item -ItemType Directory -Path $privateHome -Force | Out-Null
 foreach ($name in @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'DOTNET_CLI_HOME')) {
-    Set-Item "Env:$name" $home
+    Set-Item "Env:$name" $privateHome
 }
 $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
 $env:MSBUILDDISABLENODEREUSE = '1'
@@ -39,7 +39,7 @@ $env:UseSharedCompilation = 'false'
 $env:NACHOS_DOCSGEN_TEST_ROOT = $root
 $env:DOCS_CONFIGURATION = 'Release'
 $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $root 'docs/site/.playwright'
-$nugetConfig = Join-Path $home 'NuGet.Config'
+$nugetConfig = Join-Path $privateHome 'NuGet.Config'
 '<configuration><packageSources><clear/><add key="nuget.org" value="https://api.nuget.org/v3/index.json"/></packageSources></configuration>' |
     Set-Content $nugetConfig -Encoding utf8NoBOM
 
