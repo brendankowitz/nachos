@@ -31,11 +31,17 @@ public sealed class RealProducerTests
     {
         var artifacts = Path.Combine(Root, "artifacts", "docsgen");
         File.Exists(Path.Combine(artifacts, "bin", Configuration, "net10.0", "DocsGen.dll")).ShouldBeTrue();
-        File.Exists(Path.Combine(artifacts, "obj", "project.assets.json")).ShouldBeTrue();
+        var restoreMetadata = Path.Combine(Root, "eng", "DocsGen", "obj");
+        File.Exists(Path.Combine(restoreMetadata, "project.assets.json")).ShouldBeTrue();
+        foreach (var name in new[] { "DocsGen.csproj.nuget.g.props", "DocsGen.csproj.nuget.g.targets", "project.nuget.cache", "DocsGen.csproj.nuget.dgspec.json" })
+            File.Exists(Path.Combine(restoreMetadata, name)).ShouldBeTrue();
         foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
             File.Exists(Path.Combine(artifacts, "obj", "options-xml", Configuration, name + ".xml")).ShouldBeTrue();
         Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "bin")).ShouldBeFalse();
-        Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "obj")).ShouldBeFalse();
+        Directory.EnumerateFiles(Path.Combine(Root, "eng", "DocsGen"), "*", SearchOption.AllDirectories)
+            .Where(file => new[] { ".dll", ".exe", ".so", ".dylib", ".node", ".pdb" }.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase))
+            .Select(file => Path.GetRelativePath(Root, file))
+            .ShouldBeEmpty();
     }
 
     [Fact]

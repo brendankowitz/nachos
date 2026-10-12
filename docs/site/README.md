@@ -110,7 +110,7 @@ Existing Astro MDX head-inject/404 priority warnings remain visible.
 `dist/.nachos/output-provenance.v1.json` has the fixed v1 schema:
 `schemaVersion`, `build`, `inputs`, `sources`, `outputs`.
 The producer records actually observed suppliers conservatively across rendered
-pages and search, not the entire installed dependency graph.
+pages, not the entire installed dependency graph.
 
 Every physical output, including hidden files, is checked; only the two named
 metadata files are excluded from their own output enumeration. Input/package
@@ -145,12 +145,12 @@ terminators, directory inventory and every regular file's bytes, including
 hidden metadata. It rejects links, special files, aliases, GNU/PAX extensions
 and tree mutations before/during archiving. It never rebuilds audited output.
 
-## Full audit and publication gates
+## Full audit and Pages publication
 
-`.github/workflows/docs-site.yml` has independent source and full-license jobs.
-Both are source-only on main, PRs and manual dispatch, with read-only contents
-permission, pinned setup actions and credential-free checkout. There is **no**
-upload, Pages deployment, Pages environment, OIDC or live Pages-setting probe.
+`.github/workflows/docs-site.yml` has independent source, full-license and
+Pages-publication jobs. Source validation and the fail-closed full audit keep
+their existing behavior on main, PRs and manual dispatch, with read-only
+contents permission, pinned setup actions and credential-free checkout.
 
 The license job calls `Invoke-DocsSite.ps1 -Audit -PythonExecutable <selected-python>`.
 It performs one final site build and seal; prepares actual API/CLI publish
@@ -162,18 +162,36 @@ or inherited source-merge waiver is changed. Source CI can be green while the
 full audit remains honestly red.
 
 On audit success, the same tree is reverified, archived and checked again.
-The source-only job also exercises these local artifact mechanics without
-claiming license approval. Nothing is uploaded in either job.
+The source job also exercises these local artifact mechanics without claiming
+license approval.
 
-Before any separate release workflow is introduced:
+The separate `pages` job runs `Invoke-DocsSite.ps1 -Publication` on PRs and
+main. Per the owner decision, docs-site library licensing is not a Pages
+publication gate. Publication mode installs the locked tools, performs one final
+site build, seals the tree, runs `verify-docs` for output provenance, archives
+the same sealed `dist`, and verifies the archive. It does not run the full audit,
+does not require Python, and does not run a docs licensing gate.
 
-- Review a Pages-only credential/execution profile under
-  [#13](https://github.com/brendankowitz/nachos/issues/13).
-- Resolve emitted-assets and full dependency compliance under
+Only `push` or `workflow_dispatch` on `refs/heads/main` uploads
+`docs/site/dist` with the SHA-pinned `actions/upload-pages-artifact` action.
+The `deploy` job needs both `source` and `pages`, runs only on that same main
+condition, has exactly `pages: write` and `id-token: write`, targets the
+`github-pages` environment, and contains only the SHA-pinned
+`actions/deploy-pages` step. To redeploy without a source change, run the
+**Documentation source CI** workflow manually from the `main` branch; PR and
+non-main manual runs exercise the provenance/archive checks but do not upload or
+deploy.
+
+Before any future release workflow or artifact class is introduced:
+
+- Keep the Pages-only credential/execution profile bounded to
+  [#13](https://github.com/brendankowitz/nachos/issues/13); do not add blanket
+  workflow-level OIDC or Pages grants.
+- Resolve any new emitted-assets and full dependency compliance findings under
   [#19](https://github.com/brendankowitz/nachos/issues/19), including inherited
   Microsoft/distribution findings; a provenance pass is insufficient.
 - Independently review the source and final generated artifact.
-- Preserve build → seal → full audit → verify → archive → verify → upload
-  ordering, with no rebuilding after audit.
-- Obtain owner authorization for Pages activation. Enabling a repository
-  setting alone cannot activate this workflow. Azure requires separate consent.
+- Preserve build → seal → verify → archive → verify → upload ordering for Pages,
+  with no rebuilding after verification. The separate full-audit job remains
+  fail-closed and informational for docs-site publication.
+- Azure requires separate consent.
