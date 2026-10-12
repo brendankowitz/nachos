@@ -88,7 +88,7 @@
     "version": "2.2.1",
     "sourceUrl": "https://static.crates.io/crates/minicbor/minicbor-2.2.1.crate",
     "path": "docs/site/notices/minicbor-2.2.1-LICENSE.md",
-    "sha256": "79860758B46E85F70A1762C21A8FFF4F2D220D89F9BDCA096E12AED15B9951C5"
+    "sha256": "8A1AF140FDFBF5AFD3DF27F7E662F989C5B963A300020DFAFCE42033CAE9E004"
   },
   {
     "component": "once_cell",

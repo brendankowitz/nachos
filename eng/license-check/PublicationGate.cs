@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace Nachos.LicenseCheck;
 
@@ -71,7 +72,7 @@ public static class PublicationGate
         }
         else
         {
-            var notices = File.ReadAllText(noticesPath);
+            var notices = NormalizeNotice(File.ReadAllText(noticesPath));
             if (report.DocsProvenance is not null)
             {
                 foreach (var package in report.DocsProvenance.Packages)
@@ -80,6 +81,10 @@ public static class PublicationGate
                     if (!notices.Contains(text, StringComparison.Ordinal))
                     {
                         messages.Add($"publication gate failed: notices missing {text}.");
+                    }
+                    foreach (var license in PackageLicenseTexts(inputs.RepoRoot, package))
+                    {
+                        RequireNoticeText(messages, notices, text, license);
                     }
                 }
             }
@@ -90,6 +95,14 @@ public static class PublicationGate
                 {
                     messages.Add($"publication gate failed: notices missing embedded component {text}.");
                 }
+                var source = Path.Combine(inputs.RepoRoot, component.Path.Replace('/', Path.DirectorySeparatorChar));
+                var expected = ReadNormalized(source);
+                var hash = Hash(expected);
+                if (!string.Equals(component.Sha256, hash, StringComparison.OrdinalIgnoreCase))
+                {
+                    messages.Add($"publication gate failed: evidence hash mismatch for embedded component {text}.");
+                }
+                RequireNoticeText(messages, notices, text, expected);
             }
         }
 
@@ -115,7 +128,48 @@ public static class PublicationGate
         || message.Contains("bundle-modules", StringComparison.OrdinalIgnoreCase)
         || message.Contains("Docs provenance", StringComparison.Ordinal);
 
-    private static IEnumerable<EmbeddedComponent> EmbeddedComponents(string repoRoot)
+    private static string[] PackageLicenseTexts(string repoRoot, DocsPackage package)
+    {
+        var directory = Path.Combine(repoRoot, "docs", "site", "node_modules", package.Package.Replace('/', Path.DirectorySeparatorChar));
+        if (!Directory.Exists(directory))
+        {
+            if (package.Package is "pagefind" or "@pagefind/default-ui" or "@pagefind/linux-x64" or "@pagefind/windows-x64")
+            {
+                return EmbeddedComponents(repoRoot).Where(record => record.Component == "Pagefind" && record.Version == package.Version)
+                    .Select(record => ReadNormalized(Path.Combine(repoRoot, record.Path.Replace('/', Path.DirectorySeparatorChar))))
+                    .ToArray();
+            }
+            return [];
+        }
+        return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+            .Where(file => LicenseName(Path.GetFileName(file)))
+            .Order(StringComparer.Ordinal)
+            .Select(ReadNormalized)
+            .ToArray();
+    }
+
+    private static void RequireNoticeText(List<string> messages, string notices, string identity, string expected)
+    {
+        if (!notices.Contains("SHA-256: " + Hash(expected), StringComparison.Ordinal) || !notices.Contains(expected, StringComparison.Ordinal))
+        {
+            messages.Add($"publication gate failed: notices missing license text for {identity}.");
+        }
+    }
+
+    private static string ReadNormalized(string path) => NormalizeNotice(File.ReadAllText(path));
+
+    private static string NormalizeNotice(string text) => text.ReplaceLineEndings("\n").TrimEnd() + "\n";
+
+    private static string Hash(string text) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
+
+    private static bool LicenseName(string name) => name.StartsWith("LICENSE", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("LICENCE", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("COPYING", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("NOTICE", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("COPYRIGHT", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "UNLICENSE", StringComparison.OrdinalIgnoreCase);
+
+    private static EmbeddedComponent[] EmbeddedComponents(string repoRoot)
     {
         var path = Path.Combine(repoRoot, "docs", "site", "notices", "evidence-manifest.json");
         if (!File.Exists(path))
@@ -124,8 +178,8 @@ public static class PublicationGate
         }
         var records = JsonSerializer.Deserialize<EmbeddedComponent[]>(File.ReadAllText(path), JsonOptions.CaseInsensitive)
             ?? throw new InvalidDataException("Invalid embedded notice evidence manifest.");
-        return records.DistinctBy(record => (record.Component, record.Version));
+        return records.DistinctBy(record => (record.Component, record.Version)).ToArray();
     }
 
-    private sealed record EmbeddedComponent(string Component, string Version);
+    private sealed record EmbeddedComponent(string Component, string Version, string Path, string Sha256);
 }

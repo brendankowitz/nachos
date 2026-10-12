@@ -16,9 +16,27 @@ public sealed class PublicationGateTests : IDisposable
         File.WriteAllText(Full("eng/license-check/allowlist.json"), "[\"MIT\"]");
         Write(Full("docs-report.json"), docs);
         Directory.CreateDirectory(Full("dist"));
-        File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), "## astro@7.3.5\n## Svelte@4.2.20\n");
+        Directory.CreateDirectory(Full("docs/site/node_modules/astro"));
+        File.WriteAllText(Full("docs/site/node_modules/astro/package.json"), """{"name":"astro","version":"7.3.5"}""");
+        File.WriteAllText(Full("docs/site/node_modules/astro/LICENSE"), "fixture astro license text\n");
+        File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), """
+            ## astro@7.3.5
+            SHA-256: B8469086899CC3B0047C20F389B8782A1E3E6F0D62C3F0A37D03EB06E7B9FBA9
+
+            fixture astro license text
+
+            ## Svelte@4.2.20
+            SHA-256: A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1
+
+            fixture svelte license text
+            """.ReplaceLineEndings("\n"));
         Directory.CreateDirectory(Full("docs/site/notices"));
-        Write(Full("docs/site/notices/evidence-manifest.json"), new[] { new { component = "Svelte", version = "4.2.20" } });
+        File.WriteAllText(Full("docs/site/notices/svelte.txt"), "fixture svelte license text\n");
+        Write(Full("docs/site/notices/evidence-manifest.json"), new[] { new
+        {
+            component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte.txt",
+            sha256 = "A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1"
+        } });
     }
 
     [Fact]
@@ -72,6 +90,14 @@ public sealed class PublicationGateTests : IDisposable
         WriteReport();
         File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), "## Svelte@4.2.20\n");
         Verify().Messages.ShouldContain(message => message.Contains("notices missing astro@7.3.5", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void NoticesWithOnlyHeadingsFail()
+    {
+        WriteReport();
+        File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), "## astro@7.3.5\n## Svelte@4.2.20\n");
+        Verify().Messages.ShouldContain(message => message.Contains("notices missing license text for astro@7.3.5", StringComparison.Ordinal));
     }
 
     [Fact]
