@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/nachos-hero.jpg" alt="Nachos logo: a gold chip linking three teal memory nodes" width="280"/>
+  <img src="docs/assets/nachos-hero.png" alt="Nachos logo: a gold chip linking three teal memory nodes" width="280"/>
 
   <h1>Nachos</h1>
   <p>
