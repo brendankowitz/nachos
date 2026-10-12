@@ -31,7 +31,7 @@ export default defineConfig({
       customCss: ['./src/styles/custom.css'],
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/brendankowitz/nachos' }],
       expressiveCode: {},
-      components: { ContentPanel: './src/components/ReferenceContentPanel.astro' },
+      components: { MarkdownContent: './src/components/ReferenceMarkdownContent.astro' },
       sidebar: [
         { label: 'Getting started', items: [{ autogenerate: { directory: 'getting-started' } }] },
         { label: 'Concepts', items: [{ autogenerate: { directory: 'concepts' } }] },

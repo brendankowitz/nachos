@@ -123,14 +123,14 @@ After the final build:
 ```powershell
 $env:DOCS_SITE ??= 'https://brendankowitz.github.io'
 $env:DOCS_BASE ??= '/nachos'
-node docs\site\scripts\verify-provenance.mjs
-node .github\scripts\docs-artifact.mjs seal . artifacts\ci\docs\tree-seal.json
+node docs/site/scripts/verify-provenance.mjs
+node .github/scripts/docs-artifact.mjs seal . artifacts/ci/docs/tree-seal.json
 ```
 
 The C# `verify-docs` command is a **protocol check, not a license audit**:
 
 ```powershell
-dotnet eng\license-check\bin\Release\net10.0\Nachos.LicenseCheck.dll verify-docs --site-root docs/site --asset-root docs/assets --npm-root docs/site --output-root docs/site/dist --site $env:DOCS_SITE --base $env:DOCS_BASE --report artifacts/ci/docs/provenance-report.json
+dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll verify-docs --site-root docs/site --asset-root docs/assets --npm-root docs/site --output-root docs/site/dist --site $env:DOCS_SITE --base $env:DOCS_BASE --report artifacts/ci/docs/provenance-report.json
 ```
 
 Build that checker via `dotnet build test/Nachos.LicenseCheck.Tests -c Release`

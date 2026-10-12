@@ -76,6 +76,10 @@ test('real references build with rendered Mermaid, search and exact distribution
   const api = await readFile(join(site, 'dist/reference/rest-api/operations/v3admingrants/index.html'), 'utf8');
   assert.match(api, /204/);
   assert.match(api, /not-assessed/);
+  for (const content of [api, await readFile(join(site, 'dist/reference/rest-api/index.html'), 'utf8')]) {
+    assert.equal((content.match(/aria-label="Declaration evidence only"/g) ?? []).length, 1);
+    assert.match(content, /conformance\.<\/strong>\s+SDK conformance/);
+  }
   assert.ok(evidence.sources.some((entry) => entry.package === 'starlight-openapi'));
   for (const module of ['index.ts', 'libs/vite.ts']) {
     assert.ok(evidence.sources.some((entry) => entry.path === `npm/node_modules/starlight-openapi/${module}`),
