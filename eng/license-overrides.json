@@ -1,0 +1,167 @@
+[
+  {
+    "ecosystem": "npm",
+    "package": "astro",
+    "version": "7.3.5",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/astro/-/astro-7.3.5.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@astrojs/sitemap",
+    "version": "3.7.4",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@astrojs/sitemap/-/sitemap-3.7.4.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@astrojs/starlight",
+    "version": "0.42.4",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@astrojs/starlight/-/starlight-0.42.4.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@expressive-code/core",
+    "version": "0.44.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@expressive-code/core/-/core-0.44.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@expressive-code/plugin-frames",
+    "version": "0.44.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@expressive-code/plugin-frames/-/plugin-frames-0.44.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@expressive-code/plugin-shiki",
+    "version": "0.44.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@expressive-code/plugin-shiki/-/plugin-shiki-0.44.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@expressive-code/plugin-text-markers",
+    "version": "0.44.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/@expressive-code/plugin-text-markers/-/plugin-text-markers-0.44.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "astro-expressive-code",
+    "version": "0.44.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/astro-expressive-code/-/astro-expressive-code-0.44.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "mermaid",
+    "version": "11.17.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/mermaid/-/mermaid-11.17.2.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "starlight-openapi",
+    "version": "0.27.0",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/starlight-openapi/-/starlight-openapi-0.27.0.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "vite",
+    "version": "8.3.1",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://registry.npmjs.org/vite/-/vite-8.3.1.tgz"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "pagefind",
+    "version": "1.5.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://github.com/Pagefind/pagefind/blob/v1.5.2/LICENSE"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@pagefind/default-ui",
+    "version": "1.5.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://github.com/Pagefind/pagefind/blob/v1.5.2/LICENSE"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@pagefind/linux-x64",
+    "version": "1.5.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://github.com/Pagefind/pagefind/blob/v1.5.2/LICENSE"
+  },
+  {
+    "ecosystem": "npm",
+    "package": "@pagefind/windows-x64",
+    "version": "1.5.2",
+    "license": "MIT",
+    "reviewers": [
+      "Cedar"
+    ],
+    "review": "https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981",
+    "evidenceUrl": "https://github.com/Pagefind/pagefind/blob/v1.5.2/LICENSE"
+  }
+]
