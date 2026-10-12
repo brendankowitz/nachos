@@ -23,22 +23,40 @@ try {
     & (Join-Path $PSScriptRoot 'Test-WorkflowPolicy.ps1') -YamlAssembly $YamlAssembly -SourceRoot $fixture
     $count = 0
     foreach ($mutation in @(
-        @{ Name='write permission'; From='contents: read'; To='contents: write' },
-        @{ Name='OIDC permission'; From='contents: read'; To="contents: read`n  id-token: write" },
-        @{ Name='upload action'; From='actions/setup-node@'; To='actions/upload-artifact@' },
-        @{ Name='retained credentials'; From='persist-credentials: false'; To='persist-credentials: true' },
-        @{ Name='job permissions'; From="  source:`n"; To="  source:`n    permissions: write-all`n" },
-        @{ Name='hidden audit failure'; From='run: ./eng/ci/Invoke-DocsSite.ps1 -Audit'; To="continue-on-error: true`n        run: ./eng/ci/Invoke-DocsSite.ps1 -Audit" }
+        @{ Name='workflow pages permission'; File='docs-site.yml'; From='permissions:'; To="permissions:`n  pages: write" },
+        @{ Name='workflow OIDC permission'; File='docs-site.yml'; From='permissions:'; To="permissions:`n  id-token: write" },
+        @{ Name='source job pages permission'; File='docs-site.yml'; From="  source:`n"; To="  source:`n    permissions:`n      pages: write`n" },
+        @{ Name='pages job OIDC permission'; File='docs-site.yml'; From="  pages:`n    name: Publication gate and Pages artifact"; To="  pages:`n    name: Publication gate and Pages artifact`n    permissions:`n      id-token: write" },
+        @{ Name='deploy extra permission'; File='docs-site.yml'; From="      id-token: write`n"; To="      id-token: write`n      contents: write`n" },
+        @{ Name='deploy missing environment'; File='docs-site.yml'; From="    environment:`n      name: github-pages`n      url: `${{ steps.deployment.outputs.page_url }}`n"; To='' },
+        @{ Name='deploy unguarded if'; File='docs-site.yml'; From="    if: `${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}`n"; To='' },
+        @{ Name='deploy checkout step'; File='docs-site.yml'; From="    steps:`n      - id: deployment"; To="    steps:`n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`n      - id: deployment" },
+        @{ Name='deploy run step'; File='docs-site.yml'; From="    steps:`n      - id: deployment"; To="    steps:`n      - run: echo no`n      - id: deployment" },
+        @{ Name='tag-pinned deploy'; File='docs-site.yml'; From='actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346'; To='actions/deploy-pages@v5.0.1' },
+        @{ Name='tag-pinned pages upload'; File='docs-site.yml'; From='actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9'; To='actions/upload-pages-artifact@v5.0.0' },
+        @{ Name='pages upload missing condition'; File='docs-site.yml'; From="        if: `${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}`n        with:"; To='        with:' },
+        @{ Name='source upload-pages action'; File='docs-site.yml'; From='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'; To='actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9' },
+        @{ Name='deploy needs source only'; File='docs-site.yml'; From='needs: [source, pages]'; To='needs: source' },
+        @{ Name='generic upload action'; File='docs-site.yml'; From='actions/setup-node@820762786026740c76f36085b0efc47a31fe5020'; To='actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08' },
+        @{ Name='ci workflow pages permission'; File='ci.yml'; From='contents: read'; To="contents: read`n  pages: write" },
+        @{ Name='docs validate OIDC permission'; File='docs-validate.yml'; From='contents: read'; To="contents: read`n  id-token: write" },
+        @{ Name='retained credentials'; File='docs-site.yml'; From='persist-credentials: false'; To='persist-credentials: true' },
+        @{ Name='hidden audit failure'; File='docs-site.yml'; From='run: ./eng/ci/Invoke-DocsSite.ps1 -Audit'; To="continue-on-error: true`n        run: ./eng/ci/Invoke-DocsSite.ps1 -Audit" }
     )) {
+        Copy-Item (Join-Path $root ".github/workflows/$($mutation.File)") (Join-Path $workflows $mutation.File) -Force
         $normalized = $original.Replace("`r`n", "`n")
+        if ($mutation.File -ne 'docs-site.yml') {
+            $normalized = (Get-Content (Join-Path $workflows $mutation.File) -Raw).Replace("`r`n", "`n")
+        }
         if (-not $normalized.Contains($mutation.From)) { throw "Mutation target missing: $($mutation.Name)" }
-        $normalized.Replace($mutation.From, $mutation.To) | Set-Content $path -Encoding utf8NoBOM
+        $normalized.Replace($mutation.From, $mutation.To) | Set-Content (Join-Path $workflows $mutation.File) -Encoding utf8NoBOM
         $rejected = $false
         try {
             & (Join-Path $PSScriptRoot 'Test-WorkflowPolicy.ps1') -YamlAssembly $YamlAssembly -SourceRoot $fixture | Out-Null
         }
         catch { $rejected = $true }
         if (-not $rejected) { throw "Source-only policy accepted $($mutation.Name)." }
+        Copy-Item (Join-Path $root ".github/workflows/$($mutation.File)") (Join-Path $workflows $mutation.File) -Force
         $count++
     }
     Write-Host "Docs source-only policy: $count forbidden-workflow mutations rejected."

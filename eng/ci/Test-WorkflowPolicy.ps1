@@ -11,6 +11,26 @@ function Child {
     if (-not $Node.Children.ContainsKey($keyNode)) { throw "Missing YAML key: $Key" }
     return ,$Node.Children[$keyNode]
 }
+function HasKey {
+    param($Node, [string] $Key)
+    return $Node.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new($Key))
+}
+function Scalar {
+    param($Node, [string] $Key)
+    return (Child $Node $Key).Value
+}
+function Assert-TopPermissions {
+    param($Document, [string] $File)
+    $permissions = Child $Document 'permissions'
+    if ($permissions.Children.Count -ne 1 -or (Scalar $permissions 'contents') -ne 'read') {
+        throw "$File workflow permissions must be exactly contents: read."
+    }
+}
+function Assert-MainOnlyExpression {
+    param([string] $Value, [string] $Context)
+    $expected = '${{ (github.event_name == ''push'' || github.event_name == ''workflow_dispatch'') && github.ref == ''refs/heads/main'' }}'
+    if ($Value -cne $expected) { throw "$Context must be main-only push/workflow_dispatch." }
+}
 function Assert-Policy {
     param($Document)
     $events = Child $Document 'on'
@@ -57,29 +77,81 @@ foreach ($file in @('ci.yml', 'docs-validate.yml', 'docs-site.yml')) {
     if ($yaml.Documents.Count -ne 1) { throw 'Expected one YAML document.' }
     $root = $yaml.Documents[0].RootNode
     $total += Assert-Policy $root
+    Assert-TopPermissions $root $file
     if ($file -eq 'docs-site.yml') {
-        $permissions = Child $root 'permissions'
-        if ($permissions.Children.Count -ne 1 -or (Child $permissions 'contents').Value -ne 'read') {
-            throw 'Documentation CI must have only contents: read.'
-        }
-        foreach ($job in (Child $root 'jobs').Children.Values) {
-            foreach ($key in @('permissions', 'environment', 'continue-on-error', 'uses')) {
-                if ($job.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new($key))) {
-                    throw "Documentation job cannot set $key."
+        $jobs = Child $root 'jobs'
+        foreach ($entry in $jobs.Children.GetEnumerator()) {
+            $jobName = $entry.Key.Value
+            $job = $entry.Value
+            if ($jobName -in @('source', 'licenses')) {
+                foreach ($key in @('permissions', 'environment', 'continue-on-error', 'uses')) {
+                    if (HasKey $job $key) { throw "Documentation source/audit job cannot set $key." }
                 }
             }
+            elseif ($jobName -eq 'pages') {
+                $permissions = Child $job 'permissions'
+                if ($permissions.Children.Count -ne 1 -or (Scalar $permissions 'contents') -ne 'read') {
+                    throw 'Pages artifact job permissions must be exactly contents: read.'
+                }
+                if (HasKey $job 'environment' -or HasKey $job 'continue-on-error' -or HasKey $job 'uses') {
+                    throw 'Pages artifact job cannot set environment, continue-on-error or uses.'
+                }
+                $needs = Child $job 'needs'
+                if ($needs.Value -ne 'source') { throw 'Pages artifact job must need source.' }
+            }
+            elseif ($jobName -eq 'deploy') {
+                Assert-MainOnlyExpression (Scalar $job 'if') 'Deploy job'
+                $needs = Child $job 'needs'
+                if ($needs -isnot [YamlDotNet.RepresentationModel.YamlSequenceNode] -or
+                    ($needs.Children.Value | Sort-Object) -join ',' -cne 'pages,source') {
+                    throw 'Deploy job must need both source and pages.'
+                }
+                $permissions = Child $job 'permissions'
+                if ($permissions.Children.Count -ne 2 -or (Scalar $permissions 'pages') -ne 'write' -or
+                    (Scalar $permissions 'id-token') -ne 'write') {
+                    throw 'Deploy job permissions must be exactly pages: write and id-token: write.'
+                }
+                $environment = Child $job 'environment'
+                if ((Scalar $environment 'name') -ne 'github-pages') { throw 'Deploy job must target github-pages environment.' }
+                $concurrency = Child $job 'concurrency'
+                if ((Scalar $concurrency 'group') -ne 'pages' -or (Scalar $concurrency 'cancel-in-progress') -ne 'false') {
+                    throw 'Deploy job must use non-canceling Pages concurrency.'
+                }
+                $steps = Child $job 'steps'
+                if ($steps.Children.Count -ne 1) { throw 'Deploy job must contain exactly one step.' }
+                $step = $steps.Children[0]
+                if (HasKey $step 'run' -or HasKey $step 'with' -or HasKey $step 'continue-on-error') {
+                    throw 'Deploy step cannot run commands, configure inputs or hide failures.'
+                }
+                if ((Scalar $step 'id') -ne 'deployment') { throw 'Deploy step id must be deployment.' }
+                $action = Scalar $step 'uses'
+                if ($action -cnotmatch '^actions/deploy-pages@[a-f0-9]{40}$') {
+                    throw "Deploy job must use SHA-pinned actions/deploy-pages: $action"
+                }
+                continue
+            }
+            else { throw "Unexpected documentation workflow job: $jobName" }
             foreach ($step in (Child $job 'steps').Children) {
                 if ($step.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new('continue-on-error'))) {
                     throw 'Documentation steps cannot hide failures.'
                 }
                 if ($step.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new('uses'))) {
                     $action = (Child $step 'uses').Value
-                    if ($action -cnotmatch '^actions/(checkout|setup-dotnet|setup-node|setup-python)@[a-f0-9]{40}$') {
+                    if ($action -cmatch '^actions/upload-pages-artifact@') {
+                        if ($jobName -ne 'pages' -or $action -cnotmatch '^actions/upload-pages-artifact@[a-f0-9]{40}$') {
+                            throw "Upload Pages artifact is only allowed as a SHA-pinned pages job action: $action"
+                        }
+                        Assert-MainOnlyExpression (Scalar $step 'if') 'Upload Pages artifact step'
+                    }
+                    elseif ($action -cnotmatch '^actions/(checkout|setup-dotnet|setup-node|setup-python)@[a-f0-9]{40}$') {
                         throw "Documentation CI only permits SHA-pinned source setup actions: $action"
                     }
                     if ($action.StartsWith('actions/checkout@') -and
-                        (Child (Child $step 'with') 'persist-credentials').Value -ne 'false') {
+                        (Scalar (Child $step 'with') 'persist-credentials') -ne 'false') {
                         throw 'Documentation checkout must not persist credentials.'
+                    }
+                    if ($action -cmatch '^actions/(upload-artifact|download-artifact|deploy-pages)@') {
+                        throw "Unexpected upload/deploy action outside the reviewed Pages profile: $action"
                     }
                 }
             }

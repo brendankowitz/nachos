@@ -17,8 +17,9 @@ defaults:
   run:
     shell: pwsh
 
-# No artifact upload, Pages environment, deploy job, or OIDC. Activation needs
-# separately reviewed credential and emitted-asset license gates (#13 and #19).
+# Source validation and fail-closed full audit remain unchanged. The pages job
+# gates the emitted static site before uploading only from main; deployment is
+# isolated to the GitHub Pages environment with the minimal Pages/OIDC grant.
 jobs:
   source:
     name: References, site, links and provenance (${{ matrix.os }})
@@ -63,3 +64,51 @@ jobs:
         env:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
         run: ./eng/ci/Invoke-DocsSite.ps1 -Audit -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+
+  pages:
+    name: Publication gate and Pages artifact
+    runs-on: ubuntu-24.04
+    needs: source
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        id: python
+        with:
+          python-version: '3.13'
+      - name: Build, audit, gate, seal and verify Pages artifact
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+        with:
+          path: docs/site/dist
+
+  deploy:
+    name: Deploy GitHub Pages
+    runs-on: ubuntu-24.04
+    needs: [source, pages]
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
