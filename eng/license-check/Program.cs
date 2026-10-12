@@ -8,12 +8,13 @@ try
     var fetch = command is "fetch-npm" or "fetch-pnpm";
     var inventory = command == "inventory-pnpm";
     var verifyDocs = command == "verify-docs";
+    var verifyPublication = command == "verify-publication";
     var projectPython = command == "project-python";
-    var known = new HashSet<string>(verifyDocs ? ["--site-root", "--asset-root", "--npm-root", "--output-root", "--site", "--base", "--report"]
+    var known = new HashSet<string>(verifyPublication ? ["--repo", "--report", "--docs-report", "--site-output"] : verifyDocs ? ["--site-root", "--asset-root", "--npm-root", "--output-root", "--site", "--base", "--report"]
         : fetch ? ["--lock", "--npm-archives"] : inventory ? ["--lock", "--report"] : projectPython ? ["--lock"]
         : ["--repo", "--nuget-inventory", "--nuget-cache", "--api-publish", "--cli-publish", "--python-archives", "--npm-archives",
             "--docs-output", "--docs-site", "--docs-base", "--report"], StringComparer.Ordinal);
-    for (var index = fetch || inventory || verifyDocs || projectPython ? 1 : 0; index < args.Length; index += 2)
+    for (var index = fetch || inventory || verifyDocs || verifyPublication || projectPython ? 1 : 0; index < args.Length; index += 2)
     {
         if (!known.Contains(args[index]) || index + 1 >= args.Length || !options.TryAdd(args[index], args[index + 1]))
         {
@@ -40,6 +41,17 @@ try
         }));
         Console.WriteLine($"Docs provenance verified: {verified.OutputCount} outputs, {verified.InputCount} inputs, {verified.SourceCount} sources, {verified.Packages.Count} package identities. Not a license audit or release clearance.");
         return 0;
+    }
+    if (verifyPublication)
+    {
+        var result = PublicationGate.Verify(new PublicationGateInputs(
+            options.TryGetValue("--repo", out var repo) ? Path.GetFullPath(repo) : Directory.GetCurrentDirectory(),
+            Required("--report"), Required("--docs-report"), Required("--site-output")));
+        foreach (var message in result.Messages)
+        {
+            (result.ExitCode == 0 ? Console.Out : Console.Error).WriteLine(message);
+        }
+        return result.ExitCode;
     }
     if (command is "fetch-pnpm" or "inventory-pnpm")
     {
@@ -91,3 +103,6 @@ catch (Exception exception) when (exception is InvalidDataException or IOExcepti
     Console.Error.WriteLine("LICENSE INPUT ERROR: " + exception.Message);
     return 2;
 }
+
+
+
