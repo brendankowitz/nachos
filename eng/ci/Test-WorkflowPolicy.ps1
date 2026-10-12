@@ -50,13 +50,41 @@ function Assert-Policy {
 }
 $total = 0
 $mutants = 0
-foreach ($file in @('ci.yml', 'docs-validate.yml')) {
+foreach ($file in @('ci.yml', 'docs-validate.yml', 'docs-site.yml')) {
     $reader = [IO.StringReader]::new((Get-Content (Join-Path $SourceRoot ".github/workflows/$file") -Raw))
     $yaml = [YamlDotNet.RepresentationModel.YamlStream]::new()
     try { $yaml.Load($reader) } finally { $reader.Dispose() }
     if ($yaml.Documents.Count -ne 1) { throw 'Expected one YAML document.' }
     $root = $yaml.Documents[0].RootNode
     $total += Assert-Policy $root
+    if ($file -eq 'docs-site.yml') {
+        $permissions = Child $root 'permissions'
+        if ($permissions.Children.Count -ne 1 -or (Child $permissions 'contents').Value -ne 'read') {
+            throw 'Documentation CI must have only contents: read.'
+        }
+        foreach ($job in (Child $root 'jobs').Children.Values) {
+            foreach ($key in @('permissions', 'environment', 'continue-on-error', 'uses')) {
+                if ($job.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new($key))) {
+                    throw "Documentation job cannot set $key."
+                }
+            }
+            foreach ($step in (Child $job 'steps').Children) {
+                if ($step.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new('continue-on-error'))) {
+                    throw 'Documentation steps cannot hide failures.'
+                }
+                if ($step.Children.ContainsKey([YamlDotNet.RepresentationModel.YamlScalarNode]::new('uses'))) {
+                    $action = (Child $step 'uses').Value
+                    if ($action -cnotmatch '^actions/(checkout|setup-dotnet|setup-node|setup-python)@[a-f0-9]{40}$') {
+                        throw "Documentation CI only permits SHA-pinned source setup actions: $action"
+                    }
+                    if ($action.StartsWith('actions/checkout@') -and
+                        (Child (Child $step 'with') 'persist-credentials').Value -ne 'false') {
+                        throw 'Documentation checkout must not persist credentials.'
+                    }
+                }
+            }
+        }
+    }
     Write-Host "PASS ${file}: parsed main/PR/manual event and concurrency scenarios"
     $branchNode = (Child (Child (Child $root 'on') 'push') 'branches').Children[0]
     $cancelNode = Child (Child $root 'concurrency') 'cancel-in-progress'

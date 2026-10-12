@@ -1,0 +1,44 @@
+---
+title: Self-host with SQL Server
+sidebar:
+  order: 4
+---
+
+The source API and SQL provider exist. No published Nachos container image or
+production-ready deployment package is promised.
+
+## Prepare the database separately
+
+The repository contains Azure SQL and SQL Server 2025 database projects plus
+the schema CLI. Prepare the database using the matching dacpac and a principal
+authorized for schema changes; use a narrower runtime identity afterwards.
+Read [Schema upgrades](/nachos/guides/schema-upgrades/) before changing any data.
+Full-text search is required for the SQL search path. The repository has an FTS
+image recipe under `eng/docker/mssql-fts`; do not assume the stock SQL image
+selected by AppHost includes FTS.
+
+## Configure the source API
+
+The canonical connection key is `Nachos:SqlServer:ConnectionString`; Aspire's
+`ConnectionStrings:nachos` is the fallback. If both exist, the canonical key
+wins. If neither exists, the API selects in-memory storage. A blank, malformed
+or database-less selected value fails startup rather than silently falling back.
+
+Set the connection privately using configuration or the environment path
+`Nachos__SqlServer__ConnectionString`. Do not put it in a tracked example.
+Configure [authentication](/nachos/guides/auth/) before starting an exposed host.
+The pure defaults, including the schema-deployment switch, appear in
+[Options](/nachos/reference/options/).
+
+Build and run the source API with .NET 10:
+
+```powershell
+dotnet build src\Nachos.Api -c Release
+dotnet run --project src\Nachos.Api -c Release --no-build --no-launch-profile
+```
+
+Production hosting still needs TLS, secret rotation, backups, monitoring and
+reviewed dependency redistribution. Docsite CI does not start SQL or deploy
+schemas. Existing SQL integration CI tests the provider against Docker.
+Extreme filters and repetitive full-text searches have documented limitations
+in [#18](https://github.com/brendankowitz/nachos/issues/18).

@@ -1,0 +1,69 @@
+---
+title: Quick start
+sidebar:
+  order: 2
+---
+
+Use **.NET 10** from `global.json`. These commands run from the repository root
+in PowerShell 7. No Docker or Azure is needed for this local, volatile API demo.
+Use a clean shell without SQL connection strings or Azure configuration.
+
+## Run the local API
+
+This demo intentionally disables authentication **only in Development**, binds
+to loopback and uses in-memory storage. Do not use it with real user data or on
+a shared network. SQL connection settings must be absent, not blank.
+
+```powershell
+dotnet build src\Nachos.Api -c Release
+$env:ASPNETCORE_ENVIRONMENT = 'Development'
+$env:Nachos__Auth__Enabled = 'false'
+dotnet run --project src\Nachos.Api -c Release --no-build --no-launch-profile -- --urls http://127.0.0.1:5080
+```
+
+In another terminal, create a workspace:
+
+```powershell
+$base = 'http://127.0.0.1:5080'
+Invoke-RestMethod "$base/v3/workspaces" -Method Post -ContentType 'application/json' -Body '{"id":"demo"}'
+```
+
+The response has `id: demo`. Stop the API with Ctrl+C; in-memory data disappears.
+Remove the demo override from the first shell when finished:
+
+```powershell
+Remove-Item Env:Nachos__Auth__Enabled
+```
+
+For an authenticated source run, configure a signing ring and use an issued
+bearer key as described in [Authentication](/nachos/guides/auth/).
+The existing conformance launchers create an isolated, authenticated loopback
+API with ephemeral signing material; see [SDK smoke tests](/nachos/guides/honcho-sdks/).
+
+## Aspire and SQL
+
+With Docker available, the source AppHost orchestrates a SQL container and API:
+
+```powershell
+$env:DOTNET_ENVIRONMENT = 'Development'
+dotnet run --project src\Nachos.AppHost
+```
+
+This is a separate, heavier path: Development run mode creates local containers,
+configures signing keys and initializes the local schema. It is not run by docsite CI. See
+[Self-hosting](/nachos/getting-started/self-host/) for SQL prerequisites.
+
+## Build this site
+
+With Node **24 LTS**, install the pinned lock and Chromium, then run checks:
+
+```powershell
+npm --prefix docs\site ci --ignore-scripts
+npm --prefix docs\site run browser:install
+npm --prefix docs\site run check
+```
+
+Every build generates real references before taking its provenance snapshot.
+The output is `docs/site/dist`. These commands do not enable Pages or deploy
+anything. Maintainer details are in
+[docs/site/README.md](https://github.com/brendankowitz/nachos/blob/main/docs/site/README.md).

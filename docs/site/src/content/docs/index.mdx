@@ -1,0 +1,69 @@
+---
+title: Memory for stateful agents
+description: Build the Nachos source MVP, inspect its references, and understand what remains staged.
+template: splash
+hero:
+  tagline: A .NET source MVP for agent memory. CRUD today; reasoning and durable memory processing are still ahead.
+  image:
+    file: ../../../../assets/nachos-logo.svg
+  actions:
+    - text: Read the approved design
+      link: https://github.com/brendankowitz/nachos/blob/main/docs/superpowers/specs/2026-10-07-nachos-design.md
+      icon: external
+    - text: Read the source
+      link: https://github.com/brendankowitz/nachos
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## A foundation you can inspect
+
+Nachos is an early, clean-room reference implementation for agent memory.
+The source MVP includes workspace, peer, session, membership and message operations,
+NachosKey/Entra authentication, a .NET client, in-memory and SQL providers.
+This documentation covers the current source and references generated from the
+actual API, CLI and option types before each site build.
+It is **not** a released memory service, SDK, or deployment package.
+Start with the [introduction](/nachos/getting-started/introduction/).
+Ready to try it? Follow the [local source quick start](/nachos/getting-started/quick-start/).
+
+<CardGrid>
+  <Card title="Understand the model" icon="open-book">
+    Learn how workspaces, peers, sessions, and messages fit together.
+    [Explore concepts](/nachos/concepts/workspaces-and-peers/).
+  </Card>
+  <Card title="Inspect the architecture" icon="setting">
+    Follow the separation of contracts, core, providers, and hosts.
+    [Read the architecture](/nachos/architecture/).
+  </Card>
+  <Card title="Check the evidence" icon="approve-check">
+    Pinned SDK smoke tests cover a subset; generated declarations are not conformance results.
+    [See current compatibility](/nachos/reference/compatibility/).
+  </Card>
+  <Card title="Contribute carefully" icon="pencil">
+    Work from the approved specification, keep source boundaries clean,
+    and require explicit consent for Azure operations.
+    [Contributor guide](/nachos/contributing/).
+  </Card>
+</CardGrid>
+
+## Choose an area to explore
+
+Choose a source-based setup. No production release or published container image is promised.
+
+<Tabs>
+  <TabItem label="Azure">
+    Bicep and azd hooks exist; live deployment still needs explicit per-run owner consent.
+    [Read the deployment boundary](/nachos/getting-started/deploy-azure/).
+  </TabItem>
+  <TabItem label="Docker">
+    Use the source API with a separately prepared SQL database. No application image is published.
+    [Review self-hosting prerequisites](/nachos/getting-started/self-host/).
+  </TabItem>
+  <TabItem label="Library">
+    Compose the in-process API with project references, or use the .NET HTTP client.
+    [Try the library](/nachos/getting-started/library/).
+  </TabItem>
+</Tabs>

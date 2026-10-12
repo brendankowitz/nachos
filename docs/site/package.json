@@ -1,0 +1,40 @@
+{
+  "name": "nachos-docs-site",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.15.0 <25" },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "dev": "node scripts/run.mjs astro dev",
+    "build": "node scripts/run.mjs astro build",
+    "preview": "node scripts/run.mjs astro preview",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "check": "npm test && npm run build",
+    "browser:install": "node scripts/run.mjs playwright install chromium",
+    "assets": "node scripts/export-logo.mjs"
+  },
+  "devDependencies": {
+    "@astrojs/markdown-remark": "7.3.1",
+    "@astrojs/mdx": "8.0.2",
+    "@astrojs/starlight": "0.42.4",
+    "astro": "7.3.5",
+    "hast-util-from-html": "2.0.3",
+    "mermaid": "11.17.2",
+    "pagefind": "1.5.2",
+    "playwright": "1.63.0",
+    "rehype-expressive-code": "0.44.2",
+    "starlight-links-validator": "0.26.0",
+    "starlight-openapi": "0.27.0",
+    "vite": "8.3.1"
+  },
+  "overrides": {
+    "mermaid": "11.17.2",
+    "katex": "0.18.2",
+    "postcss-nested": {
+      "postcss-selector-parser": "7.1.6"
+    },
+    "httpsnippet": {
+      "form-data": "4.0.6"
+    }
+  }
+}

@@ -1,0 +1,60 @@
+---
+title: Authentication and authorization
+---
+
+The source API implements **NachosKey** and **Microsoft Entra** bearer
+authentication. Authentication defaults on; an unauthenticated `/v3` request
+fails closed. `Nachos:Auth:Enabled=false` is allowed only in Development.
+
+## Nachos signing keys
+
+Configure an ordered `Nachos:Auth:NachosKey:Keys` list. Every entry has a `Kid`
+and a `Secret` of at least 32 UTF-8 bytes. The first key signs; all configured
+keys validate, supporting rotation overlap. An empty ring cannot issue keys.
+Supply secrets through an appropriate local secret provider or deployment
+secret configuration, never a tracked file.
+
+The equivalent environment paths for the first entry are:
+
+```text
+Nachos__Auth__NachosKey__Keys__0__Kid
+Nachos__Auth__NachosKey__Keys__0__Secret
+```
+
+The CLI can mint a bootstrap key offline using the same key ID and secret.
+After setting `NACHOS_SIGNING_SECRET` privately, capture its output rather than
+printing it or placing a secret value in command history:
+
+```powershell
+$key = dotnet run --project src\Nachos.Cli -- keys create --admin --kid local --signing-secret-env NACHOS_SIGNING_SECRET
+```
+
+An admin key has broad authority. Normal applications should receive a
+workspace-scoped key, narrowed to a peer or session as appropriate. Peer and
+session scopes are mutually exclusive. `POST /v3/keys` is implemented for
+authorized issuance; read its generated
+<a href={`${import.meta.env.BASE_URL.replace(/\/$/, '')}/reference/rest-api/`}>REST reference</a>.
+
+## Entra and grants
+
+Entra configuration binds under `Nachos:Auth:Entra` using Microsoft Identity
+Web configuration. Issuer, audience, signature and lifetime are validated.
+Validated identities still need explicit workspace grants; an identity or
+peer ID is not itself permission. Administrators can use `POST /v3/admin/grants`
+or the bootstrap grants CLI. Follow [CLI help](/nachos/reference/cli/) for exact
+arguments rather than guessing database or tenant settings.
+
+The Azure host can load the configured signing ring from Key Vault using
+managed identity when `AZURE_KEY_VAULT_ENDPOINT` is set. A docs build clears
+that setting and does not contact Key Vault.
+
+## Scope boundaries
+
+Peer-scoped keys may read messages only in sessions where the peer is an active
+member. The SDK's high-level `peer()`/`session()` handles perform get-or-create
+writes first, so they cannot be treated as read-only scoped handles.
+See the [SDK guide](/nachos/guides/honcho-sdks/).
+
+The API uses 401 for refused authorization as well as authentication, including
+non-member reads, to avoid exposing membership. Never include keys, bearer
+tokens or connection strings in logs, issue comments or documentation output.

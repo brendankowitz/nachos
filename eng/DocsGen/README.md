@@ -1,0 +1,201 @@
+# DocsGen reference producer
+
+This implements Task 18's reference **producer**. The now-integrated
+`docs/site/integrations/reference-stage.mjs` builds and runs the actual producer
+before the site's provenance input snapshot, replacing the original scaffold
+refusal with mandatory generation. No SDK conformance, license approval,
+publication or completed-Task18 claim follows from reference generation.
+
+## Prepare real inputs and generate
+
+From the repository root, with .NET 10 and the existing central dependencies
+restored, build the actual API and CLI:
+
+```powershell
+dotnet build src\Nachos.Api\Nachos.Api.csproj -c Debug --no-restore -m:1 -nr:false -p:UseSharedCompilation=false
+dotnet build src\Nachos.Cli\Nachos.Cli.csproj -c Debug --no-restore -m:1 -nr:false -p:UseSharedCompilation=false
+dotnet run --project eng\DocsGen -c Debug --no-restore -p:UseSharedCompilation=false -- --configuration Debug
+```
+
+An initial `--no-restore` build can report NETSDK1004. Restore only the affected
+project and retry; restore is not a substitute for producing the real inputs.
+Plain `dotnet run --project eng/DocsGen` uses its compiled configuration after preparation.
+It does **not** build/start the API or invoke a CLI action. The API's own build-time
+OpenAPI producer does instantiate the application for document discovery.
+
+The current API produces `src/Nachos.Api/obj/Nachos.Api.json`, **not** the plan's
+unwired `src/Nachos.Api/openapi/nachos.json`. No search, fixture or stale-file
+fallback is performed. An alternate actual document requires `--openapi`.
+The .NET build configuration and the producer's application configuration are
+separate settings. For Release, prepare Release sources, pass `-c Release` to
+`dotnet`, and pass `--configuration Release` **after** its `--` separator:
+
+```powershell
+dotnet build src\Nachos.Api\Nachos.Api.csproj -c Release --no-restore -m:1 -nr:false -p:UseSharedCompilation=false
+dotnet build src\Nachos.Cli\Nachos.Cli.csproj -c Release --no-restore -m:1 -nr:false -p:UseSharedCompilation=false
+dotnet run --project eng\DocsGen -c Release --no-restore -p:UseSharedCompilation=false -- --configuration Release
+```
+
+The application argument selects Release CLI/option artifacts; it does not set
+the build configuration or change the API's shared `obj/Nachos.Api.json` path.
+Build the API immediately before generation. Validate Debug and Release in
+separate clean checkouts/output roots; do not let retained artifacts from one
+configuration supply inputs to the other.
+
+The producer's `CaptureOptionsXml` build target builds the actual Abstractions,
+Core and SQL projects with XML documentation enabled, then snapshots those
+compiler outputs in `eng/DocsGen/obj/options-xml/<Configuration>`. A later normal
+library build may remove XML from its own `bin`; it cannot remove this snapshot.
+No XML summaries are invented or checked in. XML-only builds leave existing
+CS1573 (partial parameter comments) and CS0419 (ambiguous cref) visible as
+warnings; CS1591 (undocumented members) is disabled for that export only.
+Normal product builds retain the repository's warnings-as-errors policy.
+These existing documentation gaps require owner follow-up, not silent text.
+The nested XML builds still write ordinary product `bin`/`obj` directories.
+The integrated solution Release build also completes with warnings-as-errors;
+31 pre-existing XML-export CS1573/CS0419 warnings remain visible under that
+target's narrow exception. Independent concurrent builds and incremental
+correctness under competing configurations are not established. Do not build
+configurations concurrently in one checkout.
+
+Run preparation and tests in an allowlisted child environment: clear inherited
+credential/configuration variables, use a private DOTNET_CLI_HOME/USERPROFILE,
+short PATH, `DOTNET_GENERATE_ASPNET_CERTIFICATE=false`,
+`MSBUILDDISABLENODEREUSE=1`, `DOTNET_CLI_USE_MSBUILD_SERVER=0`, and disable shared
+compilation. Do not run AppHost, SQL, Docker, Azure or deployment commands.
+
+## Inputs and output contract
+
+Options are strict name/value pairs. Duplicate/unknown options, missing values,
+missing files, unsupported shapes and inconsistent inputs fail with exit 1 and
+a value-free diagnostic. No input contents, path values or child stderr are
+printed on failure.
+
+| Option | Default / constraint |
+| --- | --- |
+| `--root` | Current repository directory |
+| `--configuration` | Running producer's compiled configuration; only `Debug` and `Release` |
+| `--openapi` | `src/Nachos.Api/obj/Nachos.Api.json` |
+| `--cli` | `src/Nachos.Cli/bin/<Configuration>/net10.0/Nachos.Cli.dll` |
+| `--manifest` | `test/contracts/honcho-v3-wire.json` |
+| `--output` | `docs/site/src/content/docs/reference/_generated` |
+
+Inputs must remain inside the specified root and cannot traverse symlinks or
+reparse points. Output overrides are restricted to this test project's `obj`
+descendants; production writes only the four files below. Inputs are limited
+to 32 MiB each. Inputs changing during generation are rejected before publishing.
+
+* **`rest-api.json`**: exact bytes of the selected real generated OpenAPI,
+  including its original whitespace/newlines. It is not reconstructed, filtered,
+  augmented with health routes, or copied from upstream.
+* **`cli.md`**: actual `--help` stdout for root and every command recursively
+  discovered from its `Commands:` section. Command aliases remain visible in
+  help; one canonical invocation per command is sufficient. Only validated
+  command-name tokens followed by `--help` are passed, never option values or
+  response files. In the current CLI these are 11 help invocations.
+* **`options.md`**: pure defaults of `NachosOptions`, its configuration members,
+  and `SqlServerOptions`, with compiler-produced XML summaries. Missing member
+  summaries are explicitly marked. No service provider or host is constructed.
+  Core/API binding, SQL's section constant, snake_case wire fields and AppHost
+  transient values are distinguished. The current API selects SQL from its
+  canonical connection key or Aspire's fallback key; the canonical key wins.
+  Neither configured key means in-memory. Signing secrets are never read.
+* **`compatibility.json`**: schema version 1, exact method/template comparison
+  against the local 3.3.0 wire manifest and its pinned upstream digest. No upstream
+  document is downloaded. `wireVersion`, `counts`, `routes`, `evidence` and
+  `cliHelpSha256` describe the actual inputs; `sdkConformance: "not-run"` and
+  `authentication: "not-assessed"` prevent declaration coverage being mistaken
+  for operational availability. `/v3/admin/grants` and workspace `jobs` are named
+  extensions, not upstream conformance.
+
+All paths/methods are compared ordinally. Template parameter names are not
+erased, case is not folded, and trailing slashes are not silently normalized.
+Explicit path aliases must already be represented by the OpenAPI producer.
+Path parameters must exactly cover the template and be required. Unresolved
+parameter `$ref` forms fail rather than guessing; the current producer uses
+inline parameters. This is validation of the consumed OpenAPI 3.0/3.1 shape,
+not a replacement for a complete OpenAPI schema validator.
+
+Route status is one of `declared-implemented` (2xx without 501),
+`declared-partial` (both 2xx and 501), `staged-501` (501 without 2xx),
+`declared-other`, or `missing`. Scope is independently `wire`, `extension`, or
+`unmatched`. Counts cover all actual operations; extension counts overlap status
+counts. Missing means absent from OpenAPI, not proof of an unmapped endpoint.
+For current source: 55 wire operations, 56 actual operations, 21
+declared-implemented, 1 partial, 34 staged, 1 missing (`GET /health`), 2 extensions.
+Session create is partial because a supported success response coexists with a
+staged variant; do not label the entire operation implemented or entirely 501.
+Key issuance and admin grants now have implemented declarations. The API implements
+NachosKey/Entra auth; generation does not exercise it. Tokenizer release limitations
+remain tracked separately under issue #10 rather than an old test-count baseline.
+
+Markdown and compatibility JSON use UTF-8 without BOM, LF, stable ordinal
+ordering, and no timestamps or absolute paths. OpenAPI is the byte-copy exception.
+Evidence contains SHA-256 hashes keyed by repository-relative paths for the
+actual OpenAPI, wire manifest, CLI assembly/deps/runtimeconfig, options assemblies,
+XML snapshots and API/auth binding source. Option assemblies are checked against the
+loaded first-party types. Help hashes cover the captured LF-normalized text.
+Binary hashes identify exact builds; different compiler/runtime inputs can
+legitimately change them. They are not a claim of reproducible builds across SDKs.
+Generation twice against identical inputs must yield identical bytes.
+
+## Bounded help and publication
+
+Help uses the current .NET installation, a cleared child environment, an isolated
+home under this producer's `obj`, closed stdin and redirected UTF-8 streams.
+There is a 10-second deadline per invocation covering **both exit and streams**,
+128 KiB stdout / 16 KiB stderr character limits, depth 8 and at most 128 commands.
+Nonzero exit, any stderr, invalid help or resource-limit failure aborts.
+The process is disposed and a live owned process tree is killed on failure;
+cleanup wait is bounded at 2 seconds. An already-exited parent cannot guarantee
+termination of detached descendants; the real CLI's help spawns none. A
+first-party inherited-pipe fixture tests bounded return and cleans its exact
+recorded child PID. This is not a sandbox for untrusted assemblies.
+
+All input validation/help/rendering completes before output publication.
+A dedicated sibling lock excludes concurrent publishers. Four staged files are
+flushed, read back, then swapped at the **directory** level; an old directory
+is retained for rollback until the swap succeeds. No per-file old/new mix is
+published. Unexpected files/subdirectories cause refusal, not broad deletion.
+Input/process failures preserve previous output bytes.
+
+This portable two-rename protocol is not a filesystem transaction: readers may
+briefly see the directory absent; termination/power loss between renames can
+leave an owned backup/stage for manual recovery. Do not build Astro concurrently.
+A failed backup cleanup can return nonzero after a coherent new directory is
+installed. No recovery deletes arbitrary old directories. Review and restore an
+orphan backup explicitly after ensuring no generator is running.
+
+## Tests and site integration boundary
+
+```powershell
+$env:NACHOS_DOCSGEN_TEST_ROOT = (Get-Location).Path
+dotnet test test\Nachos.DocsGen.Tests\Nachos.DocsGen.Tests.csproj -c Debug --no-restore -m:1 -nr:false -p:UseSharedCompilation=false --logger trx
+```
+
+For the separate clean Release checkout, set its root environment variable and
+use the same test command with `-c Release`. Tests derive their configuration
+from the running test assembly's `AssemblyConfigurationAttribute`, passing it
+explicitly to the producer and using matching fixture paths. They check captured
+CLI/XML input hashes and reject evidence from the other configuration; they do
+not fall back to Debug.
+
+The test project builds the actual API/CLI/producer closure directly. Real-source
+tests compare OpenAPI bytes, invoke real CLI help independently, derive command
+coverage from the actual pure CLI factories, and inspect actual option defaults.
+Only the in-process help test normalizes the entry-assembly name `testhost` to
+`Nachos.Cli`; production help is not rewritten. First-party unit fixtures test
+malformed inputs, route mismatches, deadlines/pipe inheritance, environment
+isolation, deterministic encoding and preservation of previous outputs. They
+are not schema/CLI/conformance deliverables.
+
+The solution includes the owner-authorized `eng/DocsGen/DocsGen.csproj` and
+`test/Nachos.DocsGen.Tests/Nachos.DocsGen.Tests.csproj` references. No central
+.NET package versions or product dependencies are changed by this producer.
+
+The site wrapper consumes these exact outputs before **every** supported build
+and verifies a complete immutable tree before audit/upload. See the
+[site maintainer guide](../../docs/site/README.md) for the trusted OpenAPI plugin,
+rendered routes, failure controls, attribution and independent full-audit gate.
+Genuine conformance results require their own producer and evidence. This
+producer alone does not establish completed Task 18 or publication readiness.
