@@ -86,8 +86,10 @@ and concurrent independent builds in the same checkout are unsupported.
 
 ## Rendering and ownership boundaries
 
-- Pinned Starlight, Pagefind and local `starlight-openapi`; no downloaded
-  upstream schema, sample API or unknown plugin fallback.
+- Pinned Starlight and local `starlight-openapi`; no downloaded upstream schema,
+  sample API or unknown plugin fallback. Starlight search is disabled pending
+  [#26](https://github.com/brendankowitz/nachos/issues/26) because Pagefind's
+  WASM embeds GPL-3.0-only `pagefind_microjson`.
 - Mermaid renders SVG at build time in Chromium with network requests blocked.
   The browser closes on failure. No client Mermaid renderer ships.
 - Astro uses `passthroughImageService()`. The logo exporter uses Chromium.
@@ -110,7 +112,7 @@ Existing Astro MDX head-inject/404 priority warnings remain visible.
 `dist/.nachos/output-provenance.v1.json` has the fixed v1 schema:
 `schemaVersion`, `build`, `inputs`, `sources`, `outputs`.
 The producer records actually observed suppliers conservatively across rendered
-pages and search, not the entire installed dependency graph.
+pages, not the entire installed dependency graph.
 
 Every physical output, including hidden files, is checked; only the two named
 metadata files are excluded from their own output enumeration. Input/package
@@ -171,9 +173,10 @@ audit while preserving its exit code as visible evidence, then propagates only
 the structured `verify-publication` gate. The gate requires successful docs
 provenance for the same sealed dist, accepted distributed license decisions for
 every emitted docs package, no docs-provenance input errors, and the emitted
-`THIRD-PARTY-NOTICES.txt` to name every emitted package and embedded Pagefind
-component. Non-emitted tooling and API/CLI baseline audit errors remain visible
-in the summary instead of being hidden.
+`THIRD-PARTY-NOTICES.txt` to name every emitted package. It also rejects any
+top-level `pagefind/` output and any `.wasm` or `.pagefind` file while #26 keeps
+search disabled. Non-emitted tooling and API/CLI baseline audit errors remain
+visible in the summary instead of being hidden.
 
 Only `push` or `workflow_dispatch` on `refs/heads/main` uploads
 `docs/site/dist` with the SHA-pinned `actions/upload-pages-artifact` action.
@@ -186,9 +189,8 @@ non-main manual runs exercise the gate but do not upload or deploy.
 
 `npm --prefix docs/site run notices` regenerates
 `docs/site/public/THIRD-PARTY-NOTICES.txt` from installed exact npm license
-files and committed `docs/site/notices` evidence for embedded Pagefind bundle
-components. `npm --prefix docs/site run notices -- --check` fails if the
-committed notices are stale.
+files for the emitted package union. `npm --prefix docs/site run notices -- --check`
+fails if the committed notices are stale.
 
 Before any future release workflow or artifact class is introduced:
 

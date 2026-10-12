@@ -37,7 +37,18 @@ async function fixture(action) {
   }
 }
 
-test('real references build with rendered Mermaid, search and exact distribution provenance', { timeout: 450_000 }, async () => {
+async function listFiles(root, prefix = '') {
+  const entries = await readdir(join(root, prefix), { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const child = join(prefix, entry.name);
+    if (entry.isDirectory()) files.push(...await listFiles(root, child));
+    else files.push(child.replaceAll('\\', '/'));
+  }
+  return files;
+}
+
+test('real references build with rendered Mermaid, disabled search and exact distribution provenance', { timeout: 450_000 }, async () => {
   const result = build(site);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /All.*links.*valid|No.*broken|successfully validated/i);
@@ -47,30 +58,29 @@ test('real references build with rendered Mermaid, search and exact distribution
   const architecture = await readFile(join(site, 'dist', 'architecture', 'index.html'), 'utf8');
   assert.match(architecture, /<svg[^>]+.*mermaid/s);
   assert.ok(!architecture.includes('language-mermaid'), 'diagram must render, not remain a code block');
-  await readFile(join(site, 'dist', 'pagefind', 'pagefind.js'));
   const notices = await readFile(join(site, 'dist', 'THIRD-PARTY-NOTICES.txt'), 'utf8');
   const manifest = JSON.parse(await readFile(join(site, 'dist', '.nachos', 'bundle-modules.json')));
-  for (const name of ['@astrojs/starlight', '@pagefind/default-ui', 'pagefind', 'mermaid', '@expressive-code/plugin-shiki']) {
+  const distFiles = await listFiles(join(site, 'dist'));
+  assert.ok(!distFiles.some((path) => path === 'pagefind' || path.startsWith('pagefind/')),
+    'Pagefind search is disabled pending #26 because pagefind_microjson is GPL-3.0-only');
+  assert.ok(!distFiles.some((path) => path.endsWith('.pagefind') || path.endsWith('.wasm')),
+    'distributed search bundles must not contain opaque Pagefind/WASM assets pending #26');
+  for (const name of ['@astrojs/starlight', 'mermaid', '@expressive-code/plugin-shiki']) {
     assert.ok(manifest.some((entry) => entry.package === name), `missing shipping package ${name}`);
   }
+  for (const name of ['@pagefind/default-ui', 'pagefind', '@pagefind/linux-x64', '@pagefind/windows-x64']) {
+    assert.ok(!manifest.some((entry) => entry.package === name), `Pagefind package must not be emitted: ${name}`);
+  }
+  assert.equal(new Set(manifest.map((entry) => `${entry.package}@${entry.version}`)).size, 10,
+    'only the ten non-Pagefind emitted npm identities should ship');
   for (const [name, version] of [
     ['astro', '7.3.5'], ['@astrojs/sitemap', '3.7.4'], ['@astrojs/starlight', '0.42.4'],
     ['@expressive-code/core', '0.44.2'], ['@expressive-code/plugin-frames', '0.44.2'],
     ['@expressive-code/plugin-shiki', '0.44.2'], ['@expressive-code/plugin-text-markers', '0.44.2'],
     ['astro-expressive-code', '0.44.2'], ['mermaid', '11.17.2'], ['starlight-openapi', '0.27.0'],
-    ['vite', '8.3.1'], ['pagefind', '1.5.2'], ['@pagefind/default-ui', '1.5.2'],
-    ['@pagefind/linux-x64', '1.5.2'], ['@pagefind/windows-x64', '1.5.2'],
   ]) {
     assert.match(notices, new RegExp(`## ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@${version}`),
       `missing emitted notice for ${name}@${version}`);
-  }
-  for (const [name, version] of [
-    ['Svelte', '4.2.20'], ['mark.js', '8.11.1'], ['pagefind_stem', '1.0.0'],
-    ['pagefind_microjson', '0.1.4'], ['write-json', '0.1.4'], ['wasm-bindgen', '0.2.117'],
-    ['bit-set', '0.10.0'], ['bit-vec', '0.9.1'], ['minicbor', '2.2.1'],
-  ]) {
-    assert.match(notices, new RegExp(`## ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@${version}`),
-      `missing embedded notice for ${name}@${version}`);
   }
   for (const name of ['elkjs', 'rehype-mermaid', 'playwright', 'sharp', 'starlight-links-validator']) {
     assert.ok(!manifest.some((entry) => entry.package === name), `build-only package mislabeled: ${name}`);
@@ -112,16 +122,7 @@ test('real references build with rendered Mermaid, search and exact distribution
   assert.ok(rendered.evidence.some((entry) => entry.producer === 'mermaid-svg'));
   assert.ok(rendered.evidence.some((entry) => entry.producer === 'expressive-html'));
   assert.ok(rendered.packages.some((entry) => entry.package === 'mermaid'));
-  const search = evidence.outputs.filter((entry) => entry.path.startsWith('pagefind/'));
-  assert.ok(search.length > 0);
-  assert.ok(search.every((entry) => entry.packages.some((pkg) => pkg.package === 'mermaid')),
-    'search index inherits embedded page contributors conservatively');
-  const backend = `@pagefind/${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
-  assert.ok(search.every((entry) => entry.packages.some((pkg) => pkg.package === backend)),
-    'Pagefind native response supplies the embedded JS/CSS/WASM, not just execution');
-  for (const name of ['pagefind-component-ui.css', 'pagefind-component-ui.js', 'wasm.unknown.pagefind']) {
-    assert.ok((await readFile(join(site, 'dist', 'pagefind', name))).length > 0, `native output was not flushed: ${name}`);
-  }
+  assert.ok(!evidence.outputs.some((entry) => entry.path.startsWith('pagefind/')));
 });
 
 test('real site build fails on a missing internal Markdown link', { timeout: 150_000 }, async () => {

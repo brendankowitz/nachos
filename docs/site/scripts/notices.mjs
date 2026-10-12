@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 const site = fileURLToPath(new URL('../', import.meta.url));
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const output = join(site, 'public', 'THIRD-PARTY-NOTICES.txt');
-const manifestPath = join(site, 'notices', 'evidence-manifest.json');
 const review = 'https://github.com/brendankowitz/nachos/issues/16#issuecomment-6129149981';
 
 const emitted = [
@@ -20,14 +19,7 @@ const emitted = [
   ['astro-expressive-code', '0.44.2'],
   ['mermaid', '11.17.2'],
   ['starlight-openapi', '0.27.0'],
-  ['vite', '8.3.1'],
-  ['pagefind', '1.5.2'],
-  ['@pagefind/default-ui', '1.5.2'],
-  ['@pagefind/linux-x64', '1.5.2'],
-  ['@pagefind/windows-x64', '1.5.2'],
 ];
-
-const pagefindPackages = new Set(['pagefind', '@pagefind/default-ui', '@pagefind/linux-x64', '@pagefind/windows-x64']);
 
 function sha256(text) {
   return createHash('sha256').update(text).digest('hex').toUpperCase();
@@ -50,29 +42,12 @@ function readNoticeFile(path) {
   return readFileSync(path, 'utf8').replace(/\r\n?/g, '\n').trimEnd();
 }
 
-function evidenceRecords() {
-  return JSON.parse(readFileSync(manifestPath, 'utf8'));
-}
-
-function recordsByComponent(records) {
-  const map = new Map();
-  for (const record of records) {
-    const key = `${record.component}@${record.version}`;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(record);
-  }
-  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-}
-
 function renderFile(path) {
   const text = readNoticeFile(path);
   return `File: ${relative(root, path).replaceAll('\\', '/')}\nSHA-256: ${sha256(text + '\n')}\n\n${text}\n`;
 }
 
 function generate() {
-  const records = evidenceRecords();
-  const pagefindLicense = records.find((record) => record.component === 'Pagefind' && record.version === '1.5.2');
-  if (!pagefindLicense) throw new Error('Missing Pagefind evidence record.');
   const lines = [];
   lines.push('Nachos documentation site third-party notices');
   lines.push('=================================================');
@@ -91,25 +66,11 @@ function generate() {
       if (packageJson.name !== name || packageJson.version !== version) {
         throw new Error(`Installed ${name} package mismatch: ${packageJson.name}@${packageJson.version}`);
       }
-    } else if (!pagefindPackages.has(name)) {
+    } else {
       throw new Error(`Installed package is required for ${name}@${version}`);
     }
-    const files = pagefindPackages.has(name)
-      ? [join(root, pagefindLicense.path)]
-      : findLicenseFiles(packageDirectory(name));
+    const files = findLicenseFiles(packageDirectory(name));
     for (const file of files) lines.push(renderFile(file));
-  }
-  lines.push('');
-  lines.push('Embedded Pagefind bundle component notices');
-  lines.push('-------------------------------------------');
-  for (const [key, componentRecords] of recordsByComponent(records)) {
-    lines.push('');
-    lines.push(`## ${key}`);
-    for (const record of componentRecords.sort((a, b) => a.path.localeCompare(b.path))) {
-      lines.push(`Source: ${record.sourceUrl}`);
-      if (record.note) lines.push(`Note: ${record.note}`);
-      lines.push(renderFile(join(root, record.path)));
-    }
   }
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
@@ -130,5 +91,3 @@ if (process.argv.includes('--check')) {
   writeFileSync(output, generated, 'utf8');
   console.log(`Wrote ${relative(root, output)} (${generated.length} bytes).`);
 }
-
-

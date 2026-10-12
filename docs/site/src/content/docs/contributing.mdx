@@ -22,7 +22,9 @@ The site's [maintainer notes](https://github.com/brendankowitz/nachos/blob/main/
 describe dependency provenance, license boundaries, and reference generation.
 Never hide an unknown shipped package by returning an empty manifest.
 Published builds include the exact [third-party notices](/nachos/THIRD-PARTY-NOTICES.txt)
-for redistributed docs-site packages and embedded Pagefind bundle components.
+for redistributed docs-site packages. Pagefind search remains disabled pending
+[#26](https://github.com/brendankowitz/nachos/issues/26) because its WASM embeds
+GPL-3.0-only code.
 
 ## Deployment consent
 

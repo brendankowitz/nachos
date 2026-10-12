@@ -61,7 +61,7 @@ test('actual standalone Expressive Code CSS rejects only its evidence hash being
   assert.deepEqual(await readFile(join(root, 'dist', css.path)), bytes);
 });
 
-test('real inline styles survive HTML serialization and Pagefind derivation', async () => {
+test('real inline styles survive HTML serialization', async () => {
   const html = await readFile(join(inlineRoot, 'dist', 'getting-started', 'quick-start', 'index.html'), 'utf8');
   assert.ok([...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)]
     .some((match) => match[1].includes('.expressive-code')), 'real code-block page must contain inline EC CSS');
@@ -81,8 +81,6 @@ test('standalone and inline EC styles have distinct closed roles', async () => {
   assert.equal(css.evidence[0].producer, 'expressive-stylesheet');
   const html = inlineData.outputs.find((entry) => entry.path === 'getting-started/quick-start/index.html');
   assert.ok(html.evidence.some((entry) => entry.producer === 'expressive-inline-style'));
-  const search = inlineData.outputs.find((entry) => entry.path === 'pagefind/pagefind.js');
-  assert.ok(search.evidence.some((entry) => entry.producer === 'expressive-inline-style'));
 });
 
 test('the old ambiguous expressive-style role is rejected', async () => {
@@ -91,7 +89,7 @@ test('the old ambiguous expressive-style role is rejected', async () => {
   await assert.rejects(validateEvidence(root, join(root, 'dist'), modified), /producer/i);
 });
 
-for (const path of ['architecture/index.html', 'pagefind/pagefind.js']) {
+for (const path of ['architecture/index.html']) {
   test(`inline intermediates require their render anchor in ${path}`, async () => {
     const modified = structuredClone(data);
     const output = modified.outputs.find((entry) => entry.path === path);

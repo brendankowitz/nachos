@@ -20,6 +20,8 @@ defaults:
 # Source validation and fail-closed full audit remain unchanged. The pages job
 # gates the emitted static site before uploading only from main; deployment is
 # isolated to the GitHub Pages environment with the minimal Pages/OIDC grant.
+# Pagefind search stays disabled pending #26; the publication gate rejects
+# Pagefind/WASM outputs rather than relabeling GPL-3.0-only embedded code.
 jobs:
   source:
     name: References, site, links and provenance (${{ matrix.os }})

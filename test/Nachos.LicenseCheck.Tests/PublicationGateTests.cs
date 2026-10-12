@@ -24,19 +24,7 @@ public sealed class PublicationGateTests : IDisposable
             SHA-256: B8469086899CC3B0047C20F389B8782A1E3E6F0D62C3F0A37D03EB06E7B9FBA9
 
             fixture astro license text
-
-            ## Svelte@4.2.20
-            SHA-256: A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1
-
-            fixture svelte license text
             """.ReplaceLineEndings("\n"));
-        Directory.CreateDirectory(Full("docs/site/notices"));
-        File.WriteAllText(Full("docs/site/notices/svelte.txt"), "fixture svelte license text\n");
-        Write(Full("docs/site/notices/evidence-manifest.json"), new[] { new
-        {
-            component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte.txt",
-            sha256 = "A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1"
-        } });
     }
 
     [Fact]
@@ -96,7 +84,7 @@ public sealed class PublicationGateTests : IDisposable
     public void NoticesWithOnlyHeadingsFail()
     {
         WriteReport();
-        File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), "## astro@7.3.5\n## Svelte@4.2.20\n");
+        File.WriteAllText(Full("dist/THIRD-PARTY-NOTICES.txt"), "## astro@7.3.5\n");
         Verify().Messages.ShouldContain(message => message.Contains("notices missing license text for astro@7.3.5", StringComparison.Ordinal));
     }
 
@@ -107,19 +95,17 @@ public sealed class PublicationGateTests : IDisposable
         Verify().Messages.ShouldContain(message => message.Contains("manifestSha256 mismatch", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void EveryEvidenceFileOfAComponentIsRequired()
+    [Theory]
+    [InlineData("pagefind/search.js", "Pagefind output directory")]
+    [InlineData("assets/search.wasm", "*.wasm")]
+    [InlineData("assets/search.pagefind", "*.pagefind")]
+    public void OpaquePrebuiltSearchBundlesFailPublicationGate(string relativePath, string expectedMessage)
     {
         WriteReport();
-        File.WriteAllText(Full("docs/site/notices/svelte-notice.txt"), "fixture svelte embedded notice\n");
-        Write(Full("docs/site/notices/evidence-manifest.json"), new[]
-        {
-            new { component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte.txt",
-                sha256 = "A403CA9420B1C0132E30DE1812B18F8D6AD07C9C20B5A0BA7260218CBCF8DDF1" },
-            new { component = "Svelte", version = "4.2.20", path = "docs/site/notices/svelte-notice.txt",
-                sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData("fixture svelte embedded notice\n"u8)) }
-        });
-        Verify().Messages.ShouldContain(message => message.Contains("notices missing license text for Svelte@4.2.20", StringComparison.Ordinal));
+        var path = Full("dist/" + relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "opaque search bundle");
+        Verify().Messages.ShouldContain(message => message.Contains(expectedMessage, StringComparison.Ordinal));
     }
 
     private PublicationGateResult Verify() => PublicationGate.Verify(new PublicationGateInputs(
@@ -146,4 +132,3 @@ public sealed class PublicationGateTests : IDisposable
 
     public void Dispose() => Directory.Delete(root, true);
 }
-

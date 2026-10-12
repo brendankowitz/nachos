@@ -65,6 +65,8 @@ public static class PublicationGate
             messages.Add($"publication gate failed: docs provenance input error remains: {error.Message}");
         }
 
+        RequireNoOpaqueSearchBundles(inputs.SiteOutput, messages);
+
         var noticesPath = Path.Combine(inputs.SiteOutput, "THIRD-PARTY-NOTICES.txt");
         if (!File.Exists(noticesPath))
         {
@@ -87,22 +89,6 @@ public static class PublicationGate
                         RequireNoticeText(messages, notices, text, license);
                     }
                 }
-            }
-            foreach (var component in EmbeddedComponents(inputs.RepoRoot))
-            {
-                var text = component.Component + "@" + component.Version;
-                if (!notices.Contains(text, StringComparison.Ordinal))
-                {
-                    messages.Add($"publication gate failed: notices missing embedded component {text}.");
-                }
-                var source = Path.Combine(inputs.RepoRoot, component.Path.Replace('/', Path.DirectorySeparatorChar));
-                var expected = ReadNormalized(source);
-                var hash = Hash(expected);
-                if (!string.Equals(component.Sha256, hash, StringComparison.OrdinalIgnoreCase))
-                {
-                    messages.Add($"publication gate failed: evidence hash mismatch for embedded component {text}.");
-                }
-                RequireNoticeText(messages, notices, text, expected);
             }
         }
 
@@ -132,15 +118,7 @@ public static class PublicationGate
     {
         var directory = Path.Combine(repoRoot, "docs", "site", "node_modules", package.Package.Replace('/', Path.DirectorySeparatorChar));
         if (!Directory.Exists(directory))
-        {
-            if (package.Package is "pagefind" or "@pagefind/default-ui" or "@pagefind/linux-x64" or "@pagefind/windows-x64")
-            {
-                return EmbeddedComponents(repoRoot).Where(record => record.Component == "Pagefind" && record.Version == package.Version)
-                    .Select(record => ReadNormalized(Path.Combine(repoRoot, record.Path.Replace('/', Path.DirectorySeparatorChar))))
-                    .ToArray();
-            }
             return [];
-        }
         return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
             .Where(file => LicenseName(Path.GetFileName(file)))
             .Order(StringComparer.Ordinal)
@@ -169,16 +147,25 @@ public static class PublicationGate
         || name.StartsWith("COPYRIGHT", StringComparison.OrdinalIgnoreCase)
         || string.Equals(name, "UNLICENSE", StringComparison.OrdinalIgnoreCase);
 
-    private static EmbeddedComponent[] EmbeddedComponents(string repoRoot)
+    private static void RequireNoOpaqueSearchBundles(string siteOutput, List<string> messages)
     {
-        var path = Path.Combine(repoRoot, "docs", "site", "notices", "evidence-manifest.json");
-        if (!File.Exists(path))
+        if (Directory.Exists(Path.Combine(siteOutput, "pagefind")))
         {
-            return [];
+            messages.Add("publication gate failed: Pagefind output directory is disabled pending #26 because Pagefind's WASM embeds GPL-3.0-only pagefind_microjson.");
         }
-        return JsonSerializer.Deserialize<EmbeddedComponent[]>(File.ReadAllText(path), JsonOptions.CaseInsensitive)
-            ?? throw new InvalidDataException("Invalid embedded notice evidence manifest.");
+        foreach (var file in Directory.EnumerateFiles(siteOutput, "*", SearchOption.AllDirectories))
+        {
+            var extension = Path.GetExtension(file);
+            if (string.Equals(extension, ".wasm", StringComparison.OrdinalIgnoreCase))
+            {
+                messages.Add($"publication gate failed: *.wasm file {Relative(siteOutput, file)} is an opaque prebuilt bundle; publish without it pending #26.");
+            }
+            if (string.Equals(extension, ".pagefind", StringComparison.OrdinalIgnoreCase))
+            {
+                messages.Add($"publication gate failed: *.pagefind file {Relative(siteOutput, file)} is an opaque prebuilt Pagefind bundle; publish without it pending #26.");
+            }
+        }
     }
 
-    private sealed record EmbeddedComponent(string Component, string Version, string Path, string Sha256);
+    private static string Relative(string root, string path) => Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
 }
