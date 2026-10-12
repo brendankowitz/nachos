@@ -30,12 +30,8 @@ export default defineConfig({
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/brendankowitz/nachos' }],
-      pagefind: false,
       expressiveCode: {},
-      components: {
-        MarkdownContent: './src/components/ReferenceMarkdownContent.astro',
-        Search: './src/components/DisabledSearch.astro',
-      },
+      components: { MarkdownContent: './src/components/ReferenceMarkdownContent.astro' },
       sidebar: [
         { label: 'Getting started', items: [{ autogenerate: { directory: 'getting-started' } }] },
         { label: 'Concepts', items: [{ autogenerate: { directory: 'concepts' } }] },

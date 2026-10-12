@@ -17,11 +17,11 @@ defaults:
   run:
     shell: pwsh
 
-# Source validation and fail-closed full audit remain unchanged. The pages job
-# gates the emitted static site before uploading only from main; deployment is
-# isolated to the GitHub Pages environment with the minimal Pages/OIDC grant.
-# Pagefind search stays disabled pending #26; the publication gate rejects
-# Pagefind/WASM outputs rather than relabeling GPL-3.0-only embedded code.
+# Source validation and the separate fail-closed full audit remain unchanged.
+# Per the owner decision, docs-site library licensing is not a Pages publication
+# gate. The pages job builds, verifies and archives the emitted static site
+# before uploading only from main; deployment is isolated to the GitHub Pages
+# environment with the minimal Pages/OIDC grant.
 jobs:
   source:
     name: References, site, links and provenance (${{ matrix.os }})
@@ -68,7 +68,7 @@ jobs:
         run: ./eng/ci/Invoke-DocsSite.ps1 -Audit -PythonExecutable $env:CI_PYTHON_EXECUTABLE
 
   pages:
-    name: Publication gate and Pages artifact
+    name: Build and verify Pages artifact
     runs-on: ubuntu-24.04
     needs: source
     permissions:
@@ -84,14 +84,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        id: python
-        with:
-          python-version: '3.13'
-      - name: Build, audit, gate, seal and verify Pages artifact
-        env:
-          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
-        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+      - name: Build, seal, verify and archive Pages artifact
+        run: ./eng/ci/Invoke-DocsSite.ps1 -Publication
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
         with:

@@ -24,7 +24,6 @@ export function docsProvenance(root) {
   const source = (name) => fileURLToPath(import.meta.resolve(name));
   const starlightRoot = fileURLToPath(new URL('.', import.meta.resolve('@astrojs/starlight')));
   let build;
-  let pagefindEnabled = true;
   let openapiConstructionSources = [];
 
   async function renderRenderer(options, nativeWrappers, inlineStyles = false) {
@@ -85,7 +84,6 @@ export function docsProvenance(root) {
       return renderRenderer(options);
     },
     async starlight(options) {
-      pagefindEnabled = options.pagefind !== false;
       if (options.plugins !== undefined) {
         throw new Error('Unknown Expressive Code content producer: custom configuration plugins are unsupported');
       }
@@ -187,10 +185,6 @@ export function docsProvenance(root) {
           }
           for (const name of ['sitemap-index.xml', 'sitemap-0.xml']) {
             await provenance.recordFile(join(output, name), [source('@astrojs/sitemap'), join(root, 'astro.config.mjs')], 'sitemap');
-          }
-          if (!pagefindEnabled) {
-            await provenance.write(output, { pending: join(root, '.astro', 'nachos-output.pending.json'), build });
-            return;
           }
           // writeFiles()+close() can leave native writes unfinished. Materialize
           // the returned bytes ourselves, then seal that exact final producer.

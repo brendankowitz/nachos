@@ -86,10 +86,8 @@ and concurrent independent builds in the same checkout are unsupported.
 
 ## Rendering and ownership boundaries
 
-- Pinned Starlight and local `starlight-openapi`; no downloaded upstream schema,
-  sample API or unknown plugin fallback. Starlight search is disabled pending
-  [#26](https://github.com/brendankowitz/nachos/issues/26) because Pagefind's
-  WASM embeds GPL-3.0-only `pagefind_microjson`.
+- Pinned Starlight, Pagefind and local `starlight-openapi`; no downloaded
+  upstream schema, sample API or unknown plugin fallback.
 - Mermaid renders SVG at build time in Chromium with network requests blocked.
   The browser closes on failure. No client Mermaid renderer ships.
 - Astro uses `passthroughImageService()`. The logo exporter uses Chromium.
@@ -147,7 +145,7 @@ terminators, directory inventory and every regular file's bytes, including
 hidden metadata. It rejects links, special files, aliases, GNU/PAX extensions
 and tree mutations before/during archiving. It never rebuilds audited output.
 
-## Full audit and publication gates
+## Full audit and Pages publication
 
 `.github/workflows/docs-site.yml` has independent source, full-license and
 Pages-publication jobs. Source validation and the fail-closed full audit keep
@@ -168,15 +166,11 @@ The source job also exercises these local artifact mechanics without claiming
 license approval.
 
 The separate `pages` job runs `Invoke-DocsSite.ps1 -Publication` on PRs and
-main. That mode performs one final build, seal and `verify-docs`, runs the full
-audit while preserving its exit code as visible evidence, then propagates only
-the structured `verify-publication` gate. The gate requires successful docs
-provenance for the same sealed dist, accepted distributed license decisions for
-every emitted docs package, no docs-provenance input errors, and the emitted
-`THIRD-PARTY-NOTICES.txt` to name every emitted package. It also rejects any
-top-level `pagefind/` output and any `.wasm` or `.pagefind` file while #26 keeps
-search disabled. Non-emitted tooling and API/CLI baseline audit errors remain
-visible in the summary instead of being hidden.
+main. Per the owner decision, docs-site library licensing is not a Pages
+publication gate. Publication mode installs the locked tools, performs one final
+site build, seals the tree, runs `verify-docs` for output provenance, archives
+the same sealed `dist`, and verifies the archive. It does not run the full audit,
+does not require Python, and does not run a docs licensing gate.
 
 Only `push` or `workflow_dispatch` on `refs/heads/main` uploads
 `docs/site/dist` with the SHA-pinned `actions/upload-pages-artifact` action.
@@ -185,12 +179,8 @@ condition, has exactly `pages: write` and `id-token: write`, targets the
 `github-pages` environment, and contains only the SHA-pinned
 `actions/deploy-pages` step. To redeploy without a source change, run the
 **Documentation source CI** workflow manually from the `main` branch; PR and
-non-main manual runs exercise the gate but do not upload or deploy.
-
-`npm --prefix docs/site run notices` regenerates
-`docs/site/public/THIRD-PARTY-NOTICES.txt` from installed exact npm license
-files for the emitted package union. `npm --prefix docs/site run notices -- --check`
-fails if the committed notices are stale.
+non-main manual runs exercise the provenance/archive checks but do not upload or
+deploy.
 
 Before any future release workflow or artifact class is introduced:
 
@@ -201,6 +191,7 @@ Before any future release workflow or artifact class is introduced:
   [#19](https://github.com/brendankowitz/nachos/issues/19), including inherited
   Microsoft/distribution findings; a provenance pass is insufficient.
 - Independently review the source and final generated artifact.
-- Preserve build → seal → full audit → verify → archive → verify → upload
-  ordering, with no rebuilding after audit.
+- Preserve build → seal → verify → archive → verify → upload ordering for Pages,
+  with no rebuilding after verification. The separate full-audit job remains
+  fail-closed and informational for docs-site publication.
 - Azure requires separate consent.

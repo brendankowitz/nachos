@@ -218,6 +218,9 @@ foreach ($workflowFile in $workflowFiles) {
                         $uploadStepCount++
                         Assert-PagesUploadStep $step
                     }
+                    elseif ($jobName -eq 'pages' -and $action -cmatch '^actions/setup-python@') {
+                        throw 'Pages artifact job must not install Python; docs-site licensing is not a publication gate.'
+                    }
                     elseif ($action -cnotmatch '^actions/(checkout|setup-dotnet|setup-node|setup-python)@[a-f0-9]{40}$') {
                         throw "Documentation CI only permits SHA-pinned source setup actions: $action"
                     }

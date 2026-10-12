@@ -173,42 +173,6 @@ unreviewed entries fail. Overrides can supply missing text or resolve metadata
 disagreement, but cannot erase observed components, declared AND obligations or
 prohibited licenses. **The checker never writes reviews or exceptions.**
 
-`eng/license-overrides.json` is also where the reviewed emitted-docsite package
-records live. Those records are exact-version npm identities only, with review
-evidence pointing at the owner-reviewed issue comment and exact locked tarball
-URLs for the emitted non-Pagefind package union. Pagefind search is disabled
-pending [#26](https://github.com/brendankowitz/nachos/issues/26) because its
-WASM embeds GPL-3.0-only `pagefind_microjson`; the override records do not
-relabel or approve those opaque bundles. The records do not approve non-emitted
-docs tooling and do not change the docs-generation exemption below.
-
-## Documentation publication gate
-
-The `verify-publication` command is a narrow release gate for the GitHub Pages
-site artifact:
-
-```powershell
-dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll verify-publication `
-  --repo . `
-  --report artifacts/ci/docs/audit/license-report.json `
-  --docs-report artifacts/ci/docs/provenance-report.json `
-  --site-output docs/site/dist
-```
-
-It requires the full audit report to contain docs provenance matching the
-standalone `verify-docs` report for the same immutable `dist`, requires every
-provenance package identity to have exactly one accepted npm decision in the
-`distributed` tier with only allowlisted selected license components, rejects
-docs-provenance input errors and errors attributed to emitted packages, and
-requires `dist/THIRD-PARTY-NOTICES.txt` to name every emitted package identity.
-While #26 keeps search disabled, it also fails if the site output contains a
-top-level `pagefind/` directory or any `.wasm` or `.pagefind` file.
-
-This command intentionally does **not** turn the full audit green. Non-emitted
-docs tooling and unrelated API/CLI baseline findings remain in the report and
-the command prints a one-line count of remaining full-audit errors. The
-fail-closed full audit job still propagates the production audit exit code.
-
 ## Complete docs-output v1 consumer and docs-generation policy
 
 The [owner decision](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6084081762)
@@ -334,17 +298,14 @@ not-executed entries in a default Linux run). Linux execution therefore remains
 an integration validation requirement, not a claimed platform proof.
 
 Closed output-bound roles: `copy`, `vite-chunk`, `vite-asset`,
-`expressive-stylesheet`, `expressive-script`, `sitemap`, and the historical
-`pagefind` role. Current publication disables Pagefind search and the release
-gate rejects any Pagefind/WASM output pending #26.
+`expressive-stylesheet`, `expressive-script`, `sitemap`, `pagefind`.
 Every such hash equals the output hash; `copy` also requires one identical
 source. Intermediate roles: `astro-render`, `expressive-html`,
 `expressive-inline-style`, `mermaid-svg`.
 With no intermediates there must be exactly one output-bound record. With
 intermediates there must be exactly one `astro-render` anchor and either no
-output-bound record on a literal `.html` path, or the historical Pagefind search
-case. All other contexts fail; the obsolete ambiguous `expressive-style` is
-unknown.
+output-bound record on a literal `.html` path, or one output-bound `pagefind`.
+All other contexts fail; the obsolete ambiguous `expressive-style` is unknown.
 Intermediate hashes do not claim to be literal substrings of serialized HTML.
 
 ### Eligibility and reporting

@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
-if (($Audit -or $Publication) -and -not $PythonExecutable) { throw 'The full audit requires an explicitly selected Python interpreter.' }
+if ($Audit -and -not $PythonExecutable) { throw 'The full audit requires an explicitly selected Python interpreter.' }
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Set-Location $root
 if ($PythonExecutable) {
@@ -70,7 +70,7 @@ if (-not ($Audit -or $Publication)) {
 }
 
 $checker = Join-Path $root 'eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll'
-if ($Audit -or $Publication) {
+if ($Audit) {
     $npmArchives = Join-Path $work 'npm-archives'
     $pythonArchives = Join-Path $work 'python-archives'
     foreach ($producer in @('docs/site', '.github/scripts', 'test/conformance/typescript')) {
@@ -100,22 +100,13 @@ Invoke-DocsCommand dotnet @($checker, 'verify-docs', '--site-root', 'docs/site',
     '--npm-root', 'docs/site', '--output-root', 'docs/site/dist',
     '--report', (Join-Path $work 'provenance-report.json'))
 
-if ($Audit -or $Publication) {
+if ($Audit) {
     # The production checker discovers the site lock/dist; this is a full audit,
     # not the green verify-docs protocol check above. Preserve its raw failure.
     & (Join-Path $root 'eng/license-check/Check-Licenses.ps1') `
         -ApiPublishRoot (Join-Path $work 'publish/Api') -CliPublishRoot (Join-Path $work 'publish/Cli') `
         -NpmArchives $npmArchives -PythonArchives $pythonArchives -OutputDirectory (Join-Path $work 'audit')
-    $auditExit = $LASTEXITCODE
-    if ($Audit -and $auditExit -ne 0) { exit $auditExit }
-    if ($Publication) {
-        Write-Host "Full audit completed with exit code $auditExit; publication gate will evaluate the emitted docs artifact only."
-        Invoke-DocsCommand dotnet @($checker, 'verify-publication',
-            '--repo', $root,
-            '--report', (Join-Path $work 'audit/license-report.json'),
-            '--docs-report', (Join-Path $work 'provenance-report.json'),
-            '--site-output', 'docs/site/dist')
-    }
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 Invoke-DocsCommand node @('.github/scripts/docs-artifact.mjs', 'archive', $root, $seal, $archive)

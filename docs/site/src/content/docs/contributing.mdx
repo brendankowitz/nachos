@@ -19,16 +19,12 @@ the site and Markdown checks. Add a failing regression before changing validator
 or artifact-provenance behavior. Every new internal link must pass the real build.
 
 The site's [maintainer notes](https://github.com/brendankowitz/nachos/blob/main/docs/site/README.md)
-describe dependency provenance, license boundaries, and reference generation.
+describe output provenance, workflow boundaries, and reference generation.
 Never hide an unknown shipped package by returning an empty manifest.
-Published builds include the exact [third-party notices](/nachos/THIRD-PARTY-NOTICES.txt)
-for redistributed docs-site packages. Pagefind search remains disabled pending
-[#26](https://github.com/brendankowitz/nachos/issues/26) because its WASM embeds
-GPL-3.0-only code.
 
 ## Deployment consent
 
 Documentation changes do not authorize GitHub Pages configuration, secret
 creation, Azure provisioning, or resource deletion. The checked-in Pages profile
-publishes only from `main` after the docs artifact and publication-license gates
+publishes only from `main` after the docs artifact provenance and archive checks
 pass. Azure work still requires separate consent.
