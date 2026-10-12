@@ -186,6 +186,17 @@ jobs:
           $projection | Set-Content -LiteralPath $projectionPath -Encoding utf8NoBOM
           & $selectedPython -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r $projectionPath --dest artifacts/ci/python-archives
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Produce the emitted docs evidence without uploading it
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          $env:DOCS_CONFIGURATION = 'Release'
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $PWD 'docs/site/.playwright'
+          npm --prefix docs/site run browser:install -- --with-deps
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix docs/site run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the production audit and propagate its raw failure
         env:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
