@@ -8,8 +8,7 @@ namespace Nachos.Cli.Tests;
 public sealed class NoticeTests
 {
     // Path in the output, and the repo file it must be a byte-for-byte copy of. The license sits at the same repo-relative path
-    // as its source (eng/licenses/...), which is where the reviewed notice contract (eng/license-check/DacFxApproval.cs) and
-    // the API's publish output put it.
+    // as its source (eng/licenses/...), which is also where the API's publish output puts it.
     private static readonly (string Published, string Source)[] Notices =
     [
         ("THIRD-PARTY-NOTICES.md", "THIRD-PARTY-NOTICES.md"),

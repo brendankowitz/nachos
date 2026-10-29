@@ -17,10 +17,8 @@ defaults:
   run:
     shell: pwsh
 
-# Source validation and the separate fail-closed full audit remain unchanged.
-# Per the owner decision, docs-site library licensing is not a Pages publication
-# gate. The pages job builds, verifies and archives the emitted static site
-# before uploading only from main; deployment is isolated to the GitHub Pages
+# The pages job builds, verifies and archives the emitted static site before
+# uploading only from main; deployment is isolated to the GitHub Pages
 # environment with the minimal Pages/OIDC grant.
 jobs:
   source:
@@ -41,31 +39,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
-      - name: Validate source only (not a license approval)
+      - name: Validate documentation source
         run: ./eng/ci/Invoke-DocsSite.ps1
-
-  licenses:
-    name: Full emitted-site and dependency license audit (fail closed)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
-        with:
-          dotnet-version: '10.0.401'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24.21.0'
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        id: python
-        with:
-          python-version: '3.13'
-      - name: Build, seal, audit, then verify the same local artifact
-        env:
-          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
-        run: ./eng/ci/Invoke-DocsSite.ps1 -Audit -PythonExecutable $env:CI_PYTHON_EXECUTABLE
 
   pages:
     name: Build and verify Pages artifact

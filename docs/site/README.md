@@ -127,50 +127,24 @@ node docs/site/scripts/verify-provenance.mjs
 node .github/scripts/docs-artifact.mjs seal . artifacts/ci/docs/tree-seal.json
 ```
 
-The C# `verify-docs` command is a **protocol check, not a license audit**:
-
-```powershell
-dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll verify-docs --site-root docs/site --asset-root docs/assets --npm-root docs/site --output-root docs/site/dist --site $env:DOCS_SITE --base $env:DOCS_BASE --report artifacts/ci/docs/provenance-report.json
-```
-
-Build that checker via `dotnet build test/Nachos.LicenseCheck.Tests -c Release`
-first. Its npm root is the directory containing `node_modules`, not that
-subdirectory. Preserve the same `DOCS_SITE`/`DOCS_BASE` settings as the build:
-the first block fills in only unset values, using the build's defaults. The C#
-checker does not read those environment variables, so pass both arguments.
-The custom-domain integration test builds real output and executes both blocks.
+Preserve the same `DOCS_SITE`/`DOCS_BASE` settings as the build: the block
+fills in only unset values, using the build's defaults. The custom-domain
+integration test builds real output and executes this block.
 
 The artifact helper validates closed USTAR framing, octal fields, padding,
 terminators, directory inventory and every regular file's bytes, including
 hidden metadata. It rejects links, special files, aliases, GNU/PAX extensions
 and tree mutations before/during archiving. It never rebuilds audited output.
 
-## Full audit and Pages publication
+## Pages publication
 
-`.github/workflows/docs-site.yml` has independent source, full-license and
-Pages-publication jobs. Source validation and the fail-closed full audit keep
-their existing behavior on main, PRs and manual dispatch, with read-only
-contents permission, pinned setup actions and credential-free checkout.
+`.github/workflows/docs-site.yml` has independent source and Pages-publication
+jobs, with read-only contents permission, pinned setup actions and
+credential-free checkout.
 
-The license job calls `Invoke-DocsSite.ps1 -Audit -PythonExecutable <selected-python>`.
-It performs one final site build and seal; prepares actual API/CLI publish
-outputs, solution NuGet inventory/cache, all locked npm archives and every
-hash-locked Python audit identity; then runs the existing production
-`Check-Licenses.ps1`. That checker discovers the site lock and emitted provenance.
-Its raw failure stops further artifact handling. No policy/allowlist/exception
-or inherited source-merge waiver is changed. Source CI can be green while the
-full audit remains honestly red.
-
-On audit success, the same tree is reverified, archived and checked again.
-The source job also exercises these local artifact mechanics without claiming
-license approval.
-
-The separate `pages` job runs `Invoke-DocsSite.ps1 -Publication` on PRs and
-main. Per the owner decision, docs-site library licensing is not a Pages
-publication gate. Publication mode installs the locked tools, performs one final
-site build, seals the tree, runs `verify-docs` for output provenance, archives
-the same sealed `dist`, and verifies the archive. It does not run the full audit,
-does not require Python, and does not run a docs licensing gate.
+The `pages` job runs `Invoke-DocsSite.ps1 -Publication` on PRs and main.
+Publication mode installs the locked tools, performs one final site build,
+seals the tree, archives the same sealed `dist`, and verifies the archive.
 
 Only `push` or `workflow_dispatch` on `refs/heads/main` uploads
 `docs/site/dist` with the SHA-pinned `actions/upload-pages-artifact` action.

@@ -54,7 +54,7 @@
     <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.1" />
     <!-- Bootstrap CLI (Nachos.Cli) -->
     <PackageVersion Include="System.CommandLine" Version="2.0.12" />
-    <!-- Tooling only (eng/license-check); never a product dependency -->
+    <!-- CI tooling only (eng/ci/WorkflowYaml); never a product dependency -->
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 </Project>

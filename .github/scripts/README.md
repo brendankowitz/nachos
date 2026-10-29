@@ -64,22 +64,14 @@ does not persist checkout credentials, and requires no secrets.
   `GHSA-f23m-r3pf-42rh`. The first patched release, 4.18.0, is deprecated
   by its publisher as a bad release.
 
-These overrides are confined to this private documentation validator. They do
-not expand the existing shipping or license exception below: `elkjs` remains
-**0.9.3**, restricted to unmodified, non-distributed developer/CI tooling.
+These overrides are confined to this private documentation validator. `elkjs`
+remains **0.9.3** (see the license note below).
 Browser rendering remains outside this syntax-only tool's validation; dependency
 compatibility smoke checks are not a tested guarantee of browser rendering.
 
-## Dependency license exception
+## Dependency license note
 
-[`eng/license-exceptions.json`](../../eng/license-exceptions.json) records the
-reviewed EPL-2.0 exception for npm `elkjs` **0.9.3** only, used by Mermaid syntax
-validation in `.github/scripts`. The installed
-`.github/scripts/node_modules/elkjs/LICENSE.md` contains the Eclipse Public
-License v2.0 text.
-
-This exception permits only unmodified, non-distributed developer/CI tooling.
-It does **not** permit shipping Mermaid/ELK assets in NuGet packages, CLI or
-container outputs, or published docs-site assets. There are no shipping product
-artifacts in this PR; this record does not implement or imply emitted-artifact
-license scanning.
+npm `elkjs` **0.9.3**, used by Mermaid syntax validation here, is EPL-2.0. That
+is acceptable for unmodified, non-distributed developer/CI tooling only; do not
+ship Mermaid/ELK assets in NuGet packages, CLI or container outputs, or
+published docs-site assets.

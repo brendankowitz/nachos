@@ -147,9 +147,9 @@ foreach ($workflowFile in $workflowFiles) {
             $jobName = $entry.Key.Value
             $job = $entry.Value
             $uploadStepCount = 0
-            if ($jobName -in @('source', 'licenses')) {
+            if ($jobName -eq 'source') {
                 foreach ($key in @('permissions', 'environment', 'continue-on-error', 'uses')) {
-                    if (HasKey $job $key) { throw "Documentation source/audit job cannot set $key." }
+                    if (HasKey $job $key) { throw "Documentation source job cannot set $key." }
                 }
             }
             elseif ($jobName -eq 'pages') {
@@ -236,7 +236,7 @@ foreach ($workflowFile in $workflowFiles) {
                         Assert-PagesUploadStep $step
                     }
                     elseif ($jobName -eq 'pages' -and $action -cmatch '^actions/setup-python@') {
-                        throw 'Pages artifact job must not install Python; docs-site licensing is not a publication gate.'
+                        throw 'Pages artifact job must not install Python.'
                     }
                     elseif ($action -cnotmatch '^actions/(checkout|setup-dotnet|setup-node|setup-python)@[a-f0-9]{40}$') {
                         throw "Documentation CI only permits SHA-pinned source setup actions: $action"

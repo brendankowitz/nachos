@@ -1,11 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <!-- Has no code: restores YamlDotNet into bin/ so Test-WorkflowPolicy.ps1 can Add-Type it. -->
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="YamlDotNet" />
-    <EmbeddedResource Include="license-templates.json" />
-    <InternalsVisibleTo Include="Nachos.LicenseCheck.Tests" />
   </ItemGroup>
 </Project>
