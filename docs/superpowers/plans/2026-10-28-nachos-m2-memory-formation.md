@@ -70,7 +70,7 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 |---|---|---|---|
 | D1 | `IWorkQueue.EnqueueAsync` "joins the ambient transaction" (§7.1); `MessageIngestionService` runs enqueue in one transaction (§10.2). | No unit of work and no ambient transaction. Each store method opens its own connection and transaction (`SqlMessageStore.AppendAsync`). | Enqueue happens **inside `IMessageStore.AppendAsync`**. Core passes a per-message derive decision; the provider resolves observers with the shared pure rule (Abstractions) inside the same transaction and inserts the `WorkItems`. No ambient-transaction machinery. |
 | D2 | Queue claim, seq allocation and status live in stored procedures (`AcquireWorkUnit`, `AllocateMessageSeq`, `GetQueueStatus`, `GetDueWorkCount`). | No stored procedures. Seq allocation is inline parameterized SQL. | Keep inline parameterized SQL in `SqlWorkQueue`, matching the code. `GetDueWorkCount` is added only when KEDA (R7) is verified (Task 9, owner-gated). |
-| D3 | The schema version stays `1` until the first release (§7.3). | `SchemaGate` only deploys when the database is behind `SchemaInfo.CurrentVersion`, so an M1 database stamped `1` would **never receive the M2 tables**. | Bump `SchemaInfo.CurrentVersion` and the post-deploy literal to `2` (all-additive, `AutoSafe`). Owner question Q1. |
+| D3 | The schema version stays `1` until the first release (§7.3). | `SchemaGate` only deploys when the database is behind `SchemaInfo.CurrentVersion`, so an M1 database stamped `1` would **never receive the M2 tables**. | **Owner (Q1): keep version `1` until the first release.** Pre-release databases are recreated, or taken through `schema report` + `schema upgrade --approve-reviewed`. |
 | D4 | Message configuration's `reasoning` and the resolver drive derivation (§8). | `NachosService.CreateMessagesResponseAsync` validates configuration but never calls `IConfigurationResolver`. `NewMessage` has no configuration. | Task 3 resolves `reasoning.enabled` per message (message > session > workspace > global) and passes the result to `AppendAsync`. |
 | D5 | `PeerCards.Entries json`, `WorkItems.Payload json` (§7.2 table). | All JSON is `nvarchar(max)` with an `ISJSON` CHECK (§7.2 prose, and every M1 table). | Use `nvarchar(max)` plus `ISJSON(…, ARRAY/OBJECT)`, like M1. |
 | D6 | Deriver is an Agent Framework `RunAsync<ExtractionResult>` (§4.2, §11.1). | No AI packages. | The Deriver is one tool-less structured call, so it uses `IChatClient.GetResponseAsync<ExtractionResult>` (M.E.AI) directly. Agent Framework (`ChatClientAgent`, `AIFunction` tool loops) comes in with M4 dialectic, where it adds value. Agent Framework's `RunAsync<T>` sits on the same M.E.AI abstraction, so nothing is lost ([Agent Framework structured outputs](https://learn.microsoft.com/en-us/agent-framework/agents/structured-outputs)). |
@@ -85,11 +85,11 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 
 ## Tasks
 
-### Task 1: M2 schema (additive) and schema version 2
+### Task 1: M2 schema (additive; schema version stays 1)
 
 **Files:**
 - Create in `src/DataLayer/Nachos.DataLayer.SqlServer.Database/Tables/`: `Collections.sql`, `Conclusions.sql`, `ConclusionSources.sql`, `ConclusionCorroborations.sql`, `PeerCards.sql`, `MessageEmbeddings.sql`, `WorkItems.sql`, `WorkUnitLeases.sql`.
-- Modify: `Scripts/Script.PostDeployment.sql` (version literal `2`), `src/DataLayer/Nachos.DataLayer.SqlServer/Schema/SchemaInfo.cs` (`CurrentVersion = 2`).
+- No version change: `SchemaInfo.CurrentVersion` stays `1` (Q1). Existing pre-release databases are recreated or take the reviewed upgrade path.
 - Tests: `test/Nachos.DataLayer.SqlServer.Tests/Schema/M2SchemaTests.cs`.
 
 **Depends on:** none (Q1 answered).
@@ -113,14 +113,14 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 The vector dimension is fixed at **1536** (Q2). Startup validates the configured embedding dimension against the column (Task 4).
 
 - [ ] **Step 1:** Write `M2SchemaTests`:
-  - `UpgradeFromM1Database_IsAutoSafe_AndStampsVersion2`: deploy the M1 dacpac (from git tag or a fixture copy), then this one, and assert the classification is `AutoSafe`;
+  - `M2Tables_DeployToEmptyDatabase`, and `M1Database_ReviewedUpgrade_AddsM2Tables` (deploy the M1 dacpac, then `schema upgrade --approve-reviewed` with this one; the report classifies the change as additive);
   - `AllIndexKeys_WithinSqlLimits` (extended to the new tables);
   - `VectorColumns_Dimension1536_OnBothDacpacs`;
   - `WorkItemsTaskType_RejectsUnknownValue`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.DataLayer.SqlServer.Tests --filter M2Schema`. Expected: FAIL.
 - [ ] **Step 3:** Write the DDL. Build both `.sqlproj` projects. **Spike first:** confirm that `Microsoft.Build.Sql` 2.2.0 / DacFx 170.4.83 build `VECTOR(1536)` for both `SqlAzureV12` and `Sql170`. Microsoft's release notes say VECTOR is supported for SQL project build on Azure SQL and SQL Server 2025 ([SqlPackage release notes](https://learn.microsoft.com/en-us/sql/tools/sqlpackage/release-notes-sqlpackage)). If a pinned version fails, bump DacFx (owner Microsoft-library policy, spec §3) and record it in the PR.
 - [ ] **Step 4:** Run it again. Expected: PASS. Also run the full `SchemaDeployerTests`.
-- [ ] **Step 5:** Amend spec §7.2 (D5, the 1536 decision) and §7.3 (D3). Commit `feat(schema): M2 memory and queue tables; schema version 2`.
+- [ ] **Step 5:** Amend spec §7.2 (D5, the 1536 decision). Commit `feat(schema): M2 memory and queue tables`.
 
 ### Task 2: Abstractions and in-memory provider
 
@@ -394,12 +394,13 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 - Modify `src/Nachos.Client/NachosHttpClient.cs` (new methods; read routes retry, `POST C` does not).
 - Tests: `test/Nachos.Api.Tests/{ConclusionEndpointTests,PeerMemoryEndpointTests,QueueEndpointTests}.cs`, `WireCoverageTests` updated, `ScopeMatrixTests` rows, and `test/Nachos.Client.Tests` round-trips. Add conformance smoke scenarios for conclusions create/list/query/delete and card get/set.
 
-**Depends on:** 7. Q7 must be answered.
+**Depends on:** 7.
 
-**Auth (proposal; Q7):**
-- The conclusion routes and `W/queue/status` require `RouteAccess.Workspace`.
-- `P/card` (`GET`/`PUT`), `P/representation` and `P/context` require `RouteAccess.Peer`, with `p == peer_id` for peer-scoped keys.
-- No M2 route is added to the member-read allowlist.
+**Auth (owner, Q7): mirror Honcho.** Each M2 route's scope requirement matches Honcho's documented scoped-key behaviour, established from Honcho's public docs and black-box SDK behaviour only (clean-room, spec §3), never its source.
+- Step 0 records, per route, the evidence (doc link or SDK observation) and the resulting `RouteAccess` in the PR.
+- Where the public evidence is silent, fall back to: conclusions and `W/queue/status` → `RouteAccess.Workspace`; `P/card`, `P/representation`, `P/context` → `RouteAccess.Peer` with `p == peer_id`. List each fallback in the PR.
+
+- [ ] **Step 0:** Collect the scoped-key evidence above and write the `ScopeMatrixTests` rows from it.
 
 - [ ] **Step 1:** Write the endpoint tests for each route. Cover status codes exactly as in `honcho-v3-wire.json`, the 422 bounds (batch 1–100, content ≤ 65,535, `top_k` 1–100, `distance` 0–1, `max_conclusions` 1–100), the 401 matrix rows, the 501 list shrinking by exactly the M2 pairs, and the OpenAPI wire diff.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Api.Tests test/Nachos.Client.Tests`. Expected: FAIL.
@@ -439,7 +440,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 The M2 PR merges when all of these hold:
 
 - [ ] Tasks 1–9 are committed with their tests.
-- [ ] CI is green at the final SHA: build-test (both OSes), SQL/CLI/AppHost (Docker), schema (both dacpacs; the M1→M2 upgrade classifies `AutoSafe`), infra, docs, and SDK smoke.
+- [ ] CI is green at the final SHA: build-test (both OSes), SQL/CLI/AppHost (Docker), schema (both dacpacs; the reviewed M1→M2 upgrade adds the tables), infra, docs, and SDK smoke.
 - [ ] The queue concurrency tests have been looped 20× on SQL, with results posted against the SHA.
 - [ ] Locally (Aspire, `UseFakeAI`): a posted message produces conclusions, visible through `C/list` and `P/representation`, with no manual steps.
 - [ ] No M2 read path bypasses `VisibilityPolicy` (architecture test green).
@@ -449,20 +450,22 @@ The M2 PR merges when all of these hold:
 
 ## Owner actions requested (not performed by agents)
 
-1. **Answer the open questions below** (each names the task it blocks).
+1. ~~Answer the open questions below~~ (answered 2026-10-28).
 2. **Approve one M2 Azure smoke run** once Task 9 lands. The agents will post the exact commands (`azd env new nachos-m2 …`, `azd up`) plus the model deployment names. The run verifies the worker, Azure OpenAI chat and embeddings, and one end-to-end derivation. Cleanup (`azd down --purge`) needs its own approval.
 3. **R7 KEDA verification (optional for M2 merge):** approve a run that applies the `mssql` scale rule with the worker's managed identity on Container Apps. Until that run succeeds, the worker stays at `minReplicas = 1` with CPU scaling. Microsoft's docs confirm the `identity` property on Container Apps scale rules in general, but no source confirms the `mssql` scaler specifically ([Container Apps managed identity](https://learn.microsoft.com/azure/container-apps/managed-identity), [KEDA mssql scaler](https://keda.sh/docs/scalers/mssql/)).
 4. **(Optional) A live Deriver quality spot-check** through the `azure-live` environment. The eval harness itself is M4.
 
-## Open questions for the owner
+## Owner decisions (2026-10-28)
 
-| # | Question | Proposed default | Blocks |
+Q1, Q2, Q6 and Q7 were answered by the owner. Q3, Q4, Q5 and Q8 take the proposed default.
+
+| # | Question | Decision | Blocks |
 |---|---|---|---|
-| Q1 | Spec §7.3 keeps the schema version at `1` until the first release, but the deployer only applies changes when the stamp is behind, so M1 databases would never get the M2 tables (D3). Bump to `2` now? | **Yes.** Bump per milestone that adds DDL. Each bump is additive and `AutoSafe`. | Task 1 |
-| Q2 | The embedding dimension is fixed in DDL (`VECTOR(1536)`, `text-embedding-3-small`). Is a deploy-time dimension needed? | **Fixed at 1536.** Another model must use the `dimensions` request parameter (spec §7.4). Startup fails on a mismatch. | Task 1 |
+| Q1 | Spec §7.3 keeps the schema version at `1` until the first release, but the deployer only applies changes when the stamp is behind, so M1 databases would never get the M2 tables (D3). Bump to `2` now? | **Owner: no, stay at `1`.** Recreate pre-release databases (or use the reviewed upgrade). | Task 1 |
+| Q2 | The embedding dimension is fixed in DDL (`VECTOR(1536)`, `text-embedding-3-small`). Is a deploy-time dimension needed? | **Fixed at 1536.** Another model must use the `dimensions` request parameter (spec §7.4). Startup fails on a mismatch. **Owner: confirmed.** | Task 1 |
 | Q3 | `PeerRepresentationGet.scope` exists on the wire, but scopes are M6. What should M2 do when `scope` is set? | Return **422** `scope is not supported in this Nachos version`, so it fails closed. | Task 7 |
 | Q4 | Should `PUT P/card` enforce the 40-entry cap and the category prefixes (`IDENTITY`/`ATTRIBUTE`/`RELATIONSHIP`/`INSTRUCTION`), which the spec defines only for dream-written cards (§11.10)? | **No cap or prefix check on `PUT`** (store what the caller sends; the wire has no bound). The cap applies to agent-written cards (M5). | Task 7 |
 | Q5 | For explicit conclusions (deriver- or API-created), should the wire `source_ids` list the source **message** public ids, or stay empty? The spec stores message provenance separately from `ConclusionSources` (conclusion → conclusion premises). | **Empty for explicit**, with message ids kept in `InternalMetadata`. Revisit with black-box SDK evidence. | Tasks 5, 7 |
-| Q6 | Should Bicep provision the Azure OpenAI account and model deployments, or keep taking an existing endpoint (`openAiEndpoint`) as M1 does? | **Keep taking an existing endpoint**, adding deployment-name parameters and the `Cognitive Services OpenAI User` role for the managed identity. Provisioning AOAI raises quota and region issues (R6). | Task 9 |
-| Q7 | Should peer-scoped keys reach `P/representation`, `P/context` and `P/card` for their own peer, and should conclusions be workspace-only? | **Yes** to peer access for its own `peer_id`, **workspace** for conclusions and queue status, and no member-read additions. | Task 8 |
+| Q6 | Should Bicep provision the Azure OpenAI account and model deployments, or keep taking an existing endpoint (`openAiEndpoint`) as M1 does? | **Keep taking an existing endpoint**, adding deployment-name parameters and the `Cognitive Services OpenAI User` role for the managed identity. Provisioning AOAI raises quota and region issues (R6). **Owner: confirmed.** | Task 9 |
+| Q7 | Should peer-scoped keys reach `P/representation`, `P/context` and `P/card` for their own peer, and should conclusions be workspace-only? | **Owner: mirror Honcho's scoped-key behaviour** from public docs and black-box SDK evidence (Task 8 Step 0); own-peer/workspace split is the fallback where evidence is silent. | Task 8 |
 | Q8 | Should the Deriver also maintain the peer card when `peer_card.create` is true? Spec §11.2 lists no card step, while card updates are a dream behavior (§11.10). | **No card writes in M2.** Cards are set via `PUT` only until M5. | Task 5 |
