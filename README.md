@@ -254,28 +254,22 @@ A minimal smoke suite drives the upstream Python (`honcho-ai` 2.5.1) and TypeScr
 | SQL filters | A metadata key longer than 4000 UTF-16 code units, or a single filter with more than 2000 SQL parameters, is rejected with `422`. A pathological unmergeable filter, or a long `contains` / `icontains` operand over repetitive text, can hit the 30 second command timeout and surface as `500` rather than `422`: [#18](https://github.com/brendankowitz/nachos/issues/18). |
 | Pre-release schema | The schema version stays `1` until the first release, so a database created by an earlier M1 build reads as current. Take the reviewed path once: `schema report`, then `schema upgrade --approve-reviewed`. New databases need nothing. See section 7.3 of the design spec. |
 
-## Release holds
+## Third-party licenses
 
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) records the scoped notices for `Microsoft.SqlServer.DacFx`, the SqlClient SNI runtime and `Microsoft.SqlServer.Types`. It is not a complete dependency inventory.
-
-No binaries or container images are distributed yet:
-
-- The governing terms of `Microsoft.SqlServer.Types` 170.1000.7 are unresolved (its embedded licence is a pre-release evaluation document), which blocks artifacts that contain it: [#15](https://github.com/brendankowitz/nachos/issues/15).
-- `Microsoft.Identity.Client.NativeInterop` 0.20.6, observed transitively in the API and CLI outputs, has unresolved distribution terms: [#19](https://github.com/brendankowitz/nachos/issues/19). Accepting a license as engineering policy is not the same as having the publisher's distribution rights.
-- The tokenizer above is a production-release gate ([#10](https://github.com/brendankowitz/nachos/issues/10)).
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) records the notices for `Microsoft.SqlServer.DacFx`, the SqlClient SNI runtime and `Microsoft.SqlServer.Types`. Dependencies are expected to use Microsoft or permissive open-source licenses; see section 3 of the design spec. The tokenizer above is a production-release gate ([#10](https://github.com/brendankowitz/nachos/issues/10)).
 
 ## Roadmap
 
 | Theme | Issues |
 | --- | --- |
 | Parity | [#2](https://github.com/brendankowitz/nachos/issues/2) full Honcho v3 parity on .NET and Azure |
-| Release gates | [#10](https://github.com/brendankowitz/nachos/issues/10) tokenizer, [#15](https://github.com/brendankowitz/nachos/issues/15) `Microsoft.SqlServer.Types`, [#19](https://github.com/brendankowitz/nachos/issues/19) distribution terms |
-| Docs and conformance | [#11](https://github.com/brendankowitz/nachos/issues/11) SDK conformance, [#12](https://github.com/brendankowitz/nachos/issues/12) docs tooling |
+| Release gates | [#10](https://github.com/brendankowitz/nachos/issues/10) tokenizer |
+| Conformance | [#11](https://github.com/brendankowitz/nachos/issues/11) SDK conformance |
 | Storage and hosting | [#18](https://github.com/brendankowitz/nachos/issues/18) pathological SQL filters, [#7](https://github.com/brendankowitz/nachos/issues/7) revision-based Container App deployment |
 | Request handling | [#8](https://github.com/brendankowitz/nachos/issues/8) and [#9](https://github.com/brendankowitz/nachos/issues/9) error-location and malformed-Unicode validation |
 | Later | [#3](https://github.com/brendankowitz/nachos/issues/3) Honcho data import, [#4](https://github.com/brendankowitz/nachos/issues/4) legacy `/v2` |
 
-Tooling and policy issues: [#13](https://github.com/brendankowitz/nachos/issues/13), [#14](https://github.com/brendankowitz/nachos/issues/14), [#17](https://github.com/brendankowitz/nachos/issues/17). No date is promised. The M1 plan is [`docs/superpowers/plans/2026-10-07-nachos-m1-foundation.md`](docs/superpowers/plans/2026-10-07-nachos-m1-foundation.md).
+Tooling and policy issues: [#13](https://github.com/brendankowitz/nachos/issues/13), [#17](https://github.com/brendankowitz/nachos/issues/17). No date is promised. The M1 plan is [`docs/superpowers/plans/2026-10-07-nachos-m1-foundation.md`](docs/superpowers/plans/2026-10-07-nachos-m1-foundation.md).
 
 ## 🤝 Contributing
 
