@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { digest, regularFile } from './output-evidence.mjs';
+import { digest, regularFile } from './site-files.mjs';
 
 export const referenceNames = ['cli.md', 'compatibility.json', 'options.md', 'rest-api.json'];
 const referenceDirectory = 'src/content/docs/reference/_generated';

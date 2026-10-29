@@ -80,7 +80,7 @@ Publisher: Microsoft. The complete, unchanged
 accompanies this notice, including its English and French provisions. The
 [official exact-version package license](https://www.nuget.org/packages/Microsoft.SqlServer.Types/170.1000.7/License)
 also reproduces the evaluation terms; no replacement governing terms have
-been established by the retained provenance checks.
+been established.
 
 The document is titled **MICROSOFT PRE-RELEASE SOFTWARE LICENSE TERMS /
 MICROSOFT SQL SERVER VNEXT COMMUNITY PREVIEW** and states **TERM until

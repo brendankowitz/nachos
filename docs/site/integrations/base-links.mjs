@@ -1,5 +1,5 @@
 import { relative } from 'node:path';
-import { files, regularFile } from './output-evidence.mjs';
+import { files, regularFile } from './site-files.mjs';
 
 export async function verifyRenderedLinks(output, { site, base }) {
   const { fromHtml } = await import('hast-util-from-html');

@@ -22,7 +22,7 @@ defaults:
 # environment with the minimal Pages/OIDC grant.
 jobs:
   source:
-    name: References, site, links and provenance (${{ matrix.os }})
+    name: References, site and links (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
