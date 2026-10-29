@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
+using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
 using Nachos.Core.Configuration;
@@ -27,8 +28,14 @@ namespace Nachos.Core.Deriver;
 /// including a lost lease, leaves no trace, so a retry recomputes the batch from scratch and cannot count a fact twice.
 /// </para>
 /// <para>
-/// The observers are the snapshot each work item carries (<see cref="RepresentationPayload"/>), never the current
-/// memberships. A fact reaches an observer only if that observer saw every message the fact is sourced from.
+/// Each work item's snapshot (<see cref="RepresentationPayload"/>) is authoritative: its observers, never the current
+/// memberships, and its message-level <c>reasoning</c>, which overrides the session and workspace as they are now. A
+/// message whose reasoning is now disabled is shown as context only. A fact reaches an observer only if that observer saw
+/// every message the fact is sourced from.
+/// </para>
+/// <para>
+/// When the workspace, session or messages are gone (<see cref="NotFoundException"/> while reading), the batch completes
+/// with no changes instead of failing until it is dead-lettered.
 /// </para>
 /// <para>Scoped, because it resolves configuration through the scoped <see cref="IConfigurationResolver"/>.</para>
 /// </remarks>
@@ -36,14 +43,18 @@ public sealed partial class DeriverService : IWorkHandler
 {
     public const string AgentName = "deriver";
 
-    /// <summary>How many messages before the batch's first message are offered as context, budget permitting.</summary>
-    private const int PrecedingContextMessages = 10;
+    /// <summary>
+    /// How many non-batch messages, ending at the batch's last message, are read as context (budget permitting): the
+    /// messages between and just before the batch's messages, newest first.
+    /// </summary>
+    private const int ContextMessages = 10;
 
     private const string PromptResource = "Nachos.Core.Deriver.Prompts.deriver.v1.md";
 
     private static readonly PromptTemplate Prompt = PromptTemplate.LoadEmbedded(typeof(DeriverService).Assembly, PromptResource);
 
-    // The transcript is model input, not HTML, so non-ASCII text stays readable instead of becoming \u escapes.
+    // The transcript is model input, not HTML, so non-ASCII text stays readable instead of becoming \u escapes. Quotes and
+    // backslashes are still escaped, so message content can never break out of its JSON string.
     private static readonly JsonSerializerOptions TranscriptJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private readonly IMemoryStore _store;
@@ -99,40 +110,64 @@ public sealed partial class DeriverService : IWorkHandler
         ArgumentNullException.ThrowIfNull(lease);
         var batch = WorkBatch.From(lease);
 
-        var configuration = await ResolveConfigurationAsync(batch, cancellationToken).ConfigureAwait(false);
-        if (configuration.Reasoning.Enabled.Value is false)
+        Derivation derivation;
+        try
         {
-            LogReasoningDisabled(lease.WorkUnitKey, lease.Items.Count);
-            await CommitAsync(lease, batch.Nothing(), 0, cancellationToken).ConfigureAwait(false);
-            return;
+            derivation = await DeriveAsync(lease.WorkUnitKey, batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (NotFoundException ex)
+        {
+            LogSourceGone(lease.WorkUnitKey, ex.Message);
+            derivation = new Derivation(batch.Nothing(), 0);
         }
 
-        var messages = await LoadMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
-        if (messages.Count == 0)
+        await _store.Conclusions.CommitDerivationAsync(lease, derivation.Changes, cancellationToken).ConfigureAwait(false);
+        LogCommitted(
+            lease.WorkUnitKey,
+            derivation.Facts,
+            derivation.Changes.Inserts.Count,
+            derivation.Changes.Corroborations.Count,
+            derivation.Changes.Replacements.Count);
+    }
+
+    /// <summary>Computes the batch's changes without writing anything.</summary>
+    private async Task<Derivation> DeriveAsync(string workUnitKey, WorkBatch batch, CancellationToken ct)
+    {
+        var configuration = await ResolveConfigurationAsync(batch, ct).ConfigureAwait(false);
+        var sessionEnabled = configuration.Reasoning.Enabled.Value ?? true;
+        var targetIds = batch.MessageIds
+            .Where(id => batch.WorkOf(id).ReasoningEnabled ?? sessionEnabled)
+            .ToHashSet(StringComparer.Ordinal);
+        if (targetIds.Count == 0)
         {
-            await CommitAsync(lease, batch.Nothing(), 0, cancellationToken).ConfigureAwait(false);
-            return;
+            LogReasoningDisabled(workUnitKey, batch.MessageIds.Count);
+            return new Derivation(batch.Nothing(), 0);
         }
 
-        var target = messages[0].PeerName;
-        if (messages.Any(message => !string.Equals(message.PeerName, target, StringComparison.Ordinal)))
+        var targets = await LoadTargetsAsync(batch, targetIds, ct).ConfigureAwait(false);
+        if (targets.Count == 0)
+        {
+            return new Derivation(batch.Nothing(), 0);
+        }
+
+        var target = targets[0].PeerName;
+        if (targets.Any(message => !string.Equals(message.PeerName, target, StringComparison.Ordinal)))
         {
             throw new InvalidOperationException(
-                $"Work unit '{lease.WorkUnitKey}' holds messages from more than one sender; a representation unit has one.");
+                $"Work unit '{workUnitKey}' holds messages from more than one sender; a representation unit has one.");
         }
 
         var system = Prompt.Render(new Dictionary<string, string>
         {
             ["target_peer"] = target,
-            ["custom_instructions"] = RenderCustomInstructions(configuration),
+            ["custom_instructions"] = RenderCustomInstructions(configuration, batch, targets),
         });
-        var transcript = await BuildTranscriptAsync(batch, messages, target, system, cancellationToken).ConfigureAwait(false);
-        var extraction = await ExtractAsync(lease.WorkUnitKey, batch.WorkspaceName, system, transcript, cancellationToken)
-            .ConfigureAwait(false);
-        var candidates = Validate(lease.WorkUnitKey, extraction, messages);
-        var facts = await EmbedAsync(lease.WorkUnitKey, candidates, cancellationToken).ConfigureAwait(false);
-        var changes = await BuildChangesAsync(batch, target, facts, cancellationToken).ConfigureAwait(false);
-        await CommitAsync(lease, changes, facts.Count, cancellationToken).ConfigureAwait(false);
+        var transcript = await BuildTranscriptAsync(batch, targets, target, system, ct).ConfigureAwait(false);
+        var extraction = await ExtractAsync(workUnitKey, batch.WorkspaceName, system, transcript, ct).ConfigureAwait(false);
+        var candidates = Validate(workUnitKey, extraction, targets);
+        var facts = await EmbedAsync(workUnitKey, candidates, ct).ConfigureAwait(false);
+        var changes = await BuildChangesAsync(batch, target, facts, ct).ConfigureAwait(false);
+        return new Derivation(changes, facts.Count);
     }
 
     private async Task<ResolvedConfiguration> ResolveConfigurationAsync(WorkBatch batch, CancellationToken ct)
@@ -141,61 +176,68 @@ public sealed partial class DeriverService : IWorkHandler
             ?? throw new NotFoundException($"Workspace '{batch.WorkspaceName}' not found.");
         var session = await _store.Sessions.GetAsync(batch.WorkspaceName, batch.SessionName, ct).ConfigureAwait(false)
             ?? throw new NotFoundException($"Session '{batch.SessionName}' not found in workspace '{batch.WorkspaceName}'.");
-        // Message-level reasoning was applied at enqueue (it decided whether the item exists); it is not stored.
+        // Message-level reasoning is not stored with the message; each item's snapshot applies it per message.
         return _configurationResolver.Resolve(workspace.Configuration, session.Configuration);
     }
 
-    /// <summary>The batch's messages in <c>Seq</c> order. A message deleted since it was enqueued is left out.</summary>
-    private async Task<List<MessageRecord>> LoadMessagesAsync(WorkBatch batch, CancellationToken ct)
+    /// <summary>
+    /// The target messages in <c>Seq</c> order, read in one filtered list (paged at the store's maximum page size). A
+    /// message deleted since it was enqueued is left out.
+    /// </summary>
+    private async Task<List<MessageRecord>> LoadTargetsAsync(WorkBatch batch, HashSet<string> targetIds, CancellationToken ct)
     {
-        var messages = new List<MessageRecord>();
-        foreach (var messageId in batch.MessageIds)
+        var filter = new FilterNode.Field(
+            FilterColumns.PublicId, FilterOp.In, new JsonArray([.. targetIds.Select(id => JsonValue.Create(id))]));
+        var targets = new List<MessageRecord>();
+        for (var page = 1; ; page++)
         {
-            if (await _store.Messages.GetAsync(batch.WorkspaceName, batch.SessionName, messageId, ct).ConfigureAwait(false)
-                is { } message)
+            var result = await _store.Messages.ListAsync(
+                batch.WorkspaceName, batch.SessionName, filter, new PageRequest(page, PageRequest.MaxSize), ct).ConfigureAwait(false);
+            targets.AddRange(result.Items);
+            if (result.Items.Count < PageRequest.MaxSize)
             {
-                messages.Add(message);
+                return targets;
             }
         }
-
-        messages.Sort((a, b) => a.Seq.CompareTo(b.Seq));
-        return messages;
     }
 
     /// <summary>
-    /// The user message: the batch's messages marked <c>target</c>, plus the messages around and before them as
-    /// <c>context</c>, newest first while they fit <see cref="DeriverOptions.MaxInputTokens"/>. The batch is always
-    /// included, even over budget, because it is the subject of the request; context stops at the first message that
-    /// does not fit, so what is shown is contiguous.
+    /// The user message: the target messages marked <c>target</c>, plus up to <see cref="ContextMessages"/> other messages
+    /// ending at the last target, newest first while they fit <see cref="DeriverOptions.MaxInputTokens"/>. The targets are
+    /// always included, even over budget, because they are the subject of the request; context stops at the first message
+    /// that does not fit, so what is shown is contiguous.
     /// </summary>
     private async Task<string> BuildTranscriptAsync(
-        WorkBatch batch, List<MessageRecord> messages, string target, string system, CancellationToken ct)
+        WorkBatch batch, List<MessageRecord> targets, string target, string system, CancellationToken ct)
     {
-        var batchIds = messages.Select(message => message.PublicId).ToHashSet(StringComparer.Ordinal);
+        var targetIds = targets.Select(message => message.PublicId).ToHashSet(StringComparer.Ordinal);
+        var lastSeq = targets[^1].Seq;
+        // Seq values are unique per session, so this range holds at most the batch plus ContextMessages messages.
         var window = await _store.Messages.ListRangeAsync(
             batch.WorkspaceName,
             batch.SessionName,
-            Math.Max(1, messages[0].Seq - PrecedingContextMessages),
-            messages[^1].Seq,
+            Math.Max(1, lastSeq - batch.MessageIds.Count - ContextMessages + 1),
+            lastSeq,
             ct).ConfigureAwait(false);
 
-        var entries = window.Select(message => (message.Seq, Entry: Entry(message, batchIds.Contains(message.PublicId)))).ToList();
         var remaining = _options.MaxInputTokens
             - _tokenCounter.Count(system)
-            - _tokenCounter.Count(Transcript(target, []))
-            - entries.Where(e => IsTarget(e.Entry)).Sum(e => Cost(e.Entry));
+            - _tokenCounter.Count(Transcript(target, []));
+        var included = targets.Select(message => (message.Seq, Entry: Entry(message, isTarget: true))).ToList();
+        remaining -= included.Sum(e => Cost(e.Entry));
 
-        var included = entries.Where(e => IsTarget(e.Entry)).ToList();
-        foreach (var context in entries.Where(e => !IsTarget(e.Entry)).OrderByDescending(e => e.Seq))
+        var context = window.Where(message => !targetIds.Contains(message.PublicId)).OrderByDescending(message => message.Seq);
+        foreach (var message in context)
         {
-            var cost = Cost(context.Entry);
+            var entry = Entry(message, isTarget: false);
+            var cost = Cost(entry);
             if (cost > remaining)
             {
                 break;
             }
 
             remaining -= cost;
-            included.Add(context);
+            included.Add((message.Seq, entry));
         }
 
         return Transcript(target, [.. included.OrderBy(e => e.Seq).Select(e => e.Entry)]);
@@ -216,8 +258,6 @@ public sealed partial class DeriverService : IWorkHandler
         return entry;
     }
 
-    private static bool IsTarget(JsonObject entry) => entry.ContainsKey("id");
-
     private int Cost(JsonObject entry) => _tokenCounter.Count(entry.ToJsonString(TranscriptJson));
 
     private static string Transcript(string target, IReadOnlyList<JsonObject> entries) =>
@@ -227,10 +267,22 @@ public sealed partial class DeriverService : IWorkHandler
             ["messages"] = new JsonArray([.. entries]),
         }.ToJsonString(TranscriptJson);
 
-    private static string RenderCustomInstructions(ResolvedConfiguration configuration)
+    /// <summary>
+    /// The resolved general and reasoning instructions, then each distinct message-level instruction of the target
+    /// messages, in ordinal order.
+    /// </summary>
+    private static string RenderCustomInstructions(ResolvedConfiguration configuration, WorkBatch batch, List<MessageRecord> targets)
     {
-        string?[] instructions = [configuration.CustomInstructions.Value, configuration.Reasoning.CustomInstructions.Value];
-        var present = instructions.Where(text => !string.IsNullOrWhiteSpace(text)).ToList();
+        var messageLevel = targets
+            .Select(message => batch.WorkOf(message.PublicId).CustomInstructions)
+            .OfType<string>()
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal);
+        var present = new[] { configuration.CustomInstructions.Value, configuration.Reasoning.CustomInstructions.Value }
+            .OfType<string>()
+            .Concat(messageLevel)
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .ToList();
         return present.Count == 0
             ? string.Empty
             : $"\n## Additional instructions\n\n{string.Join("\n\n", present)}\n";
@@ -250,13 +302,13 @@ public sealed partial class DeriverService : IWorkHandler
     }
 
     /// <summary>
-    /// Keeps the facts with non-blank content whose sources are all batch messages; drops and counts the rest. A fact
+    /// Keeps the facts with non-blank content whose sources are all target messages; drops and counts the rest. A fact
     /// with no sources is ungrounded and dropped too.
     /// </summary>
     private List<(string Content, IReadOnlyList<string> Sources)> Validate(
-        string workUnitKey, ExtractionResult extraction, List<MessageRecord> messages)
+        string workUnitKey, ExtractionResult extraction, List<MessageRecord> targets)
     {
-        var batchOrder = messages.Select((message, index) => (message.PublicId, index))
+        var order = targets.Select((message, index) => (message.PublicId, index))
             .ToDictionary(pair => pair.PublicId, pair => pair.index, StringComparer.Ordinal);
         var proposed = extraction.Facts ?? [];
         var valid = new List<(string, IReadOnlyList<string>)>();
@@ -264,12 +316,12 @@ public sealed partial class DeriverService : IWorkHandler
         {
             var content = fact?.Content is null ? string.Empty : ConclusionDeduplicator.Normalize(fact.Content);
             var sources = fact?.SourceMessageIds;
-            if (content.Length == 0 || sources is null || sources.Count == 0 || sources.Any(id => id is null || !batchOrder.ContainsKey(id)))
+            if (content.Length == 0 || sources is null || sources.Count == 0 || sources.Any(id => id is null || !order.ContainsKey(id)))
             {
                 continue;
             }
 
-            valid.Add((content, [.. sources.Distinct(StringComparer.Ordinal).OrderBy(id => batchOrder[id])]));
+            valid.Add((content, [.. sources.Distinct(StringComparer.Ordinal).OrderBy(id => order[id])]));
         }
 
         if (valid.Count < proposed.Count)
@@ -306,9 +358,16 @@ public sealed partial class DeriverService : IWorkHandler
         var inserts = new List<NewConclusion>();
         var corroborations = new List<string>();
         var replacements = new List<ConclusionReplacement>();
-        foreach (var observer in batch.Observers)
+        var observers = facts
+            .SelectMany(fact => fact.SourceMessageIds)
+            .SelectMany(id => batch.WorkOf(id).Observers)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal);
+        foreach (var observer in observers)
         {
-            var observed = facts.Where(fact => fact.SourceMessageIds.All(id => batch.ObserversOf(id).Contains(observer))).ToList();
+            var observed = facts
+                .Where(fact => fact.SourceMessageIds.All(id => batch.WorkOf(id).Observers.Contains(observer, StringComparer.Ordinal)))
+                .ToList();
             if (observed.Count == 0)
             {
                 continue;
@@ -325,12 +384,6 @@ public sealed partial class DeriverService : IWorkHandler
         return new DerivationChanges(batch.WorkspaceName, inserts, corroborations, replacements);
     }
 
-    private async Task CommitAsync(WorkLease lease, DerivationChanges changes, int facts, CancellationToken ct)
-    {
-        await _store.Conclusions.CommitDerivationAsync(lease, changes, ct).ConfigureAwait(false);
-        LogCommitted(lease.WorkUnitKey, facts, changes.Inserts.Count, changes.Corroborations.Count, changes.Replacements.Count);
-    }
-
     private static JsonObject Provenance(DerivedFact fact) => new()
     {
         ["prompt_id"] = Prompt.Id,
@@ -338,8 +391,13 @@ public sealed partial class DeriverService : IWorkHandler
         ["source_message_ids"] = new JsonArray([.. fact.SourceMessageIds.Select(id => JsonValue.Create(id))]),
     };
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Reasoning is disabled; completing work unit {WorkUnitKey} ({Items} items) without derivation.")]
+    private sealed record Derivation(DerivationChanges Changes, int Facts);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Reasoning is disabled for every message; completing work unit {WorkUnitKey} ({Items} items) without derivation.")]
     private partial void LogReasoningDisabled(string workUnitKey, int items);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Completing work unit {WorkUnitKey} without derivation: {Reason}")]
+    private partial void LogSourceGone(string workUnitKey, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Dropped {Dropped} of {Proposed} facts for work unit {WorkUnitKey}: blank content, or sources outside the batch.")]
     private partial void LogInvalidFactsDropped(string workUnitKey, int dropped, int proposed);

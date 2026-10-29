@@ -15,7 +15,10 @@ public sealed class DeriverOptions
     /// <summary>A unit is due once its oldest pending message is this old; default 30 minutes.</summary>
     public TimeSpan MaxAge { get; set; } = TimeSpan.FromMinutes(30);
 
-    /// <summary>Token budget of one extraction request: prompt, instructions and transcript; default 25,000.</summary>
+    /// <summary>
+    /// Token budget of one extraction request: prompt, instructions and transcript; default 25,000. The structured-output
+    /// JSON schema the chat client adds to the request is not counted, so leave headroom below the model's window.
+    /// </summary>
     public int MaxInputTokens { get; set; } = 25_000;
 
     /// <summary>A new fact within this cosine distance of an existing conclusion is a duplicate; default 0.05.</summary>

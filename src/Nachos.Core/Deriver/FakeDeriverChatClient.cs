@@ -10,7 +10,7 @@ namespace Nachos.Core.Deriver;
 /// <c>target</c> message of its transcript, the message's content verbatim, sourced from that message. Not a
 /// memory-quality mode; it only lets the derivation pipeline run without a model.
 /// </summary>
-public sealed class FakeDeriverChatClient : IChatClient
+internal sealed class FakeDeriverChatClient : IChatClient
 {
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)

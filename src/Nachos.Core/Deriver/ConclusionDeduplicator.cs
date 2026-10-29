@@ -110,7 +110,7 @@ public sealed partial class ConclusionDeduplicator
         }
 
         var nearest = await _store.Conclusions.FindNearestAsync(
-            workspaceName, observerName, observedName, fact.Embedding, _maxDistance, sessionName, ct)
+            workspaceName, observerName, observedName, ConclusionLevel.Explicit, fact.Embedding, _maxDistance, sessionName, ct)
             .ConfigureAwait(false);
         return nearest?.Conclusion;
     }

@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
     <InternalsVisibleTo Include="Nachos.Core.Tests" />
+    <InternalsVisibleTo Include="Nachos.Hosting" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Deriver\Prompts\deriver.v1.md" LogicalName="Nachos.Core.Deriver.Prompts.deriver.v1.md" />

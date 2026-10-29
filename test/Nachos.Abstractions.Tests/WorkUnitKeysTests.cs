@@ -64,8 +64,29 @@ public sealed class WorkUnitKeysTests
         var payload = RepresentationPayload.Create(["alice", "bob"]);
 
         payload.ToJsonString().ShouldBe("""{"observers":["alice","bob"]}""");
-        RepresentationPayload.ReadObservers(payload).ShouldBe(["alice", "bob"]);
-        Should.Throw<FormatException>(() => RepresentationPayload.ReadObservers(new JsonObject()));
-        Should.Throw<FormatException>(() => RepresentationPayload.ReadObservers(new JsonObject { ["observers"] = new JsonArray(1) }));
+        RepresentationPayload.Read(payload).ShouldSatisfyAllConditions(
+            work => work.Observers.ShouldBe(["alice", "bob"]),
+            work => work.ReasoningEnabled.ShouldBeNull(),
+            work => work.CustomInstructions.ShouldBeNull());
+        Should.Throw<FormatException>(() => RepresentationPayload.Read(new JsonObject()));
+        Should.Throw<FormatException>(() => RepresentationPayload.Read(new JsonObject { ["observers"] = new JsonArray(1) }));
+    }
+
+    [Fact]
+    public void RepresentationPayload_RoundTripsTheMessageReasoningSnapshot()
+    {
+        var payload = RepresentationPayload.Create(["alice"], reasoningEnabled: false, customInstructions: "Be brief.");
+
+        payload.ToJsonString().ShouldBe("""{"observers":["alice"],"reasoning_enabled":false,"custom_instructions":"Be brief."}""");
+        RepresentationPayload.Read(payload).ShouldSatisfyAllConditions(
+            work => work.Observers.ShouldBe(["alice"]),
+            work => work.ReasoningEnabled.ShouldBe(false),
+            work => work.CustomInstructions.ShouldBe("Be brief."));
+        RepresentationPayload.Read(new JsonObject { ["observers"] = new JsonArray(), ["reasoning_enabled"] = null })
+            .ReasoningEnabled.ShouldBeNull();
+        Should.Throw<FormatException>(() => RepresentationPayload.Read(
+            new JsonObject { ["observers"] = new JsonArray(), ["reasoning_enabled"] = "yes" }));
+        Should.Throw<FormatException>(() => RepresentationPayload.Read(
+            new JsonObject { ["observers"] = new JsonArray(), ["custom_instructions"] = 3 }));
     }
 }

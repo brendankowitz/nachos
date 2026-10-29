@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -11,6 +12,7 @@ using Nachos.Core.Configuration;
 using Nachos.Core.Deriver;
 using Nachos.Core.Llm;
 using Nachos.Core.Worker;
+using Nachos.DataLayer.InMemory;
 using Nachos.Hosting;
 using Nachos.Testing;
 using Shouldly;
@@ -26,9 +28,15 @@ internal sealed class DeriverFixture : IDisposable
     private static readonly TimeSpan Lease = TimeSpan.FromMinutes(5);
 
     private readonly ServiceProvider _provider;
+    private readonly List<IServiceScope> _scopes = [];
 
-    public DeriverFixture(Action<NachosBuilder>? configureAi = null, Action<NachosOptions>? configureOptions = null)
+    /// <param name="decorateStore">Wraps the store the Deriver sees; <see cref="Store"/> stays the undecorated one.</param>
+    public DeriverFixture(
+        Action<NachosBuilder>? configureAi = null,
+        Action<NachosOptions>? configureOptions = null,
+        Func<IMemoryStore, IMemoryStore>? decorateStore = null)
     {
+        Store = new InMemoryMemoryStore(Clock);
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton<TimeProvider>(Clock);
@@ -49,13 +57,14 @@ internal sealed class DeriverFixture : IDisposable
 
             builder.AddDeriver();
         });
+        var handlerStore = decorateStore is null ? Store : decorateStore(Store);
+        services.Replace(ServiceDescriptor.Singleton(handlerStore));
         if (configureOptions is not null)
         {
             services.Configure(configureOptions);
         }
 
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
-        Store = _provider.GetRequiredService<IMemoryStore>();
     }
 
     public FakeTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 10, 29, 9, 0, 0, TimeSpan.Zero));
@@ -77,7 +86,13 @@ internal sealed class DeriverFixture : IDisposable
         await Handler(scope.ServiceProvider).HandleAsync(lease, Ct);
     }
 
-    public DeriverService Handler() => Handler(_provider.CreateScope().ServiceProvider);
+    /// <summary>The handler, from a scope that lives as long as the fixture.</summary>
+    public DeriverService Handler()
+    {
+        var scope = _provider.CreateScope();
+        _scopes.Add(scope);
+        return Handler(scope.ServiceProvider);
+    }
 
     private static DeriverService Handler(IServiceProvider services) =>
         services.GetServices<IWorkHandler>().Single(h => h.TaskType == WorkTaskType.Representation).ShouldBeOfType<DeriverService>();
@@ -95,10 +110,12 @@ internal sealed class DeriverFixture : IDisposable
             Ct);
     }
 
-    /// <summary>Appends one message; only alice's messages enqueue derivation, so every lease is alice's unit.</summary>
-    public async Task<MessageRecord> SayAsync(string peer, string content)
+    /// <summary>
+    /// Appends one message; by default only alice's messages enqueue derivation, so every lease is alice's unit.
+    /// </summary>
+    public async Task<MessageRecord> SayAsync(string peer, string content, DeriveIntent? intent = null)
     {
-        var intent = peer == "alice" ? DeriveIntent.Derive : DeriveIntent.Skip;
+        intent ??= peer == "alice" ? DeriveIntent.Derive : DeriveIntent.Skip;
         var message = (await Store.Messages.AppendAsync(
             WorkspaceId, SessionId, [new NewMessage(peer, content, 5, null, Clock.GetUtcNow())], null, [intent], Ct)).Single();
         Clock.Advance(TimeSpan.FromMinutes(1));
@@ -122,19 +139,41 @@ internal sealed class DeriverFixture : IDisposable
     public ScriptedChatClient Facts(params (string Content, string[] Sources)[] facts) =>
         Chat.EnqueueJson(new ExtractionResult([.. facts.Select(f => new ExtractedFact(f.Content, f.Sources))]));
 
-    public void Dispose() => _provider.Dispose();
+    public void Dispose()
+    {
+        foreach (var scope in _scopes)
+        {
+            scope.Dispose();
+        }
+
+        _provider.Dispose();
+    }
 }
 
-/// <summary>A <see cref="DeterministicEmbeddingGenerator"/> that can be told to fail its next call.</summary>
+/// <summary>
+/// A <see cref="DeterministicEmbeddingGenerator"/> that can be told to fail its next call, and to return chosen vectors for
+/// chosen texts (hash vectors never make two different texts similar).
+/// </summary>
 internal sealed class FlakyEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
 {
     private readonly DeterministicEmbeddingGenerator _inner = new();
 
     public bool FailNext { get; set; }
 
+    public Dictionary<string, float[]> Vectors { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>A unit vector along <paramref name="axis"/>, tilted towards axis 1 by <paramref name="tilt"/>.</summary>
+    public static float[] Axis(int axis, float tilt = 0)
+    {
+        var vector = new float[VectorSpace.Dimensions];
+        vector[axis] = 1;
+        vector[1] += tilt;
+        return vector;
+    }
+
     public int Calls { get; private set; }
 
-    public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+    public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
         IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
     {
         Calls++;
@@ -144,7 +183,16 @@ internal sealed class FlakyEmbeddingGenerator : IEmbeddingGenerator<string, Embe
             throw new HttpRequestException("embedding service unavailable");
         }
 
-        return _inner.GenerateAsync(values, options, cancellationToken);
+        var texts = values.ToList();
+        var generated = new GeneratedEmbeddings<Embedding<float>>();
+        foreach (var text in texts)
+        {
+            generated.Add(Vectors.TryGetValue(text, out var vector)
+                ? new Embedding<float>(vector)
+                : (await _inner.GenerateAsync([text], options, cancellationToken))[0]);
+        }
+
+        return generated;
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null) => _inner.GetService(serviceType, serviceKey);

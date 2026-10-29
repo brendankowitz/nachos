@@ -106,6 +106,22 @@ public sealed class ConclusionDeduplicatorTests
     }
 
     [Fact]
+    public async Task NonExplicitNeighbour_IsNotADuplicate()
+    {
+        await SeedAsync();
+        await _store.Conclusions.InsertAsync(
+            Workspace,
+            [new NewConclusion("bob", "alice", Session, ConclusionLevel.Deductive, "Alice likes tea.", Vector(0), [], null)],
+            Ct);
+
+        var result = await DeduplicateAsync(Fact("Alice likes tea.", Vector(0)));
+
+        result.Inserts.ShouldHaveSingleItem();
+        result.Corroborations.ShouldBeEmpty();
+        result.Replacements.ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task RicherFact_Replaces()
     {
         await SeedAsync();
