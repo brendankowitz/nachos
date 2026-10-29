@@ -44,14 +44,17 @@ public interface IConclusionStore
         CancellationToken ct);
 
     /// <summary>
-    /// Dedup lookup: the conclusion in the collection nearest to <paramref name="vector"/>, if its distance is at most
-    /// <paramref name="maxDistance"/>; ties go to the oldest. Null when there is none.
+    /// Dedup lookup: the conclusion in the collection with this <paramref name="level"/> nearest to
+    /// <paramref name="vector"/>, if its distance is at most <paramref name="maxDistance"/>; ties go to the oldest. Null
+    /// when there is none.
     /// </summary>
+    /// <param name="level">Only conclusions of this level are candidates; the filter applies before the nearest is chosen.</param>
     /// <param name="restrictToSession">When non-null, only conclusions of that session are considered.</param>
     Task<ConclusionMatch?> FindNearestAsync(
         string workspaceName,
         string observerName,
         string observedName,
+        ConclusionLevel level,
         ReadOnlyMemory<float> vector,
         double maxDistance,
         string? restrictToSession,

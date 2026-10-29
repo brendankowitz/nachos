@@ -91,11 +91,11 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         string session,
         string sender,
         int tokens = 10,
-        DeriveIntent intent = DeriveIntent.Derive,
+        DeriveIntent? intent = null,
         DateTimeOffset? createdAt = null,
         IdempotencyWrite? idempotency = null) =>
         store.Messages.AppendAsync(
-            workspace, session, [new NewMessage(sender, $"message from {sender}", tokens, null, createdAt)], idempotency, [intent], Ct);
+            workspace, session, [new NewMessage(sender, $"message from {sender}", tokens, null, createdAt)], idempotency, [intent ?? DeriveIntent.Derive], Ct);
 
     private static IdempotencyWrite Write(string key, Func<IReadOnlyList<MessageRecord>, string>? serialize = null) =>
         new(key, new string('a', 64), 201, serialize ?? (messages => messages[0].PublicId), TimeSpan.FromMinutes(10));
@@ -135,7 +135,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         item.TokenCount.ShouldBe(17);
         item.Attempts.ShouldBe(1);
         item.CreatedAt.ShouldBe(Start);
-        RepresentationPayload.ReadObservers(item.Payload).ShouldBe(["alice", "bob"]);
+        item.Payload.ToJsonString().ShouldBe("""{"observers":["alice","bob"]}""");
         await store.WorkQueue.CompleteAsync(lease, Ct);
 
         // A serializer throw rolls the work back with the messages.
@@ -194,6 +194,28 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Append_SnapshotsTheMessageReasoningInThePayload()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            [new NewMessage("bob", "a", 1, null, null), new NewMessage("bob", "b", 1, null, null)],
+            null,
+            [new DeriveIntent(true, ReasoningEnabled: true, CustomInstructions: "Note hobbies."), DeriveIntent.Derive],
+            Ct);
+
+        var lease = (await store.WorkQueue.TryAcquireAsync("w", Policy(0, TimeSpan.Zero, 1000), Lease, Ct)).ShouldNotBeNull();
+        lease.Items.Select(item => item.Payload.ToJsonString()).ShouldBe(
+        [
+            """{"observers":["bob"],"reasoning_enabled":true,"custom_instructions":"Note hobbies."}""",
+            """{"observers":["bob"]}""",
+        ]);
+    }
+
+    [Fact]
     public async Task Append_IntentCountMismatch_ThrowsAndStoresNothing()
     {
         var (store, _) = await NewStoreAsync();
@@ -223,7 +245,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         await store.Sessions.SetPeerConfigAsync(workspace, session, "alice", new SessionPeerConfig(ObserveOthers: false), Ct);
 
         var lease = (await store.WorkQueue.TryAcquireAsync("w", Policy(0, TimeSpan.Zero, 1000), Lease, Ct)).ShouldNotBeNull();
-        lease.Items.Select(item => RepresentationPayload.ReadObservers(item.Payload)).ShouldBe(
+        lease.Items.Select(item => RepresentationPayload.Read(item.Payload).Observers).ShouldBe(
             [["alice", "bob"], ["alice", "bob", "carol"]]);
     }
 

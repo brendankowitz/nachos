@@ -52,9 +52,37 @@ public sealed class NachosOptions
         {
             errors.Add("Deriver is required.");
         }
-        else if (Deriver.MaxCustomInstructionsTokens < 1)
+        else
         {
-            errors.Add("Deriver.MaxCustomInstructionsTokens must be positive.");
+            if (Deriver.MaxCustomInstructionsTokens < 1)
+            {
+                errors.Add("Deriver.MaxCustomInstructionsTokens must be positive.");
+            }
+
+            if (Deriver.EligibilityTokens < 0 || Deriver.BatchTokenTarget < 0 || Deriver.MaxAge < TimeSpan.Zero)
+            {
+                errors.Add("Deriver.EligibilityTokens, Deriver.BatchTokenTarget and Deriver.MaxAge must not be negative.");
+            }
+
+            if (Deriver.MaxInputTokens < 1)
+            {
+                errors.Add("Deriver.MaxInputTokens must be positive.");
+            }
+
+            if (Deriver.DedupMaxDistance is < 0 or > 2 || double.IsNaN(Deriver.DedupMaxDistance))
+            {
+                errors.Add("Deriver.DedupMaxDistance must be a cosine distance between 0 and 2.");
+            }
+
+            if (Deriver.MaxAttempts < 1)
+            {
+                errors.Add("Deriver.MaxAttempts must be positive.");
+            }
+
+            if (Deriver.LeaseDuration <= TimeSpan.Zero)
+            {
+                errors.Add("Deriver.LeaseDuration must be positive.");
+            }
         }
 
         if (errors.Count > 0)

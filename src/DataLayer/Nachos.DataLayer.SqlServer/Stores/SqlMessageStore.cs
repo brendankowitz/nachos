@@ -31,6 +31,11 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             ? AppendAsync(workspaceName, sessionName, messages, idempotency, ct)
             : throw new NotSupportedException(SqlMemoryStore.PendingM2Message);
 
+    // Temporary: the Deriver's context read lands in M2 Task 3.
+    public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct) =>
+        throw new NotSupportedException(SqlMemoryStore.PendingM2Message);
+
     /// <remarks>
     /// <para>
     /// One transaction, in the lock order documented on <see cref="Upserts"/>: (1) the <c>Seq</c> allocation

@@ -129,7 +129,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
         var work = new List<Func<long, QueuedItem>>();
         foreach (var (message, intent) in staged.Messages.Zip(derive))
         {
-            var observers = intent == DeriveIntent.Derive ? staged.ObserversOf(message) : [];
+            var observers = intent.ShouldDerive ? staged.ObserversOf(message) : [];
             if (observers.Count == 0)
             {
                 continue;
@@ -141,7 +141,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                 workspaceName,
                 WorkTaskType.Representation,
                 key,
-                RepresentationPayload.Create(observers),
+                RepresentationPayload.Create(observers, intent.ReasoningEnabled, intent.CustomInstructions),
                 message.TokenCount,
                 message.SessionName,
                 message.PublicId,
@@ -183,6 +183,21 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                     var updated = message with { Metadata = ownedMetadata };
                     session.ReplaceMessage(updated);
                     return JsonCopy.Out(updated);
+                }
+            },
+            ct);
+
+    public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct) =>
+        state.Run<IReadOnlyList<MessageRecord>>(
+            () =>
+            {
+                var workspace = state.RequireWorkspace(workspaceName);
+                lock (workspace.Gate)
+                {
+                    return [.. workspace.RequireSession(sessionName).Messages
+                        .Where(message => message.Seq >= fromSeq && message.Seq <= toSeq)
+                        .Select(JsonCopy.Out)];
                 }
             },
             ct);

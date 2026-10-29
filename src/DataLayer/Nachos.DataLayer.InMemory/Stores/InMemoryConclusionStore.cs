@@ -59,6 +59,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
         string workspaceName,
         string observerName,
         string observedName,
+        ConclusionLevel level,
         ReadOnlyMemory<float> vector,
         double maxDistance,
         string? restrictToSession,
@@ -71,7 +72,10 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 lock (workspace.Gate)
                 {
                     var candidates = workspace.Conclusions.Values.Where(c =>
-                        c.IsSearchable && c.InCollection(observerName, observedName) && c.InSession(restrictToSession));
+                        c.IsSearchable
+                        && c.InCollection(observerName, observedName)
+                        && c.InSession(restrictToSession)
+                        && c.Record.Level == level);
                     return Nearest(candidates, query, maxDistance).FirstOrDefault();
                 }
             },

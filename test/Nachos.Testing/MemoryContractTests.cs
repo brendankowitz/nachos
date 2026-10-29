@@ -319,14 +319,31 @@ public abstract class MemoryContractTests : IAsyncLifetime
         await InsertAsync(store, workspace, Fact("pending", session));
 
         Task<ConclusionMatch?> Find(double maxDistance, string? restrictToSession) =>
-            store.Conclusions.FindNearestAsync(workspace, "alice", "bob", Vector(0), maxDistance, restrictToSession, Ct);
+            store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, Vector(0), maxDistance, restrictToSession, Ct);
 
         var any = (await Find(0.05, null)).ShouldNotBeNull();
         any.Conclusion.PublicId.ShouldBe(elsewhere.PublicId);
         any.Distance.ShouldBe(TiltDistance(0.1f), 1e-4);
         (await Find(0.05, session)).ShouldNotBeNull().Conclusion.PublicId.ShouldBe(inSession.PublicId);
         (await Find(TiltDistance(0.2f) / 2, session)).ShouldBeNull();
-        (await store.Conclusions.FindNearestAsync(workspace, "bob", "alice", Vector(0), 2, null, Ct)).ShouldBeNull();
+        (await store.Conclusions.FindNearestAsync(workspace, "bob", "alice", ConclusionLevel.Explicit, Vector(0), 2, null, Ct)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task FindNearest_FiltersByLevelBeforeChoosingTheNearest()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var deductive = await InsertAsync(
+            store, workspace, Fact("deduced", session, Vector(0), level: ConclusionLevel.Deductive));
+        var explicitFact = await InsertAsync(store, workspace, Fact("stated", session, Vector(0, tilt: 0.1f)));
+
+        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, Vector(0), 0.05, session, Ct))
+            .ShouldNotBeNull().Conclusion.PublicId.ShouldBe(explicitFact.PublicId);
+        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Deductive, Vector(0), 0.05, session, Ct))
+            .ShouldNotBeNull().Conclusion.PublicId.ShouldBe(deductive.PublicId);
+        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Inductive, Vector(0), 2, null, Ct))
+            .ShouldBeNull();
     }
 
     // ---------------------------------------------------------------- derivation commit
@@ -359,7 +376,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
         replacement.Content.ShouldBe("Bob has a dog named Rex.");
         replacement.TimesDerived.ShouldBe(2);
         replacement.CreatedAt.ShouldBe(replaced.CreatedAt);
-        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", Vector(3), 0.01, null, Ct))
+        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, Vector(3), 0.01, null, Ct))
             .ShouldNotBeNull().Conclusion.PublicId.ShouldBe(replaced.PublicId);
 
         var inserted = (await ListAllAsync(store, workspace, Filter("""{"observer_id":"alice"}""")))
@@ -533,7 +550,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
         (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.TimesDerived, new PageRequest(), Ct)).Total.ShouldBe(0);
         (await store.Conclusions.QueryAsync(workspace, Vector(0), 10, null, null, Ct)).ShouldBeEmpty();
         (await store.Conclusions.FindExactAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, "embedded", null, Ct)).ShouldBeNull();
-        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", Vector(0), 2, null, Ct)).ShouldBeNull();
+        (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, Vector(0), 2, null, Ct)).ShouldBeNull();
         (await store.Embeddings.ListPendingAsync(1000, Ct)).ShouldNotContain(p => p.ConclusionId == pending.PublicId);
     }
 
@@ -599,6 +616,30 @@ public abstract class MemoryContractTests : IAsyncLifetime
         await Should.ThrowAsync<NotFoundException>(() => store.PeerCards.SetAsync(workspace, "nobody", "bob", ["x"], PeerCardAuthor.Api, Ct));
         await Should.ThrowAsync<NotFoundException>(() => store.PeerCards.GetAsync(Unique("missing"), "alice", "bob", Ct));
         (await store.PeerCards.GetAsync(workspace, "alice", "nobody", Ct)).ShouldBeNull();
+    }
+
+    // ---------------------------------------------------------------- message range (deriver context)
+
+    [Fact]
+    public async Task Messages_ListRange_ReturnsTheInclusiveSeqRangeInOrder()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var appended = await store.Messages.AppendAsync(
+            workspace,
+            session,
+            [.. Enumerable.Range(1, 5).Select(i => new NewMessage(i % 2 == 0 ? "alice" : "bob", $"m{i}", 1, null, null))],
+            null,
+            Ct);
+
+        var range = await store.Messages.ListRangeAsync(workspace, session, 2, 4, Ct);
+
+        range.Select(m => m.PublicId).ShouldBe(appended.Skip(1).Take(3).Select(m => m.PublicId));
+        range.Select(m => m.Seq).ShouldBe([2L, 3L, 4L]);
+        (await store.Messages.ListRangeAsync(workspace, session, -10, 1, Ct)).Single().Content.ShouldBe("m1");
+        (await store.Messages.ListRangeAsync(workspace, session, 4, 2, Ct)).ShouldBeEmpty();
+        (await store.Messages.ListRangeAsync(workspace, session, 6, 100, Ct)).ShouldBeEmpty();
+        await Should.ThrowAsync<NotFoundException>(() => store.Messages.ListRangeAsync(workspace, "missing", 1, 5, Ct));
     }
 
     // ---------------------------------------------------------------- embedding backlog

@@ -90,7 +90,7 @@ public sealed class SqlMemoryStore : IMemoryStore
 
         public Task<ConclusionRecord?> FindExactAsync(string workspaceName, string observerName, string observedName, ConclusionLevel level, string content, string? restrictToSession, CancellationToken ct) => throw Pending();
 
-        public Task<ConclusionMatch?> FindNearestAsync(string workspaceName, string observerName, string observedName, ReadOnlyMemory<float> vector, double maxDistance, string? restrictToSession, CancellationToken ct) => throw Pending();
+        public Task<ConclusionMatch?> FindNearestAsync(string workspaceName, string observerName, string observedName, ConclusionLevel level, ReadOnlyMemory<float> vector, double maxDistance, string? restrictToSession, CancellationToken ct) => throw Pending();
 
         public Task<Page<ConclusionRecord>> ListAsync(string workspaceName, FilterNode? filter, ConclusionOrder order, PageRequest page, CancellationToken ct) => throw Pending();
 

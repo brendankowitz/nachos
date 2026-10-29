@@ -53,11 +53,12 @@ public interface IMessageStore
     /// enqueues their derivation work.
     /// </summary>
     /// <remarks>
-    /// For each message whose intent is <see cref="DeriveIntent.Derive"/>, the store resolves the observers with
+    /// For each message whose intent has <see cref="DeriveIntent.ShouldDerive"/>, the store resolves the observers with
     /// <see cref="Observation.ObserverRule"/> at the message's <c>CreatedAt</c>, over the memberships as the append
     /// leaves them, and, when there is at least one, enqueues one <see cref="WorkTaskType.Representation"/> item:
     /// key <see cref="Work.WorkUnitKeys.Representation"/> (workspace, session, sender), payload
-    /// <see cref="Work.RepresentationPayload"/>, the message's <c>TokenCount</c> and public id, enqueued now. Whenever
+    /// <see cref="Work.RepresentationPayload"/> (the observers, plus the intent's <see cref="DeriveIntent.ReasoningEnabled"/>
+    /// and <see cref="DeriveIntent.CustomInstructions"/>), the message's <c>TokenCount</c> and public id, enqueued now. Whenever
     /// the append stores nothing (a serializer throw, an idempotency duplicate), it enqueues nothing.
     /// </remarks>
     /// <param name="derive">One intent per message, in order; null enqueues nothing.</param>
@@ -85,6 +86,14 @@ public interface IMessageStore
     /// <exception cref="NotFoundException">The session or the message does not exist.</exception>
     Task<MessageRecord> UpdateMetadataAsync(
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct);
+
+    /// <summary>
+    /// The session's messages whose <c>Seq</c> is between <paramref name="fromSeq"/> and <paramref name="toSeq"/>
+    /// inclusive, in <c>Seq</c> order; empty when the range is empty or holds no messages.
+    /// </summary>
+    /// <exception cref="NotFoundException">The session does not exist.</exception>
+    Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct);
 
     /// <summary>Lists by <c>Seq</c> (descending when <see cref="PageRequest.Reverse"/>), never by <c>CreatedAt</c>.</summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
