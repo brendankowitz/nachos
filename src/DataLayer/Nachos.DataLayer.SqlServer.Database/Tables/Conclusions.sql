@@ -7,6 +7,11 @@ CREATE TABLE [dbo].[Conclusions]
     [SessionId]        BIGINT         NULL,
     [Level]            TINYINT        NOT NULL, -- 0 = explicit, 1 = deductive, 2 = inductive, 3 = contradiction
     [Content]          NVARCHAR (MAX) NOT NULL,
+    -- SHA-256 of the content's UTF-16 bytes, filled by the provider (not computed: the project's ANSI_NULLS OFF blocks indexing a
+    -- computed column). It is the exact-dedup lookup, since a MAX column cannot be indexed and Content uses the database collation,
+    -- which would merge case and accent variants. The provider must match on hash first, then confirm with
+    -- Content = @content COLLATE Latin1_General_100_BIN2_UTF8.
+    [ContentHash]      BINARY (32)    NOT NULL,
     -- The dimension is fixed in DDL (text-embedding-3-small); startup validates the configured embedding model against it.
     [Embedding]        VECTOR (1536)  NULL,
     [EmbeddingState]   TINYINT        NOT NULL, -- 0 = pending, 1 = synced, 2 = failed
@@ -23,6 +28,7 @@ CREATE TABLE [dbo].[Conclusions]
     CONSTRAINT [CK_Conclusions_InternalMetadata_IsJsonObject] CHECK ((isjson([InternalMetadata],OBJECT)=(1))),
     -- An IN list is stored as a reversed OR chain.
     CONSTRAINT [CK_Conclusions_Level] CHECK (([Level]=(3) OR [Level]=(2) OR [Level]=(1) OR [Level]=(0))),
+    CONSTRAINT [CK_Conclusions_EmbeddingState] CHECK (([EmbeddingState]=(2) OR [EmbeddingState]=(1) OR [EmbeddingState]=(0))),
     -- Composite FKs include WorkspaceId: a conclusion cannot reference another workspace's collection or session.
     CONSTRAINT [FK_Conclusions_Collections] FOREIGN KEY ([WorkspaceId], [CollectionId]) REFERENCES [dbo].[Collections] ([WorkspaceId], [Id]),
     CONSTRAINT [FK_Conclusions_Sessions] FOREIGN KEY ([WorkspaceId], [SessionId]) REFERENCES [dbo].[Sessions] ([WorkspaceId], [Id]),
@@ -31,7 +37,23 @@ CREATE TABLE [dbo].[Conclusions]
 GO
 
 CREATE NONCLUSTERED INDEX [IX_Conclusions_Collection_DeletedAt_CreatedAt]
-    ON [dbo].[Conclusions] ([CollectionId], [DeletedAt], [CreatedAt]);
+    ON [dbo].[Conclusions] ([CollectionId], [DeletedAt], [CreatedAt])
+    INCLUDE ([Level]);
+GO
+
+-- Serves workspace-level lists by time.
+CREATE NONCLUSTERED INDEX [IX_Conclusions_Workspace_DeletedAt_CreatedAt]
+    ON [dbo].[Conclusions] ([WorkspaceId], [DeletedAt], [CreatedAt]);
+GO
+
+-- Serves session filters and the composite (WorkspaceId, SessionId) FK.
+CREATE NONCLUSTERED INDEX [IX_Conclusions_Workspace_Session]
+    ON [dbo].[Conclusions] ([WorkspaceId], [SessionId]);
+GO
+
+-- Serves exact dedup.
+CREATE NONCLUSTERED INDEX [IX_Conclusions_Collection_Level_ContentHash]
+    ON [dbo].[Conclusions] ([CollectionId], [Level], [ContentHash]);
 GO
 
 -- Serves the reconciler's pending-embedding scan. Not filtered (WHERE EmbeddingState = 0): the project declares

@@ -181,6 +181,159 @@ public sealed class M2SchemaTests(SqlServerFixture fixture)
         dimensions.ShouldBe(1536);
     }
 
+    [Theory]
+    [InlineData("Azure")]
+    [InlineData("Sql2025")]
+    public void TableNames_EqualTheModelsTables(string platform)
+    {
+        var target = platform == "Azure" ? DacpacCatalog.Azure : DacpacCatalog.Sql2025;
+        var path = Path.Combine(Path.GetTempPath(), $"m2schema-{Guid.NewGuid():N}.dacpac");
+        try
+        {
+            using (var source = target.Open())
+            using (var file = File.Create(path))
+            {
+                source.CopyTo(file);
+            }
+
+            using var model = new Microsoft.SqlServer.Dac.Model.TSqlModel(path);
+            var expected = model.GetObjects(Microsoft.SqlServer.Dac.Model.DacQueryScopes.UserDefined, Microsoft.SqlServer.Dac.Model.ModelSchema.Table)
+                .Select(table => table.Name.Parts[^1])
+                .Order(StringComparer.Ordinal)
+                .ToList();
+
+            DacpacModel.TableNames(target).ShouldBe(expected);
+            DacpacModel.TableNames(target).ShouldContain(table => M2Tables.Contains(table), M2Tables.Length);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // A workspace "w1" with peers "a" and "b" and session "s", and a second workspace "w2" with peer "x".
+    private const string SeedSql = """
+        INSERT [dbo].[Workspaces] ([Name], [LifecycleState], [CreatedAt]) VALUES (N'w1', 0, SYSDATETIMEOFFSET()), (N'w2', 0, SYSDATETIMEOFFSET());
+        INSERT [dbo].[Peers] ([WorkspaceId], [Name], [CreatedAt])
+            SELECT [Id], p.[Name], SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] w
+            JOIN (VALUES (N'w1', N'a'), (N'w1', N'b'), (N'w2', N'x')) p ([Workspace], [Name]) ON p.[Workspace] = w.[Name];
+        INSERT [dbo].[Sessions] ([WorkspaceId], [Name], [LifecycleState], [CreatedAt])
+            SELECT [Id], N's', 0, SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] WHERE [Name] = N'w1';
+        INSERT [dbo].[Collections] ([WorkspaceId], [ObserverPeerId], [ObservedPeerId], [CreatedAt])
+            SELECT w.[Id], a.[Id], b.[Id], SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] w
+            JOIN [dbo].[Peers] a ON a.[WorkspaceId] = w.[Id] AND a.[Name] = N'a'
+            JOIN [dbo].[Peers] b ON b.[WorkspaceId] = w.[Id] AND b.[Name] = N'b'
+            WHERE w.[Name] = N'w1';
+        """;
+
+    private static string InsertConclusion(string publicId, int level, int embeddingState) =>
+        $"""
+        INSERT [dbo].[Conclusions] ([WorkspaceId], [PublicId], [CollectionId], [Level], [Content], [ContentHash], [EmbeddingState], [CreatedAt])
+        SELECT [WorkspaceId], N'{publicId}', [Id], {level}, N'c', 0x00, {embeddingState}, SYSDATETIMEOFFSET() FROM [dbo].[Collections]
+        """;
+
+    private static string InsertPeerCard(string entries, int updatedBy) =>
+        $"""
+        INSERT [dbo].[PeerCards] ([WorkspaceId], [ObserverPeerId], [ObservedPeerId], [Entries], [UpdatedAt], [UpdatedBy])
+        SELECT [WorkspaceId], [ObserverPeerId], [ObservedPeerId], N'{entries}', SYSDATETIMEOFFSET(), {updatedBy} FROM [dbo].[Collections]
+        """;
+
+    private static string InsertWorkItem(int status) =>
+        $$"""
+        INSERT [dbo].[WorkItems] ([TaskType], [WorkUnitKey], [Payload], [Status], [AvailableAt], [TokenCount], [CreatedAt])
+        VALUES (1, N'k', N'{}', {{status}}, SYSDATETIMEOFFSET(), 0, SYSDATETIMEOFFSET())
+        """;
+
+    private static async Task RejectsAsync(string connectionString, string sql, string constraint)
+    {
+        var rejected = await Should.ThrowAsync<SqlException>(() => ExecuteAsync(connectionString, sql));
+        rejected.Message.ShouldContain(constraint);
+    }
+
+    [Fact]
+    public async Task ReferentialIntegrity_RejectsCrossWorkspaceReferences()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+
+        await RejectsAsync(
+            connectionString,
+            """
+            INSERT [dbo].[Collections] ([WorkspaceId], [ObserverPeerId], [ObservedPeerId], [CreatedAt])
+            SELECT w.[Id], a.[Id], a.[Id], SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] w, [dbo].[Peers] a
+            WHERE w.[Name] = N'w2' AND a.[Name] = N'a'
+            """,
+            "FK_Collections_Observe");
+        await RejectsAsync(
+            connectionString,
+            """
+            INSERT [dbo].[Conclusions] ([WorkspaceId], [PublicId], [CollectionId], [Level], [Content], [ContentHash], [EmbeddingState], [CreatedAt])
+            SELECT w.[Id], N'x', c.[Id], 0, N'c', 0x00, 0, SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] w, [dbo].[Collections] c
+            WHERE w.[Name] = N'w2'
+            """,
+            "FK_Conclusions_Collections");
+    }
+
+    [Fact]
+    public async Task Checks_RejectOutOfRangeAndMalformedValues()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+
+        await ExecuteAsync(connectionString, InsertConclusion("ok", 3, 2));
+        await RejectsAsync(connectionString, InsertConclusion("lvl", 4, 0), "CK_Conclusions_Level");
+        await RejectsAsync(connectionString, InsertConclusion("emb", 0, 3), "CK_Conclusions_EmbeddingState");
+
+        await ExecuteAsync(connectionString, InsertPeerCard("[\"IDENTITY: a\"]", 1));
+        await ExecuteAsync(connectionString, "DELETE [dbo].[PeerCards]");
+        await RejectsAsync(connectionString, InsertPeerCard("{}", 0), "CK_PeerCards_Entries_IsJsonArray");
+        await RejectsAsync(connectionString, InsertPeerCard("[]", 2), "CK_PeerCards_UpdatedBy");
+
+        await ExecuteAsync(connectionString, InsertWorkItem(3));
+        await RejectsAsync(connectionString, InsertWorkItem(4), "CK_WorkItems_Status");
+    }
+
+    [Fact]
+    public async Task UniqueConstraints_RejectDuplicates()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+        await ExecuteAsync(connectionString, InsertConclusion("dup", 0, 0));
+        await ExecuteAsync(connectionString, InsertPeerCard("[]", 0));
+
+        await RejectsAsync(connectionString, InsertConclusion("dup", 0, 0), "UQ_Conclusions_PublicId");
+        await RejectsAsync(connectionString, InsertPeerCard("[]", 0), "UQ_PeerCards_Workspace_Observer_Observed");
+        await RejectsAsync(
+            connectionString,
+            "INSERT [dbo].[Collections] ([WorkspaceId], [ObserverPeerId], [ObservedPeerId], [CreatedAt]) SELECT [WorkspaceId], [ObserverPeerId], [ObservedPeerId], SYSDATETIMEOFFSET() FROM [dbo].[Collections]",
+            "UQ_Collections_Workspace_Observer_Observed");
+    }
+
+    [Fact]
+    public async Task WorkUnitLease_AcceptsA450CharacterKey_AndRejectsItsDuplicate()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        var insert = $"INSERT [dbo].[WorkUnitLeases] ([WorkUnitKey], [Owner], [ExpiresAt], [FencingToken]) VALUES (N'{new string('k', 450)}', N'o', SYSDATETIMEOFFSET(), 1)";
+
+        await ExecuteAsync(connectionString, insert);
+
+        await RejectsAsync(connectionString, insert, "PK_WorkUnitLeases");
+    }
+
+    [Fact]
+    public async Task ConclusionSources_AcceptsASourceIdWithNoConclusion()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+        await ExecuteAsync(connectionString, InsertConclusion("derived", 1, 0));
+
+        await ExecuteAsync(
+            connectionString,
+            "INSERT [dbo].[ConclusionSources] ([DerivedId], [Position], [SourceId]) SELECT [Id], 0, 987654321 FROM [dbo].[Conclusions]");
+
+        (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM [dbo].[ConclusionSources]")).ShouldBe(1);
+    }
+
     [Fact]
     public async Task WorkItemsTaskType_RejectsUnknownValue()
     {
