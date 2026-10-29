@@ -279,21 +279,23 @@ All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped throu
 | `SessionPeers` | `(WorkspaceId, SessionId, PeerId)`, `Configuration`, `JoinedAt`, `LeftAt` |
 | `Messages` | `PublicId` unique, `SessionId`, `PeerId`, `Seq` (unique per session), `Content nvarchar(max)`, `TokenCount`, `Metadata`, `InternalMetadata`, `CreatedAt`; full-text index on `Content` |
 | `MessageEmbeddings` | `MessageId`, `ChunkIndex`, `Content`, `Embedding VECTOR(@dims)`, `SyncState` (`Pending`/`Synced`/`Failed`), `Attempts` |
-| `Collections` | `(WorkspaceId, ObserverPeerId, ObservedPeerId)` unique |
-| `Conclusions` | `PublicId`, `CollectionId`, `SessionId NULL`, `Level`, `Content`, `Embedding VECTOR(@dims)`, `TimesDerived`, `PatternType NULL`, `Confidence NULL`, `InternalMetadata`, `CreatedAt`, `DeletedAt NULL` |
+| `Collections` | `(WorkspaceId, ObserverPeerId, ObservedPeerId)` unique, `NewExplicitCount`, `LastActivityAt NULL`, `LastDreamAt NULL` (the dream counters are the M5 seam), `CreatedAt` |
+| `Conclusions` | `WorkspaceId`, `PublicId`, `CollectionId`, `SessionId NULL`, `Level` (`tinyint`), `Content`, `ContentHash binary(32)` (SHA-256 of the UTF-16 content, filled by the provider; exact dedup matches hash then confirms content with `COLLATE Latin1_General_100_BIN2_UTF8`; indexed with `(CollectionId, Level)`), `Embedding VECTOR(1536) NULL`, `EmbeddingState` (`Pending`/`Synced`/`Failed`), `TimesDerived`, `PatternType NULL`, `Confidence NULL`, `InternalMetadata`, `CreatedAt`, `DeletedAt NULL`. Indexed by collection and by workspace (by `DeletedAt, CreatedAt` and by session). |
 | `ConclusionSources` | `(DerivedId, Position)`, `SourceId` (no FK, so orphan sources are retained deliberately) |
-| `ConclusionCorroborations` | `(ConclusionId, SourceBatchKey)` unique. Δ Keeps `TimesDerived` idempotent across retries. |
-| `PeerCards` | `(WorkspaceId, ObserverPeerId, ObservedPeerId)` unique, `Entries json`, `UpdatedAt`, `UpdatedBy` (`api`/`dream`) |
+| `ConclusionCorroborations` | Δ **Not built in M2.** One fenced derivation commit applies a batch's writes and completes its work items together, so there is nothing to replay and `TimesDerived` cannot be inflated by a retry. |
+| `PeerCards` | `(WorkspaceId, ObserverPeerId, ObservedPeerId)` unique, `Entries` (`nvarchar(max)` with an `ISJSON` array check), `UpdatedAt`, `UpdatedBy` (`api`/`dream`) |
 | `SessionSummaries` | `(SessionId, Kind)` unique (`Short`/`Long`), `Content`, `CoversThroughMessageId`, `TokenCount`, `CreatedAt` |
 | `Scopes` | `(WorkspaceId, Name)` unique, `ObserverPeerId` |
 | `ScopeSessions` | `(ScopeId, SessionId)`, `BackfillState`, `AddedAt` |
-| `WorkItems` | `Id`, `WorkspaceId NULL`, `TaskType`, `WorkUnitKey`, `Payload json`, `Status`, `Attempts`, `AvailableAt`, `TokenCount`, `MessageId NULL`, `Error`, `CreatedAt`, `CompletedAt` |
-| `WorkUnitLeases` | `WorkUnitKey` PK, `Owner`, `ExpiresAt`, `FencingToken` |
+| `WorkItems` | `Id`, `WorkspaceId NULL`, `TaskType` (`tinyint`, values 1 to 8 reserved for all milestones, CHECK-constrained), `WorkUnitKey nvarchar(450)`, `Payload` (`nvarchar(max)` with an `ISJSON` object check), `Status` (`tinyint`: 0 pending, 1 failed, 2 succeeded, 3 dead-lettered, CHECK-constrained), `Attempts`, `AvailableAt`, `TokenCount`, `MessageId NULL`, `SessionId NULL`, `Error`, `CreatedAt`, `CompletedAt` |
+| `WorkUnitLeases` | `WorkUnitKey nvarchar(450)` PK (450 code units is the 900-byte clustered key limit), `Owner`, `ExpiresAt`, `FencingToken` |
 | `WebhookEndpoints` | `PublicId`, `WorkspaceId`, `Url`, `CreatedAt` |
 | `WebhookDeliveries` | `EndpointId`, `EventId`, `Payload`, `Status`, `Attempts`, `NextAttemptAt`, `LastStatusCode`, `LastError` |
 | `PrincipalGrants` | Entra `ObjectId`, `WorkspaceId NULL`, `Role` (§9.2) |
 | `IdempotencyRecords` | `(WorkspaceId, Key)` unique, `RequestHash`, `ResponseStatus`, `ResponseBody`, `ExpiresAt` (§9.1) |
 | `SchemaVersion` | Single row stamped by post-deploy script (Ignixa pattern) |
+
+The embedding dimension is fixed in DDL at **1536** (`text-embedding-3-small`); another model must use the `dimensions` request parameter, and startup fails on a mismatch. JSON columns, including `PeerCards.Entries` and `WorkItems.Payload`, are `nvarchar(max)` with an `ISJSON` check, like every M1 table. `Conclusions` has no filtered pending-embedding index: the project declares `ANSI_NULLS OFF`, and SQL Server refuses to create a filtered index on a table created that way, so it carries a plain index on `EmbeddingState`.
 
 Queue claim, sequence allocation, and status aggregation live in stored procedures (`AcquireWorkUnit`, `AllocateMessageSeq`, `GetQueueStatus`). Everything else is EF Core or parameterized SqlClient.
 
