@@ -54,8 +54,8 @@ public sealed class VisibilityPolicy
     }
 
     /// <summary>
-    /// <paramref name="filter"/> narrowed to what this policy shows. A store's filter cannot express the conclusion level,
-    /// so callers also pass every returned conclusion through <see cref="Allows"/>.
+    /// <paramref name="filter"/> narrowed in the store to what this policy shows, so totals and page sizes count only
+    /// visible conclusions. Callers still pass every returned conclusion through <see cref="Allows"/> as a second check.
     /// </summary>
     public FilterNode? Restrict(FilterNode? filter)
     {
@@ -70,8 +70,9 @@ public sealed class VisibilityPolicy
         }
 
         var sessions = new JsonArray([.. _sessions.Order(StringComparer.Ordinal).Select(s => JsonValue.Create(s))]);
-        var allowlisted = new FilterNode.Field(FilterColumns.SessionId, FilterOp.In, sessions);
-        return filter is null ? allowlisted : new FilterNode.And([filter, allowlisted]);
+        FilterNode allowlisted = new FilterNode.Field(FilterColumns.SessionId, FilterOp.In, sessions);
+        FilterNode explicitOnly = new FilterNode.Field(FilterColumns.Level, FilterOp.Eq, JsonValue.Create(ConclusionLevelNames.Explicit));
+        return new FilterNode.And(filter is null ? [allowlisted, explicitOnly] : [filter, allowlisted, explicitOnly]);
     }
 
     /// <summary>Whether <paramref name="conclusion"/> is visible under this policy.</summary>

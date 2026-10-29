@@ -469,7 +469,10 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 - **Queue status counts work items.** The wire fields are named `*_work_units`, but Nachos queues one work item per message, covering all of that message's observers, and `W/queue/status` counts those items one to one: `pending` = claimable items (including failed ones waiting to retry), `in_progress` = open items of a unit with an unexpired lease, `completed` = succeeded **plus dead-lettered** items (no further work happens on either), and `total` = their sum. `sessions` maps each session id with selected work to the same counts. Whether Honcho counts per message or per observer is an open parity question, to settle from black-box SDK evidence.
 - **`scope` fails closed.** `P/representation` with any `scope` value returns `422 scope is not supported in this Nachos version` until scopes land (M6), rather than reading without the restriction.
-- **`P/representation` `session_id`** is the §11.8 session allowlist: only explicit conclusions stated in that session are used, and no card is read.
+- **`P/representation` `session_id`** is the §11.8 session allowlist: only explicit conclusions stated in that session are used, and no card is read. The level and session rules are applied inside the store query (the internal, non-wire filter column `Level`), so pages and totals count only visible conclusions.
+- **`VisibilityPolicy` holds only the allowlist and scope rules.** The perspective (which observer's collection about which observed peer) is applied by each caller, not by the policy. M3 search and M4 tools must apply it themselves.
+- **Provisional parity defaults (open questions, to confirm from black-box SDK evidence):** `max_conclusions` 25, `search_top_k` 10 and `include_most_frequent` false on `P/representation` and `P/context`; `top_k` 10 on `C/query`; `DELETE C/{id}` on a missing conclusion is a no-op `204`.
+- **The embedding generator is optional in API hosts.** Without one, a semantic read (`C/query`, or a `search_query`) is a `500`, and `POST C` stores conclusions pending for the reconciler.
 
 ### 9.4 Intentional deviations (Δ summary)
 

@@ -32,6 +32,16 @@ public sealed class PeerContextService(IMemoryStore store, RepresentationBuilder
         string workspaceName, string observerName, string observedName, IReadOnlyList<string> entries, CancellationToken ct) =>
         store.PeerCards.SetAsync(workspaceName, observerName, observedName, entries, PeerCardAuthor.Api, ct);
 
+    /// <summary>The working representation under <paramref name="policy"/> (see <see cref="RepresentationBuilder"/>).</summary>
+    public Task<string> GetRepresentationAsync(
+        string workspaceName,
+        string observerName,
+        string observedName,
+        VisibilityPolicy policy,
+        RepresentationQuery query,
+        CancellationToken ct) =>
+        representations.BuildAsync(workspaceName, observerName, observedName, policy, query, ct);
+
     /// <summary>The representation and the card, both under <paramref name="policy"/>.</summary>
     public async Task<PeerContext> GetContextAsync(
         string workspaceName,
@@ -42,7 +52,7 @@ public sealed class PeerContextService(IMemoryStore store, RepresentationBuilder
         CancellationToken ct)
     {
         var card = await GetCardAsync(workspaceName, observerName, observedName, policy, ct).ConfigureAwait(false);
-        var representation = await representations.BuildAsync(workspaceName, observerName, observedName, policy, query, ct)
+        var representation = await GetRepresentationAsync(workspaceName, observerName, observedName, policy, query, ct)
             .ConfigureAwait(false);
         return new(observerName, observedName, representation, card);
     }

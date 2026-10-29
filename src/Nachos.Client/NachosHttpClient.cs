@@ -54,6 +54,7 @@ namespace Nachos.Client;
 /// </remarks>
 public sealed class NachosHttpClient : INachosClient
 {
+    private const string MemoryRoutesPending = "The HTTP client for M2 memory routes lands in M2 Task 8.";
     private const string Workspaces = "/v3/workspaces";
     private const string WorkspacesList = Workspaces + "/list";
     private const string W = Workspaces + "/{workspace_id}";
@@ -337,8 +338,6 @@ public sealed class NachosHttpClient : INachosClient
         ArgumentNullException.ThrowIfNull(role);
         await SendAsync(HttpMethod.Post, Grants, [], null, new GrantCreate(objectId, workspaceId, role), null, ct).ConfigureAwait(false);
     }
-
-    private const string MemoryRoutesPending = "The HTTP client for M2 memory routes lands in M2 Task 8.";
 
     public Task<IReadOnlyList<Conclusion>> CreateConclusionsAsync(
         string workspaceId, IReadOnlyList<ConclusionCreate> conclusions, CancellationToken ct = default) =>

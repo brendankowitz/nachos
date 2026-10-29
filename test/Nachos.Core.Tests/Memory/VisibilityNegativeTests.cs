@@ -16,7 +16,10 @@ public sealed class VisibilityNegativeTests
     private static readonly VisibilityPolicy OnlyS1 = VisibilityPolicy.Create(["S1"], null);
     private static readonly VisibilityPolicy Nothing = VisibilityPolicy.Create([], null);
 
-    /// <summary>bob's memory of alice: one visible S1 fact, and an S2 fact, an unattributed fact and an S1-free deduction that are not.</summary>
+    /// <summary>
+    /// bob's memory of alice: one visible explicit S1 fact; an S2 fact, an unattributed fact, an unattributed deduction
+    /// and a deduction attributed to S1 that are not visible under the S1 allowlist.
+    /// </summary>
     private static async Task<MemoryFixture> SeededAsync()
     {
         var f = await new MemoryFixture().SeedAsync();
@@ -24,6 +27,7 @@ public sealed class VisibilityNegativeTests
         await f.AddAsync("alice likes tea in S2", session: "S2");
         await f.AddAsync("alice likes tea, unattributed", session: null);
         await f.AddAsync("alice likes tea, deduced", session: null, level: ConclusionLevel.Deductive);
+        await f.AddAsync("alice likes tea, deduced in S1", session: "S1", level: ConclusionLevel.Deductive);
         await f.PeerContext.SetCardAsync(W, "bob", "alice", ["IDENTITY: alice"], default);
         return f;
     }
@@ -80,7 +84,52 @@ public sealed class VisibilityNegativeTests
 
         (await f.Conclusions.ListAsync(W, OnlyS1, null, new(), default)).Items.Select(c => c.Content).ShouldBe(["alice likes tea"]);
         (await f.Conclusions.ListAsync(W, Nothing, null, new(), default)).Items.ShouldBeEmpty();
-        (await f.Conclusions.ListAsync(W, VisibilityPolicy.Unrestricted, null, new(), default)).Items.Count.ShouldBe(4);
+        (await f.Conclusions.ListAsync(W, VisibilityPolicy.Unrestricted, null, new(), default)).Items.Count.ShouldBe(5);
+    }
+
+    [Fact]
+    public async Task ConclusionList_UnderAllowlist_TotalAndPagesCountOnlyVisibleRows()
+    {
+        using var f = await SeededAsync();
+        await f.AddAsync("alice likes coffee", session: "S1");
+
+        var page = await f.Conclusions.ListAsync(W, OnlyS1, null, new(Size: 1), default);
+
+        // The level rule is applied in the store, so the S1 deduction counts in neither the total nor the pages.
+        page.Items.Select(c => c.Content).ShouldBe(["alice likes tea"]);
+        page.Total.ShouldBe(2);
+        page.Pages.ShouldBe(2);
+        (await f.Conclusions.ListAsync(W, OnlyS1, null, new(Page: 2, Size: 1), default)).Items
+            .Select(c => c.Content).ShouldBe(["alice likes coffee"]);
+    }
+
+    [Fact]
+    public async Task Representation_UnderAllowlist_IsNotCrowdedOutByHiddenRows()
+    {
+        using var f = await SeededAsync();
+        for (var i = 0; i < 3; i++)
+        {
+            await f.AddAsync($"newer deduction {i}", session: "S1", level: ConclusionLevel.Deductive);
+        }
+
+        // Three newer hidden rows would fill a one-conclusion page if the level were only checked after the read.
+        (await f.Representations.BuildAsync(W, "bob", "alice", OnlyS1, new(MaxConclusions: 1), default))
+            .ShouldBe("## Explicit\n\n- alice likes tea\n");
+    }
+
+    [Fact]
+    public async Task Conclusion_OfAnotherWorkspace_IsNotFound_AndCannotBeDeleted()
+    {
+        using var f = await SeededAsync();
+        await f.Service.GetOrCreateWorkspaceAsync("W2");
+        var id = (await f.Conclusions.ListAsync(W, VisibilityPolicy.Unrestricted, null, new(), default)).Items[0].PublicId;
+
+        (await f.Conclusions.GetAsync("W2", VisibilityPolicy.Unrestricted, id, default)).ShouldBeNull();
+        await Should.ThrowAsync<NotFoundException>(() => f.Service.GetConclusionAsync("W2", id));
+        await f.Service.DeleteConclusionAsync("W2", id);
+
+        (await f.Service.GetConclusionAsync(W, id)).Id.ShouldBe(id);
+        (await f.Service.ListConclusionsAsync("W2", null, new())).Total.ShouldBe(0);
     }
 
     [Fact]

@@ -12,10 +12,8 @@ internal static class NachosServiceFactory
 {
     public static NachosService Create(IMemoryStore store, ITokenCounter counter, RequestValidator validator, IKeyIssuer issuer)
     {
-        var representations = new RepresentationBuilder(store, embeddings: null);
         return new(store, counter, validator, issuer,
-            new ConclusionService(store, NullLogger<ConclusionService>.Instance, embeddings: null),
-            new PeerContextService(store, representations),
-            representations);
+            new ConclusionService(store, NullLogger<ConclusionService>.Instance),
+            new PeerContextService(store, new RepresentationBuilder(store)));
     }
 }

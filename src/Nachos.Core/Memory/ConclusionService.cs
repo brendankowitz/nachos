@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -14,13 +15,16 @@ namespace Nachos.Core.Memory;
 /// </summary>
 /// <remarks>
 /// The embedding generator is optional so that a host without AI still serves everything else: created conclusions
-/// then stay pending, and a semantic query throws <see cref="InvalidOperationException"/>.
+/// then stay pending, and a semantic query throws <see cref="InvalidOperationException"/>. Logging is optional because a
+/// bare container may register none.
 /// </remarks>
 public sealed partial class ConclusionService(
     IMemoryStore store,
-    ILogger<ConclusionService> logger,
-    IEmbeddingGenerator<string, Embedding<float>>? embeddings)
+    ILogger<ConclusionService>? logger = null,
+    IEmbeddingGenerator<string, Embedding<float>>? embeddings = null)
 {
+    private readonly ILogger _logger = logger ?? NullLogger<ConclusionService>.Instance;
+
     /// <summary>
     /// Inserts explicit conclusions, all or nothing and without deduplication, with no source ids (owner decision Q5).
     /// They are stored pending and then embedded best-effort; one that is not embedded here is embedded by the
@@ -95,7 +99,7 @@ public sealed partial class ConclusionService(
             var vectors = await embeddings.GenerateAsync(created.Select(c => c.Content), cancellationToken: ct).ConfigureAwait(false);
             if (vectors.Count != created.Count || vectors.Any(v => v.Vector.Length != VectorSpace.Dimensions))
             {
-                LogUnusableEmbeddings(logger, created.Count, VectorSpace.Dimensions);
+                LogUnusableEmbeddings(_logger, created.Count, VectorSpace.Dimensions);
                 return;
             }
 
@@ -109,7 +113,7 @@ public sealed partial class ConclusionService(
         {
             // The conclusions are committed; failing the request now would invite a duplicating retry. A provider
             // timeout surfaces as a TaskCanceledException, so only the caller's own cancellation propagates.
-            LogEmbeddingDeferred(logger, ex, created.Count);
+            LogEmbeddingDeferred(_logger, ex, created.Count);
         }
     }
 

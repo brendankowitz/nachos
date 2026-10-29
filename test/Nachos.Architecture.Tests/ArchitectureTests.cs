@@ -9,8 +9,8 @@ using Shouldly;
 namespace Nachos.Architecture.Tests;
 
 /// <summary>
-/// Review Focus 5: no memory read in Nachos.Core bypasses <see cref="VisibilityPolicy"/>. The rule reads the IL of every
-/// Core method, so a read hidden in an async state machine, iterator, lambda or local function is attributed to the
+/// Review Focus 5: no memory read outside the storage providers bypasses <see cref="VisibilityPolicy"/>. The rule reads
+/// the IL of every method of every other <c>src</c> assembly, so a read hidden in an async state machine, iterator, lambda or local function is attributed to the
 /// method that wrote it.
 /// </summary>
 public sealed class ArchitectureTests
@@ -42,7 +42,7 @@ public sealed class ArchitectureTests
     [Fact]
     public void MemoryReads_RequireVisibilityPolicy()
     {
-        var reads = MemoryReadCalls(typeof(Nachos.Core.AssemblyMarker).Assembly).ToArray();
+        var reads = ScannedAssemblies().SelectMany(MemoryReadCalls).ToArray();
 
         // The scan must see through async state machines, or the rule would pass without checking anything.
         reads.ShouldContain(r => r.Owner.DeclaringType == typeof(ConclusionDeduplicator) && r.Read.Name == nameof(IConclusionStore.FindExactAsync));
@@ -52,6 +52,42 @@ public sealed class ArchitectureTests
         reads.Where(r => !TakesPolicy(r.Owner) && !Exempt.Contains($"{r.Owner.DeclaringType!.FullName}.{r.Read.Name}"))
             .Select(r => $"{r.Owner.DeclaringType!.FullName}.{r.Owner.Name} calls {r.Read.DeclaringType!.Name}.{r.Read.Name}")
             .ShouldBeEmpty("memory reads outside a method that takes a VisibilityPolicy");
+    }
+
+    /// <summary>
+    /// Every assembly built from <c>src</c>, except the storage providers (which implement the reads) and the Aspire
+    /// AppHost (which only orchestrates). A new project fails here until this test project references it.
+    /// </summary>
+    private static Assembly[] ScannedAssemblies()
+    {
+        var names = Directory.EnumerateFiles(Path.Combine(RepoRoot(), "src"), "*.csproj", SearchOption.AllDirectories)
+            .Select(Path.GetFileNameWithoutExtension)
+            .OfType<string>()
+            .Where(name => !name.StartsWith("Nachos.DataLayer.", StringComparison.Ordinal) && name != "Nachos.AppHost")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        names.ShouldContain("Nachos.Api");
+        foreach (var name in names)
+        {
+            File.Exists(Path.Combine(AppContext.BaseDirectory, name + ".dll"))
+                .ShouldBeTrue($"{name} is not scanned for memory reads; add a ProjectReference to it in Nachos.Architecture.Tests");
+        }
+
+        return [.. names.Select(name => Assembly.Load(new AssemblyName(name)))];
+    }
+
+    private static string RepoRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Nachos.slnx")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("Nachos.slnx was not found above the test output; the memory-read rule needs the source tree.");
     }
 
     private static bool TakesPolicy(MethodBase method) =>

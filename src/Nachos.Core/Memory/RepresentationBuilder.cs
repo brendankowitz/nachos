@@ -26,7 +26,7 @@ namespace Nachos.Core.Memory;
 /// </remarks>
 public sealed class RepresentationBuilder(
     IMemoryStore store,
-    IEmbeddingGenerator<string, Embedding<float>>? embeddings)
+    IEmbeddingGenerator<string, Embedding<float>>? embeddings = null)
 {
     /// <summary>The Markdown representation <paramref name="observerName"/> holds of <paramref name="observedName"/>.</summary>
     public async Task<string> BuildAsync(

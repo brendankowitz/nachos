@@ -112,7 +112,7 @@ public sealed class RepresentationBuilderTests
         f.Embeddings.Calls.ShouldBe(calls);
 
         // Without a query, no embedding generator is needed at all.
-        var withoutAi = new RepresentationBuilder(f.Store, embeddings: null);
+        var withoutAi = new RepresentationBuilder(f.Store);
         (await withoutAi.BuildAsync(MemoryFixture.W, "bob", "alice", VisibilityPolicy.Unrestricted, new(), default))
             .ShouldContain("- alice likes tea");
         await Should.ThrowAsync<InvalidOperationException>(() =>

@@ -109,8 +109,9 @@ public sealed partial class NachosService
 
         var query = ReadRepresentationQuery("body", request.MaxConclusions, request.IncludeMostFrequent, request.SearchQuery,
             request.SearchTopK, request.SearchMaxDistance, FilterParser.Parse(request.Filters, ResourceKind.Conclusion));
-        var policy = VisibilityPolicy.Create(request.SessionId is null ? null : [request.SessionId], ReadScopes(request.Scope));
-        return new(await representations.BuildAsync(workspaceId, peerId, observed, policy, query, ct).ConfigureAwait(false));
+        // Any scope is rejected by the policy, so which ids it named does not matter.
+        var policy = VisibilityPolicy.Create(request.SessionId is null ? null : [request.SessionId], request.Scope is null ? null : []);
+        return new(await peerContext.GetRepresentationAsync(workspaceId, peerId, observed, policy, query, ct).ConfigureAwait(false));
     }
 
     public Task<PeerContext> GetPeerContextAsync(string workspaceId, string peerId, PeerContextQuery query,
@@ -253,26 +254,9 @@ public sealed partial class NachosService
         }
     }
 
-    // Any scope is rejected by the policy; the ids are read only so the policy sees what the request named.
-    private static string[]? ReadScopes(JsonNode? scope) => scope switch
-    {
-        null => null,
-        JsonArray ids => [.. ids.Select(id => id?.ToJsonString() ?? "null")],
-        _ => [scope.ToJsonString()],
-    };
-
     private static RequestValidationException Invalid(IReadOnlyList<object> location, string message, string type) =>
         new([new ValidationError(location, message, type)]);
 
     private static Conclusion Map(ConclusionRecord row) => new(row.PublicId, row.Content, row.ObserverName,
-        row.ObservedName, row.SessionName, WireLevel(row.Level), row.TimesDerived, row.SourceIds, row.CreatedAt);
-
-    private static string WireLevel(ConclusionLevel level) => level switch
-    {
-        ConclusionLevel.Explicit => "explicit",
-        ConclusionLevel.Deductive => "deductive",
-        ConclusionLevel.Inductive => "inductive",
-        ConclusionLevel.Contradiction => "contradiction",
-        _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Unknown conclusion level."),
-    };
+        row.ObservedName, row.SessionName, ConclusionLevelNames.Of(row.Level), row.TimesDerived, row.SourceIds, row.CreatedAt);
 }
