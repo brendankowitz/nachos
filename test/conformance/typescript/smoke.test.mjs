@@ -123,6 +123,48 @@ test('batch messages: create, list, get and metadata update', async () => {
   assert.deepEqual((await session.getMessage(created[3].id)).metadata, { edited: true });
 });
 
+test('conclusions: create, list, get and delete', async () => {
+  // The semantic query (`.query`) needs an embedding generator, which the conformance host does not configure yet
+  // (Task 9 wires the fake AI provider); it is covered by the .NET round-trip tests until then.
+  const honcho = client(freshWorkspace());
+  const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
+  const session = await honcho.session('s1');
+  await session.addPeers([alice, bob]);
+  const aboutBob = alice.conclusionsOf('bob');
+
+  const created = await aboutBob.create([
+    { content: 'Bob prefers dark mode', sessionId: 's1' },
+    { content: 'Bob works at Acme', sessionId: 's1' },
+  ]);
+  assert.deepEqual(created.map((c) => c.content), ['Bob prefers dark mode', 'Bob works at Acme']);
+  const ids = async (view) => {
+    const page = await view.list();
+    const seen = [];
+    for await (const conclusion of page) {
+      seen.push(conclusion.id);
+    }
+    return seen;
+  };
+  assert.deepEqual(new Set(await ids(aboutBob)), new Set(created.map((c) => c.id)));
+  assert.deepEqual(await ids(alice.conclusions), []);
+
+  assert.equal((await aboutBob.get(created[0].id)).content, 'Bob prefers dark mode');
+  await aboutBob.delete(created[0].id);
+  assert.deepEqual(await ids(aboutBob), [created[1].id]);
+});
+
+test('peer card get and set', async () => {
+  const honcho = client(freshWorkspace());
+  const alice = await honcho.peer('alice');
+  await honcho.peer('bob');
+
+  assert.equal(await alice.getCard(), null);
+  assert.deepEqual(await alice.setCard(['Likes TypeScript', 'Lives in NYC']), ['Likes TypeScript', 'Lives in NYC']);
+  await alice.setCard(['Works at Acme'], 'bob');
+  assert.deepEqual(await alice.getCard(), ['Likes TypeScript', 'Lives in NYC']);
+  assert.deepEqual(await alice.getCard('bob'), ['Works at Acme']);
+});
+
 test('idempotent replay returns the same batch', async () => {
   // @honcho-ai/sdk takes extra request headers per client (`defaultHeaders`), so a dedicated client replays one batch
   // under one Idempotency-Key. Spec 9.1: the replay returns the stored response and performs no second mutation.

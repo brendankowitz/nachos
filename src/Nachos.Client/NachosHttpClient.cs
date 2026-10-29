@@ -31,6 +31,7 @@ namespace Nachos.Client;
 /// <para>
 /// <see cref="CreateMessagesAsync"/> always sends an <c>Idempotency-Key</c>: the caller's, or a new GUID per call.
 /// A retry handler replays the same request, so the key is stable across retries of one call.
+/// <see cref="CreateConclusionsAsync"/> sends none and is never retried: the server does not support a key there yet.
 /// </para>
 /// <para>
 /// For an operation that returns a value, a success body that is not valid JSON (malformed, a duplicate property
@@ -54,7 +55,6 @@ namespace Nachos.Client;
 /// </remarks>
 public sealed class NachosHttpClient : INachosClient
 {
-    private const string MemoryRoutesPending = "The HTTP client for M2 memory routes lands in M2 Task 8.";
     private const string Workspaces = "/v3/workspaces";
     private const string WorkspacesList = Workspaces + "/list";
     private const string W = Workspaces + "/{workspace_id}";
@@ -70,6 +70,14 @@ public sealed class NachosHttpClient : INachosClient
     private const string Messages = S + "/messages";
     private const string MessagesList = Messages + "/list";
     private const string MessageById = Messages + "/{message_id}";
+    private const string PeerCard = P + "/card";
+    private const string PeerContextRoute = P + "/context";
+    private const string PeerRepresentation = P + "/representation";
+    private const string Conclusions = W + "/conclusions";
+    private const string ConclusionsList = Conclusions + "/list";
+    private const string ConclusionsQuery = Conclusions + "/query";
+    private const string ConclusionById = Conclusions + "/{conclusion_id}";
+    private const string QueueStatusRoute = W + "/queue/status";
     private const string Keys = "/v3/keys";
     private const string Grants = "/v3/admin/grants";
 
@@ -87,6 +95,12 @@ public sealed class NachosHttpClient : INachosClient
     // reads as an empty object, because the Abstractions records model them as non-null.
     private static readonly string[] MetadataAndConfiguration = ["metadata", "configuration"];
     private static readonly string[] MetadataOnly = ["metadata"];
+
+    // Optional nullable members of the M2 wire entities: an omitted value reads as null.
+    private static readonly string[] ConclusionNulls = ["session_id"];
+    private static readonly string[] PeerCardNulls = ["peer_card"];
+    private static readonly string[] PeerContextNulls = ["representation", "peer_card"];
+    private static readonly string[] QueueStatusNulls = ["sessions"];
 
     private readonly HttpClient _http;
     private readonly Uri _baseAddress;
@@ -326,9 +340,7 @@ public sealed class NachosHttpClient : INachosClient
         AddQuery(parameters, "peer_id", peerId);
         AddQuery(parameters, "session_id", sessionId);
         AddQuery(parameters, "expires_at", expiresAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
-        var query = parameters.Count == 0 ? null : string.Join('&', parameters);
-
-        var json = await SendAsync(HttpMethod.Post, Keys, [], query, null, null, ct).ConfigureAwait(false);
+        var json = await SendAsync(HttpMethod.Post, Keys, [], Joined(parameters), null, null, ct).ConfigureAwait(false);
         return ReadEntity<KeyResponse>(json, []);
     }
 
@@ -339,43 +351,94 @@ public sealed class NachosHttpClient : INachosClient
         await SendAsync(HttpMethod.Post, Grants, [], null, new GrantCreate(objectId, workspaceId, role), null, ct).ConfigureAwait(false);
     }
 
-    public Task<IReadOnlyList<Conclusion>> CreateConclusionsAsync(
-        string workspaceId, IReadOnlyList<ConclusionCreate> conclusions, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<IReadOnlyList<Conclusion>> CreateConclusionsAsync(
+        string workspaceId, IReadOnlyList<ConclusionCreate> conclusions, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(conclusions);
 
-    public Task<Page<Conclusion>> ListConclusionsAsync(
-        string workspaceId, JsonObject? filters, PageRequest page, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+        // No Idempotency-Key: the server does not support one on this route yet (spec §9.1), so it is never retried.
+        var json = await SendAsync(HttpMethod.Post, Conclusions, [workspaceId], null, new ConclusionBatchCreate(conclusions), null, ct)
+            .ConfigureAwait(false);
+        return Read<Conclusion[]>(RequireArrayOfObjects(WireJson.Parse(json), nameof(Conclusion), [], ConclusionNulls));
+    }
 
-    public Task<IReadOnlyList<Conclusion>> QueryConclusionsAsync(
-        string workspaceId, ConclusionQuery query, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<Page<Conclusion>> ListConclusionsAsync(
+        string workspaceId, JsonObject? filters, PageRequest page, CancellationToken ct = default)
+    {
+        var json = await SendAsync(HttpMethod.Post, ConclusionsList, [workspaceId], ListQuery(page), new FilterBody(Data(filters)), null, ct)
+            .ConfigureAwait(false);
+        return ReadPage<Conclusion>(json, [], ConclusionNulls);
+    }
 
-    public Task<Conclusion> GetConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<IReadOnlyList<Conclusion>> QueryConclusionsAsync(
+        string workspaceId, ConclusionQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var body = query with { Filters = Data(query.Filters) };
+        var json = await SendAsync(HttpMethod.Post, ConclusionsQuery, [workspaceId], null, body, null, ct).ConfigureAwait(false);
+        return Read<Conclusion[]>(RequireArrayOfObjects(WireJson.Parse(json), nameof(Conclusion), [], ConclusionNulls));
+    }
 
-    public Task DeleteConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<Conclusion> GetConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default)
+    {
+        var json = await SendAsync(HttpMethod.Get, ConclusionById, [workspaceId, conclusionId], null, null, null, ct).ConfigureAwait(false);
+        return ReadEntity<Conclusion>(json, [], ConclusionNulls);
+    }
 
-    public Task<PeerCardResponse> GetPeerCardAsync(
-        string workspaceId, string peerId, string? target = null, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task DeleteConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default) =>
+        await SendAsync(HttpMethod.Delete, ConclusionById, [workspaceId, conclusionId], null, null, null, ct).ConfigureAwait(false);
 
-    public Task<PeerCardResponse> SetPeerCardAsync(string workspaceId, string peerId, IReadOnlyList<string> peerCard,
-        string? target = null, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<PeerCardResponse> GetPeerCardAsync(
+        string workspaceId, string peerId, string? target = null, CancellationToken ct = default)
+    {
+        var json = await SendAsync(HttpMethod.Get, PeerCard, [workspaceId, peerId], TargetQuery(target), null, null, ct).ConfigureAwait(false);
+        return ReadEntity<PeerCardResponse>(json, [], PeerCardNulls);
+    }
 
-    public Task<RepresentationResponse> GetRepresentationAsync(
-        string workspaceId, string peerId, PeerRepresentationGet request, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<PeerCardResponse> SetPeerCardAsync(string workspaceId, string peerId, IReadOnlyList<string> peerCard,
+        string? target = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(peerCard);
+        var json = await SendAsync(HttpMethod.Put, PeerCard, [workspaceId, peerId], TargetQuery(target), new PeerCardSet(peerCard), null, ct)
+            .ConfigureAwait(false);
+        return ReadEntity<PeerCardResponse>(json, [], PeerCardNulls);
+    }
 
-    public Task<PeerContext> GetPeerContextAsync(
-        string workspaceId, string peerId, PeerContextQuery query, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<RepresentationResponse> GetRepresentationAsync(
+        string workspaceId, string peerId, PeerRepresentationGet request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = request with { Filters = Data(request.Filters), Scope = StrictJsonData.ToCanonical(request.Scope) };
+        var json = await SendAsync(HttpMethod.Post, PeerRepresentation, [workspaceId, peerId], null, body, null, ct).ConfigureAwait(false);
+        return ReadEntity<RepresentationResponse>(json, []);
+    }
 
-    public Task<QueueStatus> GetQueueStatusAsync(string workspaceId, string? observerId = null, string? senderId = null,
-        string? sessionId = null, CancellationToken ct = default) =>
-        throw new NotSupportedException(MemoryRoutesPending);
+    public async Task<PeerContext> GetPeerContextAsync(
+        string workspaceId, string peerId, PeerContextQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var parameters = new List<string>(6);
+        AddQuery(parameters, "target", query.Target);
+        AddQuery(parameters, "search_query", query.SearchQuery);
+        AddQuery(parameters, "search_top_k", query.SearchTopK?.ToString(CultureInfo.InvariantCulture));
+        AddQuery(parameters, "search_max_distance", query.SearchMaxDistance?.ToString("R", CultureInfo.InvariantCulture));
+        AddQuery(parameters, "include_most_frequent", query.IncludeMostFrequent switch { null => null, true => "true", false => "false" });
+        AddQuery(parameters, "max_conclusions", query.MaxConclusions?.ToString(CultureInfo.InvariantCulture));
+        var json = await SendAsync(HttpMethod.Get, PeerContextRoute, [workspaceId, peerId], Joined(parameters), null, null, ct)
+            .ConfigureAwait(false);
+        return ReadEntity<PeerContext>(json, [], PeerContextNulls);
+    }
+
+    public async Task<QueueStatus> GetQueueStatusAsync(string workspaceId, string? observerId = null, string? senderId = null,
+        string? sessionId = null, CancellationToken ct = default)
+    {
+        var parameters = new List<string>(3);
+        AddQuery(parameters, "observer_id", observerId);
+        AddQuery(parameters, "sender_id", senderId);
+        AddQuery(parameters, "session_id", sessionId);
+        var json = await SendAsync(HttpMethod.Get, QueueStatusRoute, [workspaceId], Joined(parameters), null, null, ct).ConfigureAwait(false);
+        return ReadEntity<QueueStatus>(json, [], QueueStatusNulls);
+    }
 
     /// <summary>Sends one request and returns the success body; any other status throws the mapped exception.</summary>
     private async Task<string> SendAsync(
@@ -514,6 +577,10 @@ public sealed class NachosHttpClient : INachosClient
             CultureInfo.InvariantCulture, $"page={page.Page}&size={page.Size}&reverse={(page.Reverse ? "true" : "false")}");
     }
 
+    private static string? TargetQuery(string? target) => target is null ? null : "target=" + Uri.EscapeDataString(target);
+
+    private static string? Joined(List<string> parameters) => parameters.Count == 0 ? null : string.Join('&', parameters);
+
     private static void AddQuery(List<string> parameters, string name, string? value)
     {
         if (value is not null)
@@ -526,17 +593,17 @@ public sealed class NachosHttpClient : INachosClient
     // object, a collection is an array of objects, and a page is an object whose "items" is such an array. Anything else
     // (a null entry included) throws JsonException, so no null or fabricated entity is ever returned.
 
-    private static T ReadEntity<T>(string json, string[] objectMembers) =>
-        Read<T>(RequireObject(WireJson.Parse(json), typeof(T).Name, objectMembers));
+    private static T ReadEntity<T>(string json, string[] objectMembers, string[]? nullMembers = null) =>
+        Read<T>(RequireObject(WireJson.Parse(json), typeof(T).Name, objectMembers, nullMembers));
 
-    private static Page<T> ReadPage<T>(string json, string[] objectMembers)
+    private static Page<T> ReadPage<T>(string json, string[] objectMembers, string[]? nullMembers = null)
     {
         var page = RequireObject(WireJson.Parse(json), $"a page of {typeof(T).Name}", []);
-        RequireArrayOfObjects(page["items"], typeof(T).Name, objectMembers);
+        RequireArrayOfObjects(page["items"], typeof(T).Name, objectMembers, nullMembers);
         return Read<Page<T>>(page);
     }
 
-    private static JsonArray RequireArrayOfObjects(JsonNode? node, string itemName, string[] objectMembers)
+    private static JsonArray RequireArrayOfObjects(JsonNode? node, string itemName, string[] objectMembers, string[]? nullMembers = null)
     {
         if (node is not JsonArray items)
         {
@@ -545,7 +612,7 @@ public sealed class NachosHttpClient : INachosClient
 
         for (var i = 0; i < items.Count; i++)
         {
-            RequireObject(items[i], $"{itemName} at index {i}", objectMembers);
+            RequireObject(items[i], $"{itemName} at index {i}", objectMembers, nullMembers);
         }
 
         return items;
@@ -553,9 +620,10 @@ public sealed class NachosHttpClient : INachosClient
 
     /// <summary>
     /// The node as an object, with each of <paramref name="objectMembers"/> that is absent or null set to <c>{}</c>
-    /// (optional wire members the Abstractions records model as non-null).
+    /// (optional wire members the Abstractions records model as non-null), and each of <paramref name="nullMembers"/>
+    /// that is absent set to null (optional wire members the records model as nullable).
     /// </summary>
-    private static JsonObject RequireObject(JsonNode? node, string what, string[] objectMembers)
+    private static JsonObject RequireObject(JsonNode? node, string what, string[] objectMembers, string[]? nullMembers = null)
     {
         if (node is not JsonObject obj)
         {
@@ -568,6 +636,11 @@ public sealed class NachosHttpClient : INachosClient
             {
                 obj[member] = new JsonObject();
             }
+        }
+
+        foreach (var member in nullMembers ?? [])
+        {
+            obj.TryAdd(member, null);
         }
 
         return obj;

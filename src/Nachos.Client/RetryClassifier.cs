@@ -32,7 +32,6 @@ public static class RetryClassifier
         // Non-idempotent mutations that accept an Idempotency-Key (spec §9.1).
         (Split("v3/workspaces/{}/sessions/{}/messages"), RetryCategory.RequiresIdempotencyKey),
         (Split("v3/workspaces/{}/sessions/{}/messages/upload"), RetryCategory.RequiresIdempotencyKey),
-        (Split("v3/workspaces/{}/conclusions"), RetryCategory.RequiresIdempotencyKey),
         (Split("v3/workspaces/{}/sessions/{}/clone"), RetryCategory.RequiresIdempotencyKey),
 
         // Get-or-create keyed by the body id.
@@ -60,6 +59,10 @@ public static class RetryClassifier
         // Grant add is a set-add (IGrantStore.AddAsync: a duplicate is a no-op), so a replay would be safe; spec §16
         // nevertheless lists it as never auto-retried (an admin write).
         (Split("v3/admin/grants"), RetryCategory.Never),
+
+        // Conclusion create is non-idempotent and the server does not support an Idempotency-Key on it yet (spec §9.1),
+        // so a replay would store a second batch even when the request carries a key.
+        (Split("v3/workspaces/{}/conclusions"), RetryCategory.Never),
     ];
 
     private static readonly string[] WebhookTest = Split("v3/workspaces/{}/webhooks/test");

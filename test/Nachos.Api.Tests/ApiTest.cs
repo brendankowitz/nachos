@@ -9,7 +9,8 @@ public abstract class ApiTest : IDisposable
 {
     protected NachosApiFactory Factory { get; } = new();
     private HttpClient? _client;
-    protected HttpClient Client => _client ??= Factory.CreateClient();
+    protected HttpClient Client => _client ??= CreateClient();
+    protected virtual HttpClient CreateClient() => Factory.CreateClient();
     protected const string W = "/v3/workspaces/w";
     protected const string S = W + "/sessions/s";
     protected const string M = S + "/messages";

@@ -102,6 +102,15 @@ internal sealed class RequestBody(JsonDocument document) : IDisposable
         return id;
     }
 
+    /// <summary>Rejects a body without <paramref name="property"/>; an explicit null is left to the value's own rule.</summary>
+    public void Require(string property)
+    {
+        if (!Root.TryGetProperty(property, out _))
+        {
+            throw Invalid(["body", property], "Field required.", "missing");
+        }
+    }
+
     public JsonObject? Object(string property) => Optional(property, NachosJsonContext.Default.JsonObject);
 
     public T? Optional<T>(string property, JsonTypeInfo<T> typeInfo, bool strict = false) where T : class

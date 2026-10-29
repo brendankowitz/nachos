@@ -50,6 +50,12 @@ public sealed class RetryClassifierTests
     [InlineData("POST", W + "/search", RetryCategory.Retryable)]
     [InlineData("POST", P + "/search", RetryCategory.Retryable)]
     [InlineData("POST", C + "/query", RetryCategory.Retryable)]
+    [InlineData("POST", C + "/list", RetryCategory.Retryable)]
+    [InlineData("GET", C + "/{conclusion_id}", RetryCategory.Retryable)]
+    [InlineData("GET", P + "/card", RetryCategory.Retryable)]
+    [InlineData("PUT", P + "/card", RetryCategory.Retryable)]
+    [InlineData("GET", P + "/context", RetryCategory.Retryable)]
+    [InlineData("GET", W + "/queue/status", RetryCategory.Retryable)]
     [InlineData("POST", P + "/representation", RetryCategory.Retryable)]
     [InlineData("POST", P + "/sessions", RetryCategory.Retryable)]
     // Idempotent writes: PUT, get-or-create POST keyed by id, DELETE, membership adds.
@@ -73,11 +79,12 @@ public sealed class RetryClassifierTests
     [InlineData("POST", H, RetryCategory.Never)]
     [InlineData("POST", "/v3/admin/grants", RetryCategory.Never)]
     [InlineData("POST", W + "/scopes/{scope_id}/sessions", RetryCategory.Never)]
+    // No Idempotency-Key support on conclusion create in M2 (spec §9.1).
+    [InlineData("POST", C, RetryCategory.Never)]
     // Non-idempotent mutations: retryable only with an Idempotency-Key.
     [InlineData("POST", M, RetryCategory.RequiresIdempotencyKey)]
     [InlineData("POST", M + "/", RetryCategory.RequiresIdempotencyKey)]
     [InlineData("POST", M + "/upload", RetryCategory.RequiresIdempotencyKey)]
-    [InlineData("POST", C, RetryCategory.RequiresIdempotencyKey)]
     [InlineData("POST", S + "/clone", RetryCategory.RequiresIdempotencyKey)]
     public void Classify_NamedCases(string method, string template, RetryCategory expected)
     {
@@ -99,7 +106,7 @@ public sealed class RetryClassifierTests
     [InlineData("POST", M + "/upload", false, false)]
     [InlineData("POST", M + "/upload", true, true)]
     [InlineData("POST", C, false, false)]
-    [InlineData("POST", C, true, true)]
+    [InlineData("POST", C, true, false)]
     [InlineData("POST", S + "/clone", false, false)]
     [InlineData("POST", S + "/clone", true, true)]
     [InlineData("POST", "/v3/keys", true, false)]

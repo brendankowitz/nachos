@@ -27,7 +27,69 @@ public sealed partial class WireCoverageTests : ApiTest
         "POST /v3/workspaces/{workspace_id}/sessions/{session_id}/messages/list",
         "GET /v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}",
         "PUT /v3/workspaces/{workspace_id}/sessions/{session_id}/messages/{message_id}",
+        "POST /v3/workspaces/{workspace_id}/conclusions", "POST /v3/workspaces/{workspace_id}/conclusions/list",
+        "POST /v3/workspaces/{workspace_id}/conclusions/query",
+        "GET /v3/workspaces/{workspace_id}/conclusions/{conclusion_id}",
+        "DELETE /v3/workspaces/{workspace_id}/conclusions/{conclusion_id}",
+        "GET /v3/workspaces/{workspace_id}/peers/{peer_id}/card", "PUT /v3/workspaces/{workspace_id}/peers/{peer_id}/card",
+        "GET /v3/workspaces/{workspace_id}/peers/{peer_id}/context",
+        "POST /v3/workspaces/{workspace_id}/peers/{peer_id}/representation",
+        "GET /v3/workspaces/{workspace_id}/queue/status",
     };
+
+    /// <summary>The routes M2 implemented: exactly these left the 501 list (plan Task 8).</summary>
+    private static readonly (string Method, string Path)[] M2Routes =
+    [
+        ("POST", "/v3/workspaces/{workspace_id}/conclusions"), ("POST", "/v3/workspaces/{workspace_id}/conclusions/list"),
+        ("POST", "/v3/workspaces/{workspace_id}/conclusions/query"),
+        ("GET", "/v3/workspaces/{workspace_id}/conclusions/{conclusion_id}"),
+        ("DELETE", "/v3/workspaces/{workspace_id}/conclusions/{conclusion_id}"),
+        ("GET", "/v3/workspaces/{workspace_id}/peers/{peer_id}/card"), ("PUT", "/v3/workspaces/{workspace_id}/peers/{peer_id}/card"),
+        ("GET", "/v3/workspaces/{workspace_id}/peers/{peer_id}/context"),
+        ("POST", "/v3/workspaces/{workspace_id}/peers/{peer_id}/representation"),
+        ("GET", "/v3/workspaces/{workspace_id}/queue/status"),
+    ];
+
+    [Fact]
+    public void ImplementedSet_IsM1PlusExactlyTheM2Pairs()
+    {
+        // M1 implemented 22 manifest routes plus the grants extension; every other manifest route must still answer 501
+        // (EveryManifestRoute_IsMapped).
+        Implemented.Count.ShouldBe(23 + M2Routes.Length);
+        M2Routes.ShouldAllBe(route => Implemented.Contains(route.Method + " " + route.Path));
+        var manifest = Routes().Select(route => (string)route[0] + " " + (string)route[1]).ToHashSet(StringComparer.Ordinal);
+        Implemented.Where(route => route != "POST /v3/admin/grants").ShouldAllBe(route => manifest.Contains(route));
+    }
+
+    public static TheoryData<string, string> M2RouteData()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var (method, path) in M2Routes)
+        {
+            data.Add(method, path);
+        }
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(M2RouteData))]
+    public async Task M2Route_DocumentsExactlyTheManifestQueryParameters(string method, string path)
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "honcho-v3-wire.json")));
+        var expected = manifest.RootElement.GetProperty("routes").EnumerateArray()
+            .Single(route => route.GetProperty("method").GetString() == method && route.GetProperty("path").GetString() == path)
+            .GetProperty("query").EnumerateArray().Select(name => name.GetString()!).Order().ToArray();
+        var operation = (await Send(HttpMethod.Get, "/openapi/v1.json")).GetProperty("paths").GetProperty(path)
+            .GetProperty(method.ToLowerInvariant());
+        var actual = operation.TryGetProperty("parameters", out var parameters)
+            ? parameters.EnumerateArray().Where(p => p.GetProperty("in").GetString() == "query")
+                .Select(p => p.GetProperty("name").GetString()!).Order().ToArray()
+            : [];
+        actual.ShouldBe(expected);
+        var statuses = operation.GetProperty("responses").EnumerateObject().Select(r => r.Name).ToArray();
+        statuses.ShouldContain("422");
+        statuses.ShouldNotContain("501");
+    }
 
     public static IEnumerable<object[]> Routes()
     {

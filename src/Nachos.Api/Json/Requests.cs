@@ -27,3 +27,7 @@ public sealed record MessageUpdate(JsonObject? Metadata = null);
 public sealed record MessageBatchCreate(
     [property: MinLength(1), MaxLength(100)] IReadOnlyList<MessageCreate> Messages);
 public sealed record GrantCreate(string ObjectId, string? WorkspaceId, string Role);
+public sealed record ConclusionBatchCreate(
+    [property: MinLength(1), MaxLength(100)] IReadOnlyList<ConclusionCreate> Conclusions);
+public sealed record ConclusionGet(JsonObject? Filters = null);
+public sealed record PeerCardSet(IReadOnlyList<string> PeerCard);

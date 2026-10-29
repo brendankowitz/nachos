@@ -39,12 +39,12 @@ function Assert-CiSdkResult {
     $python = [regex]::Matches($Output, '(?m)^=+\s+(\d+) passed(?:, [^\r\n]*warnings?)? in [^\r\n]+=+\s*$')
     $typescript = [regex]::Matches($Output, '(?m)^.* tests (\d+)\r?$')
     $passed = [regex]::Matches($Output, '(?m)^.* pass (\d+)\r?$')
-    # Current unfiltered suites contain ten Python and nine TypeScript cases,
+    # Current unfiltered suites contain twelve Python and eleven TypeScript cases,
     # including each language's scoped-key success/denial case. These are minima.
-    if ($python.Count -ne 1 -or [int] $python[0].Groups[1].Value -lt 10 -or
-        $typescript.Count -ne 1 -or [int] $typescript[0].Groups[1].Value -lt 9 -or
+    if ($python.Count -ne 1 -or [int] $python[0].Groups[1].Value -lt 12 -or
+        $typescript.Count -ne 1 -or [int] $typescript[0].Groups[1].Value -lt 11 -or
         $passed.Count -ne 1 -or $passed[0].Groups[1].Value -ne $typescript[0].Groups[1].Value) {
-        throw 'Both complete SDK suites must report actual passing test counts (Python >=10; TypeScript >=9).'
+        throw 'Both complete SDK suites must report actual passing test counts (Python >=12; TypeScript >=11).'
     }
     foreach ($counter in @('fail', 'skipped', 'todo')) {
         $values = [regex]::Matches($Output, "(?m)^.* $counter (\d+)\r?$")
