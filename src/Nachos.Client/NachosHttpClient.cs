@@ -338,6 +338,46 @@ public sealed class NachosHttpClient : INachosClient
         await SendAsync(HttpMethod.Post, Grants, [], null, new GrantCreate(objectId, workspaceId, role), null, ct).ConfigureAwait(false);
     }
 
+    private const string MemoryRoutesPending = "The HTTP client for M2 memory routes lands in M2 Task 8.";
+
+    public Task<IReadOnlyList<Conclusion>> CreateConclusionsAsync(
+        string workspaceId, IReadOnlyList<ConclusionCreate> conclusions, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<Page<Conclusion>> ListConclusionsAsync(
+        string workspaceId, JsonObject? filters, PageRequest page, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<IReadOnlyList<Conclusion>> QueryConclusionsAsync(
+        string workspaceId, ConclusionQuery query, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<Conclusion> GetConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task DeleteConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<PeerCardResponse> GetPeerCardAsync(
+        string workspaceId, string peerId, string? target = null, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<PeerCardResponse> SetPeerCardAsync(string workspaceId, string peerId, IReadOnlyList<string> peerCard,
+        string? target = null, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<RepresentationResponse> GetRepresentationAsync(
+        string workspaceId, string peerId, PeerRepresentationGet request, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<PeerContext> GetPeerContextAsync(
+        string workspaceId, string peerId, PeerContextQuery query, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
+    public Task<QueueStatus> GetQueueStatusAsync(string workspaceId, string? observerId = null, string? senderId = null,
+        string? sessionId = null, CancellationToken ct = default) =>
+        throw new NotSupportedException(MemoryRoutesPending);
+
     /// <summary>Sends one request and returns the success body; any other status throws the mapped exception.</summary>
     private async Task<string> SendAsync(
         HttpMethod method,

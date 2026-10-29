@@ -393,7 +393,7 @@ public sealed class MessageServiceTests
         public Fixture(ITokenCounter? tokenCounter = null)
         {
             var counter = tokenCounter ?? new TiktokenTokenCounter();
-            Service = new(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
+            Service = Memory.NachosServiceFactory.Create(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
             Store.Sessions.GetAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(info => new SessionRecord(info.ArgAt<string>(0), info.ArgAt<string>(1), LifecycleState.Active, new(), new(), Clock.GetUtcNow()));
             Store.Idempotency.TryGetAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())

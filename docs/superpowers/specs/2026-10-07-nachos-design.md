@@ -465,6 +465,12 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 
 - **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. A value is classified by its backing runtime value, so any other CLR value (collections, POCOs, enums, `TimeSpan` and so on), including an interface or base-type projection of a non-allowlisted runtime type, is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well formed: `SerializeToNode` has already turned a lone surrogate into U+FFFD, so callers who need that guarantee must build `JsonObject`/`JsonArray` with literal strings. Every provider and in-process client **must** pass constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and store or parse only its result (see the strict-data cases in the shared store contract tests). The HTTP path is unchanged.
 
+**M2 memory route notes:**
+
+- **Queue status counts work items.** The wire fields are named `*_work_units`, but Nachos queues one work item per message, covering all of that message's observers, and `W/queue/status` counts those items one to one: `pending` = claimable items (including failed ones waiting to retry), `in_progress` = open items of a unit with an unexpired lease, `completed` = succeeded **plus dead-lettered** items (no further work happens on either), and `total` = their sum. `sessions` maps each session id with selected work to the same counts. Whether Honcho counts per message or per observer is an open parity question, to settle from black-box SDK evidence.
+- **`scope` fails closed.** `P/representation` with any `scope` value returns `422 scope is not supported in this Nachos version` until scopes land (M6), rather than reading without the restriction.
+- **`P/representation` `session_id`** is the §11.8 session allowlist: only explicit conclusions stated in that session are used, and no card is read.
+
 ### 9.4 Intentional deviations (Δ summary)
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).

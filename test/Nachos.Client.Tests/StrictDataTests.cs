@@ -65,6 +65,7 @@ public sealed class StrictDataTests
     {
         // Metadata, configuration and filters typed as JsonObject, plus MessageCreate.Metadata inside the batch.
         var parameters = typeof(INachosClient).GetMethods()
+            .Where(m => !PendingClientOperations.Task8.Contains(m.Name))
             .SelectMany(m => m.GetParameters().Where(p => p.ParameterType == typeof(JsonObject)).Select(p => $"{m.Name[..^"Async".Length]}.{p.Name}"))
             .Append("CreateMessages.metadata")
             .ToHashSet(StringComparer.Ordinal);
