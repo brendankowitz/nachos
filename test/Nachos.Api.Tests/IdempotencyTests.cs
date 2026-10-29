@@ -445,6 +445,10 @@ public sealed class IdempotencyTests(ITestOutputHelper output)
         public IMessageStore Messages => inner.Messages;
         public IGrantStore Grants => inner.Grants;
         public IIdempotencyStore Idempotency => this;
+        public IConclusionStore Conclusions => inner.Conclusions;
+        public IPeerCardStore PeerCards => inner.PeerCards;
+        public IWorkQueue WorkQueue => inner.WorkQueue;
+        public IEmbeddingStore Embeddings => inner.Embeddings;
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Interlocked.Increment(ref _reads);

@@ -373,13 +373,16 @@ public sealed class InMemoryMemoryStoreTests
     }
 
     /// <summary>
-    /// <see cref="AllEntryPoints"/> only sees methods of the six sub-stores, so a store-level method on the
+    /// <see cref="AllEntryPoints"/> only sees methods of the sub-stores, so a store-level method on the
     /// <see cref="IMemoryStore"/> itself would escape the guard unnoticed: fail loudly instead.
     /// </summary>
     [Fact]
-    public void MemoryStoreInterface_DeclaresOnlyTheSixSubStoreGetters()
+    public void MemoryStoreInterface_DeclaresOnlySubStoreGetters()
     {
-        var subStores = new[] { "Workspaces", "Peers", "Sessions", "Messages", "Grants", "Idempotency" };
+        var subStores = new[]
+        {
+            "Workspaces", "Peers", "Sessions", "Messages", "Grants", "Idempotency", "Conclusions", "PeerCards", "WorkQueue", "Embeddings",
+        };
 
         typeof(IMemoryStore).GetInterfaces().ShouldBeEmpty();
         typeof(IMemoryStore).GetProperties().Select(p => p.Name).Order(StringComparer.Ordinal)

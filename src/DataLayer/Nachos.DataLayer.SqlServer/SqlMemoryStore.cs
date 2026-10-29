@@ -1,3 +1,7 @@
+using Nachos.Abstractions;
+using Nachos.Abstractions.Contracts;
+using Nachos.Abstractions.Domain;
+using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Schema;
 using Nachos.DataLayer.SqlServer.Storage;
@@ -35,6 +39,8 @@ namespace Nachos.DataLayer.SqlServer;
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore
 {
+    internal const string PendingM2Message = "The SQL Server M2 store lands in M2 Task 3.";
+
     public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -48,6 +54,11 @@ public sealed class SqlMemoryStore : IMemoryStore
         Messages = new SqlMessageStore(runtime);
         Grants = new SqlGrantStore(runtime);
         Idempotency = new SqlIdempotencyStore(runtime);
+        var pendingM2 = new PendingM2Stores();
+        Conclusions = pendingM2;
+        PeerCards = pendingM2;
+        WorkQueue = pendingM2;
+        Embeddings = pendingM2;
     }
 
     public IWorkspaceStore Workspaces { get; }
@@ -61,4 +72,62 @@ public sealed class SqlMemoryStore : IMemoryStore
     public IGrantStore Grants { get; }
 
     public IIdempotencyStore Idempotency { get; }
+
+    public IConclusionStore Conclusions { get; }
+
+    public IPeerCardStore PeerCards { get; }
+
+    public IWorkQueue WorkQueue { get; }
+
+    public IEmbeddingStore Embeddings { get; }
+
+    /// <summary>Temporary placeholder until M2 Task 3: every member throws <see cref="NotSupportedException"/>.</summary>
+    private sealed class PendingM2Stores : IConclusionStore, IPeerCardStore, IWorkQueue, IEmbeddingStore
+    {
+        private static NotSupportedException Pending() => new(PendingM2Message);
+
+        public Task<CollectionRecord?> GetCollectionAsync(string workspaceName, string observerName, string observedName, CancellationToken ct) => throw Pending();
+
+        public Task<ConclusionRecord?> FindExactAsync(string workspaceName, string observerName, string observedName, ConclusionLevel level, string content, string? restrictToSession, CancellationToken ct) => throw Pending();
+
+        public Task<ConclusionMatch?> FindNearestAsync(string workspaceName, string observerName, string observedName, ReadOnlyMemory<float> vector, double maxDistance, string? restrictToSession, CancellationToken ct) => throw Pending();
+
+        public Task<Page<ConclusionRecord>> ListAsync(string workspaceName, FilterNode? filter, ConclusionOrder order, PageRequest page, CancellationToken ct) => throw Pending();
+
+        public Task<IReadOnlyList<ConclusionMatch>> QueryAsync(string workspaceName, ReadOnlyMemory<float> vector, int topK, double? maxDistance, FilterNode? filter, CancellationToken ct) => throw Pending();
+
+        public Task<ConclusionRecord?> GetAsync(string workspaceName, string publicId, CancellationToken ct) => throw Pending();
+
+        public Task CommitDerivationAsync(WorkLease lease, DerivationChanges changes, CancellationToken ct) => throw Pending();
+
+        public Task<IReadOnlyList<ConclusionRecord>> InsertAsync(string workspaceName, IReadOnlyList<NewConclusion> conclusions, CancellationToken ct) => throw Pending();
+
+        public Task TombstoneAsync(string workspaceName, string publicId, CancellationToken ct) => throw Pending();
+
+        public Task<int> PurgeTombstonesAsync(TimeSpan retention, CancellationToken ct) => throw Pending();
+
+        public Task<PeerCardRecord?> GetAsync(string workspaceName, string observerName, string observedName, CancellationToken ct) => throw Pending();
+
+        public Task<PeerCardRecord> SetAsync(string workspaceName, string observerName, string observedName, IReadOnlyList<string> entries, PeerCardAuthor updatedBy, CancellationToken ct) => throw Pending();
+
+        public Task<WorkLease?> TryAcquireAsync(string owner, IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, TimeSpan leaseDuration, CancellationToken ct) => throw Pending();
+
+        public Task<WorkLease?> TryLeaseAsync(string workUnitKey, string owner, TimeSpan leaseDuration, CancellationToken ct) => throw Pending();
+
+        public Task RenewAsync(WorkLease lease, TimeSpan leaseDuration, CancellationToken ct) => throw Pending();
+
+        public Task CompleteAsync(WorkLease lease, CancellationToken ct) => throw Pending();
+
+        public Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct) => throw Pending();
+
+        public Task<QueueStatusRecord> GetStatusAsync(string workspaceName, string? observerName, string? senderName, string? sessionName, CancellationToken ct) => throw Pending();
+
+        public Task<int> PruneSucceededAsync(TimeSpan retention, CancellationToken ct) => throw Pending();
+
+        public Task<IReadOnlyList<PendingEmbedding>> ListPendingAsync(int limit, CancellationToken ct) => throw Pending();
+
+        public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, CancellationToken ct) => throw Pending();
+
+        public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct) => throw Pending();
+    }
 }

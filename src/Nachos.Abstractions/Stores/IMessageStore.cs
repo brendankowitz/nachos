@@ -40,11 +40,36 @@ public interface IMessageStore
     /// </remarks>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     /// <exception cref="IdempotencyDuplicateException">The key already has an unexpired record.</exception>
+    /// <remarks>Enqueues no work; the same as the overload with a null <c>derive</c>.</remarks>
     Task<IReadOnlyList<MessageRecord>> AppendAsync(
         string workspaceName,
         string sessionName,
         IReadOnlyList<NewMessage> messages,
         IdempotencyWrite? idempotency,
+        CancellationToken ct);
+
+    /// <summary>
+    /// Appends the messages exactly as the overload without <paramref name="derive"/> does and, in the same transaction,
+    /// enqueues their derivation work.
+    /// </summary>
+    /// <remarks>
+    /// For each message whose intent is <see cref="DeriveIntent.Derive"/>, the store resolves the observers with
+    /// <see cref="Observation.ObserverRule"/> at the message's <c>CreatedAt</c>, over the memberships as the append
+    /// leaves them, and, when there is at least one, enqueues one <see cref="WorkTaskType.Representation"/> item:
+    /// key <see cref="Work.WorkUnitKeys.Representation"/> (workspace, session, sender), payload
+    /// <see cref="Work.RepresentationPayload"/>, the message's <c>TokenCount</c> and public id, enqueued now. Whenever
+    /// the append stores nothing (a serializer throw, an idempotency duplicate), it enqueues nothing.
+    /// </remarks>
+    /// <param name="derive">One intent per message, in order; null enqueues nothing.</param>
+    /// <exception cref="ArgumentException"><paramref name="derive"/> does not have one intent per message.</exception>
+    /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="IdempotencyDuplicateException">The key already has an unexpired record.</exception>
+    Task<IReadOnlyList<MessageRecord>> AppendAsync(
+        string workspaceName,
+        string sessionName,
+        IReadOnlyList<NewMessage> messages,
+        IdempotencyWrite? idempotency,
+        IReadOnlyList<DeriveIntent>? derive,
         CancellationToken ct);
 
     /// <summary>

@@ -40,6 +40,9 @@ internal static class JsonCopy
 
     public static MessageRecord Out(MessageRecord record) => record with { Metadata = Reparse(record.Metadata) };
 
+    public static ConclusionRecord Out(ConclusionRecord record) =>
+        record with { InternalMetadata = Reparse(record.InternalMetadata) };
+
     private static JsonObject Canonical(JsonObject value, string field)
     {
         JsonNode canonical;

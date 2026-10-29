@@ -260,6 +260,10 @@ public sealed class AdmissionReplayTests
         public IMessageStore Messages => this;
         public IGrantStore Grants => inner.Grants;
         public IIdempotencyStore Idempotency => this;
+        public IConclusionStore Conclusions => inner.Conclusions;
+        public IPeerCardStore PeerCards => inner.PeerCards;
+        public IWorkQueue WorkQueue => inner.WorkQueue;
+        public IEmbeddingStore Embeddings => inner.Embeddings;
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Reads++;
@@ -271,6 +275,13 @@ public sealed class AdmissionReplayTests
         {
             Appends++;
             return inner.Messages.AppendAsync(workspaceName, sessionName, messages, idempotency, ct);
+        }
+
+        public Task<IReadOnlyList<MessageRecord>> AppendAsync(string workspaceName, string sessionName,
+            IReadOnlyList<NewMessage> messages, IdempotencyWrite? idempotency, IReadOnlyList<DeriveIntent>? derive, CancellationToken ct)
+        {
+            Appends++;
+            return inner.Messages.AppendAsync(workspaceName, sessionName, messages, idempotency, derive, ct);
         }
 
         public Task<MessageRecord?> GetAsync(string workspaceName, string sessionName, string publicId, CancellationToken ct) =>
