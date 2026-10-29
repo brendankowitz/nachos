@@ -156,6 +156,8 @@ test('conclusions: create, list, get and delete', async () => {
 test('peer card get and set', async () => {
   const honcho = client(freshWorkspace());
   const alice = await honcho.peer('alice');
+  // @honcho-ai/sdk 2.5.1 sends PUT P/card without creating the target first, and Nachos answers 404 for a missing
+  // target (open parity question, spec §9.3), so the target is created explicitly.
   await honcho.peer('bob');
 
   assert.equal(await alice.getCard(), null);

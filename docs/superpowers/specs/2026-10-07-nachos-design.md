@@ -422,7 +422,7 @@ Key defaults (parity values):
 | `POST C`, `C/list`, `C/query`, `GET` / `DELETE C/{conclusion_id}` | workspace | **Fallback** (docs silent on conclusions). |
 | `GET W/queue/status` | workspace | **Fallback** (docs silent on queue status). |
 
-A peer-scoped key reaches its own peer's view of any `target` (`P/card?target=…`, `P/context?target=…`, `P/representation` `target`): the route's `peer_id` is the observer, and the docs scope the key by the peer it acts as. Member-read (above) is unchanged and covers no M2 route.
+A peer-scoped key reaches its own peer's view of any `target` (`P/card?target=…`, `P/context?target=…`, `P/representation` `target`): the route's `peer_id` is the observer, and the docs scope the key by the peer it acts as. `P/representation` `session_id` only narrows that observer view to one session's explicit conclusions, so no session-membership check is applied for a peer key. Member-read (above) is unchanged and covers no M2 route.
 
 Both schemes produce a single `NachosPrincipal` (`IsAdmin`, `Workspaces`, `Peer?`, `Session?`). **One** `IAuthorizationHandler` evaluates route requirements, so policies are declared per route (`RequireWorkspace("workspace_id")`, `AllowMemberRead()`, and so on). `Auth:Enabled = false` is allowed only in Development. **Every authentication or authorization failure, including scope mismatch, returns `401 {"detail": …}`**, matching Honcho's documented behavior.
 
@@ -483,6 +483,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 - **`P/representation` `session_id`** is the §11.8 session allowlist: only explicit conclusions stated in that session are used, and no card is read. The level and session rules are applied inside the store query (the internal, non-wire filter column `Level`), so pages and totals count only visible conclusions.
 - **`VisibilityPolicy` holds only the allowlist and scope rules.** The perspective (which observer's collection about which observed peer) is applied by each caller, not by the policy. M3 search and M4 tools must apply it themselves.
 - **Provisional parity defaults (open questions, to confirm from black-box SDK evidence):** `max_conclusions` 25, `search_top_k` 10 and `include_most_frequent` false on `P/representation` and `P/context`; `top_k` 10 on `C/query`; `DELETE C/{id}` on a missing conclusion is a no-op `204`.
+- **`PUT P/card` with a missing `target` is `404` (open parity question).** Honcho's SDK docs say `set_card` "creates the peer automatically", but black-box, the pinned SDKs (2.5.1) send the `PUT` without creating the target first, so against Nachos the call fails with `404` unless the target exists. M2 keeps the `404`: a server-side get-or-create would let a peer-scoped key create arbitrary peers. A later option is to auto-create the target only for workspace and admin keys and keep `404` for peer keys.
 - **The embedding generator is optional in API hosts.** Without one, a semantic read (`C/query`, or a `search_query`) is a `500`, and `POST C` stores conclusions pending for the reconciler.
 
 ### 9.4 Intentional deviations (Δ summary)

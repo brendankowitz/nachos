@@ -145,6 +145,25 @@ public sealed partial class ScopeMatrixTests
         await host.Send("POST", "/v3/workspaces/A/conclusions/list", "{}", peer, 401);
     }
 
+    [Fact]
+    public async Task ConclusionIdFromAnotherWorkspace_IsUnreachable()
+    {
+        using var host = new AuthHost();
+        await host.Seed();
+        var admin = AuthHost.Key("admin");
+        await host.Send("POST", "/v3/workspaces/B/peers", """{"id":"q1"}""", admin, 200);
+        var created = await host.Send("POST", "/v3/workspaces/B/conclusions",
+            """{"conclusions":[{"content":"belongs to B","observer_id":"q1","observed_id":"q1"}]}""", admin, 201);
+        var id = created[0].GetProperty("id").GetString()!;
+        var workspace = AuthHost.Key("workspace");
+
+        await host.Send("GET", "/v3/workspaces/A/conclusions/" + id, null, workspace, 404);
+        await host.Send("DELETE", "/v3/workspaces/A/conclusions/" + id, null, workspace, 204);
+        (await host.Send("POST", "/v3/workspaces/A/conclusions/list", "{}", workspace, 200)).GetProperty("total").GetInt32().ShouldBe(0);
+        (await host.Send("GET", "/v3/workspaces/B/conclusions/" + id, null, admin, 200))
+            .GetProperty("content").GetString().ShouldBe("belongs to B");
+    }
+
     internal static string Concrete(string template, string message = "message") =>
         template == "/v3/keys" ? template + "?workspace_id=A" : Parameter().Replace(template, match => match.Value switch
         {

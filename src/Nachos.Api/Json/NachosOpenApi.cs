@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.OpenApi;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.OpenApi;
 using Nachos.Abstractions.Contracts;
+using Nachos.Abstractions.Domain;
 
 namespace Nachos.Api.Json;
 
@@ -63,7 +64,8 @@ internal static class NachosOpenApi
         return Task.CompletedTask;
     }
 
-    private static readonly string[] ConclusionLevels = ["explicit", "deductive", "inductive", "contradiction"];
+    private static readonly string[] ConclusionLevels =
+        [ConclusionLevelNames.Explicit, ConclusionLevelNames.Deductive, ConclusionLevelNames.Inductive, ConclusionLevelNames.Contradiction];
 
     // Response members the manifest marks optional although the records always carry them.
     private static readonly Dictionary<Type, string[]> WireRequired = new()

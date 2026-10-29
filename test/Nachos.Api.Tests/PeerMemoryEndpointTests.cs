@@ -108,6 +108,22 @@ public sealed class PeerMemoryEndpointTests : MemoryApiTest
         self.GetProperty("peer_card").ValueKind.ShouldBe(JsonValueKind.Null);
     }
 
+    [Fact]
+    public async Task Context_OpenApi_DocumentsTheQueryBounds()
+    {
+        var operation = (await Send(HttpMethod.Get, "/openapi/v1.json")).GetProperty("paths")
+            .GetProperty("/v3/workspaces/{workspace_id}/peers/{peer_id}/context").GetProperty("get");
+        var query = operation.GetProperty("parameters").EnumerateArray()
+            .Where(p => p.GetProperty("in").GetString() == "query")
+            .ToDictionary(p => p.GetProperty("name").GetString()!, p => p.GetProperty("schema"));
+        foreach (var (name, minimum, maximum) in new[] { ("search_top_k", 1m, 100m), ("max_conclusions", 1m, 100m), ("search_max_distance", 0m, 1m) })
+        {
+            query[name].GetProperty("minimum").GetDecimal().ShouldBe(minimum, name);
+            query[name].GetProperty("maximum").GetDecimal().ShouldBe(maximum, name);
+        }
+        query["target"].TryGetProperty("minimum", out _).ShouldBeFalse();
+    }
+
     [Theory]
     [InlineData("max_conclusions=0", "max_conclusions", "greater_than_equal")]
     [InlineData("max_conclusions=101", "max_conclusions", "less_than_equal")]

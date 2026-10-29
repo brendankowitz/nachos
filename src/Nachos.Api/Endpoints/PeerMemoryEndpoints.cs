@@ -14,16 +14,16 @@ internal static class PeerMemoryEndpoints
         group.MapGet("/card", async (string workspace_id, string peer_id, HttpContext http, INachosClient client) =>
             TypedResults.Ok(await client.GetPeerCardAsync(workspace_id, peer_id, QueryParameters.Text(http.Request, "target"),
                 http.RequestAborted)))
-            .Produces<PeerCardResponse>().WithQuery(("target", JsonSchemaType.String));
+            .Produces<PeerCardResponse>().WithQuery(new QueryParameter("target", JsonSchemaType.String));
         group.MapPut("/card", async (string workspace_id, string peer_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
             body.Require("peer_card");
-            // An explicit null reaches Core, which reports it as list_type.
-            var card = body.OptionalStrings("peer_card");
-            return TypedResults.Ok(await client.SetPeerCardAsync(workspace_id, peer_id, card!,
+            var card = body.OptionalStrings("peer_card")
+                ?? throw RequestBody.Invalid(["body", "peer_card"], "Input should be a valid list.", "list_type");
+            return TypedResults.Ok(await client.SetPeerCardAsync(workspace_id, peer_id, card,
                 QueryParameters.Text(http.Request, "target"), http.RequestAborted));
-        }).Accepts<PeerCardSet>("application/json").Produces<PeerCardResponse>().WithQuery(("target", JsonSchemaType.String));
+        }).Accepts<PeerCardSet>("application/json").Produces<PeerCardResponse>().WithQuery(new QueryParameter("target", JsonSchemaType.String));
         group.MapPost("/representation", async (string workspace_id, string peer_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
@@ -43,8 +43,8 @@ internal static class PeerMemoryEndpoints
                 QueryParameters.Integer(request, "max_conclusions"));
             return TypedResults.Ok(await client.GetPeerContextAsync(workspace_id, peer_id, query, http.RequestAborted));
         }).Produces<PeerContext>().WithQuery(
-            ("target", JsonSchemaType.String), ("search_query", JsonSchemaType.String),
-            ("search_top_k", JsonSchemaType.Integer), ("search_max_distance", JsonSchemaType.Number),
-            ("include_most_frequent", JsonSchemaType.Boolean), ("max_conclusions", JsonSchemaType.Integer));
+            new("target", JsonSchemaType.String), new("search_query", JsonSchemaType.String),
+            new("search_top_k", JsonSchemaType.Integer, "1", "100"), new("search_max_distance", JsonSchemaType.Number, "0", "1"),
+            new("include_most_frequent", JsonSchemaType.Boolean), new("max_conclusions", JsonSchemaType.Integer, "1", "100"));
     }
 }

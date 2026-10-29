@@ -127,6 +127,8 @@ def test_conclusions_create_list_get_delete(honcho: Honcho):
 
 def test_peer_card_get_and_set(honcho: Honcho):
     alice = honcho.peer("alice")
+    # honcho-ai 2.5.1 sends PUT P/card without creating the target first, and Nachos answers 404 for a missing target
+    # (open parity question, spec §9.3), so the target is created explicitly.
     honcho.peer("bob")
 
     assert alice.get_card() is None

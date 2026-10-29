@@ -43,18 +43,25 @@ internal static class QueryParameters
     };
 
     /// <summary>Declares optional query parameters on the operation, in the order given.</summary>
-    public static RouteHandlerBuilder WithQuery(this RouteHandlerBuilder endpoint, params (string Name, JsonSchemaType Type)[] parameters) =>
+    public static RouteHandlerBuilder WithQuery(this RouteHandlerBuilder endpoint, params QueryParameter[] parameters) =>
         endpoint.AddOpenApiOperationTransformer((operation, _, cancellationToken) =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             operation.Parameters ??= [];
-            foreach (var (name, type) in parameters)
+            foreach (var parameter in parameters)
             {
                 operation.Parameters.Add(new OpenApiParameter
                 {
-                    Name = name, In = ParameterLocation.Query, Schema = new OpenApiSchema { Type = type | JsonSchemaType.Null },
+                    Name = parameter.Name, In = ParameterLocation.Query,
+                    Schema = new OpenApiSchema
+                    {
+                        Type = parameter.Type | JsonSchemaType.Null, Minimum = parameter.Minimum, Maximum = parameter.Maximum,
+                    },
                 });
             }
             return Task.CompletedTask;
         });
 }
+
+/// <summary>One optional query parameter as OpenAPI documents it; the bounds are inclusive.</summary>
+internal sealed record QueryParameter(string Name, JsonSchemaType Type, string? Minimum = null, string? Maximum = null);

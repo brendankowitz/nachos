@@ -10,7 +10,8 @@ internal static class ConclusionEndpoints
     public static void MapConclusionEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/v3/workspaces/{workspace_id}/conclusions");
-        // No Idempotency-Key in M2 (spec §9.1): a repeated create stores a second batch, as Honcho does.
+        // No Idempotency-Key in M2 (spec §9.1): a repeated create stores a second batch. The collection root is mapped
+        // with its full template, as every M1 collection root is (workspaces, peers, sessions, messages).
         endpoints.MapPost("/v3/workspaces/{workspace_id}/conclusions", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
