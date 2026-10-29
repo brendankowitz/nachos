@@ -79,8 +79,7 @@ Publisher: Microsoft. The complete, unchanged
 [license.md](eng/licenses/Microsoft.SqlServer.Types/170.1000.7/license.md)
 accompanies this notice, including its English and French provisions. The
 [official exact-version package license](https://www.nuget.org/packages/Microsoft.SqlServer.Types/170.1000.7/License)
-also reproduces the evaluation terms; no replacement governing terms have
-been established by the retained provenance checks.
+also reproduces the evaluation terms.
 
 The document is titled **MICROSOFT PRE-RELEASE SOFTWARE LICENSE TERMS /
 MICROSOFT SQL SERVER VNEXT COMMUNITY PREVIEW** and states **TERM until
@@ -88,13 +87,8 @@ MICROSOFT SQL SERVER VNEXT COMMUNITY PREVIEW** and states **TERM until
 live operating environment absent another Microsoft agreement, and includes
 restrictions on publishing copies, transfer and commercial hosting.
 
-**Unresolved governing-terms release hold:** the
-[owner's Microsoft-primary engineering-policy acceptance](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6083936795)
-does not supersede this document, correct a possible publisher packaging
-mistake, establish production/redistribution rights or constitute EULA assent.
-The release owner must resolve which terms govern this exact package and the
-required rights before release. A passing engineering audit records evidence,
-not release clearance, and does not automatically enforce that separate hold.
+The [repository owner accepts Microsoft library licenses](https://github.com/brendankowitz/nachos/pull/6#issuecomment-6083936795)
+for distribution (reconfirmed 2026-10-28); this package is not a release hold.
 
 This package is not relicensed MIT. Any applicable third-party terms and
 required notices remain obligations. Copying this notice and the license

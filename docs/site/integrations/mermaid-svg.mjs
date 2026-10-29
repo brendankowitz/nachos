@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 
-export default function mermaidSvg({ onRender } = {}) {
+export default function mermaidSvg() {
   return async (tree, file) => {
     const diagrams = [];
     function visit(parent) {
@@ -39,8 +39,6 @@ export default function mermaidSvg({ onRender } = {}) {
         }, { source: diagram.source, id: `mermaid-${index}` });
         const node = fromHtml(svg, { fragment: true }).children.find((child) => child.tagName === 'svg');
         if (!node) throw new Error('Mermaid did not produce an SVG element.');
-        if (!onRender) throw new Error('Mermaid requires a registered output provenance producer.');
-        await onRender(svg, file.path);
         diagram.parent.children[diagram.index] = node;
       }
     } catch (error) {

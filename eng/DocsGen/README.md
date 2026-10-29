@@ -2,7 +2,7 @@
 
 This implements Task 18's reference **producer**. The now-integrated
 `docs/site/integrations/reference-stage.mjs` builds and runs the actual producer
-before the site's provenance input snapshot, replacing the original scaffold
+before the site build, replacing the original scaffold
 refusal with mandatory generation. No SDK conformance, license approval,
 publication or completed-Task18 claim follows from reference generation.
 
