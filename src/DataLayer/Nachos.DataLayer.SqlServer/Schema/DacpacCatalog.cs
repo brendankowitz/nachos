@@ -38,6 +38,7 @@ internal static class DacpacCatalog
 internal static class DacpacModel
 {
     private static readonly ConcurrentDictionary<string, Lazy<IReadOnlyDictionary<string, string>>> ConstraintCache = new();
+    private static readonly ConcurrentDictionary<string, Lazy<IReadOnlyList<string>>> TableCache = new();
 
     /// <summary>
     /// Maps each constraint's name (<c>[dbo].[CK_x]</c>, as a DeployReport item spells it) to the table that owns it
@@ -47,7 +48,17 @@ internal static class DacpacModel
     public static IReadOnlyDictionary<string, string> ConstraintTables(DacpacTarget target) =>
         ConstraintCache.GetOrAdd(target.ResourceName, _ => new Lazy<IReadOnlyDictionary<string, string>>(() => Load(target))).Value;
 
-    private static Dictionary<string, string> Load(DacpacTarget target)
+    /// <summary>The name of every user table the model defines, ordinal-sorted, read once per process.</summary>
+    public static IReadOnlyList<string> TableNames(DacpacTarget target) =>
+        TableCache.GetOrAdd(target.ResourceName, _ => new Lazy<IReadOnlyList<string>>(() => WithModel(target, LoadTableNames))).Value;
+
+    private static string[] LoadTableNames(TSqlModel model) =>
+        [.. model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.Table).Select(table => table.Name.Parts[^1]).Order(StringComparer.Ordinal)];
+
+    private static Dictionary<string, string> Load(DacpacTarget target) =>
+        WithModel(target, model => LoadConstraintTables(model, target));
+
+    private static T WithModel<T>(DacpacTarget target, Func<TSqlModel, T> read)
     {
         // TSqlModel reads from a file path only.
         var path = Path.Combine(Path.GetTempPath(), $"nachos-model-{Guid.NewGuid():N}.dacpac");
@@ -60,25 +71,30 @@ internal static class DacpacModel
             }
 
             using var model = new TSqlModel(path);
-            var tables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var constraint in model.GetObjects(
-                         DacQueryScopes.UserDefined,
-                         ModelSchema.PrimaryKeyConstraint,
-                         ModelSchema.DefaultConstraint,
-                         ModelSchema.CheckConstraint,
-                         ModelSchema.UniqueConstraint,
-                         ModelSchema.ForeignKeyConstraint))
-            {
-                var parent = constraint.GetParent()
-                    ?? throw new InvalidOperationException($"Constraint {constraint.Name} in {target.ResourceName} has no parent object.");
-                tables[constraint.Name.ToString()] = parent.Name.ToString();
-            }
-
-            return tables;
+            return read(model);
         }
         finally
         {
             File.Delete(path);
         }
+    }
+
+    private static Dictionary<string, string> LoadConstraintTables(TSqlModel model, DacpacTarget target)
+    {
+        var tables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var constraint in model.GetObjects(
+                     DacQueryScopes.UserDefined,
+                     ModelSchema.PrimaryKeyConstraint,
+                     ModelSchema.DefaultConstraint,
+                     ModelSchema.CheckConstraint,
+                     ModelSchema.UniqueConstraint,
+                     ModelSchema.ForeignKeyConstraint))
+        {
+            var parent = constraint.GetParent()
+                ?? throw new InvalidOperationException($"Constraint {constraint.Name} in {target.ResourceName} has no parent object.");
+            tables[constraint.Name.ToString()] = parent.Name.ToString();
+        }
+
+        return tables;
     }
 }
