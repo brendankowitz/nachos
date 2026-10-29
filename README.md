@@ -16,7 +16,7 @@
 
 ---
 
-> **Status: pre-release source MVP (milestone M1).** Nothing is published: no NuGet packages, no container images, no GitHub Pages site, no tagged release. Build it from this repository. Azure definitions in [`infra/`](infra) are validated offline only. The project is developed with AI agents under manual review, and it is a clean-room implementation of the [Honcho](https://honcho.dev) v3 API shape. No Honcho source is included; see [License](#-license) below.
+> **Status: pre-release source MVP (milestone M1).** No packages are published: no NuGet packages, no container images, no tagged release. Build it from this repository. The [documentation site](https://brendankowitz.github.io/nachos/) is published from `main`. Azure definitions in [`infra/`](infra) are validated offline only. The project is developed with AI agents under manual review, and it is a clean-room implementation of the [Honcho](https://honcho.dev) v3 API shape. No Honcho source is included; see [License](#-license) below.
 
 ---
 
@@ -26,7 +26,7 @@
 
 The same `INachosClient` surface is implemented in-process and over HTTP. Storage is either a non-durable in-memory provider or SQL Server, with the schema owned by a database project. Authentication fails closed unless you explicitly disable it for local development.
 
-Reasoning is not in this milestone. Conclusions, dialectic chat, search, context, summaries, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. A Starlight site lives in [`docs/site`](docs/site) and builds from this checkout; it is not published.
+Reasoning is not in this milestone. Conclusions, dialectic chat, search, context, summaries, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. The [documentation site](https://brendankowitz.github.io/nachos/) is built from [`docs/site`](docs/site).
 
 ## ✨ What works today
 
@@ -126,7 +126,7 @@ curl -s -X POST http://127.0.0.1:5080/v3/workspaces/list \
   -H "Content-Type: application/json" -d '{}'
 ```
 
-To call an authenticated server, configure a signing key and send a NachosKey minted with that same secret. The guide in the docs site source is [`docs/site/src/content/docs/guides/auth.mdx`](docs/site/src/content/docs/guides/auth.mdx).
+To call an authenticated server, configure a signing key and send a NachosKey minted with that same secret. See the [authentication guide](https://brendankowitz.github.io/nachos/guides/auth/).
 
 The API selects SQL Server when `Nachos:SqlServer:ConnectionString` is set, or when `ConnectionStrings:nachos` is set (that is what the AppHost provides). A configured value that is blank or has no database fails startup. It does not fall back to memory.
 
@@ -261,7 +261,7 @@ A minimal smoke suite drives the upstream Python (`honcho-ai` 2.5.1) and TypeScr
 No binaries or container images are distributed yet:
 
 - The governing terms of `Microsoft.SqlServer.Types` 170.1000.7 are unresolved (its embedded licence is a pre-release evaluation document), which blocks artifacts that contain it: [#15](https://github.com/brendankowitz/nachos/issues/15).
-- `Microsoft.Identity.Client.NativeInterop` 0.20.6, observed transitively in the API and CLI outputs, has unresolved distribution terms. The license audit of the committed tree is not yet clean: [#19](https://github.com/brendankowitz/nachos/issues/19). Accepting a license as engineering policy is not the same as having the publisher's distribution rights.
+- `Microsoft.Identity.Client.NativeInterop` 0.20.6, observed transitively in the API and CLI outputs, has unresolved distribution terms: [#19](https://github.com/brendankowitz/nachos/issues/19). Accepting a license as engineering policy is not the same as having the publisher's distribution rights.
 - The tokenizer above is a production-release gate ([#10](https://github.com/brendankowitz/nachos/issues/10)).
 
 ## Roadmap
@@ -270,7 +270,7 @@ No binaries or container images are distributed yet:
 | --- | --- |
 | Parity | [#2](https://github.com/brendankowitz/nachos/issues/2) full Honcho v3 parity on .NET and Azure |
 | Release gates | [#10](https://github.com/brendankowitz/nachos/issues/10) tokenizer, [#15](https://github.com/brendankowitz/nachos/issues/15) `Microsoft.SqlServer.Types`, [#19](https://github.com/brendankowitz/nachos/issues/19) distribution terms |
-| Docs and conformance | [#11](https://github.com/brendankowitz/nachos/issues/11) SDK conformance, [#16](https://github.com/brendankowitz/nachos/issues/16) published docs site, [#12](https://github.com/brendankowitz/nachos/issues/12) docs tooling |
+| Docs and conformance | [#11](https://github.com/brendankowitz/nachos/issues/11) SDK conformance, [#12](https://github.com/brendankowitz/nachos/issues/12) docs tooling |
 | Storage and hosting | [#18](https://github.com/brendankowitz/nachos/issues/18) pathological SQL filters, [#7](https://github.com/brendankowitz/nachos/issues/7) revision-based Container App deployment |
 | Request handling | [#8](https://github.com/brendankowitz/nachos/issues/8) and [#9](https://github.com/brendankowitz/nachos/issues/9) error-location and malformed-Unicode validation |
 | Later | [#3](https://github.com/brendankowitz/nachos/issues/3) Honcho data import, [#4](https://github.com/brendankowitz/nachos/issues/4) legacy `/v2` |
