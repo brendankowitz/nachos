@@ -454,6 +454,8 @@ public sealed class IdempotencyTests(ITestOutputHelper output)
             Interlocked.Increment(ref _reads);
             return inner.Idempotency.TryGetAsync(workspaceName, key, ct);
         }
+
+        public Task<int> PurgeExpiredAsync(CancellationToken ct) => inner.Idempotency.PurgeExpiredAsync(ct);
     }
 
     private sealed class UnreadableBody : Stream

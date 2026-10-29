@@ -15,6 +15,7 @@ public static class NachosDeriverBuilderExtensions
     public static NachosBuilder AddDeriver(this NachosBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        builder.Services.TryAddSingleton<WorkerMetrics>();
         builder.Services.TryAddScoped<ConclusionDeduplicator>();
         builder.Services.TryAddEnumerable(ServiceDescriptor.Scoped<IWorkHandler, DeriverService>());
         return builder;

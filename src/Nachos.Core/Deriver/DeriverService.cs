@@ -64,6 +64,7 @@ public sealed partial class DeriverService : IWorkHandler
     private readonly ITokenCounter _tokenCounter;
     private readonly ConclusionDeduplicator _deduplicator;
     private readonly DeriverOptions _options;
+    private readonly WorkerMetrics _metrics;
     private readonly ILogger<DeriverService> _logger;
 
     public DeriverService(
@@ -74,6 +75,7 @@ public sealed partial class DeriverService : IWorkHandler
         ITokenCounter tokenCounter,
         ConclusionDeduplicator deduplicator,
         IOptions<NachosOptions> options,
+        WorkerMetrics metrics,
         ILogger<DeriverService> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -83,6 +85,7 @@ public sealed partial class DeriverService : IWorkHandler
         ArgumentNullException.ThrowIfNull(tokenCounter);
         ArgumentNullException.ThrowIfNull(deduplicator);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(metrics);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
         _chatClients = chatClients;
@@ -91,6 +94,7 @@ public sealed partial class DeriverService : IWorkHandler
         _tokenCounter = tokenCounter;
         _deduplicator = deduplicator;
         _options = options.Value.Deriver;
+        _metrics = metrics;
         _logger = logger;
         BatchPolicy = new WorkBatchPolicy(_options.EligibilityTokens, _options.MaxAge, _options.BatchTokenTarget);
     }
@@ -118,10 +122,11 @@ public sealed partial class DeriverService : IWorkHandler
         catch (NotFoundException ex)
         {
             LogSourceGone(lease.WorkUnitKey, ex.Message);
-            derivation = new Derivation(batch.Nothing(), 0);
+            derivation = new Derivation(batch.Nothing(), 0, 0);
         }
 
         await _store.Conclusions.CommitDerivationAsync(lease, derivation.Changes, cancellationToken).ConfigureAwait(false);
+        _metrics.RecordDerivation(derivation.Facts, derivation.ObserverFacts, derivation.Changes.Inserts.Count);
         LogCommitted(
             lease.WorkUnitKey,
             derivation.Facts,
@@ -141,13 +146,13 @@ public sealed partial class DeriverService : IWorkHandler
         if (targetIds.Count == 0)
         {
             LogReasoningDisabled(workUnitKey, batch.MessageIds.Count);
-            return new Derivation(batch.Nothing(), 0);
+            return new Derivation(batch.Nothing(), 0, 0);
         }
 
         var targets = await LoadTargetsAsync(batch, targetIds, ct).ConfigureAwait(false);
         if (targets.Count == 0)
         {
-            return new Derivation(batch.Nothing(), 0);
+            return new Derivation(batch.Nothing(), 0, 0);
         }
 
         var target = targets[0].PeerName;
@@ -166,8 +171,8 @@ public sealed partial class DeriverService : IWorkHandler
         var extraction = await ExtractAsync(workUnitKey, batch.WorkspaceName, system, transcript, ct).ConfigureAwait(false);
         var candidates = Validate(workUnitKey, extraction, targets);
         var facts = await EmbedAsync(workUnitKey, candidates, ct).ConfigureAwait(false);
-        var changes = await BuildChangesAsync(batch, target, facts, ct).ConfigureAwait(false);
-        return new Derivation(changes, facts.Count);
+        var (changes, observerFacts) = await BuildChangesAsync(batch, target, facts, ct).ConfigureAwait(false);
+        return new Derivation(changes, facts.Count, observerFacts);
     }
 
     private async Task<ResolvedConfiguration> ResolveConfigurationAsync(WorkBatch batch, CancellationToken ct)
@@ -352,12 +357,14 @@ public sealed partial class DeriverService : IWorkHandler
         return [.. candidates.Zip(embeddings, (c, e) => new DerivedFact(c.Content, e.Vector, c.Sources))];
     }
 
-    private async Task<DerivationChanges> BuildChangesAsync(
+    /// <returns>The changes, and the facts summed over the observers each one reached.</returns>
+    private async Task<(DerivationChanges Changes, int ObserverFacts)> BuildChangesAsync(
         WorkBatch batch, string target, List<DerivedFact> facts, CancellationToken ct)
     {
         var inserts = new List<NewConclusion>();
         var corroborations = new List<string>();
         var replacements = new List<ConclusionReplacement>();
+        var observerFacts = 0;
         var observers = facts
             .SelectMany(fact => fact.SourceMessageIds)
             .SelectMany(id => batch.WorkOf(id).Observers)
@@ -373,6 +380,7 @@ public sealed partial class DeriverService : IWorkHandler
                 continue;
             }
 
+            observerFacts += observed.Count;
             var result = await _deduplicator.DeduplicateAsync(
                 batch.WorkspaceName, observer, target, batch.SessionName, observed, ct).ConfigureAwait(false);
             inserts.AddRange(result.Inserts.Select(fact => new NewConclusion(
@@ -381,7 +389,7 @@ public sealed partial class DeriverService : IWorkHandler
             replacements.AddRange(result.Replacements);
         }
 
-        return new DerivationChanges(batch.WorkspaceName, inserts, corroborations, replacements);
+        return (new DerivationChanges(batch.WorkspaceName, inserts, corroborations, replacements), observerFacts);
     }
 
     private static JsonObject Provenance(DerivedFact fact) => new()
@@ -391,7 +399,7 @@ public sealed partial class DeriverService : IWorkHandler
         ["source_message_ids"] = new JsonArray([.. fact.SourceMessageIds.Select(id => JsonValue.Create(id))]),
     };
 
-    private sealed record Derivation(DerivationChanges Changes, int Facts);
+    private sealed record Derivation(DerivationChanges Changes, int Facts, int ObserverFacts);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Reasoning is disabled for every message; completing work unit {WorkUnitKey} ({Items} items) without derivation.")]
     private partial void LogReasoningDisabled(string workUnitKey, int items);

@@ -29,4 +29,13 @@ internal sealed class SqlIdempotencyStore(SqlStoreRuntime runtime) : IIdempotenc
             ? null
             : new IdempotencyRecord(record.Key, record.RequestHash, record.ResponseStatus, record.ResponseBody, record.ExpiresAt);
     }
+
+    /// <remarks>Seeks <c>IX_IdempotencyRecords_ExpiresAt</c>.</remarks>
+    public async Task<int> PurgeExpiredAsync(CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        await using var db = await runtime.OpenAsync(ct);
+        var now = runtime.Clock.GetUtcNow();
+        return await db.IdempotencyRecords.Where(r => r.ExpiresAt <= now).ExecuteDeleteAsync(ct);
+    }
 }

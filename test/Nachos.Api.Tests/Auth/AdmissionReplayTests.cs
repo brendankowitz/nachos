@@ -270,6 +270,8 @@ public sealed class AdmissionReplayTests
             return inner.Idempotency.TryGetAsync(workspaceName, key, ct);
         }
 
+        public Task<int> PurgeExpiredAsync(CancellationToken ct) => inner.Idempotency.PurgeExpiredAsync(ct);
+
         public Task<IReadOnlyList<MessageRecord>> AppendAsync(string workspaceName, string sessionName,
             IReadOnlyList<NewMessage> messages, IdempotencyWrite? idempotency, CancellationToken ct)
         {

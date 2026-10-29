@@ -24,4 +24,26 @@ internal sealed class InMemoryIdempotencyStore(InMemoryState state) : IIdempoten
                 }
             },
             ct);
+
+    public Task<int> PurgeExpiredAsync(CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                var now = state.Clock.GetUtcNow();
+                var purged = 0;
+                foreach (var workspace in state.AllWorkspaces())
+                {
+                    lock (workspace.Gate)
+                    {
+                        foreach (var key in workspace.Idempotency.Where(pair => pair.Value.ExpiresAt <= now).Select(pair => pair.Key).ToList())
+                        {
+                            workspace.Idempotency.Remove(key);
+                            purged++;
+                        }
+                    }
+                }
+
+                return purged;
+            },
+            ct);
 }
