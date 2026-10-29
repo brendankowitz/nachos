@@ -51,4 +51,16 @@ public interface IMemoryStore
 
     /// <summary>Read access to stored idempotency records.</summary>
     IIdempotencyStore Idempotency { get; }
+
+    /// <summary>Conclusion collections, including the fenced derivation commit.</summary>
+    IConclusionStore Conclusions { get; }
+
+    /// <summary>Peer cards.</summary>
+    IPeerCardStore PeerCards { get; }
+
+    /// <summary>The fenced work queue.</summary>
+    IWorkQueue WorkQueue { get; }
+
+    /// <summary>The conclusion embedding backlog.</summary>
+    IEmbeddingStore Embeddings { get; }
 }

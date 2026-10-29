@@ -19,6 +19,18 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     // 7 parameters per message plus 3 shared stay well under SQL Server's 2,100-parameter limit.
     private const int InsertChunk = 200;
 
+    // Temporary: transactional enqueue lands in M2 Task 3.
+    public Task<IReadOnlyList<MessageRecord>> AppendAsync(
+        string workspaceName,
+        string sessionName,
+        IReadOnlyList<NewMessage> messages,
+        IdempotencyWrite? idempotency,
+        IReadOnlyList<DeriveIntent>? derive,
+        CancellationToken ct) =>
+        derive is null
+            ? AppendAsync(workspaceName, sessionName, messages, idempotency, ct)
+            : throw new NotSupportedException(SqlMemoryStore.PendingM2Message);
+
     /// <remarks>
     /// <para>
     /// One transaction, in the lock order documented on <see cref="Upserts"/>: (1) the <c>Seq</c> allocation

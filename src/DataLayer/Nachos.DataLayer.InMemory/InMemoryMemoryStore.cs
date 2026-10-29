@@ -20,6 +20,10 @@ namespace Nachos.DataLayer.InMemory;
 /// <see cref="Abstractions.NachosValidationException"/>.
 /// </para>
 /// <para>
+/// The work queue is a lock-guarded table with the SQL provider's lease and fencing semantics, and vector reads are exact
+/// brute-force cosine distance.
+/// </para>
+/// <para>
 /// Each workspace is guarded by a synchronous <see cref="Lock"/>, deliberately not a <see cref="SemaphoreSlim"/>:
 /// critical sections are short and purely in-memory, and never span an <c>await</c> of user code. The
 /// <see cref="Abstractions.Domain.IdempotencyWrite.SerializeResponse"/> callback is synchronous and runs inside the
@@ -32,7 +36,7 @@ namespace Nachos.DataLayer.InMemory;
 /// execution context running it, including work it hands to <c>Task.Run</c>, throws
 /// <see cref="InvalidOperationException"/> before taking any lock, instead of reading, writing or deadlocking. If any
 /// such call was attempted, the append throws <see cref="InvalidOperationException"/> even when the callback swallowed
-/// the exception, and stores nothing (no messages, peers, memberships, idempotency record or <c>Seq</c> gap). Other
+/// the exception, and stores nothing (no messages, peers, memberships, idempotency record, work items or <c>Seq</c> gap). Other
 /// callers, concurrent appends included, are unaffected. Suppressing execution-context flow
 /// (<see cref="ExecutionContext.SuppressFlow"/>) defeats the guard and is out of contract.
 /// </para>
@@ -51,6 +55,10 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
         Messages = new InMemoryMessageStore(_state);
         Grants = new InMemoryGrantStore(_state);
         Idempotency = new InMemoryIdempotencyStore(_state);
+        Conclusions = new InMemoryConclusionStore(_state);
+        PeerCards = new InMemoryPeerCardStore(_state);
+        WorkQueue = new InMemoryWorkQueue(_state);
+        Embeddings = new InMemoryEmbeddingStore(_state);
     }
 
     public IWorkspaceStore Workspaces { get; }
@@ -64,4 +72,12 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
     public IGrantStore Grants { get; }
 
     public IIdempotencyStore Idempotency { get; }
+
+    public IConclusionStore Conclusions { get; }
+
+    public IPeerCardStore PeerCards { get; }
+
+    public IWorkQueue WorkQueue { get; }
+
+    public IEmbeddingStore Embeddings { get; }
 }

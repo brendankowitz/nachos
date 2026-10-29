@@ -88,3 +88,18 @@ public sealed class IdempotencyDuplicateException : NachosException
 
     public string Key { get; }
 }
+
+/// <summary>
+/// Thrown by a write made under a <see cref="Domain.WorkLease"/> that is no longer held: it was completed or failed, or
+/// another owner reclaimed the unit after it expired. Nothing was written. Never surfaced over HTTP.
+/// </summary>
+public sealed class LeaseLostException : NachosException
+{
+    public LeaseLostException(string workUnitKey, Exception? innerException = null)
+        : base($"The lease on work unit '{workUnitKey}' is no longer held; nothing was written.", innerException)
+    {
+        WorkUnitKey = workUnitKey;
+    }
+
+    public string WorkUnitKey { get; }
+}

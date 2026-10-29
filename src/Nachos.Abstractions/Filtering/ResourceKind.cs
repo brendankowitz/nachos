@@ -7,4 +7,5 @@ public enum ResourceKind
     Peer,
     Session,
     Message,
+    Conclusion,
 }
