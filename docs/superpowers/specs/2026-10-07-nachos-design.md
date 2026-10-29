@@ -114,7 +114,7 @@ Legend for the **M** column: milestone in §20. Δ marks an intentional deviatio
 
 | Honcho capability | Nachos mapping | M |
 |---|---|---|
-| Deriver: one structured-output LLM call per batch, extracting explicit atomic facts about the sender, fanned out to every observer collection | `DeriverAgent`: one Agent Framework `RunAsync<ExtractionResult>` call. Fan-out persistence is a separate step. | M2 |
+| Deriver: one structured-output LLM call per batch, extracting explicit atomic facts about the sender, fanned out to every observer collection | `DeriverAgent`: one `IChatClient.GetResponseAsync<ExtractionResult>` call (Agent Framework arrives with M4). Fan-out persistence is a separate step. | M2 |
 | Observe flags decide which observers receive facts | `ObserverResolver` combines peer config, session-peer config, and membership windows. | M2 |
 | Exact and semantic dedup (cosine distance ≤ 0.05); explicit facts never dedup across sessions | `ConclusionDeduplicator`. Exact key is normalized content + level (+ session for explicit). Semantic check uses `VECTOR_DISTANCE`. A richness heuristic decides replacement. | M2 |
 | Working representation: semantic + most-frequent + recent conclusions, formatted text | `RepresentationBuilder`, deterministic with no LLM call. | M2 |
@@ -548,14 +548,14 @@ Multi-row locks are always taken in `Id` order. Integration tests (§17, item 2)
 
 ### 11.1 LLM layer
 
-- Builds on **Microsoft Agent Framework** (`ChatClientAgent`, `AIFunction` tools, `RunAsync<T>` structured output, streaming) over `IChatClient`.
+- Builds on **`Microsoft.Extensions.AI`** (`IChatClient`, `GetResponseAsync<T>` structured output, streaming). Microsoft Agent Framework (`ChatClientAgent`, `AIFunction` tool loops) is adopted in M4 for the dialectic agent, over the same `IChatClient`.
 - `ModelProfile` options: provider, deployment/model, max output tokens, reasoning effort, temperature, structured-output mode, tool-iteration cap, and a fallback profile chain. Each agent (and each dialectic level) names a profile.
 - The `IChatClient` pipeline includes:
   - `UseOpenTelemetry()`.
-  - `NachosTokenAccounting`, which records usage per workspace and agent.
+  - A tagging step that adds `nachos.agent` and `nachos.workspace` to the OpenTelemetry span (callers pass them in `ChatOptions.AdditionalProperties`), so the GenAI token-usage data is attributable without a separate accounting client.
   - `NachosFallbackChatClient`, which retries on the next profile for retryable errors. Once a tool loop has settled on a provider, the final streaming attempt is pinned to that provider.
   - Optional `UseDistributedCache()` for deterministic calls.
-- `IEmbeddingGenerator` with batching, token-based chunking (20% overlap), and dimension validation at startup.
+- `IEmbeddingGenerator` with dimension validation at startup (the schema fixes 1536). Token-based chunking (20% overlap) arrives with message embeddings in M3.
 - Tokenization uses `Microsoft.ML.Tokenizers` Tiktoken (`o200k_base` for budgets; the embedding model's encoding for chunking).
 
 ### 11.2 Deriver (explicit-fact extraction)

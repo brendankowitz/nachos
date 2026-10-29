@@ -5,6 +5,9 @@
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Azure.Core" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <PackageReference Include="OpenAI" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
