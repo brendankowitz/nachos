@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <!-- Aspire requires Microsoft.Data.SqlClient 7.x, above the central 6.x pin, so security pins are direct references here. -->
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.Testing" />
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 
   <ItemGroup>
