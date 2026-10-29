@@ -15,8 +15,11 @@ public static class WorkUnitKeys
     /// <summary>The longest name component kept verbatim.</summary>
     public const int MaxComponentLength = 128;
 
-    /// <summary>The longest key this class builds, in UTF-16 code units.</summary>
+    /// <summary>The longest key a store accepts (and this class builds), in UTF-16 code units.</summary>
     public const int MaxLength = 450;
+
+    /// <summary>The singleton reconciler's unit, leased with <see cref="Stores.IWorkQueue.TryLeaseAsync"/>.</summary>
+    public const string Reconciler = "reconciler:main";
 
     /// <summary><c>representation:{workspace}:{session}:{observed}</c>, the unit of one sender's derivations in one session.</summary>
     public static string Representation(string workspaceName, string sessionName, string observedName)

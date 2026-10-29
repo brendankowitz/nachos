@@ -1,5 +1,6 @@
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Abstractions.Work;
 using Nachos.DataLayer.InMemory.Storage;
 
 namespace Nachos.DataLayer.InMemory.Stores;
@@ -15,7 +16,7 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
         state.Run(
             () =>
             {
-                ArgumentNullException.ThrowIfNull(owner);
+                RequireOwner(owner);
                 ArgumentNullException.ThrowIfNull(taskTypes);
                 lock (state.Queue.Gate)
                 {
@@ -29,7 +30,14 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
             () =>
             {
                 ArgumentNullException.ThrowIfNull(workUnitKey);
-                ArgumentNullException.ThrowIfNull(owner);
+                if (workUnitKey.Length > WorkUnitKeys.MaxLength)
+                {
+                    throw new ArgumentException(
+                        $"A work-unit key must be at most {WorkUnitKeys.MaxLength} characters; this one has {workUnitKey.Length}.",
+                        nameof(workUnitKey));
+                }
+
+                RequireOwner(owner);
                 lock (state.Queue.Gate)
                 {
                     return state.Queue.TryLease(workUnitKey, owner, leaseDuration, state.Clock.GetUtcNow());
@@ -87,6 +95,17 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
                 }
             },
             ct);
+
+    /// <summary>The bound of the SQL <c>Owner</c> column, so both providers reject the same owners.</summary>
+    private static void RequireOwner(string owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        if (owner.Length > WorkLease.MaxOwnerLength)
+        {
+            throw new ArgumentException(
+                $"An owner must be at most {WorkLease.MaxOwnerLength} characters; this one has {owner.Length}.", nameof(owner));
+        }
+    }
 
     public Task<int> PruneSucceededAsync(TimeSpan retention, CancellationToken ct) =>
         state.Run(

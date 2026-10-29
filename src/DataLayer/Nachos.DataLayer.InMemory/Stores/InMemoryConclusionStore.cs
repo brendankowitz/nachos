@@ -142,6 +142,13 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
             {
                 ArgumentNullException.ThrowIfNull(lease);
                 ArgumentNullException.ThrowIfNull(changes);
+                if (lease.Items.Any(item => !string.Equals(item.WorkspaceName, changes.WorkspaceName, StringComparison.Ordinal)))
+                {
+                    throw new ArgumentException(
+                        $"The changes are for workspace '{changes.WorkspaceName}', but the lease on '{lease.WorkUnitKey}' holds work of another workspace.",
+                        nameof(changes));
+                }
+
                 var inserts = Own(changes.Inserts);
                 var replacements = changes.Replacements
                     .Select(r => (r.ConclusionId, r.Content, Embedding: VectorMath.OwnOptional(r.Embedding, nameof(changes))))
@@ -156,22 +163,30 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
 
                         var now = state.Clock.GetUtcNow();
                         var inserted = Insert(workspace, inserts, now);
-                        foreach (var id in changes.Corroborations)
+                        var touched = inserted.Select(c => (c.ObserverName, c.ObservedName)).ToHashSet();
+
+                        // A replacement is a re-derivation, counted once unless the same id is already corroborated.
+                        var corroborated = changes.Corroborations.ToHashSet(StringComparer.Ordinal);
+                        var rederived = changes.Corroborations
+                            .Concat(replacements.Select(r => r.ConclusionId).Where(id => !corroborated.Contains(id)));
+                        foreach (var id in rederived)
                         {
-                            Change(workspace, id, c => c with { Record = c.Record with { TimesDerived = c.Record.TimesDerived + 1 } });
+                            Change(workspace, id, touched, c => c with { Record = c.Record with { TimesDerived = c.Record.TimesDerived + 1 } });
                         }
 
                         foreach (var (id, content, embedding) in replacements)
                         {
-                            Change(workspace, id, c => c.WithContent(content, embedding));
+                            Change(workspace, id, touched, c => c.WithContent(content, embedding));
                         }
 
-                        foreach (var collection in inserted.GroupBy(c => (c.ObserverName, c.ObservedName)))
+                        foreach (var key in touched)
                         {
-                            var counters = workspace.Collections[collection.Key];
-                            workspace.Collections[collection.Key] = counters with
+                            var explicitInserts = inserted.Count(c =>
+                                (c.ObserverName, c.ObservedName) == key && c.Level == ConclusionLevel.Explicit);
+                            var counters = workspace.Collections[key];
+                            workspace.Collections[key] = counters with
                             {
-                                NewExplicitCount = counters.NewExplicitCount + collection.Count(c => c.Level == ConclusionLevel.Explicit),
+                                NewExplicitCount = counters.NewExplicitCount + explicitInserts,
                                 LastActivityAt = now,
                             };
                         }
@@ -204,7 +219,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
-                    Change(workspace, publicId, c => c with { DeletedAt = state.Clock.GetUtcNow() });
+                    Change(workspace, publicId, touched: null, c => c with { DeletedAt = state.Clock.GetUtcNow() });
                 }
             },
             ct);
@@ -294,12 +309,20 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
         return inserted;
     }
 
-    /// <summary>Replaces a live conclusion through <paramref name="change"/>; a missing or tombstoned one is skipped.</summary>
-    private static void Change(WorkspaceEntry workspace, string publicId, Func<StoredConclusion, StoredConclusion> change)
+    /// <summary>
+    /// Replaces a live conclusion through <paramref name="change"/> and records its collection in
+    /// <paramref name="touched"/>; a missing or tombstoned one is skipped.
+    /// </summary>
+    private static void Change(
+        WorkspaceEntry workspace,
+        string publicId,
+        HashSet<(string ObserverName, string ObservedName)>? touched,
+        Func<StoredConclusion, StoredConclusion> change)
     {
         if (workspace.Conclusions.TryGetValue(publicId, out var stored) && stored.IsLive)
         {
             workspace.Conclusions[publicId] = change(stored);
+            touched?.Add((stored.Record.ObserverName, stored.Record.ObservedName));
         }
     }
 

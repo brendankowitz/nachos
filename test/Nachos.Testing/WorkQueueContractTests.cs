@@ -17,9 +17,9 @@ namespace Nachos.Testing;
 /// A provider's test project derives from this class and supplies the store.
 /// </summary>
 /// <remarks>
-/// The queue spans workspaces, so a provider that shares one database between tests would see other tests' units. Every
-/// test therefore claims with owners and policies that only ever reach its own units: each test's store is fresh in the
-/// in-memory provider, and SQL derivations must give each test an isolated database (or drain foreign units).
+/// The queue spans workspaces, and every test claims whatever is due, so each test must start from an empty queue. A
+/// provider whose stores share one database overrides <see cref="ResetQueueAsync"/> to empty it, and every derived class
+/// must join the non-parallel <see cref="M2StoreContracts"/>.
 /// </remarks>
 public abstract class WorkQueueContractTests : IAsyncLifetime
 {
@@ -55,11 +55,18 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         }
     }
 
-    private (IMemoryStore Store, FakeTimeProvider Clock) NewStore()
+    /// <summary>
+    /// Empties the work queue (items and leases) of a store that tests share, before each test uses it. A no-op by default,
+    /// which suits a provider whose <see cref="CreateStore"/> returns an empty store.
+    /// </summary>
+    protected virtual Task ResetQueueAsync(IMemoryStore store) => Task.CompletedTask;
+
+    private async Task<(IMemoryStore Store, FakeTimeProvider Clock)> NewStoreAsync()
     {
         var clock = new FakeTimeProvider(Start);
         var store = CreateStore(clock);
         _stores.Add(store);
+        await ResetQueueAsync(store);
         return (store, clock);
     }
 
@@ -111,7 +118,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Append_EnqueuesRepresentationWork_Atomically()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store, new() { ["alice"] = Observing(), ["bob"] = new() });
 
         var message = (await AppendAsync(store, workspace, session, "bob", tokens: 17)).Single();
@@ -147,7 +154,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Append_NoObservers_EnqueuesNothing()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
 
         // Session-level observe_me false silences the sender, even with an observing member.
         var (workspace, session) = await ArrangeAsync(
@@ -167,7 +174,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Append_DeriveFalse_EnqueuesNothing()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store, new() { ["alice"] = Observing() });
 
         await store.Messages.AppendAsync(workspace, session, [new NewMessage("bob", "no work", 5, null, null)], null, Ct);
@@ -189,7 +196,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Append_IntentCountMismatch_ThrowsAndStoresNothing()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
 
         await Should.ThrowAsync<ArgumentException>(() => store.Messages.AppendAsync(
@@ -202,7 +209,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Append_ResolvesObserversAtMessageTime_AndSnapshotsThem()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store, new() { ["alice"] = Observing(), ["carol"] = Observing() });
         clock.Advance(TimeSpan.FromHours(1));
         await store.Sessions.RemovePeersAsync(workspace, session, ["carol"], Ct);
@@ -220,12 +227,31 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
             [["alice", "bob"], ["alice", "bob", "carol"]]);
     }
 
+    [Fact]
+    public async Task Append_TwoSenders_EnqueuesTwoUnitsInOneTransaction()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        NewMessage[] batch = [new("bob", "hi", 5, null, null), new("carol", "hello", 5, null, null)];
+
+        await Should.ThrowAsync<InvalidOperationException>(() => store.Messages.AppendAsync(
+            workspace, session, batch, Write("k", _ => throw new InvalidOperationException("boom")), [DeriveIntent.Derive, DeriveIntent.Derive], Ct));
+        (await TotalsAsync(store, workspace)).Total.ShouldBe(0);
+
+        await store.Messages.AppendAsync(workspace, session, batch, null, [DeriveIntent.Derive, DeriveIntent.Derive], Ct);
+        var first = (await AcquireAsync(store)).ShouldNotBeNull();
+        var second = (await AcquireAsync(store)).ShouldNotBeNull();
+        first.WorkUnitKey.ShouldBe(WorkUnitKeys.Representation(workspace, session, "bob"));
+        second.WorkUnitKey.ShouldBe(WorkUnitKeys.Representation(workspace, session, "carol"));
+        (await AcquireAsync(store)).ShouldBeNull();
+    }
+
     // ---------------------------------------------------------------- acquire
 
     [Fact]
     public async Task Acquire_RespectsEligibilityAndBatchTarget()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var byAgePolicy = Policy(eligibilityTokens: 100, maxAge: TimeSpan.FromMinutes(30), batchTokenTarget: 50);
         var byTokensPolicy = Policy(eligibilityTokens: 100, maxAge: TimeSpan.FromDays(1), batchTokenTarget: 50);
@@ -259,7 +285,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Acquire_TakesOnlyRequestedTaskTypes()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -272,7 +298,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Acquire_OldestUnitFirst()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "first");
         clock.Advance(TimeSpan.FromSeconds(1));
@@ -287,7 +313,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Acquire_IsSerialPerUnit()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var batching = Policy(0, TimeSpan.Zero, 1000);
         await AppendAsync(store, workspace, session, "bob");
@@ -313,7 +339,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Acquire_Concurrent_OneOwnerPerUnit()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
         await AppendAsync(store, workspace, session, "carol");
@@ -338,7 +364,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task ExpiredLease_IsReclaimedWithNewFencingToken()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -360,7 +386,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task ExpiredLease_NobodyReclaimed_IsStillHeld()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -375,7 +401,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task StaleFencingToken_WriteRejected()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -400,7 +426,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task ReleasedLease_RejectsFurtherWrites()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
         await AppendAsync(store, workspace, session, "carol");
@@ -418,7 +444,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Renew_ExtendsLease()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -435,7 +461,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Fail_BacksOffThenDeadLetters()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -462,7 +488,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task Fail_BackingOffItem_HoldsBackLaterItemsOfItsUnit()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
 
@@ -476,10 +502,43 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Fail_MixedAttempts_DeadLettersOnlyItemsAtTheLimit()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var batching = Policy(0, TimeSpan.Zero, 1000);
+        await AppendAsync(store, workspace, session, "bob");
+
+        await store.WorkQueue.FailAsync((await AcquireAsync(store)).ShouldNotBeNull(), "first", TimeSpan.Zero, 2, Ct);
+        await AppendAsync(store, workspace, session, "bob");
+        var mixed = (await store.WorkQueue.TryAcquireAsync("w", batching, Lease, Ct)).ShouldNotBeNull();
+        mixed.Items.Select(item => item.Attempts).ShouldBe([2, 1]);
+
+        await store.WorkQueue.FailAsync(mixed, "second", TimeSpan.Zero, 2, Ct);
+        (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(Pending: 1, InProgress: 0, Completed: 0, DeadLettered: 1));
+        var retry = (await store.WorkQueue.TryAcquireAsync("w", batching, Lease, Ct)).ShouldNotBeNull();
+        retry.Items.ShouldHaveSingleItem().Id.ShouldBe(mixed.Items[1].Id);
+    }
+
+    [Fact]
+    public async Task OverlongOwnerOrKey_IsRejected()
+    {
+        var (store, _) = await NewStoreAsync();
+        var owner = new string('o', WorkLease.MaxOwnerLength);
+        var key = new string('k', WorkUnitKeys.MaxLength);
+
+        (await store.WorkQueue.TryLeaseAsync(key, owner, Lease, Ct)).ShouldNotBeNull();
+        (await store.WorkQueue.TryAcquireAsync(owner, Representation, Lease, Ct)).ShouldBeNull();
+        await Should.ThrowAsync<ArgumentException>(() => store.WorkQueue.TryAcquireAsync(owner + "o", Representation, Lease, Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.WorkQueue.TryLeaseAsync(Unique("k"), owner + "o", Lease, Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.WorkQueue.TryLeaseAsync(key + "k", "w", Lease, Ct));
+    }
+
+    [Fact]
     public async Task TryLease_IsExclusiveAndFenced()
     {
-        var (store, clock) = NewStore();
-        var key = Unique("reconciler");
+        var (store, clock) = await NewStoreAsync();
+        var key = WorkUnitKeys.Reconciler;
 
         var first = (await store.WorkQueue.TryLeaseAsync(key, "a", TimeSpan.FromMinutes(1), Ct)).ShouldNotBeNull();
         first.Items.ShouldBeEmpty();
@@ -501,7 +560,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task QueueStatus_CountsUnitsBySessionAndObserver()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store, new() { ["alice"] = Observing() });
         var other = Unique("sess");
         await store.Sessions.GetOrCreateAsync(workspace, other, null, null, null, Ct);
@@ -542,7 +601,7 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     [Fact]
     public async Task PruneSucceeded_RemovesOnlyOldCompletedItems()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await AppendAsync(store, workspace, session, "bob");
         await AppendAsync(store, workspace, session, "carol");

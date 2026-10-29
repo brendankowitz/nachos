@@ -9,4 +9,8 @@ namespace Nachos.Abstractions.Domain;
 /// The claimed items in ascending <see cref="WorkItemRecord.Id"/> order; empty for a lease taken with
 /// <see cref="Stores.IWorkQueue.TryLeaseAsync"/>.
 /// </param>
-public sealed record WorkLease(string WorkUnitKey, string Owner, long FencingToken, IReadOnlyList<WorkItemRecord> Items);
+public sealed record WorkLease(string WorkUnitKey, string Owner, long FencingToken, IReadOnlyList<WorkItemRecord> Items)
+{
+    /// <summary>The longest owner identity a store accepts (the SQL <c>Owner nvarchar(128)</c> column).</summary>
+    public const int MaxOwnerLength = 128;
+}

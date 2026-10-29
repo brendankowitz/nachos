@@ -4,7 +4,9 @@ namespace Nachos.Abstractions.Domain;
 
 /// <summary>
 /// A stored, live (not tombstoned) conclusion that <paramref name="ObserverName"/> holds about
-/// <paramref name="ObservedName"/>. <paramref name="PublicId"/> is case-sensitive and unique across workspaces.
+/// <paramref name="ObservedName"/>. <paramref name="PublicId"/> is case-sensitive and random (see
+/// <see cref="Abstractions.PublicId"/>): the SQL provider enforces it unique across workspaces, the in-memory provider
+/// within its workspace, and a collision is astronomically unlikely either way.
 /// </summary>
 /// <param name="SessionName">The session an explicit conclusion was stated in; null when it is not session-attributed.</param>
 /// <param name="TimesDerived">1 on insert; each corroboration adds one.</param>

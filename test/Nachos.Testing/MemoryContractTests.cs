@@ -17,7 +17,9 @@ namespace Nachos.Testing;
 /// </summary>
 /// <remarks>
 /// Workspace names are fresh per test. <see cref="IEmbeddingStore"/> and the purges span workspaces, so their
-/// assertions only look at this test's conclusions.
+/// assertions only look at this test's conclusions. Leases come from the cross-workspace queue, so a provider whose
+/// stores share one database overrides <see cref="ResetQueueAsync"/>, and every derived class must join the non-parallel
+/// <see cref="M2StoreContracts"/>.
 /// </remarks>
 public abstract class MemoryContractTests : IAsyncLifetime
 {
@@ -50,11 +52,18 @@ public abstract class MemoryContractTests : IAsyncLifetime
         }
     }
 
-    private (IMemoryStore Store, FakeTimeProvider Clock) NewStore()
+    /// <summary>
+    /// Empties the work queue (items and leases) of a store that tests share, before each test uses it. A no-op by default,
+    /// which suits a provider whose <see cref="CreateStore"/> returns an empty store.
+    /// </summary>
+    protected virtual Task ResetQueueAsync(IMemoryStore store) => Task.CompletedTask;
+
+    private async Task<(IMemoryStore Store, FakeTimeProvider Clock)> NewStoreAsync()
     {
         var clock = new FakeTimeProvider(Start);
         var store = CreateStore(clock);
         _stores.Add(store);
+        await ResetQueueAsync(store);
         return (store, clock);
     }
 
@@ -141,7 +150,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Insert_StoresConclusions()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var provenance = new JsonObject { ["source_message_ids"] = new JsonArray("m1", "m2"), ["prompt"] = "deriver.v1" };
 
@@ -182,7 +191,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Insert_InvalidReference_ThrowsAndStoresNothing()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
 
         await Should.ThrowAsync<NotFoundException>(() => store.Conclusions.InsertAsync(
@@ -201,7 +210,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Json_InputAndOutput_AreIsolated()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var provenance = new JsonObject { ["k"] = "v" };
 
@@ -219,7 +228,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task List_FiltersAndOrders()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var a = await InsertAsync(store, workspace, Fact("a", session));
         clock.Advance(TimeSpan.FromSeconds(1));
@@ -253,7 +262,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Query_RanksByCosineDistance()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         await InsertAsync(store, workspace, Fact("far", session, Vector(1)));
         await InsertAsync(store, workspace, Fact("near", session, Vector(0, tilt: 0.5f)));
@@ -278,7 +287,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task FindExact_MatchesLevelContentAndSession()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var other = Unique("sess");
         await store.Sessions.GetOrCreateAsync(workspace, other, null, null, null, Ct);
@@ -301,7 +310,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task FindNearest_RespectsThresholdAndSession()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var other = Unique("sess");
         await store.Sessions.GetOrCreateAsync(workspace, other, null, null, null, Ct);
@@ -325,7 +334,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task CommitDerivation_AppliesChangesAndCompletesTheLease()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var corroborated = await InsertAsync(store, workspace, Fact("Bob likes tea.", session, Vector(1)));
         var replaced = await InsertAsync(store, workspace, Fact("Bob has a dog.", session, Vector(2)));
@@ -348,7 +357,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
         (await store.Conclusions.GetAsync(workspace, corroborated.PublicId, Ct)).ShouldNotBeNull().TimesDerived.ShouldBe(2);
         var replacement = (await store.Conclusions.GetAsync(workspace, replaced.PublicId, Ct)).ShouldNotBeNull();
         replacement.Content.ShouldBe("Bob has a dog named Rex.");
-        replacement.TimesDerived.ShouldBe(1);
+        replacement.TimesDerived.ShouldBe(2);
         replacement.CreatedAt.ShouldBe(replaced.CreatedAt);
         (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", Vector(3), 0.01, null, Ct))
             .ShouldNotBeNull().Conclusion.PublicId.ShouldBe(replaced.PublicId);
@@ -372,7 +381,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task CommitDerivation_IsAtomicWithCompletion()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var existing = await InsertAsync(store, workspace, Fact("Bob likes tea.", session));
         var stale = await LeaseAsync(store, workspace, session, "a", TimeSpan.FromMinutes(1));
@@ -398,9 +407,75 @@ public abstract class MemoryContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CommitDerivation_CorroborationOrReplacementOnly_RecordsActivityButNoNewExplicit()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var corroborated = await InsertAsync(store, workspace, Fact("Bob likes tea.", session));
+        var replaced = await InsertAsync(store, workspace, Fact("Alice has a cat.", session, observer: "bob", observed: "alice"));
+        var lease = await LeaseAsync(store, workspace, session);
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        await store.Conclusions.CommitDerivationAsync(
+            lease,
+            new DerivationChanges(workspace, [], [corroborated.PublicId], [new ConclusionReplacement(replaced.PublicId, "Alice has a cat named Tom.", null)]),
+            Ct);
+
+        foreach (var (observer, observed) in new[] { ("alice", "bob"), ("bob", "alice") })
+        {
+            var collection = (await store.Conclusions.GetCollectionAsync(workspace, observer, observed, Ct)).ShouldNotBeNull();
+            collection.LastActivityAt.ShouldBe(Start.AddMinutes(1));
+            collection.NewExplicitCount.ShouldBe(0);
+        }
+    }
+
+    [Fact]
+    public async Task CommitDerivation_ReleasedLease_ThrowsLeaseLost()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var lease = await LeaseAsync(store, workspace, session);
+        await store.WorkQueue.CompleteAsync(lease, Ct);
+
+        await Should.ThrowAsync<LeaseLostException>(() => store.Conclusions.CommitDerivationAsync(
+            lease, new DerivationChanges(workspace, [Fact("late", session)], [], []), Ct));
+        (await ListAllAsync(store, workspace)).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task CommitDerivation_ExpiredLeaseNobodyReclaimed_Commits()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var lease = await LeaseAsync(store, workspace, session, duration: TimeSpan.FromMinutes(1));
+        clock.Advance(TimeSpan.FromMinutes(10));
+
+        await store.Conclusions.CommitDerivationAsync(lease, new DerivationChanges(workspace, [Fact("slow", session)], [], []), Ct);
+
+        (await ListAllAsync(store, workspace)).ShouldHaveSingleItem().Content.ShouldBe("slow");
+        (await QueueAsync(store, workspace)).Completed.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task CommitDerivation_ChangesForAnotherWorkspace_ThrowAndChangeNothing()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var (otherWorkspace, otherSession) = await ArrangeAsync(store);
+        var lease = await LeaseAsync(store, workspace, session);
+
+        await Should.ThrowAsync<ArgumentException>(() => store.Conclusions.CommitDerivationAsync(
+            lease, new DerivationChanges(otherWorkspace, [Fact("misrouted", otherSession)], [], []), Ct));
+
+        (await ListAllAsync(store, otherWorkspace)).ShouldBeEmpty();
+        (await QueueAsync(store, workspace)).ShouldBe(new QueueCounts(0, 1, 0, 0));
+        await store.WorkQueue.CompleteAsync(lease, Ct);
+    }
+
+    [Fact]
     public async Task CommitDerivation_InvalidChange_ChangesNothingAndKeepsTheLease()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var existing = await InsertAsync(store, workspace, Fact("Bob likes tea.", session));
         var lease = await LeaseAsync(store, workspace, session);
@@ -422,7 +497,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task CommitDerivation_SkipsTombstonedTargets()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var deleted = await InsertAsync(store, workspace, Fact("Bob likes tea.", session));
         await store.Conclusions.TombstoneAsync(workspace, deleted.PublicId, Ct);
@@ -443,7 +518,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Tombstoned_IsInvisibleToEveryRead()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var embedded = await InsertAsync(store, workspace, Fact("embedded", session, Vector(0)));
         var pending = await InsertAsync(store, workspace, Fact("pending", session));
@@ -465,7 +540,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task PurgeTombstones_RemovesOnlyThoseOlderThanRetention()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var old = await InsertAsync(store, workspace, Fact("old", session));
         var recent = await InsertAsync(store, workspace, Fact("recent", session));
@@ -486,7 +561,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task PeerCard_SetReplacesEntries()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, _) = await ArrangeAsync(store);
 
         (await store.PeerCards.GetAsync(workspace, "alice", "bob", Ct)).ShouldBeNull();
@@ -517,7 +592,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task PeerCard_UnknownPeerOrWorkspace_ThrowsNotFound()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, _) = await ArrangeAsync(store);
 
         await Should.ThrowAsync<NotFoundException>(() => store.PeerCards.SetAsync(workspace, "alice", "nobody", ["x"], PeerCardAuthor.Api, Ct));
@@ -531,7 +606,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Embeddings_PendingBecomesQueryableOnceSaved()
     {
-        var (store, clock) = NewStore();
+        var (store, clock) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var first = await InsertAsync(store, workspace, Fact("first", session));
         clock.Advance(TimeSpan.FromSeconds(1));
@@ -553,7 +628,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Embeddings_StaleSave_IsIgnored()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var conclusion = await InsertAsync(store, workspace, Fact("Bob has a dog.", session));
         var claimed = (await store.Embeddings.ListPendingAsync(1000, Ct)).Single(p => p.ConclusionId == conclusion.PublicId);
@@ -575,7 +650,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
     [Fact]
     public async Task Embeddings_MarkFailed_LeavesTheBacklog()
     {
-        var (store, _) = NewStore();
+        var (store, _) = await NewStoreAsync();
         var (workspace, session) = await ArrangeAsync(store);
         var conclusion = await InsertAsync(store, workspace, Fact("unembeddable", session));
         var claimed = (await store.Embeddings.ListPendingAsync(1000, Ct)).Single(p => p.ConclusionId == conclusion.PublicId);

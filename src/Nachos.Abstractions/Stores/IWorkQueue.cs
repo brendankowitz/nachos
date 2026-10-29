@@ -34,9 +34,10 @@ public interface IWorkQueue
     /// unexpired lease. Due-ness and the batch size follow the task type's <see cref="WorkBatchPolicy"/>. The returned
     /// items have their <see cref="WorkItemRecord.Attempts"/> incremented. Returns null when nothing is due.
     /// </summary>
-    /// <param name="owner">The worker's identity, at most 128 characters.</param>
+    /// <param name="owner">The worker's identity, at most <see cref="WorkLease.MaxOwnerLength"/> characters.</param>
     /// <param name="taskTypes">The task types to claim, each with its batching policy.</param>
     /// <param name="leaseDuration">How long the lease lasts before another owner may take the unit.</param>
+    /// <exception cref="ArgumentException"><paramref name="owner"/> is too long.</exception>
     Task<WorkLease?> TryAcquireAsync(
         string owner,
         IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes,
@@ -47,7 +48,9 @@ public interface IWorkQueue
     /// Leases the named unit without claiming any item (<see cref="WorkLease.Items"/> is empty), so one owner at a time
     /// can run a singleton duty such as the reconciler. Returns null while another owner holds an unexpired lease on it.
     /// </summary>
-    /// <param name="owner">The worker's identity, at most 128 characters.</param>
+    /// <param name="workUnitKey">At most <see cref="Work.WorkUnitKeys.MaxLength"/> characters.</param>
+    /// <param name="owner">The worker's identity, at most <see cref="WorkLease.MaxOwnerLength"/> characters.</param>
+    /// <exception cref="ArgumentException"><paramref name="workUnitKey"/> or <paramref name="owner"/> is too long.</exception>
     Task<WorkLease?> TryLeaseAsync(string workUnitKey, string owner, TimeSpan leaseDuration, CancellationToken ct);
 
     /// <summary>Extends the lease to <paramref name="leaseDuration"/> from now.</summary>

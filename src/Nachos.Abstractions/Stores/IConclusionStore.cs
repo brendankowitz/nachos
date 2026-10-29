@@ -81,14 +81,16 @@ public interface IConclusionStore
 
     /// <summary>
     /// Applies one derivation and completes its lease, in one transaction: checks that <paramref name="lease"/> is
-    /// still held, inserts <see cref="DerivationChanges.Inserts"/>, adds the corroborations, applies the replacements,
-    /// updates the dream counters of every collection it inserted into (<c>NewExplicitCount</c> += explicit inserts,
-    /// <c>LastActivityAt</c> = now), marks the lease's items succeeded and releases the unit.
+    /// still held, inserts <see cref="DerivationChanges.Inserts"/>, adds the corroborations, applies the replacements
+    /// (see <see cref="ConclusionReplacement"/> for how they count), updates the dream counters (<c>NewExplicitCount</c>
+    /// += explicit inserts; <c>LastActivityAt</c> = now on every collection an insert, corroboration or replacement
+    /// changed), marks the lease's items succeeded and releases the unit.
     /// </summary>
     /// <remarks>
     /// A corroboration or replacement naming a conclusion that is missing or tombstoned is skipped, so a concurrent
     /// delete wins. Any exception leaves everything unchanged, including the lease and its items.
     /// </remarks>
+    /// <exception cref="ArgumentException">An item of the lease belongs to another workspace than the changes.</exception>
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
     /// <exception cref="NotFoundException">An insert names a peer or session that does not exist.</exception>
     Task CommitDerivationAsync(WorkLease lease, DerivationChanges changes, CancellationToken ct);
