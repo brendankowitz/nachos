@@ -34,6 +34,10 @@ public sealed class ScriptedChatClient : IChatClient
     public ScriptedChatClient EnqueueFailure(Exception exception) =>
         Enqueue(() => throw exception);
 
+    /// <summary>Queues a failure built when the call is made, for failures that depend on what happens during the call.</summary>
+    public ScriptedChatClient EnqueueFailure(Func<Exception> createException) =>
+        Enqueue(() => throw createException());
+
     public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {

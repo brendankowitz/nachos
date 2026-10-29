@@ -1,7 +1,9 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Diagnostics;
 using System.Net;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Shouldly;
 using Nachos.Core.Llm;
@@ -30,7 +32,7 @@ public sealed class FallbackChatClientTests
     {
         var primary = new ScriptedChatClient().EnqueueFailure(error);
         var secondary = new ScriptedChatClient().EnqueueText("from fallback");
-        using var client = new NachosFallbackChatClient(primary, [secondary]);
+        using var client = Create(primary, secondary);
 
         var response = await client.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None);
 
@@ -47,7 +49,7 @@ public sealed class FallbackChatClientTests
     {
         var primary = new ScriptedChatClient().EnqueueFailure(new HttpRequestException("bad", null, status));
         var secondary = new ScriptedChatClient().EnqueueText("unused");
-        using var client = new NachosFallbackChatClient(primary, [secondary]);
+        using var client = Create(primary, secondary);
 
         await Should.ThrowAsync<HttpRequestException>(
             () => client.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None));
@@ -60,7 +62,7 @@ public sealed class FallbackChatClientTests
     {
         var primary = new ScriptedChatClient().EnqueueFailure(new HttpRequestException("first", null, HttpStatusCode.TooManyRequests));
         var secondary = new ScriptedChatClient().EnqueueFailure(new HttpRequestException("last", null, HttpStatusCode.BadGateway));
-        using var client = new NachosFallbackChatClient(primary, [secondary]);
+        using var client = Create(primary, secondary);
 
         var error = await Should.ThrowAsync<HttpRequestException>(
             () => client.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None));
@@ -69,18 +71,61 @@ public sealed class FallbackChatClientTests
     }
 
     [Fact]
-    public async Task CallerCancellation_IsNotRetried()
+    public async Task CallerCancellationDuringTheCall_IsNotRetried()
     {
         using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-        var primary = new ScriptedChatClient().EnqueueFailure(new TaskCanceledException());
+        var primary = new ScriptedChatClient().EnqueueFailure(() =>
+        {
+            cts.Cancel();
+            return new TaskCanceledException("cancelled", null, cts.Token);
+        });
         var secondary = new ScriptedChatClient().EnqueueText("unused");
-        using var client = new NachosFallbackChatClient(primary, [secondary]);
+        using var client = Create(primary, secondary);
 
-        await Should.ThrowAsync<OperationCanceledException>(
+        await Should.ThrowAsync<TaskCanceledException>(
             () => client.GetResponseAsync(Prompt, cancellationToken: cts.Token));
 
         secondary.Requests.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task HttpClientTimeout_WithLiveCallerToken_UsesNextProfile()
+    {
+        var primary = new ScriptedChatClient().EnqueueFailure(
+            new TaskCanceledException("timed out", new TimeoutException()));
+        var secondary = new ScriptedChatClient().EnqueueText("from fallback");
+        using var client = Create(primary, secondary);
+
+        var response = await client.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None);
+
+        response.Text.ShouldBe("from fallback");
+    }
+
+    [Fact]
+    public async Task Fallback_IsLoggedAndRecordedOnTheActivity()
+    {
+        var logger = new ListLogger();
+        var primary = new ScriptedChatClient().EnqueueFailure(new HttpRequestException("busy", null, HttpStatusCode.TooManyRequests));
+        var secondary = new ScriptedChatClient().EnqueueText("from fallback");
+        using var client = new NachosFallbackChatClient(primary, [secondary], ["fast", "big"], logger);
+        using var source = new ActivitySource("fallback-test");
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == "fallback-test",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var activity = source.StartActivity("call");
+
+        await client.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None);
+
+        var entry = logger.Entries.ShouldHaveSingleItem();
+        entry.Level.ShouldBe(LogLevel.Warning);
+        entry.Message.ShouldContain("fast");
+        entry.Message.ShouldContain("big");
+        entry.Message.ShouldContain("429");
+        var fallbackEvent = activity!.Events.ShouldHaveSingleItem();
+        fallbackEvent.Name.ShouldBe("nachos.llm.fallback");
     }
 
     [Fact]
@@ -88,7 +133,7 @@ public sealed class FallbackChatClientTests
     {
         var primary = new ScriptedChatClient().EnqueueFailure(new HttpRequestException("busy", null, HttpStatusCode.TooManyRequests));
         var secondary = new ScriptedChatClient().EnqueueText("streamed");
-        using var client = new NachosFallbackChatClient(primary, [secondary]);
+        using var client = Create(primary, secondary);
 
         var text = "";
         await foreach (var update in client.GetStreamingResponseAsync(Prompt, cancellationToken: CancellationToken.None))
@@ -97,6 +142,21 @@ public sealed class FallbackChatClientTests
         }
 
         text.ShouldBe("streamed");
+    }
+
+    private static NachosFallbackChatClient Create(IChatClient primary, IChatClient secondary) =>
+        new(primary, [secondary], ["primary", "secondary"], new ListLogger());
+
+    private sealed class ListLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private static PipelineResponse StatusResponse(int status)

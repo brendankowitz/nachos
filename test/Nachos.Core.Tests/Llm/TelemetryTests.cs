@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
 using Nachos.Core.Llm;
 using Nachos.Testing;
@@ -22,7 +23,7 @@ public sealed class TelemetryTests
 
         var provider = new ScriptedChatClient().EnqueueText("ok", new UsageDetails { InputTokenCount = 12, OutputTokenCount = 3 });
         var options = new LlmOptions { Profiles = { [LlmOptions.DefaultProfileName] = new ModelProfile() } };
-        using var clients = new NachosChatClients(options, _ => provider);
+        using var clients = new NachosChatClients(options, _ => provider, NullLogger.Instance);
 
         await clients.ForAgent("deriver").GetResponseAsync(
             [new ChatMessage(ChatRole.User, "hi")],

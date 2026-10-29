@@ -1,5 +1,5 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Nachos.Core.Llm;
 
@@ -13,14 +13,18 @@ public sealed class NachosChatClients : IDisposable
 
     private readonly LlmOptions _options;
     private readonly Func<ModelProfile, IChatClient> _createProviderClient;
-    private readonly ConcurrentDictionary<string, Lazy<IChatClient>> _pipelines = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ILogger _logger;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, IChatClient> _pipelines = new(StringComparer.OrdinalIgnoreCase);
 
-    public NachosChatClients(LlmOptions options, Func<ModelProfile, IChatClient> createProviderClient)
+    public NachosChatClients(LlmOptions options, Func<ModelProfile, IChatClient> createProviderClient, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(createProviderClient);
+        ArgumentNullException.ThrowIfNull(logger);
         _options = options;
         _createProviderClient = createProviderClient;
+        _logger = logger;
     }
 
     /// <summary>Returns the client for <paramref name="agent"/>, using <c>Llm:Agents:{agent}</c> or the default profile.</summary>
@@ -30,35 +34,65 @@ public sealed class NachosChatClients : IDisposable
         var profileName = _options.Agents.TryGetValue(agent, out var configured)
             ? configured
             : LlmOptions.DefaultProfileName;
-        return _pipelines.GetOrAdd(profileName, name => new Lazy<IChatClient>(() => BuildPipeline(name))).Value;
+        lock (_gate)
+        {
+            if (!_pipelines.TryGetValue(profileName, out var pipeline))
+            {
+                // Only successes are cached, so fixing a misconfiguration does not need a restart.
+                pipeline = BuildPipeline(profileName);
+                _pipelines[profileName] = pipeline;
+            }
+
+            return pipeline;
+        }
     }
 
     public void Dispose()
     {
-        foreach (var pipeline in _pipelines.Values)
+        lock (_gate)
         {
-            if (pipeline.IsValueCreated)
+            foreach (var pipeline in _pipelines.Values)
             {
-                pipeline.Value.Dispose();
+                pipeline.Dispose();
             }
+
+            _pipelines.Clear();
         }
     }
 
     private IChatClient BuildPipeline(string profileName)
     {
         var chain = ResolveChain(profileName);
-        var primary = CreateProfileClient(chain[0]);
-        var fallbacks = chain.Skip(1).Select(CreateProfileClient).ToList();
-        IChatClient client = fallbacks.Count == 0 ? primary : new NachosFallbackChatClient(primary, fallbacks);
-        return new ChatClientBuilder(client)
-            .UseOpenTelemetry(sourceName: TelemetrySourceName)
-            .Use(inner => new AgentTagChatClient(inner))
-            .Build();
+        var created = new List<IChatClient>();
+        try
+        {
+            foreach (var (_, profile) in chain)
+            {
+                created.Add(CreateProfileClient(profile));
+            }
+
+            IChatClient client = created.Count == 1
+                ? created[0]
+                : new NachosFallbackChatClient(created[0], created.Skip(1).ToList(), chain.Select(link => link.Name).ToList(), _logger);
+            return new ChatClientBuilder(client)
+                .UseOpenTelemetry(sourceName: TelemetrySourceName)
+                .Use(inner => new AgentTagChatClient(inner))
+                .Build();
+        }
+        catch
+        {
+            foreach (var client in created)
+            {
+                client.Dispose();
+            }
+
+            throw;
+        }
     }
 
-    private List<ModelProfile> ResolveChain(string profileName)
+    private List<(string Name, ModelProfile Profile)> ResolveChain(string profileName)
     {
-        var chain = new List<ModelProfile>();
+        var chain = new List<(string, ModelProfile)>();
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? next = profileName;
         while (next is not null)
@@ -75,7 +109,7 @@ public sealed class NachosChatClients : IDisposable
                     $"Llm profile '{next}' is not configured. Add Llm:Profiles:{next} or point Llm:Agents at an existing profile.");
             }
 
-            chain.Add(profile);
+            chain.Add((next, profile));
             next = profile.Fallback;
         }
 

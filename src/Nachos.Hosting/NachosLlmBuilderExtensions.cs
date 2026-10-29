@@ -1,5 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Core.Llm;
 using Nachos.Hosting;
@@ -17,10 +19,11 @@ public static class NachosLlmBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(createProviderClient);
-        builder.Services.AddOptions<LlmOptions>();
+        builder.Services.AddOptions<LlmOptions>().BindConfiguration("Llm");
         builder.Services.Replace(ServiceDescriptor.Singleton(provider => new NachosChatClients(
             provider.GetRequiredService<IOptions<LlmOptions>>().Value,
-            profile => createProviderClient(provider, profile))));
+            profile => createProviderClient(provider, profile),
+            (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger<NachosChatClients>())));
         return builder;
     }
 
@@ -33,7 +36,7 @@ public static class NachosLlmBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(createGenerator);
-        builder.Services.AddOptions<EmbeddingOptions>();
+        builder.Services.AddOptions<EmbeddingOptions>().BindConfiguration("Embeddings");
         builder.Services.Replace(ServiceDescriptor.Singleton(provider =>
         {
             var requestDimensions = provider.GetRequiredService<IOptions<EmbeddingOptions>>().Value.RequestDimensions;

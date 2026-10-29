@@ -22,7 +22,7 @@ public static class NachosAzureOpenAIExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(credential);
         ArgumentNullException.ThrowIfNull(configure);
-        builder.Services.Configure(configure);
+        builder.Services.AddOptions<AzureOpenAIOptions>().BindConfiguration("AzureOpenAI").Configure(configure);
         builder.Services.AddSingleton(provider => CreateClient(credential, provider.GetRequiredService<IOptions<AzureOpenAIOptions>>().Value));
 
         return builder
