@@ -10,7 +10,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $portableProjects = @(
     'Nachos.Abstractions.Tests', 'Nachos.Api.Tests', 'Nachos.Architecture.Tests',
     'Nachos.Client.Tests', 'Nachos.Core.Tests', 'Nachos.DataLayer.InMemory.Tests',
-    'Nachos.LicenseCheck.Tests', 'Nachos.DataLayer.SqlServer.Tests',
+    'Nachos.DataLayer.SqlServer.Tests',
     'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests'
 )
 [xml] $solution = Get-Content (Join-Path $root 'Nachos.slnx') -Raw

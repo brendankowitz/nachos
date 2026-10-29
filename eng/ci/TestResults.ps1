@@ -27,15 +27,8 @@ function Assert-CiTestResult {
         $message = $skip.SelectSingleNode('./*[local-name()="Output"]/*[local-name()="ErrorInfo"]/*[local-name()="Message"]')
         $reason = if ($message) { $message.InnerText.Trim() } else { '' }
         Write-Host "NOT EXECUTED: $($skip.testName): $reason"
-        $allowed = (
-            $Suite -eq 'Nachos.LicenseCheck.Tests' -and (
-                ($IsWindows -and $reason -eq 'Not executed: Linux-only native open/statx evidence path.') -or
-                ($IsLinux -and $reason -eq "Not executed: creating device nodes (mknod, CAP_MKNOD) in the test's own directory requires NACHOS_LINUX_DEVICE_FIXTURES=1.")
-            )
-        ) -or (
-            $Suite -eq 'Nachos.Infra.Tests' -and $IsWindows -and
+        $allowed = $Suite -eq 'Nachos.Infra.Tests' -and $IsWindows -and
             $reason -eq 'Needs a POSIX /usr/bin:/bin environment; covered in Linux CI.'
-        )
         if (-not $allowed) { throw "$Suite contains an unapproved skip: $($skip.testName): $reason" }
     }
     if ($NativeExitCode -ne 0 -or $failed -ne 0) { throw "$Suite failed (dotnet exit $NativeExitCode; failed=$failed)." }

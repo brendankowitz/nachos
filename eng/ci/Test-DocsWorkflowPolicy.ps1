@@ -59,7 +59,7 @@ try {
         @{ Name='ci workflow pages permission'; File='ci.yml'; From='contents: read'; To="contents: read`n  pages: write" },
         @{ Name='docs validate OIDC permission'; File='docs-validate.yml'; From='contents: read'; To="contents: read`n  id-token: write" },
         @{ Name='retained credentials'; File='docs-site.yml'; From='persist-credentials: false'; To='persist-credentials: true' },
-        @{ Name='hidden audit failure'; File='docs-site.yml'; From='run: ./eng/ci/Invoke-DocsSite.ps1 -Audit'; To="continue-on-error: true`n        run: ./eng/ci/Invoke-DocsSite.ps1 -Audit" }
+        @{ Name='hidden source failure'; File='docs-site.yml'; From='run: ./eng/ci/Invoke-DocsSite.ps1'; To="continue-on-error: true`n        run: ./eng/ci/Invoke-DocsSite.ps1" }
     )) {
         Copy-Item (Join-Path $root ".github/workflows/$($mutation.File)") (Join-Path $workflows $mutation.File) -Force
         $normalized = $original.Replace("`r`n", "`n")

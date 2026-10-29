@@ -15,7 +15,7 @@
 These apply to every milestone. Values are copied from the spec.
 
 - **Clean-room (spec §3):** never read or copy Honcho `src/`, `sdks/`, or `mcp/` source or prompt text. Inputs are limited to the spec, Honcho's public docs and public OpenAPI, and black-box SDK behavior. Wire names and default values may match.
-- **Licenses (spec §3 rule 7):** distributed artifacts use only permissive licenses from the allowlist. EPL-2.0/MPL-2.0 are allowed only for non-distributed tooling, via `eng/license-exceptions.json`. GPL, AGPL, LGPL, and SSPL are never allowed.
+- **Licenses (spec §3 rule 7):** distributed artifacts use only permissive licenses from the allowlist. EPL-2.0/MPL-2.0 are allowed only for unmodified, non-distributed tooling. GPL, AGPL, LGPL, and SSPL never ship. Enforced by review when a dependency is added or upgraded; there is no license-audit tooling.
 - **Schema (spec §7.3):** all DDL lives in `src/DataLayer/Nachos.DataLayer.SqlServer.Database/` (SqlAzureV12). `…Database.Sql2025` (Sql170) has no DDL of its own and globs the same files. EF Core never creates migrations. `AllowIncompatiblePlatform` is never set.
 - **Azure consent (spec §18.3):** no agent or CI runs `azd up`/`provision`/`deploy`/`down`, `az deployment …`, `what-if`, `sqlpackage Publish` to Azure, or any registry push used by Azure, without a per-run **untagged** owner approval. CI workflows that touch Azure are `workflow_dispatch`-only and run in the `azure-live` environment.
 - **SDK:** `global.json` pins `10.0.100` with `rollForward: latestFeature`. Central package management lives in `Directory.Packages.props`. `Nullable` and `TreatWarningsAsErrors` are enabled in `Directory.Build.props`.

@@ -77,39 +77,13 @@ Honcho is **AGPL-3.0**. Nachos is **MIT**. A language change is not a licensing 
 6. The research appendix cites Honcho source lines as **behavioral evidence** for the spec author. It is not implementation guidance.
 7. **Third-party licenses use artifact-based tiers** (engineering policy, not legal advice; Principal-tier decision on PR #1).
    - **Distributed artifacts** (NuGet packages, container images, CLI tools, the published docs site's assets, and any embedded third-party code) may use only: MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, ISC, MS-PL, Unlicense, CC0-1.0, BlueOak-1.0.0, Zlib, PSF-2.0, or Python-2.0.
-   - **Unmodified, non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0, through an explicitly reviewed, version-scoped exception recorded in `eng/license-exceptions.json` (package, version, license, purpose, reviewer). Example: `elkjs` used only by the docs Mermaid validator.
-   - GPL, AGPL, LGPL, and SSPL are never allowed in either tier.
-   - **Owner-approved docs-tooling scope (2026-10-09, PR #6 comment 6084081762: "I don't think we need to worry about the libraries used for docs generation since we aren't 'distributing' them").** Build-time libraries used only to *generate* the docs site (for example Astro's optional Sharp/libvips image stack) are not distributed, so they are not blocked by this rule's license tiers, including the GPL/LGPL prohibition above. Conditions:
-     - they stay in the license inventory with their license evidence, for visibility; they are not hidden or reclassified;
-     - anything they **emit into the published site** (copied assets, fonts, icon sets, bundled scripts, generated images that embed third-party content) is a distributed artifact and stays fully gated;
-     - the scope is docs generation only; other development, build or CI dependencies keep the tiers above;
-     - the docs site still prefers no image optimizer (Astro `passthroughImageService()`), so Sharp/libvips are not executed.
-   - **Owner-approved shipped-tier exception (2026-10-07):** `Microsoft.SqlServer.DacFx` (pinned version only, currently `170.4.83`) may ship in distributed artifacts (the API image and the CLI) under its **Microsoft Software License Terms, "Distributable Code"** section. It's required for the in-app dacpac schema deployment (§7.3). Conditions:
-     - a version-scoped entry in `eng/license-exceptions.json` with `tier: "shipped"`, the license-text evidence path, and the owner approval reference;
-     - its license terms reproduced or linked in `THIRD-PARTY-NOTICES.md`;
-     - Nachos must comply with the Distributable Code conditions;
-     - **any version change needs a fresh license-text review**;
-     - other Microsoft-licensed packages are covered by the separate owner approval below, not by this exception.
-   - **Owner-approved Microsoft-library acceptance (2026-10-09, PR #6 comment 6083936795: "I'm ok accepting any of the Ms library licenses").** A package published by Microsoft whose *primary* license is Microsoft's own license terms (for example `Microsoft.Data.SqlClient.SNI.runtime`, `Microsoft.SqlServer.Types`) may ship in distributed artifacts. Conditions:
-     - each accepted package is recorded by exact package, version and license-text evidence (with this approval reference) in the license-check evidence; there is no name-prefix bypass and no acceptance of missing license text;
-     - required notices are reproduced or linked in `THIRD-PARTY-NOTICES.md`, and the terms' redistribution conditions are complied with;
-     - third-party components bundled inside a Microsoft package keep their own license obligations and are evaluated under this rule's tiers;
-     - the acceptance does not resolve which terms govern a package whose embedded license document looks wrong or expired (currently `Microsoft.SqlServer.Types` 170.1000.7, which carries a pre-release evaluation document); that remains a release-gate provenance question;
-     - non-Microsoft licenses (including LGPL components and OR-license choices) are unaffected.
-   - **Owner-approved container platform-layer carve-out (2026-10-07).** The base OS layer of a container image from an **approved base** is evaluated as unmodified third-party platform, not under this rule's package allowlist. Approved bases are:
-     - Microsoft .NET images on `mcr.microsoft.com` (for example `dotnet/aspnet`, `dotnet/runtime-deps`), used by Nachos images;
-     - the digest-pinned deploy-time placeholder image used before the first `azd deploy` (§18.2). Nachos neither modifies nor redistributes this image: it is a third-party runtime dependency that Container Apps pulls from its upstream registry, and it is replaced by the first deploy. It is therefore approved **as a whole**, application layer included, provided its full package and license inventory is recorded as evidence (`infra/evidence/placeholder-<digest>/`). Changing its digest requires refreshing that evidence.
-
-     Conditions:
-     - Base images are referenced **by digest** in release evidence, together with their OS package license inventory.
-     - Bases are **never modified**: Nachos adds layers but never patches base packages.
-     - **Everything Nachos adds** (NuGet assemblies, npm or docs assets, app files, and any extra OS packages installed on top) remains subject to this rule in full.
-     - Changing to a different base image family requires a fresh review.
-   - Required license texts and notices go in `THIRD-PARTY-NOTICES.md` (for example PdfPig, Apache-2.0).
-   - **CI enforcement:**
-     - Check the locked direct and transitive dependencies **and the emitted artifacts**. `devDependencies` is not treated as a distribution boundary. Bundler module provenance for every docs-site chunk, plus package and image contents, must prove that excepted packages don't ship.
-     - Resolve licenses from license files, not only metadata. For SPDX `OR`, record the selected license. For `AND`, every component must qualify.
-     - Unknown licenses or an unproven tier assignment fail closed.
+   - **Non-distributed development/build/CI dependencies** may additionally use EPL-2.0 or MPL-2.0 when used unmodified (for example `elkjs`, used only by the docs Mermaid validator).
+   - GPL, AGPL, LGPL, and SSPL are never allowed in distributed artifacts.
+   - **Docs generation (owner, PR #6 comment 6084081762):** build-time libraries used only to generate the docs site are not distributed and are not blocked by these tiers. Anything they emit into the published site is distributed and is.
+   - **Microsoft libraries (owner, 2026-10-07 and PR #6 comment 6083936795: "I'm ok accepting any of the Ms library licenses"):** packages published by Microsoft under Microsoft's own license terms, including `Microsoft.SqlServer.DacFx` (Distributable Code, required for §7.3), may ship. Their required notices are reproduced or linked in `THIRD-PARTY-NOTICES.md`, and third-party components bundled inside them keep their own obligations.
+   - **Container bases:** Microsoft .NET images on `mcr.microsoft.com` and the digest-pinned deploy-time placeholder image (§18.2) are unmodified third-party platform, not evaluated against the package allowlist. Everything Nachos adds on top is.
+   - Required license texts and notices go in `THIRD-PARTY-NOTICES.md`.
+   - **Enforcement is by review, not tooling (owner decision, 2026-10-28).** Whoever adds or upgrades a dependency that ships checks its license against these tiers. There is no automated license audit or per-package evidence record; the earlier fail-closed audit was removed.
 
 ---
 

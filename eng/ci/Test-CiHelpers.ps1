@@ -36,11 +36,9 @@ try {
     Check 'incomplete results fail' { Assert-CiTestResult $path fixture 0 } $true
     Write-Fixture '<UnitTestResult testName="ok" outcome="Passed" /><UnitTestResult testName="hidden" outcome="NotExecuted"><Output><ErrorInfo><Message>unexpected</Message></ErrorInfo></Output></UnitTestResult>' 'total="2" executed="1" passed="1" failed="0"'
     Check 'unexpected skip fails' { Assert-CiTestResult $path fixture 0 } $true
-    $reason = if ($IsWindows) { 'Not executed: Linux-only native open/statx evidence path.' }
-        else { "Not executed: creating device nodes (mknod, CAP_MKNOD) in the test's own directory requires NACHOS_LINUX_DEVICE_FIXTURES=1." }
-    $reason = [Security.SecurityElement]::Escape($reason)
+    $reason = 'Needs a POSIX /usr/bin:/bin environment; covered in Linux CI.'
     Write-Fixture "<UnitTestResult testName='ok' outcome='Passed' /><UnitTestResult testName='platform' outcome='NotExecuted'><Output><ErrorInfo><Message>$reason</Message></ErrorInfo></Output></UnitTestResult>" 'total="2" executed="1" passed="1" failed="0"'
-    Check 'documented native platform skip remains explicit' { Assert-CiTestResult $path 'Nachos.LicenseCheck.Tests' 0 }
+    if ($IsWindows) { Check 'documented platform skip remains explicit' { Assert-CiTestResult $path 'Nachos.Infra.Tests' 0 } }
     Check 'platform skip cannot exempt a different suite' { Assert-CiTestResult $path 'Nachos.Api.Tests' 0 } $true
     $sdkOutput = "============================== 10 passed in 1.23s ==============================`nℹ tests 9`nℹ pass 9`nℹ fail 0`nℹ skipped 0`nℹ todo 0"
     Check 'both SDK language counts are required' { Assert-CiSdkResult $sdkOutput }
