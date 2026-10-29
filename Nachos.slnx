@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/eng/">
+    <Project Path="eng/ci/WorkflowYaml/WorkflowYaml.csproj" />
     <Project Path="eng/DocsGen/DocsGen.csproj" />
   </Folder>
   <Folder Name="/src/">
@@ -30,7 +31,6 @@
     <Project Path="test/Nachos.DataLayer.SqlServer.Tests/Nachos.DataLayer.SqlServer.Tests.csproj" />
     <Project Path="test/Nachos.DocsGen.Tests/Nachos.DocsGen.Tests.csproj" />
     <Project Path="test/Nachos.Infra.Tests/Nachos.Infra.Tests.csproj" />
-    <Project Path="test/Nachos.LicenseCheck.Tests/Nachos.LicenseCheck.Tests.csproj" />
     <Project Path="test/Nachos.Testing/Nachos.Testing.csproj" />
   </Folder>
 </Solution>

@@ -1,3 +1,0 @@
-files in /app that are key material (names only, bytes NOT collected):
-fullchain.pem
-testpk.pem

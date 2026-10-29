@@ -724,6 +724,8 @@ PR #6 is the MVP's first PR. On 2026-10-09 the owner told Cortado in-session: "e
 | Tokenizer (I1) | Ordinary-text counting fix (a)† landed (`08ff1c3`); `TokenCount_UsesOrdinaryTextForSpecialSpellings` passes | Partner review follow-through | #10 (managed counter; quadratic work, cancellation and Unicode residuals; release gate) |
 | Licensing | A private full-origin composition (unmerged generated site + published consumer) was red with 1,080 diagnostics; that is **not** this PR's committed tree. The committed-tree audit runs separately (Cedar) | A truthful CI license job (scope per Cedar) | #15 (Types terms, distribution blocker), #14, #12 |
 
+**Update 2026-10-28 (owner decision):** the license-audit tooling (Task 17's `licenses` job, `eng/license-check`, `Nachos.LicenseCheck.Tests`, `eng/license-exceptions.json` and the recorded evidence) was removed. Spec §3 rule 7 is now enforced by review. The Licensing row above is historical.
+
 **† Owner-confirmed MVP deviations from the checklist below** (6093551697): `docs-site` and full `conformance` jobs move to #16/#11, replaced by a docs-validate job and the minimal SDK smoke; the managed tokenizer moves to #10 as a production-release gate; Task 15's scanner residuals ship as documented limitations (#17). Distribution of Types-containing artifacts stays blocked (#15). No Azure action is authorized by any of this.
 
 ---
