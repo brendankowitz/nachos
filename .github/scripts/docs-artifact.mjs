@@ -2,9 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  digest, files, regularFile, safePath, verifyProvenance,
-} from '../../docs/site/integrations/output-evidence.mjs';
+import { digest, files, regularFile, safePath } from '../../docs/site/integrations/site-files.mjs';
 
 export async function snapshotTree(output) {
   return Promise.all((await files(output)).map(async (file) => ({
@@ -131,9 +129,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, repository, sealPath, archive] = process.argv.slice(2);
   if (!['seal', 'archive', 'verify-archive'].includes(command) || !repository || !sealPath ||
       ((command === 'archive' || command === 'verify-archive') && !archive)) throw new Error('Invalid Pages artifact arguments.');
-  const site = join(resolve(repository), 'docs/site');
-  const output = join(site, 'dist');
-  await verifyProvenance(site, output);
+  const output = join(resolve(repository), 'docs/site/dist');
   if (command === 'seal') {
     await mkdir(dirname(resolve(sealPath)), { recursive: true });
     await writeFile(sealPath, JSON.stringify(await snapshotTree(output), null, 2) + '\n');

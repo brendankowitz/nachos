@@ -6,10 +6,14 @@
     <!-- The package-based dashboard and DCP are used; the Aspire CLI bundle is not required for the AppHost or its tests. -->
     <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
     <UserSecretsId>5d6f2b0e-3c1a-4f3e-9c55-2a7c1f0e8b14</UserSecretsId>
+    <!-- Aspire requires Microsoft.Data.SqlClient 7.x, above the central 6.x pin, so security pins are direct references here. -->
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.SqlServer" />
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 
   <ItemGroup>

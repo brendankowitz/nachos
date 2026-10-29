@@ -1,15 +1,16 @@
 import { defineConfig, passthroughImageService } from 'astro/config';
 import { unified } from '@astrojs/markdown-remark';
+import starlight from '@astrojs/starlight';
+import starlightLinksValidator from 'starlight-links-validator';
+import starlightOpenAPI, { openAPISidebarGroups } from 'starlight-openapi';
 import mermaidSvg from './integrations/mermaid-svg.mjs';
 import { fileURLToPath } from 'node:url';
-import { docsProvenance } from './integrations/docs-provenance.mjs';
 import { assertReferencesReady } from './integrations/reference-stage.mjs';
 import { baseLinks } from './integrations/base-links.mjs';
-import { docsBuildSettings } from './integrations/output-evidence.mjs';
+import { docsBuildSettings } from './integrations/site-files.mjs';
 
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= fileURLToPath(new URL('./.playwright/', import.meta.url));
 await assertReferencesReady(fileURLToPath(new URL('.', import.meta.url)), process.env.NACHOS_REFERENCE_RECEIPT);
-const provenance = docsProvenance(fileURLToPath(new URL('.', import.meta.url)));
 const { base, site } = docsBuildSettings();
 
 export default defineConfig({
@@ -19,19 +20,27 @@ export default defineConfig({
   markdown: {
     processor: unified({
       remarkPlugins: [[baseLinks, { base }]],
-      rehypePlugins: [[mermaidSvg, { onRender: provenance.recordMermaid }]],
+      rehypePlugins: [mermaidSvg],
     }),
   },
   integrations: [
-    await provenance.starlight({
+    starlight({
       title: 'Nachos',
       description: 'Memory for stateful agents, built on .NET and Azure. An early clean-room reference implementation.',
       logo: { src: '../assets/nachos-logo.svg', replacesTitle: false },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/brendankowitz/nachos' }],
-      expressiveCode: {},
       components: { MarkdownContent: './src/components/ReferenceMarkdownContent.astro' },
+      plugins: [
+        starlightOpenAPI([{
+          base: 'reference/rest-api',
+          schema: './src/content/docs/reference/_generated/rest-api.json',
+          sidebar: { label: 'REST declarations', operations: { labels: 'path', badges: true } },
+          snippets: { operation: false, requestBody: false, response: false },
+        }]),
+        starlightLinksValidator({ failOnError: true }),
+      ],
       sidebar: [
         { label: 'Getting started', items: [{ autogenerate: { directory: 'getting-started' } }] },
         { label: 'Concepts', items: [{ autogenerate: { directory: 'concepts' } }] },
@@ -39,8 +48,8 @@ export default defineConfig({
         { label: 'Reference', items: [{ autogenerate: { directory: 'reference' } }] },
         { label: 'Architecture & ADRs', slug: 'architecture' },
         { label: 'Contributing', slug: 'contributing' },
+        ...openAPISidebarGroups,
       ],
     }),
-    provenance.integration,
   ],
 });

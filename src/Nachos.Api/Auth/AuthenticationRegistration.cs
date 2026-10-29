@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -61,12 +62,13 @@ internal static class AuthenticationRegistration
         services.AddSingleton<IAuthorizationMiddlewareResultHandler, NachosAuthorizationResultHandler>();
     }
 
-    private static bool Operational(Exception error)
+    // Malformed tokens surface as ArgumentException wrapping JSON/overflow errors and must stay credential failures (401).
+    private static bool Operational(Exception error) => error switch
     {
-        if (error is AggregateException aggregate) return aggregate.InnerExceptions.Any(Operational);
-        return error.InnerException is not null && Operational(error.InnerException) ||
-            error is not (SecurityTokenException or AuthException or ArgumentException or FormatException);
-    }
+        AggregateException aggregate => aggregate.InnerExceptions.Any(Operational),
+        SecurityTokenException or AuthException or ArgumentException or FormatException or JsonException => false,
+        _ => true,
+    };
 
     private sealed class NachosAuthorizationResultHandler : IAuthorizationMiddlewareResultHandler
     {

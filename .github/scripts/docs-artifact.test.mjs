@@ -18,7 +18,7 @@ before(async () => {
   await mkdir(join(output, '.nachos'), { recursive: true });
   await mkdir(join(output, 'reference/api'), { recursive: true });
   await writeFile(join(output, 'index.html'), '<h1>Actual first-party fixture</h1>');
-  await writeFile(join(output, '.nachos/output-provenance.v1.json'), '{"fixture":true}');
+  await writeFile(join(output, '.nachos/metadata.json'), '{"fixture":true}');
   await writeFile(join(output, 'reference/api/index.html'), '<p>Nested file</p>');
   seal = await snapshotTree(output);
   const archive = join(fixture, 'original.tar');
@@ -66,10 +66,10 @@ test('archive verification preserves hidden metadata and rejects every changed t
     const output = join(dir, 'dist');
     await mkdir(join(output, '.nachos'), { recursive: true });
     await writeFile(join(output, 'index.html'), '<h1>real test bytes</h1>');
-    await writeFile(join(output, '.nachos/output-provenance.v1.json'), '{"test":"metadata bytes"}');
+    await writeFile(join(output, '.nachos/metadata.json'), '{"test":"metadata bytes"}');
     const seal = await module.snapshotTree(output);
     assert.equal(seal.length, 2);
-    assert.ok(seal.some((entry) => entry.path === '.nachos/output-provenance.v1.json'));
+    assert.ok(seal.some((entry) => entry.path === '.nachos/metadata.json'));
     const archive = join(dir, 'artifact.tar');
     await module.archiveTree(output, archive, seal);
     await module.verifyArchive(archive, seal);
