@@ -1,6 +1,6 @@
 # Nachos M2 — Memory Formation Implementation Plan
 
-> **For agentic workers:** execute each task with the `implement-task-next` skill (task slug `issue-2-m2-<name>`). Steps use checkbox (`- [ ]`) syntax for tracking. Do not start a task until every task on its **Depends on** line is merged on the milestone branch (`nachos-m2`). Resolve the [open questions](#open-questions-for-the-owner) that a task names before starting that task.
+> **For agentic workers:** execute each task with the `implement-task-next` skill (task slug `issue-2-m2-<name>`). Steps use checkbox (`- [ ]`) syntax for tracking. Do not start a task until every task on its **Depends on** line is merged on the milestone branch (`nachos-m2`). The owner's answers to the plan's questions are in [Owner decisions](#owner-decisions-2026-10-28).
 
 **Goal:** Messages become memory. A message append enqueues derivation work in the same transaction. A worker claims that work under a fenced lease, asks an LLM for explicit facts, and stores them as deduplicated, corroborated, embedded conclusions per observer. The conclusions, peer-card, representation, peer-context and queue-status routes stop returning `501`, and every one of their reads goes through one `VisibilityPolicy`.
 
@@ -8,7 +8,7 @@
 - `Nachos.Abstractions` (BCL only) gains the M2 domain records, the store interfaces (`IConclusionStore`, `IPeerCardStore`, `IWorkQueue`, `IEmbeddingStore`) and the pure observer rule.
 - `Nachos.Core` gains the LLM layer (`Microsoft.Extensions.AI`), the Deriver, dedup, `RepresentationBuilder`, `PeerContextService`, `VisibilityPolicy`, and the queue consumer and reconciler loops.
 - Both providers implement the new stores. The SQL provider adds tables to the existing dacpac.
-- A new `Nachos.Worker` host runs the loops. `Nachos.Hosting.AddNachosWorker()` runs them in-process.
+- A new `Nachos.Worker` host runs the loops against SQL Server. `Nachos.Hosting.AddNachosWorker()` also runs them inside `Nachos.Api` when the in-memory provider is used, because a separate process cannot see in-memory state (Task 9).
 - `Nachos.Api` maps the M2 routes.
 
 **Tech Stack:** M1's stack, plus:
@@ -55,10 +55,10 @@ These are the high-risk behaviors. Each is pinned by a named test.
 
 1. **Enqueue is atomic with the append.** A message batch that commits always has its work items, and a rolled-back batch (serializer throw, idempotency duplicate) has none. Pinned by `StoreContractTests.Append_EnqueuesRepresentationWork_Atomically` (both providers).
 2. **A unit has one owner at a time.** Under RCSI ON, with N concurrent claimers and forced lease expiry, a work unit is never held by two owners, and a stale fencing token can never write. Pinned by `SqlWorkQueueTests.ConcurrentClaimers_NeverShareAUnit` (looped 20×) and `.StaleFencingToken_WriteRejected`.
-3. **`times_derived` does not inflate on retries.** Re-running the same batch after a crash that hit after the write but before `Complete` leaves `TimesDerived` unchanged. Pinned by `DeriverTests.RetriedBatch_DoesNotInflateTimesDerived`.
+3. **A derivation commits all or nothing.** Conclusion inserts, corroborations, dream counters and work-item completion commit in one fenced transaction, so a crash or lost lease never leaves partial writes and a retry never inflates `TimesDerived`. Pinned by `StoreContractTests.CommitDerivation_IsAtomicWithCompletion` and `DeriverTests.RetriedBatch_DoesNotInflateTimesDerived`.
 4. **Explicit facts never dedup across sessions.** Pinned by `ConclusionDeduplicatorTests.ExplicitFact_OtherSession_IsNotDuplicate`.
 5. **No M2 read path bypasses `VisibilityPolicy`.** Pinned by `VisibilityNegativeTests`, one per consumer (representation, card, context, conclusion list/query/get), plus an architecture test: in `Nachos.Core`, only `VisibilityPolicy`-taking methods may call `IConclusionStore`/`IPeerCardStore` read members.
-6. **Observer resolution is identical at enqueue and at derive time.** Pinned by `ObserverRuleTests`, a table of peer and session-peer `observe_me`/`observe_others` combinations and membership windows that both providers and the Deriver use.
+6. **Observers are resolved once, at enqueue.** The work item's payload snapshots the observers at message time and the Deriver uses that snapshot; it never re-resolves membership. Pinned by `ObserverRuleTests` (a table of peer and session-peer `observe_me`/`observe_others` combinations, shared by both providers) and `DeriverTests.UsesEnqueuedObserverSnapshot`.
 
 ---
 
@@ -68,7 +68,7 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 
 | # | Spec says | Code on `main` | Plan |
 |---|---|---|---|
-| D1 | `IWorkQueue.EnqueueAsync` "joins the ambient transaction" (§7.1); `MessageIngestionService` runs enqueue in one transaction (§10.2). | No unit of work and no ambient transaction. Each store method opens its own connection and transaction (`SqlMessageStore.AppendAsync`). | Enqueue happens **inside `IMessageStore.AppendAsync`**. Core passes a per-message derive decision; the provider resolves observers with the shared pure rule (Abstractions) inside the same transaction and inserts the `WorkItems`. No ambient-transaction machinery. |
+| D1 | `IWorkQueue.EnqueueAsync` "joins the ambient transaction" (§7.1); `MessageIngestionService` runs enqueue in one transaction (§10.2). | No unit of work and no ambient transaction. Each store method opens its own connection and transaction (`SqlMessageStore.AppendAsync`). | Enqueue happens **inside `IMessageStore.AppendAsync`**. Core passes a per-message derive decision; the provider resolves observers with the shared pure rule (Abstractions) inside the same transaction and inserts the `WorkItems`. No ambient-transaction machinery. Message embedding chunks (spec 10.2 step 4) move to M3 with search (D13). |
 | D2 | Queue claim, seq allocation and status live in stored procedures (`AcquireWorkUnit`, `AllocateMessageSeq`, `GetQueueStatus`, `GetDueWorkCount`). | No stored procedures. Seq allocation is inline parameterized SQL. | Keep inline parameterized SQL in `SqlWorkQueue`, matching the code. `GetDueWorkCount` is added only when KEDA (R7) is verified (Task 9, owner-gated). |
 | D3 | The schema version stays `1` until the first release (§7.3). | `SchemaGate` only deploys when the database is behind `SchemaInfo.CurrentVersion`, so an M1 database stamped `1` would **never receive the M2 tables**. | **Owner (Q1): keep version `1` until the first release.** Pre-release databases are recreated, or taken through `schema report` + `schema upgrade --approve-reviewed`. |
 | D4 | Message configuration's `reasoning` and the resolver drive derivation (§8). | `NachosService.CreateMessagesResponseAsync` validates configuration but never calls `IConfigurationResolver`. `NewMessage` has no configuration. | Task 3 resolves `reasoning.enabled` per message (message > session > workspace > global) and passes the result to `AppendAsync`. |
@@ -80,6 +80,8 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 | D10 | `ConclusionCreate.content` has no spec bound. | Manifest: `content` 1–65,535; batch 1–100. | Enforce the manifest bounds. |
 | D11 | Bicep provisions an Azure OpenAI account and a worker app (§18.2). | `main.bicep` has only an `openAiEndpoint` parameter, and no worker app. | Task 9 adds an offline-validated `worker-app.bicep` and model deployment parameters. AOAI account provisioning is Q6. |
 | D12 | `DeriverOptions`: eligibility 512 / batch 1024 / max age 30 min / max input 25,000 (§8). | `DeriverOptions` has only `MaxCustomInstructionsTokens`. | Task 5 adds the parity defaults. |
+| D13 | The append inserts pending `MessageEmbeddings` chunks, and the API embeds them immediately (§10.2, §10.5). | — | **Deferred to M3.** No M2 read uses message embeddings (dedup and representation use conclusion embeddings); only M3 search does. M3 adds the table and a one-off reconciler backfill of messages without chunks. |
+| D14 | Corroboration is made retry-safe per write, with a fencing check on every write. | — | One fenced `CommitDerivationAsync` transaction applies all of a batch's writes **and** completes its work items, so there is no partial state to replay. No `ConclusionCorroborations` table. |
 
 ---
 
@@ -88,8 +90,9 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
 ### Task 1: M2 schema (additive; schema version stays 1)
 
 **Files:**
-- Create in `src/DataLayer/Nachos.DataLayer.SqlServer.Database/Tables/`: `Collections.sql`, `Conclusions.sql`, `ConclusionSources.sql`, `ConclusionCorroborations.sql`, `PeerCards.sql`, `MessageEmbeddings.sql`, `WorkItems.sql`, `WorkUnitLeases.sql`.
+- Create in `src/DataLayer/Nachos.DataLayer.SqlServer.Database/Tables/`: `Collections.sql`, `Conclusions.sql`, `ConclusionSources.sql`, `PeerCards.sql`, `WorkItems.sql`, `WorkUnitLeases.sql`.
 - No version change: `SchemaInfo.CurrentVersion` stays `1` (Q1). Existing pre-release databases are recreated or take the reviewed upgrade path.
+- Modify `src/DataLayer/Nachos.DataLayer.SqlServer/Schema/SchemaProbe.cs` (or `SchemaGate`): a database stamped current must also contain every table the model expects. Otherwise readiness and the worker fail with `Schema is stamped current but table <name> is missing; recreate the database or run 'nachos schema upgrade --approve-reviewed'.` Without this, an M1 database (including the AppHost's persistent volume) passes `/health/ready` and fails on its first M2 query.
 - Tests: `test/Nachos.DataLayer.SqlServer.Tests/Schema/M2SchemaTests.cs`.
 
 **Depends on:** none (Q1 answered).
@@ -101,9 +104,7 @@ The plan builds on the code on `main`, not on the spec's idealized interfaces. E
   - The level CHECK uses stored form.
   - `InternalMetadata` holds `source_message_ids` and the prompt id/version (§11.11).
 - `ConclusionSources(DerivedId, Position, SourceId)`, PK `(DerivedId, Position)`. There is deliberately no FK on `SourceId` (spec §7.2). Empty in M2 except for API-created rows; it is the M5 seam.
-- `ConclusionCorroborations(ConclusionId, SourceBatchKey char(64), CreatedAt)`, `UQ (ConclusionId, SourceBatchKey)`.
 - `PeerCards(Id, WorkspaceId, ObserverPeerId, ObservedPeerId, Entries nvarchar(max) CHECK ISJSON ARRAY, UpdatedAt, UpdatedBy tinyint)`, `UQ (WorkspaceId, ObserverPeerId, ObservedPeerId)`.
-- `MessageEmbeddings(Id, WorkspaceId, MessageId, ChunkIndex, Content, Embedding VECTOR(1536) NULL, SyncState tinyint, Attempts int, AvailableAt)`, `UQ (MessageId, ChunkIndex)`, `IX (SyncState, AvailableAt) WHERE SyncState = 0`.
 - `WorkItems(Id, WorkspaceId NULL, TaskType tinyint, WorkUnitKey nvarchar(900) BIN2_UTF8, Payload nvarchar(max) CHECK ISJSON OBJECT, Status tinyint, Attempts int, AvailableAt, TokenCount int, MessageId NULL, SessionId NULL, Error nvarchar(4000) NULL, CreatedAt, CompletedAt NULL)`.
   - `IX (Status, WorkUnitKey, Id) INCLUDE (AvailableAt, TokenCount, CreatedAt)`; `IX (WorkspaceId, SessionId, Status)` for queue status.
   - `TaskType` values: `1 representation`, `2 summary` (M3), `3 dream` (M5), `4 webhook` (M6), `5 deletion` (M3), `6 reconciler`, `7 scope_backfill`, `8 scope_removal` (M6). The values are reserved now so later milestones need no CHECK change.
@@ -114,6 +115,7 @@ The vector dimension is fixed at **1536** (Q2). Startup validates the configured
 
 - [ ] **Step 1:** Write `M2SchemaTests`:
   - `M2Tables_DeployToEmptyDatabase`, and `M1Database_ReviewedUpgrade_AddsM2Tables` (deploy the M1 dacpac, then `schema upgrade --approve-reviewed` with this one; the report classifies the change as additive);
+  - `StampedCurrent_MissingTable_FailsReadinessWithFixCommand`;
   - `AllIndexKeys_WithinSqlLimits` (extended to the new tables);
   - `VectorColumns_Dimension1536_OnBothDacpacs`;
   - `WorkItemsTaskType_RejectsUnknownValue`.
@@ -126,7 +128,7 @@ The vector dimension is fixed at **1536** (Q2). Startup validates the configured
 
 **Files:**
 - Create in `src/Nachos.Abstractions/`:
-  - `Domain/{ConclusionRecord,ConclusionLevel,NewConclusion,PeerCardRecord,WorkItemRecord,WorkTaskType,WorkUnit,WorkLease,QueueStatusRecord,EmbeddingChunk,DeriveIntent}.cs`;
+  - `Domain/{ConclusionRecord,ConclusionLevel,NewConclusion,PeerCardRecord,WorkItemRecord,WorkTaskType,WorkUnit,WorkLease,QueueStatusRecord,DerivationChanges,DeriveIntent}.cs`;
   - `Stores/{IConclusionStore,IPeerCardStore,IWorkQueue,IEmbeddingStore}.cs`;
   - `Observation/ObserverRule.cs`;
   - `Work/WorkUnitKeys.cs`.
@@ -148,27 +150,20 @@ The vector dimension is fixed at **1536** (Q2). Startup validates the configured
   - `RenewAsync(lease)`;
   - `CompleteAsync(lease)`;
   - `FailAsync(lease, error, retryAt?)`, which moves items to `DeadLettered` after `MaxAttempts`;
-  - `GetStatusAsync(workspace, observer?, sender?, session?)`;
-  - `EnqueueAsync(IReadOnlyList<NewWorkItem>)`, used by non-append producers in M2 (the reconciler only).
+  - `GetStatusAsync(workspace, observer?, sender?, session?)`.
+
+  There is no standalone `EnqueueAsync` in M2: the append is the only producer (the reconciler is lease-guarded and enqueues nothing). M3 adds it with its first non-append producer.
 
   Eligibility for `representation`: the unit's summed `TokenCount` is at least `EligibilityTokens`, or its oldest item is older than `MaxAge`. Items are returned up to `BatchTokenTarget` (always at least one).
-- `IConclusionStore`, every write taking a `WorkLease? fence`:
-  - `GetCollectionAsync`;
-  - `FindExactAsync`;
-  - `FindNearestAsync(collection, vector, maxDistance, sessionFilter?)`;
-  - `InsertAsync(fence, IReadOnlyList<NewConclusion>)`;
-  - `CorroborateAsync(fence, conclusionId, batchKey) → bool` (false when the key was already recorded);
-  - `ReplaceContentAsync(fence, …)`;
-  - `RecordDerivationAsync(fence, collection, newExplicitCount, at)`, the dream-counter seam;
-  - `ListAsync`, `QueryAsync`, `GetAsync` and `TombstoneAsync` (204 semantics: a tombstoned conclusion is invisible to every read);
-  - `PurgeTombstonesAsync(olderThan)`.
-
-  A fenced write throws `LeaseLostException` when the lease is no longer held with that token.
+- `IConclusionStore`:
+  - reads: `GetCollectionAsync`, `FindExactAsync`, `FindNearestAsync(collection, vector, maxDistance, sessionFilter?)`, `ListAsync`, `QueryAsync`, `GetAsync`;
+  - `CommitDerivationAsync(WorkLease lease, DerivationChanges changes)`: in **one transaction**, checks the lease is still held with its fencing token, then applies the inserts, corroborations (`TimesDerived += 1`), content replacements and dream counters (`NewExplicitCount`, `LastActivityAt`; the M5 seam), and marks the lease's work items `Succeeded`. It throws `LeaseLostException` and changes nothing when the lease is gone. M5 dreams reuse the same method;
+  - `InsertAsync(IReadOnlyList<NewConclusion>)` for API-created conclusions (unfenced);
+  - `TombstoneAsync` (204 semantics: a tombstoned conclusion is invisible to every read) and `PurgeTombstonesAsync(olderThan)`.
 - `IPeerCardStore`: `GetAsync(workspace, observer, observed)`, `SetAsync(…, entries, updatedBy)`.
-- `IEmbeddingStore`: `ClaimPendingAsync(kind, batch, CancellationToken)`, `SaveAsync(...)`, `MarkFailedAsync(...)`. It covers message chunks and conclusions, so the reconciler has one loop.
+- `IEmbeddingStore`: `ClaimPendingAsync(batch, CancellationToken)`, `SaveAsync(...)`, `MarkFailedAsync(...)` over conclusions. M3 extends it to message chunks.
 - `IMessageStore.AppendAsync` gains an overload with `IReadOnlyList<DeriveIntent>? derive` (one per message: `Derive = true/false`). The existing signature forwards `null`, which means "no work", so M1 callers and tests are unchanged.
-  - Inside the transaction, the provider resolves observers with `ObserverRule` and inserts one `representation` item per message whose sender has at least one observer, with payload `{ "observers": [...] }`.
-  - It also inserts `Pending` `MessageEmbeddings` chunks for every message (chunking itself is Task 4's `ITextChunker`, passed in as precomputed `EmbeddingChunk`s on `NewMessage`).
+  - Inside the transaction, the provider resolves observers with `ObserverRule` (at the message's `CreatedAt`) and inserts one `representation` item per message whose sender has at least one observer, with payload `{ "observers": [...] }`. That snapshot is authoritative: the Deriver does not re-resolve.
 
 - [ ] **Step 1:** Write the contract tests (abstract, in `Nachos.Testing`):
   - `Append_EnqueuesRepresentationWork_Atomically` (incl. serializer-throw rollback);
@@ -179,7 +174,7 @@ The vector dimension is fixed at **1536** (Q2). Startup validates the configured
   - `ExpiredLease_IsReclaimedWithNewFencingToken`;
   - `StaleFencingToken_WriteRejected`;
   - `Fail_BacksOffThenDeadLetters`;
-  - `Corroborate_IsIdempotentPerBatchKey`;
+  - `CommitDerivation_IsAtomicWithCompletion` (lease lost before commit: nothing applied, items still pending);
   - `Tombstoned_IsInvisibleToEveryRead`;
   - `QueueStatus_CountsUnitsBySessionAndObserver`.
 
@@ -196,18 +191,18 @@ The vector dimension is fixed at **1536** (Q2). Startup validates the configured
   - `Stores/{SqlConclusionStore,SqlPeerCardStore,SqlWorkQueue,SqlEmbeddingStore}.cs`;
   - `Entities/*` for the new tables;
   - `Filtering/` conclusion field mapping.
-- Modify: `Stores/SqlMessageStore.cs` (enqueue and pending chunks in the append transaction), `SqlMemoryStore.cs`.
-- Modify `src/Nachos.Core/NachosService.Messages.cs` (D4: resolve `reasoning.enabled` per message and build `DeriveIntent`s and chunks).
+- Modify: `Stores/SqlMessageStore.cs` (enqueue in the append transaction), `SqlMemoryStore.cs`.
+- Modify `src/Nachos.Core/NachosService.Messages.cs` (D4: resolve `reasoning.enabled` per message and build `DeriveIntent`s).
 - Tests: `test/Nachos.DataLayer.SqlServer.Tests/{SqlM2StoreContractTests,SqlWorkQueueTests}.cs`.
 
-**Depends on:** 1, 2, and 4 (for `ITextChunker` only; it can be stubbed until 4 lands).
+**Depends on:** 1, 2.
 
 **Claim (spec §10.3, normative):**
 - `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`.
 - Candidate units are read from `WorkItems` with `WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK)`, with no `ROWLOCK`.
 - The lease is inserted (catch 2627/2601 → try the next candidate).
 - An expired lease is taken by a single `UPDATE WorkUnitLeases SET Owner=@o, ExpiresAt=@e, FencingToken = FencingToken + 1 WHERE WorkUnitKey=@k AND ExpiresAt < @now`, with `@@ROWCOUNT = 1`.
-- Every fenced write runs `EXISTS (SELECT 1 FROM WorkUnitLeases WITH (UPDLOCK) WHERE WorkUnitKey=@k AND Owner=@o AND FencingToken=@t)` in its own transaction, before the write.
+- `CommitDerivationAsync` starts its transaction with `EXISTS (SELECT 1 FROM WorkUnitLeases WITH (UPDLOCK) WHERE WorkUnitKey=@k AND Owner=@o AND FencingToken=@t)`; the `UPDLOCK` holds the lease row so a reclaim cannot interleave before commit.
 - Multi-row locks are taken in `Id` order. The lock order extends M1's (`Upserts`): workspace → session → messages → work items → collections → conclusions.
 
 Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<float>` parameter over a candidate set pre-filtered by collection (and by session for explicit dedup). The search is exact; there is no ANN in M2 ([vector data type](https://learn.microsoft.com/en-us/sql/t-sql/data-types/vector-data-type), [EF Core vector search](https://learn.microsoft.com/en-us/ef/core/providers/sql-server/vector-search)).
@@ -217,7 +212,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
   - `ExpiryReclaimRace_SingleWinner`;
   - `ParallelWorkers_NoDeadlock` (ordering test, spec §17.2);
   - `VectorNearest_MatchesInMemory` (same fixture vectors, same ranking);
-  - `Append_WithDerive_ChunksAndItemsCommitTogether`.
+  - `Append_WithDerive_ItemsCommitWithMessages`.
 
   Also add `NachosServiceTests.CreateMessages_ReasoningDisabled_EnqueuesNothing` and `.MessageReasoningOverridesSession` for the Core half.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.DataLayer.SqlServer.Tests` (Docker) and `test/Nachos.Core.Tests`. Expected: FAIL.
@@ -231,10 +226,8 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 - Create in `src/Nachos.Core/Llm/`:
   - `ModelProfile.cs`, `LlmOptions.cs` (`Llm:Profiles:{name}`; per-agent profile name);
   - `NachosFallbackChatClient.cs` (a `DelegatingChatClient` that tries the profile chain on retryable errors: 408/429/5xx/timeouts);
-  - `TokenAccounting.cs` (a `DelegatingChatClient` that records `nachos.llm.tokens{agent,profile,workspace}` from `ChatResponse.Usage`; metrics only, no table);
   - `EmbeddingOptions.cs`;
   - `EmbeddingDimensionCheck.cs` (an `IHostedService`: one probe embedding at start; a mismatch with `1536` fails startup with an actionable message);
-  - `TextChunker.cs` (token-based o200k chunks with 20% overlap; spec §11.1);
   - `PromptTemplate.cs` (embedded Markdown templates with id and version; §11.11).
 - Create in `src/Nachos.Hosting/`: `NachosBuilder` extensions `UseChatClient(...)`, `UseEmbeddingGenerator(...)`, `UseAzureOpenAI(...)` and `UseFakeAI()`.
 - Create in `test/Nachos.Testing/`: `ScriptedChatClient.cs` and `DeterministicEmbeddingGenerator.cs`.
@@ -242,7 +235,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 **Depends on:** none.
 
 **Notes:**
-- The pipeline is built with `ChatClientBuilder`: `UseOpenTelemetry()`, then token accounting, then fallback, then the provider client. Structured output uses `GetResponseAsync<T>`, which sets a JSON-schema `ResponseFormat` and returns `ChatResponse<T>.Result` ([M.E.AI chat completion](https://learn.microsoft.com/en-us/dotnet/ai/microsoft-extensions-ai)).
+- The pipeline is built with `ChatClientBuilder`: `UseOpenTelemetry()`, then fallback, then the provider client. `UseOpenTelemetry()` already emits the GenAI token-usage metrics; callers add `nachos.agent` and `nachos.workspace` as activity tags instead of a separate accounting client. Message chunking (spec 11.1) moves to M3 with message embeddings (D13). Structured output uses `GetResponseAsync<T>`, which sets a JSON-schema `ResponseFormat` and returns `ChatResponse<T>.Result` ([M.E.AI chat completion](https://learn.microsoft.com/en-us/dotnet/ai/microsoft-extensions-ai)).
 - The distributed cache middleware is M7. Do not add it.
 - `UseFakeAI()` ships in `Nachos.Hosting` for the offline Aspire mode (spec §18.1). It registers:
   - the deterministic hash embedding generator (unit-norm and stable across processes);
@@ -252,14 +245,13 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 
 - [ ] **Step 1:** Write the tests:
   - `FallbackChatClientTests`: `RetryableError_UsesNextProfile`, `NonRetryable_Throws`, `ChainExhausted_ThrowsLastError`;
-  - `TokenAccountingTests.RecordsUsagePerAgentAndWorkspace`;
-  - `TextChunkerTests`: `OverlapIs20Percent`, `ShortTextIsOneChunk`, `NeverSplitsSurrogatePairs`;
+  - `TelemetryTests.TokenUsageCarriesAgentAndWorkspaceTags`;
   - `EmbeddingDimensionCheckTests.Mismatch_FailsStartupWithActionableMessage`;
   - `PromptTemplateTests.MissingPlaceholder_Throws`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests --filter Llm`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run it again. Expected: PASS.
-- [ ] **Step 5:** Amend spec §4.2/§11.1 (D6). Commit `feat(core): LLM layer with profiles, fallback, token accounting, embeddings, chunking`.
+- [ ] **Step 5:** Amend spec §4.2/§11.1 (D6). Commit `feat(core): LLM layer with profiles, fallback, telemetry and embeddings`.
 
 ### Task 5: Deriver, deduplication, corroboration
 
@@ -278,21 +270,21 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 2. Resolve configuration (custom instructions and `reasoning.enabled`). Work items enqueued before reasoning was disabled are completed without an LLM call.
 3. Make one `GetResponseAsync<ExtractionResult>` call. Validate the result: every `source_message_ids` entry must be in the batch and authored by the target, and content must be non-empty. Invalid facts are dropped and counted, not fatal. Zero facts is a valid result.
 4. Embed the facts in one batch.
-5. For each observer from `ObserverRule` (re-resolved at each message's `CreatedAt`):
+5. For each observer in the work items' enqueued snapshot, build `DerivationChanges` (nothing is written yet):
    - exact dedup on normalized content + level + session (explicit only);
    - then semantic dedup `≤ DedupMaxDistance`, restricted to the same session for explicit facts;
-   - on a duplicate, `CorroborateAsync(batchKey)`, where `batchKey` is the SHA-256 of `"{unitKey}|{firstItemId}|{lastItemId}"`; retries reuse the same items, so the key is stable;
-   - when the new fact is richer (longer after normalization and contains every token of the old one), use `ReplaceContentAsync` instead;
-   - otherwise insert the fact, with `source_message_ids` and the prompt id/version in `InternalMetadata`.
-6. `RecordDerivationAsync`, the M5 seam: `NewExplicitCount += inserted`, `LastActivityAt = now`.
-7. `CompleteAsync`. A `LeaseLostException` anywhere stops the handler without completing.
+   - a duplicate becomes a corroboration (`TimesDerived += 1`), or a content replacement when the new fact is richer (longer after normalization and contains every token of the old one);
+   - otherwise an insert, with `source_message_ids` and the prompt id/version in `InternalMetadata`;
+   - dream counters for the collection (the M5 seam): `NewExplicitCount += inserted`, `LastActivityAt = now`.
+6. `CommitDerivationAsync(lease, changes)` applies all writes plus completion atomically. A `LeaseLostException` stops the handler with nothing written; the next owner redoes the batch from scratch, so a retry can never double-count.
 
 - [ ] **Step 1:** Write `DeriverTests` with `ScriptedChatClient` and the in-memory provider:
   - `ExtractsFactsToEveryObserverCollection`;
   - `OtherSpeakersAreContextOnly` (prompt-shape assertion: target tag present, other messages marked context);
   - `ZeroFacts_CompletesUnit`;
   - `InvalidSourceIds_FactDropped`;
-  - `RetriedBatch_DoesNotInflateTimesDerived`;
+  - `RetriedBatch_DoesNotInflateTimesDerived` (crash before commit, then retry);
+  - `UsesEnqueuedObserverSnapshot` (an observer added after enqueue gets nothing from that batch);
   - `ReasoningDisabledAfterEnqueue_CompletesWithoutLlmCall`;
   - `LeaseLost_DoesNotComplete`;
   - `RecordsDreamCounters`.
@@ -305,7 +297,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 - [ ] **Step 2:** Run them. Expected: FAIL.
 - [ ] **Step 3:** Implement. Write the prompt from the spec's behavioral requirements only, and get it reviewed for clean-room compliance.
 - [ ] **Step 4:** Run them. Expected: PASS.
-- [ ] **Step 5:** Commit `feat(core): deriver with dedup and retry-safe corroboration`.
+- [ ] **Step 5:** Commit `feat(core): deriver with dedup and an atomic derivation commit`.
 
 ### Task 6: Worker loops (QueueConsumerService, ReconcilerService)
 
@@ -323,12 +315,11 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
   - It polls with backoff and jitter when idle.
   - An unhandled handler exception is logged once here, at the boundary.
 - **`ReconcilerService`** is guarded by a lease on the work-unit key `reconciler:main`, so only one replica runs it. Each tick:
-  - embeds `Pending` message chunks and conclusions in batches (`IEmbeddingStore`);
+  - embeds `Pending` conclusions (API-created, or derived ones whose inline embed failed) in batches (`IEmbeddingStore`);
   - purges tombstoned conclusions older than `Reconciler:TombstoneRetention` (default 24 h);
   - prunes `Succeeded` work items older than `Reconciler:CompletedRetention` (7 d);
   - deletes expired idempotency records (the M1 index already exists).
-- **Immediate best-effort embedding.** After a message append commits, the API fires a bounded best-effort embed of those chunks, with no retry, so search freshness doesn't wait for the reconciler tick. The reconciler is the guarantee. Implement it only if it stays trivial; otherwise defer it to M3 (it only matters for search).
-- Metrics (§19): `nachos.queue.eligible_units`, `nachos.queue.oldest_age`, `nachos.queue.dead_lettered`, `nachos.deriver.facts`, `nachos.dedup.ratio`, `nachos.embeddings.pending`.
+- Metrics (§19): `nachos.queue.eligible_units`, `nachos.queue.oldest_age`, `nachos.queue.dead_lettered`, `nachos.deriver.facts`, `nachos.dedup.ratio`, `nachos.conclusions.embedding_pending`.
 
 - [ ] **Step 1:** Write the tests:
   - `QueueConsumerTests`: `ProcessesAndCompletes`, `HandlerThrows_FailsWithBackoff`, `DeadLettersAfterMaxAttempts`, `RenewsLongRunningLease`, `IgnoresUnregisteredTaskTypes`, `StopsCleanlyOnCancellation`;
@@ -358,7 +349,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
   Add the wire contracts `Conclusion`, `ConclusionCreate`, `PeerCardResponse`, `PeerContext`, `RepresentationResponse` and `QueueStatus`, matching the manifest.
 - Tests: `test/Nachos.Core.Tests/Memory/*`, `VisibilityNegativeTests.cs`, and the architecture test for Review Focus 5.
 
-**Depends on:** 2. Q3 and Q4 must be answered.
+**Depends on:** 2. Q3 and Q4 take their defaults (see Owner decisions).
 
 **Notes:**
 - **`VisibilityPolicy`** is created once per call from `(observer, observed, sessionAllowlist?, scope?)`. In M2 it does three things:
@@ -411,6 +402,7 @@ Vector queries use `VECTOR_DISTANCE('cosine', Embedding, @q)` with a `SqlVector<
 ### Task 9: Worker host, Aspire, infra (offline), docs
 
 **Files:**
+- Modify `src/Nachos.Api/Program.cs`: when the in-memory provider is selected, call `AddNachosWorker()` so the loops run in the API process (a separate worker cannot see in-memory state). With SQL Server the API never runs the loops. Test: `Api.Tests` `InMemory_PostedMessage_BecomesConclusion_WithFakeAI`.
 - Create `src/Nachos.Worker/{Nachos.Worker.csproj,Program.cs}` (`Microsoft.NET.Sdk.Worker`: ServiceDefaults, `AddNachos(...).AddNachosWorker()`, SQL provider, AI from configuration).
 - Modify:
   - `src/Nachos.AppHost/AppHost.cs`: add `AddProject<Projects.Nachos_Worker>("worker").WithReference(nachosDb).WaitFor(api)`; set `Nachos__Ai__Mode=Fake` unless an Azure OpenAI connection is configured (spec §18.1);
@@ -442,7 +434,7 @@ The M2 PR merges when all of these hold:
 - [ ] Tasks 1–9 are committed with their tests.
 - [ ] CI is green at the final SHA: build-test (both OSes), SQL/CLI/AppHost (Docker), schema (both dacpacs; the reviewed M1→M2 upgrade adds the tables), infra, docs, and SDK smoke.
 - [ ] The queue concurrency tests have been looped 20× on SQL, with results posted against the SHA.
-- [ ] Locally (Aspire, `UseFakeAI`): a posted message produces conclusions, visible through `C/list` and `P/representation`, with no manual steps.
+- [ ] Locally (Aspire, `UseFakeAI`) **and** with the README's in-memory quick start: a posted message produces conclusions, visible through `C/list` and `P/representation`, with no manual steps.
 - [ ] No M2 read path bypasses `VisibilityPolicy` (architecture test green).
 - [ ] The spec is amended for D1–D7 and D12, and for each answered open question.
 - [ ] The README and docs pages match what shipped.
