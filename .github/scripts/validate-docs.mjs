@@ -42,6 +42,7 @@ async function markdownFiles(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
+      if (/^docs\/site\/(?:node_modules|dist|\.astro|\.test-runs|\.playwright)$/.test(display(path))) continue;
       files.push(...await markdownFiles(path));
     } else if (entry.isFile() && extname(path).toLowerCase() === '.md') {
       files.push(path);
@@ -149,6 +150,13 @@ try {
   if (process.argv.length > 3) throw new Error('Usage: node validate-docs.mjs [repository-root]');
   const files = await markdownFiles(join(root, 'docs'));
   if (!files.length) throw new Error('No Markdown files found under docs/.');
+  const readme = join(root, 'README.md');
+  try {
+    await stat(readme);
+    files.unshift(readme);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   for (const file of files) await validateDocument(file);
   if (errors) {
     console.error(`Documentation validation failed: ${errors} error(s).`);

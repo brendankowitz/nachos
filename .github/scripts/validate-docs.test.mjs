@@ -45,6 +45,37 @@ test('valid Markdown, references, fragments, and real Mermaid grammars pass', ()
   });
 });
 
+test('root README missing local link fails with a path/line diagnostic', () => {
+  withFixture((root) => {
+    cpSync(join(scripts, 'fixtures', 'readme-link-missing', 'README.md'), join(root, 'README.md'));
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /README\.md:3:1 \[link\].*missing\.md/);
+  });
+});
+
+test('root README links, images and heading fragments use the Markdown validator', () => {
+  withFixture((root) => {
+    writeFileSync(join(root, 'README.md'), '# Nachos\n\n[Guide](docs/guide.md)\n\n![Asset](docs/asset%20name.txt)\n\n[Home](#nachos)\n');
+    const result = run(root);
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /5 Markdown files/);
+  });
+});
+
+test('site dependency and build directories are not repository Markdown inputs', () => {
+  withFixture((root) => {
+    for (const name of ['node_modules', 'dist', '.astro', '.test-runs', '.playwright']) {
+      const directory = join(root, 'docs', 'site', name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'README.md'), '[Generated or dependency link](missing.md)');
+    }
+    const result = run(root);
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /4 Markdown files/);
+  });
+});
+
 test('image-alt exclusion accepts the GitHub badge heading fragment', () => {
   withFixture((root) => {
     append(root, 'docs/guide.md', '\n# Awesome [![Awesome](https://example.invalid/badge.svg)](https://example.invalid)\n\n[Jump](#awesome-)\n');

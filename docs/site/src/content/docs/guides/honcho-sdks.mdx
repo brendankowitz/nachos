@@ -1,0 +1,73 @@
+---
+title: Honcho SDK smoke tests
+---
+
+The repository pins **honcho-ai 2.5.1** (Python) and **@honcho-ai/sdk 2.5.1**
+(TypeScript). Local, first-party smoke tests exercise those unmodified SDKs
+against Nachos. They cover CRUD, metadata, pagination, membership, messages,
+idempotent replay, prompt 501 errors and scoped-key denials.
+This subset is **not full Honcho conformance**; that remains
+[#11](https://github.com/brendankowitz/nachos/issues/11).
+
+## Run the authenticated smoke lane
+
+On Linux, from the repository root with .NET 10, Node 24, Python, Bash and the
+locked test dependencies available, PowerShell 7 runs the strict CI source lane:
+
+```powershell
+.\eng\ci\Invoke-SdkSmoke.ps1
+```
+
+It requires both language suites and fails on skipped authenticated cases.
+Windows users can instead use
+`eng/conformance/Start-NachosForConformance.ps1 -Run -RequireAuth`;
+the CI wrapper above intentionally invokes the Bash launcher.
+The underlying conformance launcher starts a loopback in-memory API with fresh
+ephemeral signing material, checks scoped denial and cleans up its owned process.
+Use a clean environment; do not provide cloud credentials. These tests create
+only disposable local data and are separate from a documentation build.
+
+## Application setup
+
+An application using a reviewed, configured server can construct a Python
+client with environment-provided URL and key:
+
+```python
+import os
+from honcho import Honcho
+
+client = Honcho(
+    base_url=os.environ["NACHOS_BASE_URL"],
+    api_key=os.environ["NACHOS_API_KEY"],
+    workspace_id="demo",
+)
+alice = client.peer("alice")
+session = client.session("intro")
+session.add_peers([alice])
+session.add_messages([alice.message("Hello from the source MVP")])
+```
+
+The corresponding TypeScript API is:
+
+```typescript
+import { Honcho } from '@honcho-ai/sdk';
+
+const client = new Honcho({
+  baseURL: process.env.NACHOS_BASE_URL,
+  apiKey: process.env.NACHOS_API_KEY,
+  workspaceId: 'demo',
+});
+const alice = await client.peer('alice');
+const session = await client.session('intro');
+await session.addPeers([alice]);
+await session.addMessages([alice.message('Hello from the source MVP')]);
+```
+
+These patterns come from the repository's smoke tests, not an assertion that
+every SDK feature works. Use a workspace-authorized key: high-level handles
+perform get-or-create writes. The peer-scoped membership read in the smoke
+tests uses plain HTTP, not a fictitious SDK read-only handle.
+
+The [compatibility matrix](/nachos/reference/compatibility/) reports declarations
+only. Its `sdkConformance: not-run` means DocsGen did not execute these suites;
+their independent test results must not be inferred from reference generation.

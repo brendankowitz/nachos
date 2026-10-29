@@ -1,0 +1,21 @@
+:root {
+  --sl-color-accent-low: #243a30;
+  --sl-color-accent: #e9a331;
+  --sl-color-accent-high: #ffe0a3;
+  --sl-font: system-ui, sans-serif;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fff0ce;
+  --sl-color-accent: #8b510c;
+  --sl-color-accent-high: #59340c;
+}
+.hero img {
+  filter: drop-shadow(0 1rem 2rem #e9a33120);
+}
+.sl-markdown-content svg[id^='mermaid-'] {
+  max-width: 100%;
+  height: auto;
+  background: #fffaf0;
+  border-radius: 0.75rem;
+  padding: 1rem;
+}

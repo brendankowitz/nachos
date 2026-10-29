@@ -166,7 +166,7 @@ jobs:
           CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
-          foreach ($producer in @('.github/scripts', 'test/conformance/typescript')) {
+          foreach ($producer in @('.github/scripts', 'test/conformance/typescript', 'docs/site')) {
             npm --prefix $producer ci --ignore-scripts --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             dotnet eng/license-check/bin/Release/net10.0/Nachos.LicenseCheck.dll fetch-npm --lock "$producer/package-lock.json" --npm-archives artifacts/ci/npm-archives
@@ -185,6 +185,17 @@ jobs:
           $projectionPath = Join-Path $projectionDirectory 'requirements.txt'
           $projection | Set-Content -LiteralPath $projectionPath -Encoding utf8NoBOM
           & $selectedPython -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps -r $projectionPath --dest artifacts/ci/python-archives
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Produce the emitted docs evidence without uploading it
+        env:
+          CI_PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1 -PythonExecutable $env:CI_PYTHON_EXECUTABLE
+          $env:DOCS_CONFIGURATION = 'Release'
+          $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $PWD 'docs/site/.playwright'
+          npm --prefix docs/site run browser:install -- --with-deps
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix docs/site run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the production audit and propagate its raw failure
         env:

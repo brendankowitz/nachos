@@ -1,0 +1,37 @@
+---
+title: Compatibility declarations
+description: Exact method and template coverage, not SDK conformance.
+---
+
+import coverage from './_generated/compatibility.json';
+
+This page compares the actual build-generated Nachos OpenAPI with the pinned
+Honcho wire manifest. It does **not** establish runtime availability, authentication
+availability or SDK conformance. Missing means absent from OpenAPI, not necessarily
+unmapped by the server.
+
+<p>Wire version: <code>{coverage.wireVersion}</code>.
+ SDK conformance: <strong>{coverage.sdkConformance}</strong>.
+ Authentication: <strong>{coverage.authentication}</strong>.</p>
+
+<table>
+  <thead><tr><th>Declaration category</th><th>Count</th></tr></thead>
+  <tbody>{Object.entries(coverage.counts).map(([name, count]) => <tr><td>{name}</td><td>{count}</td></tr>)}</tbody>
+</table>
+
+`declared-implemented` means 2xx without 501 in the declaration;
+`declared-partial` includes both 2xx and 501; `staged-501` is not implemented.
+Extension counts overlap these statuses. Jobs and admin grants are Nachos
+extensions, not proof of upstream SDK compatibility.
+
+<table>
+  <thead><tr><th>Method</th><th>Exact template</th><th>Scope</th><th>Status</th><th>Declared responses</th></tr></thead>
+  <tbody>{coverage.routes.map((route) => <tr>
+    <td>{route.method}</td><td><code>{route.path}</code></td><td>{route.scope}</td>
+    <td>{route.status}</td><td>{route.responses.join(', ') || 'none'}</td>
+  </tr>)}</tbody>
+</table>
+
+See the <a href={`${import.meta.env.BASE_URL.replace(/\/$/, '')}/reference/rest-api/`}>REST declarations</a>, [CLI help](/nachos/reference/cli/)
+and [configuration defaults](/nachos/reference/options/). These references are
+generated before every supported site build; producer failure blocks the build.

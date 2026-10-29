@@ -1,0 +1,26 @@
+---
+title: Schema upgrades
+---
+
+Nachos uses database projects and a DacFx-based schema CLI, not EF migrations.
+Application startup and schema changes have different permissions and risks.
+The source CLI includes `schema init`, `schema report` and `schema apply`:
+
+```powershell
+dotnet run --project src\Nachos.Cli -- schema --help
+dotnet run --project src\Nachos.Cli -- schema report --help
+```
+
+The [generated CLI reference](/nachos/reference/cli/) contains exact connection,
+target and safety arguments. Review a report before applying changes; identify
+the current and target versions, backups and a recovery plan. A report is not
+proof that arbitrary migrations are safe.
+
+Automatic schema deployment is **off by default**. AppHost enables it only for
+Development run mode, not a published manifest. A production runtime identity
+should not own schema-changing permissions.
+
+SQL integration CI exercises real deployment/report cases against Docker.
+This documentation build invokes help only, never `init`, `apply`, grant writes
+or a database connection. [Self-hosting](/nachos/getting-started/self-host/)
+describes provider selection.
