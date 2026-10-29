@@ -291,6 +291,10 @@ public sealed class AdmissionReplayTests
             JsonObject metadata, CancellationToken ct) =>
             inner.Messages.UpdateMetadataAsync(workspaceName, sessionName, publicId, metadata, ct);
 
+        public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(string workspaceName, string sessionName, long fromSeq,
+            long toSeq, CancellationToken ct) =>
+            inner.Messages.ListRangeAsync(workspaceName, sessionName, fromSeq, toSeq, ct);
+
         public Task<Page<MessageRecord>> ListAsync(string workspaceName, string sessionName, FilterNode? filter,
             PageRequest page, CancellationToken ct) =>
             inner.Messages.ListAsync(workspaceName, sessionName, filter, page, ct);

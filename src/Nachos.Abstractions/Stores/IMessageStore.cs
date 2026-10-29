@@ -86,6 +86,14 @@ public interface IMessageStore
     Task<MessageRecord> UpdateMetadataAsync(
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct);
 
+    /// <summary>
+    /// The session's messages whose <c>Seq</c> is between <paramref name="fromSeq"/> and <paramref name="toSeq"/>
+    /// inclusive, in <c>Seq</c> order; empty when the range is empty or holds no messages.
+    /// </summary>
+    /// <exception cref="NotFoundException">The session does not exist.</exception>
+    Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct);
+
     /// <summary>Lists by <c>Seq</c> (descending when <see cref="PageRequest.Reverse"/>), never by <c>CreatedAt</c>.</summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     Task<Page<MessageRecord>> ListAsync(

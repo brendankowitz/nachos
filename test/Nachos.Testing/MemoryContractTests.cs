@@ -601,6 +601,30 @@ public abstract class MemoryContractTests : IAsyncLifetime
         (await store.PeerCards.GetAsync(workspace, "alice", "nobody", Ct)).ShouldBeNull();
     }
 
+    // ---------------------------------------------------------------- message range (deriver context)
+
+    [Fact]
+    public async Task Messages_ListRange_ReturnsTheInclusiveSeqRangeInOrder()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var appended = await store.Messages.AppendAsync(
+            workspace,
+            session,
+            [.. Enumerable.Range(1, 5).Select(i => new NewMessage(i % 2 == 0 ? "alice" : "bob", $"m{i}", 1, null, null))],
+            null,
+            Ct);
+
+        var range = await store.Messages.ListRangeAsync(workspace, session, 2, 4, Ct);
+
+        range.Select(m => m.PublicId).ShouldBe(appended.Skip(1).Take(3).Select(m => m.PublicId));
+        range.Select(m => m.Seq).ShouldBe([2L, 3L, 4L]);
+        (await store.Messages.ListRangeAsync(workspace, session, -10, 1, Ct)).Single().Content.ShouldBe("m1");
+        (await store.Messages.ListRangeAsync(workspace, session, 4, 2, Ct)).ShouldBeEmpty();
+        (await store.Messages.ListRangeAsync(workspace, session, 6, 100, Ct)).ShouldBeEmpty();
+        await Should.ThrowAsync<NotFoundException>(() => store.Messages.ListRangeAsync(workspace, "missing", 1, 5, Ct));
+    }
+
     // ---------------------------------------------------------------- embedding backlog
 
     [Fact]

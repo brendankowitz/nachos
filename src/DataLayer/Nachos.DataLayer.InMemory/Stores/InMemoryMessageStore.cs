@@ -187,6 +187,21 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
             },
             ct);
 
+    public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct) =>
+        state.Run<IReadOnlyList<MessageRecord>>(
+            () =>
+            {
+                var workspace = state.RequireWorkspace(workspaceName);
+                lock (workspace.Gate)
+                {
+                    return [.. workspace.RequireSession(sessionName).Messages
+                        .Where(message => message.Seq >= fromSeq && message.Seq <= toSeq)
+                        .Select(JsonCopy.Out)];
+                }
+            },
+            ct);
+
     public Task<Page<MessageRecord>> ListAsync(
         string workspaceName, string sessionName, FilterNode? filter, PageRequest page, CancellationToken ct) =>
         state.Run(
