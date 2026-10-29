@@ -47,5 +47,21 @@ internal sealed class TestDirectory : IDisposable
             Write(path, File.ReadAllBytes(Path.Combine(RealProducerTests.Root, path)));
     }
 
-    public void Dispose() => Directory.Delete(Root, recursive: true);
+    public void Dispose()
+    {
+        // Windows can keep a just-killed fixture process's image (pipes.dll) locked for a moment
+        // (process teardown or on-access scanning), so bound a short retry instead of failing cleanup.
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Directory.Delete(Root, recursive: true);
+                return;
+            }
+            catch (Exception exception) when (attempt < 20 && exception is IOException or UnauthorizedAccessException)
+            {
+                Thread.Sleep(250);
+            }
+        }
+    }
 }

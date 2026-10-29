@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch] $Audit,
+    [switch] $Publication,
     [string] $PythonExecutable
 )
 
@@ -54,7 +55,7 @@ $browserArguments = @('--prefix', 'docs/site', 'run', 'browser:install')
 if ($IsLinux) { $browserArguments += @('--', '--with-deps') }
 Invoke-DocsCommand npm $browserArguments
 
-if (-not $Audit) {
+if (-not ($Audit -or $Publication)) {
     foreach ($configuration in @('Debug', 'Release')) {
         $results = Join-Path $work "tests/$configuration"
         if (Test-Path $results) { throw "Refusing stale DocsGen results: $results" }
