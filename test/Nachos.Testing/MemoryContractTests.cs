@@ -282,6 +282,58 @@ public abstract class MemoryContractTests : IAsyncLifetime
             .ShouldHaveSingleItem().Conclusion.Content.ShouldBe("deduced");
     }
 
+    /// <summary>
+    /// Source ids name conclusions of the same workspace, live or tombstoned, in the given order; an unknown id or one
+    /// from another workspace is dropped when stored, and a source purged later is left out on read.
+    /// </summary>
+    [Fact]
+    public async Task SourceIds_KeepOnlyTheWorkspacesConclusions_InOrder()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var (otherWorkspace, otherSession) = await ArrangeAsync(store);
+        var first = await InsertAsync(store, workspace, Fact("first", session));
+        var tombstoned = await InsertAsync(store, workspace, Fact("tombstoned", session));
+        var elsewhere = await InsertAsync(store, otherWorkspace, Fact("elsewhere", otherSession));
+        await store.Conclusions.TombstoneAsync(workspace, tombstoned.PublicId, Ct);
+
+        var derived = await InsertAsync(store, workspace, new NewConclusion(
+            "alice", "bob", null, ConclusionLevel.Deductive, "derived", null,
+            [tombstoned.PublicId, Unique("unknown"), elsewhere.PublicId, first.PublicId], null));
+
+        derived.SourceIds.ShouldBe([tombstoned.PublicId, first.PublicId]);
+        (await store.Conclusions.GetAsync(workspace, derived.PublicId, Ct)).ShouldNotBeNull()
+            .SourceIds.ShouldBe([tombstoned.PublicId, first.PublicId]);
+
+        clock.Advance(TimeSpan.FromHours(1));
+        await store.Conclusions.PurgeTombstonesAsync(TimeSpan.FromMinutes(1), Ct);
+        (await store.Conclusions.GetAsync(workspace, derived.PublicId, Ct)).ShouldNotBeNull()
+            .SourceIds.ShouldBe([first.PublicId]);
+        (await ListAllAsync(store, workspace)).Single(c => c.PublicId == derived.PublicId).SourceIds.ShouldBe([first.PublicId]);
+    }
+
+    /// <summary>A vector with a NaN or infinite component cannot be stored or searched with (the SQL VECTOR type rejects it).</summary>
+    [Fact]
+    public async Task NonFiniteVectors_AreRejected()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var nan = Vector(0).ToArray();
+        nan[7] = float.NaN;
+        var infinite = Vector(0).ToArray();
+        infinite[3] = float.PositiveInfinity;
+
+        await Should.ThrowAsync<ArgumentException>(() => store.Conclusions.InsertAsync(workspace, [Fact("nan", session, nan)], Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.Conclusions.QueryAsync(workspace, infinite, 10, null, null, Ct));
+        await Should.ThrowAsync<ArgumentException>(() =>
+            store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, nan, 1, null, Ct));
+
+        var pending = await InsertAsync(store, workspace, Fact("pending", session));
+        await Should.ThrowAsync<ArgumentException>(() =>
+            store.Embeddings.SaveAsync(new PendingEmbedding(workspace, pending.PublicId, "pending"), infinite, Ct));
+        (await ListAllAsync(store, workspace)).ShouldHaveSingleItem().PublicId.ShouldBe(pending.PublicId);
+    }
+
     [Fact]
     public async Task Query_RanksByCosineDistance()
     {

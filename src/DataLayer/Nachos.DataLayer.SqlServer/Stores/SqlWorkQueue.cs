@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
@@ -40,7 +41,7 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// lock other units' rows and deadlock with their claimers. A deadlock victim of anything else is skipped like a lost race.
 /// </para>
 /// </remarks>
-internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
+internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
 {
     /// <summary>How many due units one claim tries, in order, before reporting nothing due.</summary>
     private const int Candidates = 32;
@@ -61,25 +62,26 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
             return null;
         }
 
-        var now = runtime.Clock.GetUtcNow();
         List<Candidate> candidates;
         await using (var db = await runtime.OpenAsync(ct))
         {
-            candidates = await FindDueUnitsAsync(db, taskTypes, now, ct);
+            candidates = await FindDueUnitsAsync(db, taskTypes, runtime.Clock.GetUtcNow(), ct);
         }
 
         foreach (var candidate in candidates)
         {
             try
             {
-                if (await TryClaimAsync(candidate, owner, taskTypes, leaseDuration, now, ct) is { } lease)
+                // The clock is read per candidate, so a lease granted after earlier attempts is as long as requested.
+                if (await TryClaimAsync(candidate, owner, taskTypes, leaseDuration, runtime.Clock.GetUtcNow(), ct) is { } lease)
                 {
                     return lease;
                 }
             }
             catch (Exception ex) when (SqlErrors.IsDeadlockVictim(ex))
             {
-                // The transaction is rolled back; a deadlock is a lost race like any other.
+                // The claim's transaction was rolled back, so nothing changed: the unit is skipped like a lost race.
+                LogClaimDeadlock(runtime.Logger, candidate.WorkUnitKey, ex);
             }
         }
 
@@ -133,7 +135,7 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         await RequireHeldAsync(db, lease, ct);
         await CompleteItemsAsync(db, lease, runtime.Clock.GetUtcNow(), ct);
-        await ReleaseAsync(db, lease, ct);
+        await FreeLeaseAsync(db, lease, ct);
         await transaction.CommitAsync(ct);
     }
 
@@ -157,7 +159,7 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                 ct);
         }
 
-        await ReleaseAsync(db, lease, ct);
+        await FreeLeaseAsync(db, lease, ct);
         await transaction.CommitAsync(ct);
     }
 
@@ -191,7 +193,7 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                 SqlParameters.Text("@key", lease.WorkUnitKey),
             ],
             ct);
-        await ReleaseAsync(db, lease, ct);
+        await FreeLeaseAsync(db, lease, ct);
         await transaction.CommitAsync(ct);
     }
 
@@ -263,14 +265,28 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         return new QueueStatusRecord(totals, sessions);
     }
 
+    /// <remarks>
+    /// In batches of <see cref="SqlConclusionStore.PurgeBatch"/>, each its own statement, so the delete never escalates to
+    /// a table lock that would block appends and claims.
+    /// </remarks>
     public async Task<int> PruneSucceededAsync(TimeSpan retention, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        var cutoff = Clamp.Subtract(runtime.Clock.GetUtcNow(), retention);
         await using var db = await runtime.OpenAsync(ct);
-        return await db.Database.ExecuteSqlRawAsync(
-            "DELETE dbo.WorkItems WHERE Status = 2 AND CompletedAt <= @cutoff",
-            [SqlParameters.Time("@cutoff", Clamp.Subtract(runtime.Clock.GetUtcNow(), retention))],
-            ct);
+        var total = 0;
+        while (true)
+        {
+            var pruned = await db.Database.ExecuteSqlRawAsync(
+                "DELETE TOP (@size) dbo.WorkItems WHERE Status = 2 AND CompletedAt <= @cutoff",
+                [SqlParameters.Int("@size", SqlConclusionStore.PurgeBatch), SqlParameters.Time("@cutoff", cutoff)],
+                ct);
+            total += pruned;
+            if (pruned < SqlConclusionStore.PurgeBatch)
+            {
+                return total;
+            }
+        }
     }
 
     /// <summary>
@@ -306,7 +322,7 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                 ct);
 
     /// <summary>Releases a held lease: its token no longer matches and the unit is free. The row stays, so tokens keep growing.</summary>
-    internal static Task ReleaseAsync(NachosDbContext db, WorkLease lease, CancellationToken ct) =>
+    internal static Task FreeLeaseAsync(NachosDbContext db, WorkLease lease, CancellationToken ct) =>
         db.Database.ExecuteSqlRawAsync(
             "UPDATE dbo.WorkUnitLeases SET FencingToken = FencingToken + 1, ExpiresAt = @released WHERE WorkUnitKey = @key",
             [SqlParameters.Time("@released", DateTimeOffset.MinValue), SqlParameters.Text("@key", lease.WorkUnitKey)],
@@ -550,6 +566,9 @@ internal sealed class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                 $"An owner must be at most {WorkLease.MaxOwnerLength} characters; this one has {owner.Length}.", nameof(owner));
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "A claim of work unit {WorkUnitKey} was chosen as a deadlock victim and rolled back; the unit was skipped.")]
+    private static partial void LogClaimDeadlock(ILogger logger, string workUnitKey, Exception exception);
 
     /// <summary>A due unit and its lowest open item.</summary>
     private sealed record Candidate(string WorkUnitKey, long FirstId);

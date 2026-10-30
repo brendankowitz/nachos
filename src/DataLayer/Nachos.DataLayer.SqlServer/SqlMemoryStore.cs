@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Schema;
 using Nachos.DataLayer.SqlServer.Storage;
@@ -35,13 +36,14 @@ namespace Nachos.DataLayer.SqlServer;
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore
 {
-    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock)
+    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock, ILogger<SqlMemoryStore> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(schemaGate);
         ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(logger);
 
-        var runtime = new SqlStoreRuntime(options, schemaGate, clock);
+        var runtime = new SqlStoreRuntime(options, schemaGate, clock, logger);
         Workspaces = new SqlWorkspaceStore(runtime);
         Peers = new SqlPeerStore(runtime);
         Sessions = new SqlSessionStore(runtime);

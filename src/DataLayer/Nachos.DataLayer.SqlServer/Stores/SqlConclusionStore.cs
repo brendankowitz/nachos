@@ -28,6 +28,9 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// </remarks>
 internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionStore
 {
+    /// <summary>Rows one purge transaction deletes: below SQL Server's lock escalation threshold (about 5000 locks).</summary>
+    internal const int PurgeBatch = 4000;
+
     private const string SelectColumns = """
         SELECT c.Id, c.PublicId, o.Name AS ObserverName, d.Name AS ObservedName, s.Name AS SessionName, c.Level, c.Content,
                c.TimesDerived, c.InternalMetadata, c.CreatedAt,
@@ -297,7 +300,7 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
         await UpdateCountersAsync(db, counters, now, ct);
         await InsertRowsAsync(db, workspaceId, inserts, resolved, now, ct);
         await RederiveAsync(db, targets, ct);
-        await SqlWorkQueue.ReleaseAsync(db, lease, ct);
+        await SqlWorkQueue.FreeLeaseAsync(db, lease, ct);
         await transaction.CommitAsync(ct);
     }
 
@@ -350,23 +353,41 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
             ct);
     }
 
-    /// <remarks>Deletes the purged conclusions' own source rows first; rows naming them as a source stay (no FK).</remarks>
+    /// <remarks>
+    /// In batches of <see cref="PurgeBatch"/>, each its own short transaction: the batch's ids come from a snapshot read
+    /// (no locks on live rows), then its source rows and the conclusions are deleted by key. A batch stays below lock
+    /// escalation, so appends, claims and derivations are never blocked by a table lock. Rows naming a purged conclusion as
+    /// their source stay (no FK); reads leave the purged id out.
+    /// </remarks>
     public async Task<int> PurgeTombstonesAsync(TimeSpan retention, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
         var cutoff = Clamp.Subtract(runtime.Clock.GetUtcNow(), retention);
         await using var db = await runtime.OpenAsync(ct);
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-        await db.Database.ExecuteSqlRawAsync(
-            "DELETE cs FROM dbo.ConclusionSources AS cs JOIN dbo.Conclusions AS c ON c.Id = cs.DerivedId WHERE c.DeletedAt <= @cutoff",
-            [SqlParameters.Time("@cutoff", cutoff)],
-            ct);
-        var purged = await db.Database.ExecuteSqlRawAsync(
-            "DELETE dbo.Conclusions WHERE DeletedAt <= @cutoff",
-            [SqlParameters.Time("@cutoff", cutoff)],
-            ct);
-        await transaction.CommitAsync(ct);
-        return purged;
+        var total = 0;
+        while (true)
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+            var purged = (await db.Database
+                    .SqlQueryRaw<int>(
+                        """
+                        DECLARE @batch TABLE (Id bigint PRIMARY KEY);
+                        INSERT @batch (Id) SELECT TOP (@size) Id FROM dbo.Conclusions WHERE DeletedAt <= @cutoff ORDER BY Id;
+                        DELETE cs FROM dbo.ConclusionSources AS cs WITH (FORCESEEK) JOIN @batch AS b ON b.Id = cs.DerivedId;
+                        DELETE c FROM dbo.Conclusions AS c WITH (FORCESEEK) JOIN @batch AS b ON b.Id = c.Id WHERE c.DeletedAt <= @cutoff;
+                        SELECT @@ROWCOUNT AS [Value];
+                        """,
+                        SqlParameters.Int("@size", PurgeBatch),
+                        SqlParameters.Time("@cutoff", cutoff))
+                    .ToListAsync(ct))
+                .Single();
+            await transaction.CommitAsync(ct);
+            total += purged;
+            if (purged < PurgeBatch)
+            {
+                return total;
+            }
+        }
     }
 
     /// <summary>A distance bound; the cosine distance is a <c>float</c>.</summary>
@@ -430,7 +451,7 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
 
     /// <summary>
     /// The collection and session of each conclusion to insert, creating missing collections (get-or-create: a unique
-    /// violation means a concurrent writer created it, which is then read). Peers are looked up in ordinal name order.
+    /// violation means a concurrent writer created it, which is then read) in key order.
     /// </summary>
     /// <exception cref="NotFoundException">A conclusion names a peer or session that does not exist.</exception>
     private static async Task<List<References>> ResolveReferencesAsync(
@@ -452,20 +473,25 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
                 ?? throw Lookups.SessionNotFound(workspaceName, name);
         }
 
-        var collections = new Dictionary<(long, long), long>();
-        var references = new List<References>(conclusions.Count);
-        foreach (var conclusion in conclusions)
+        // Collections are created in (observer, observed) id order, so concurrent writers creating the same new
+        // collections take their unique-key locks in one order and cannot deadlock.
+        var keys = conclusions
+            .Select(c => (Observer: peers[c.Source.ObserverName], Observed: peers[c.Source.ObservedName]))
+            .Distinct()
+            .Order()
+            .ToList();
+        var collections = new Dictionary<(long Observer, long Observed), long>();
+        foreach (var key in keys)
         {
-            var key = (peers[conclusion.Source.ObserverName], peers[conclusion.Source.ObservedName]);
-            if (!collections.TryGetValue(key, out var collectionId))
-            {
-                collectionId = collections[key] = await EnsureCollectionAsync(db, workspaceId, key.Item1, key.Item2, now, ct);
-            }
-
-            references.Add(new References(collectionId, conclusion.Source.SessionName is { } session ? sessions[session] : null));
+            collections[key] = await EnsureCollectionAsync(db, workspaceId, key.Observer, key.Observed, now, ct);
         }
 
-        return references;
+        return
+        [
+            .. conclusions.Select(c => new References(
+                collections[(peers[c.Source.ObserverName], peers[c.Source.ObservedName])],
+                c.Source.SessionName is { } session ? sessions[session] : null)),
+        ];
     }
 
     private static async Task<long> EnsureCollectionAsync(

@@ -262,7 +262,7 @@ Dependency rule: `Abstractions` ← `Core` ← (`DataLayer.*`, `Hosting`) ← (`
 - `IMemoryStore`: unit-of-work entry point that exposes repositories (`Workspaces`, `Peers`, `Sessions`, `Messages`, `Conclusions`, `PeerCards`, `Summaries`, `Scopes`, `Webhooks`). Every method takes a `WorkspaceRef`.
 - `IVectorIndex`: `SearchMessagesAsync` and `SearchConclusionsAsync` (filters, top-k, max distance).
 - `ILexicalIndex`: full-text message search.
-- `IWorkQueue`: `TryAcquireAsync`, `TryLeaseAsync` (item-less singleton lease), `RenewAsync`, `CompleteAsync`, `FailAsync`, `GetStatusAsync`, `PruneSucceededAsync`. Δ (M2, D1) There is no ambient transaction and no standalone `EnqueueAsync` yet: each store method owns its transaction, and the append enqueues its own work inside `IMessageStore.AppendAsync` (§10.2). A standalone enqueue arrives with the first non-append producer (M3).
+- `IWorkQueue`: `TryAcquireAsync`, `TryLeaseAsync` (item-less singleton lease), `RenewAsync`, `CompleteAsync`, `FailAsync`, `ReleaseAsync` (give the unit back without consuming an attempt), `GetStatusAsync`, `PruneSucceededAsync`. Δ (M2, D1) There is no ambient transaction and no standalone `EnqueueAsync` yet: each store method owns its transaction, and the append enqueues its own work inside `IMessageStore.AppendAsync` (§10.2). A standalone enqueue arrives with the first non-append producer (M3).
 - `ISchemaManager`: `GetStatusAsync`, `DeployAsync`. SQL only; in-memory is a no-op.
 
 Providers register through `NachosBuilder.UseSqlServer(...)` and `UseInMemory()`.

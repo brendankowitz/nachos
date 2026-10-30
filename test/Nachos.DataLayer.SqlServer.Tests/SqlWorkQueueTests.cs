@@ -1,7 +1,11 @@
 using System.Collections.Concurrent;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Time.Testing;
+using System.Text.Json.Nodes;
 using Nachos.Abstractions;
+using Nachos.Abstractions.Contracts;
+using Nachos.Abstractions.Filtering;
+using Nachos.DataLayer.SqlServer.Filtering;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
@@ -206,13 +210,15 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
 
     /// <summary>
     /// Appenders (session, messages, work items), claimers (work items, leases) and committers (lease, work items,
-    /// collections, conclusions, with corroborations of shared rows in arbitrary id order) run together. A lock-order cycle
-    /// would surface as deadlock error 1205, which fails the run; nothing expires, so no lease may be lost either.
+    /// collections, conclusions, with corroborations of shared rows in arbitrary id order) run together. A deadlock in an
+    /// append or a commit fails the run with error 1205; a claim that loses one is skipped (and logged), so the server's
+    /// deadlock counter is read before and after and must not move. Nothing expires, so no lease may be lost either.
     /// </summary>
     [Fact]
     public async Task ParallelWorkers_NoDeadlock()
     {
         var database = await DatabaseAsync();
+        var deadlocksBefore = await DeadlockCountAsync(database);
         var store = database.CreateStore(TimeProvider.System);
         var (workspace, session) = await ArrangeAsync(store);
         var sessions = new[] { session, Unique("sess"), Unique("sess") };
@@ -304,7 +310,74 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
         status.Totals.ShouldBe(new QueueCounts(0, 0, Appenders * AppendsEach * 2, 0));
         completed.ShouldBeGreaterThan(0);
         failed.ShouldBeGreaterThan(0);
+        (await DeadlockCountAsync(database) - deadlocksBefore).ShouldBe(0, "deadlocks during the run");
     }
+
+    /// <summary>
+    /// API inserts and derivations that create the same new collections, listed in opposite orders, run together. Each
+    /// creates the collections in key order, so their unique-key inserts cannot deadlock (in conclusion order they did).
+    /// </summary>
+    [Fact]
+    public async Task NewCollections_InOppositeOrders_NoDeadlock()
+    {
+        var database = await DatabaseAsync();
+        var store = database.CreateStore(TimeProvider.System);
+        var deadlocksBefore = await DeadlockCountAsync(database);
+        var peers = Enumerable.Range(0, 4).Select(i => $"p{i}").ToList();
+        var pairs = peers.SelectMany(observer => peers.Select(observed => (observer, observed))).ToList();
+
+        for (var round = 0; round < 10; round++)
+        {
+            var workspace = Unique("ws");
+            await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+            foreach (var peer in peers)
+            {
+                await store.Peers.GetOrCreateAsync(workspace, peer, null, null, Ct);
+            }
+
+            await RunConcurrentlyAsync(8, async writer =>
+            {
+                var ordered = writer % 2 == 0 ? pairs : [.. Enumerable.Reverse(pairs)];
+                return await store.Conclusions.InsertAsync(
+                    workspace,
+                    [.. ordered.Select(pair => new NewConclusion(pair.observer, pair.observed, null, ConclusionLevel.Explicit, $"w{writer}", null, [], null))],
+                    Ct);
+            });
+
+            (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.CreatedAt, new PageRequest(1, 100), Ct)).Total
+                .ShouldBe(8 * pairs.Count);
+        }
+
+        (await DeadlockCountAsync(database) - deadlocksBefore).ShouldBe(0, "deadlocks during the run");
+    }
+
+    /// <summary>
+    /// A conclusion id filter travels as one JSON parameter, however many ids it lists, so the Deriver's
+    /// <c>PublicId in [...]</c> filter is not bounded by the 2000-parameter limit (and needs no cap on its batch size).
+    /// </summary>
+    [Fact]
+    public async Task ConclusionIdFilter_ThousandsOfIds_UsesOneParameter()
+    {
+        var database = await DatabaseAsync();
+        var store = database.CreateStore(TimeProvider.System);
+        var workspace = Unique("ws");
+        await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+        await store.Peers.GetOrCreateAsync(workspace, "bob", null, null, Ct);
+        var inserted = await store.Conclusions.InsertAsync(
+            workspace, [new NewConclusion("bob", "bob", null, ConclusionLevel.Explicit, "fact", null, [], null)], Ct);
+        var ids = new JsonArray([.. Enumerable.Range(0, 5000).Select(i => JsonValue.Create($"missing-{i}")), JsonValue.Create(inserted[0].PublicId)]);
+
+        var filter = new FilterNode.Field(FilterColumns.PublicId, FilterOp.In, ids);
+        SqlFilterCompiler.Compile(filter, ResourceKind.Conclusion, "c").Parameters.Count.ShouldBe(1);
+        (await store.Conclusions.ListAsync(workspace, filter, ConclusionOrder.CreatedAt, new PageRequest(), Ct))
+            .Items.ShouldHaveSingleItem().PublicId.ShouldBe(inserted[0].PublicId);
+    }
+
+    /// <summary>The server's cumulative deadlock count (the counter is named per second but counts since start-up).</summary>
+    private static Task<long> DeadlockCountAsync(SqlTestDatabase database) =>
+        ScalarAsync<long>(
+            database,
+            "SELECT cntr_value FROM sys.dm_os_performance_counters WHERE counter_name LIKE N'Number of Deadlocks/sec%' AND instance_name = N'_Total'");
 
     // ---------------------------------------------------------------- vectors
 

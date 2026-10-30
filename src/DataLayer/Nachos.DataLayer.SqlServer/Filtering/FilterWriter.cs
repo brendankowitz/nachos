@@ -339,7 +339,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         (ResourceKind.Conclusion, FilterColumns.SessionId) => RelatedName("dbo.Sessions", $"{table}.SessionId", field, optional: true),
         (ResourceKind.Conclusion, FilterColumns.ObserverId) => CollectionPeerName("ObserverPeerId", field),
         (ResourceKind.Conclusion, FilterColumns.ObservedId) => CollectionPeerName("ObservedPeerId", field),
-        (ResourceKind.Conclusion, FilterColumns.Level) => TextColumn(LevelName, binary: false, field),
+        (ResourceKind.Conclusion, FilterColumns.Level) => LevelColumn(field),
         (ResourceKind.Message, FilterColumns.TokenCount) => OrderedColumn($"{table}.TokenCount", field, ColumnType.TokenCount),
         (ResourceKind.Session, FilterColumns.PeerId) => ActiveMemberNames(field),
         (ResourceKind.Session, FilterColumns.IsActive) => IsActive(field),
@@ -348,13 +348,48 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     };
 
     /// <summary>
-    /// A conclusion's stored level (tinyint 0-3, the <c>ConclusionLevel</c> values) as its wire name
-    /// (<see cref="ConclusionLevelNames"/>), the text of <see cref="FilterColumns.Level"/>. The names are fixed constants.
+    /// A conclusion's <see cref="FilterColumns.Level"/>: text whose values are the wire names
+    /// (<see cref="ConclusionLevelNames"/>) of the stored tinyint. Equality, <c>in</c> and <c>ne</c> become comparisons of
+    /// the stored value, which can use an index; an operand naming no level matches nothing (and <c>ne</c> everything),
+    /// as text equality would. Substring operators need the text, so they compare the name the stored value maps to.
     /// </summary>
-    private string LevelName => string.Concat(
-        $"CHOOSE({table}.Level + 1, ",
-        string.Join(", ", Enum.GetValues<ConclusionLevel>().Order().Select(level => $"N'{ConclusionLevelNames.Of(level)}'")),
-        ")");
+    private string LevelColumn(FilterNode.Field field)
+    {
+        string Stored(string name) => Parameter(
+            SqlDbType.TinyInt,
+            name,
+            (parameter, _) => SqlParameters.Byte(parameter, (byte)Enum.GetValues<ConclusionLevel>().Single(level => ConclusionLevelNames.Of(level) == name)));
+
+        static bool IsLevel(string name) => Enum.GetValues<ConclusionLevel>().Any(level => ConclusionLevelNames.Of(level) == name);
+
+        switch (field.Op)
+        {
+            case FilterOp.IsNull:
+                return False;
+            case FilterOp.NotNull:
+                return True;
+            case FilterOp.Eq:
+            case FilterOp.Ne:
+                var name = field.Value!.GetValue<string>();
+                var isEq = field.Op == FilterOp.Eq;
+                return IsLevel(name) ? $"({table}.Level {(isEq ? "=" : "<>")} {Stored(name)})" : isEq ? False : True;
+            case FilterOp.In:
+                var levels = field.Value!.AsArray()
+                    .Select(element => element?.GetValue<string>())
+                    .OfType<string>()
+                    .Where(IsLevel)
+                    .Distinct(StringComparer.Ordinal)
+                    .Select(Stored)
+                    .ToList();
+                return levels.Count == 0 ? False : $"({table}.Level IN ({string.Join(", ", levels)}))";
+            default:
+                var text = string.Concat(
+                    $"CHOOSE({table}.Level + 1, ",
+                    string.Join(", ", Enum.GetValues<ConclusionLevel>().Order().Select(level => $"N'{ConclusionLevelNames.Of(level)}'")),
+                    ")");
+                return TextCondition(text, binary: false, field.Op, field.Value!);
+        }
+    }
 
     /// <summary>A text column that is never NULL.</summary>
     /// <param name="binary">True when the column's own collation is binary, so equality may use it (and its index).</param>
