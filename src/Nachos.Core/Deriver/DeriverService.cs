@@ -34,8 +34,9 @@ namespace Nachos.Core.Deriver;
 /// every message the fact is sourced from.
 /// </para>
 /// <para>
-/// When the workspace, session or messages are gone (<see cref="NotFoundException"/> while reading), the batch completes
-/// with no changes instead of failing until it is dead-lettered.
+/// When the workspace or session is gone (<see cref="NotFoundException"/> while reading), the batch completes with no
+/// changes instead of failing until it is dead-lettered. Deleted messages are skipped rather than thrown on; a batch
+/// left with no messages completes the same way.
 /// </para>
 /// <para>Scoped, because it resolves configuration through the scoped <see cref="IConfigurationResolver"/>.</para>
 /// </remarks>
@@ -44,8 +45,8 @@ public sealed partial class DeriverService : IWorkHandler
     public const string AgentName = "deriver";
 
     /// <summary>
-    /// How many non-batch messages, ending at the batch's last message, are read as context (budget permitting): the
-    /// messages between and just before the batch's messages, newest first.
+    /// Sizes the context window: the last batch size plus this many session Seq values, ending at the last target. Messages
+    /// in the window that are not targets (any speaker, including reasoning-disabled ones) are context, budget permitting.
     /// </summary>
     private const int ContextMessages = 10;
 
@@ -151,7 +152,7 @@ public sealed partial class DeriverService : IWorkHandler
             return new Derivation(batch.Nothing(), 0, 0);
         }
 
-        // A blank message states nothing, so it is never sent to the model; its item completes with the batch.
+        // A blank message states nothing, so it is never a target (it may still appear as context); its item completes with the batch.
         var targets = (await LoadTargetsAsync(batch, targetIds, ct).ConfigureAwait(false))
             .Where(message => !string.IsNullOrWhiteSpace(message.Content))
             .ToList();
@@ -214,9 +215,10 @@ public sealed partial class DeriverService : IWorkHandler
 
     /// <summary>
     /// The user message: the message-level instructions, the target messages marked <c>target</c>, plus up to
-    /// <see cref="ContextMessages"/> other messages ending at the last target, newest first while they fit
-    /// <see cref="DeriverOptions.MaxInputTokens"/>. The targets are always included, even over budget, because they are the
-    /// subject of the request; context stops at the first message that does not fit, so what is shown is contiguous.
+    /// the non-target messages in a window of the last <c>batch size + <see cref="ContextMessages"/></c> Seq values ending at
+    /// the last target, taken newest first while they fit <see cref="DeriverOptions.MaxInputTokens"/>. The targets are always
+    /// included, even over budget or before the window, because they are the subject of the request; context stops at the
+    /// first message that does not fit. The result is ordered by Seq but not necessarily contiguous.
     /// </summary>
     private async Task<string> BuildTranscriptAsync(
         WorkBatch batch,
@@ -228,7 +230,7 @@ public sealed partial class DeriverService : IWorkHandler
     {
         var targetIds = targets.Select(message => message.PublicId).ToHashSet(StringComparer.Ordinal);
         var lastSeq = targets[^1].Seq;
-        // Seq values are unique per session, so this range holds at most the batch plus ContextMessages messages.
+        // Seq values are unique per session, so this range holds at most batch size + ContextMessages messages.
         var window = await _store.Messages.ListRangeAsync(
             batch.WorkspaceName,
             batch.SessionName,

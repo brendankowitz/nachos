@@ -26,7 +26,7 @@ namespace Nachos.Core.Worker;
 /// </para>
 /// <para>
 /// Embedding: pending conclusions are embedded oldest first in batches of
-/// <see cref="ReconcilerOptions.EmbeddingBatchSize"/>, while batches come back full (at most 100 per tick). When a
+/// <see cref="ReconcilerOptions.EmbeddingBatchSize"/>, while batches come back full (at most 100 batches per tick). When a
 /// batch call fails each of its conclusions is retried alone, so one bad conclusion cannot hold back the rest; but a
 /// failure of the service rather than of an input (429, 503, a gateway error, a timeout, a connection error; not 500,
 /// which one input can provoke) ends the step for the tick instead, since retrying alone would only add load to a
@@ -244,7 +244,7 @@ public sealed partial class ReconcilerService : BackgroundService
         for (var batch = 0; batch < MaxBatchesPerTick; batch++)
         {
             var pending = await _store.Embeddings.ListPendingAsync(_options.EmbeddingBatchSize, ct).ConfigureAwait(false);
-            // A save that did not take (the store kept the conclusion pending) would otherwise repeat one batch forever.
+            // A save that did not take (the store kept the conclusion pending) would otherwise repeat one batch for the rest of the tick.
             if (pending.Count == 0 || pending.Select(p => p.ConclusionId).SequenceEqual(previous.Select(p => p.ConclusionId)))
             {
                 break;

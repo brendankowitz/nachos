@@ -13,7 +13,8 @@ public interface IWorkHandler
 
     /// <summary>
     /// Processes <paramref name="lease"/> and completes it: a handler that returns normally has completed the unit itself,
-    /// atomically with its writes. Any other outcome is an exception, after which the caller fails the lease.
+    /// atomically with its writes. Any other outcome is an exception: the caller fails the lease, or, when the failure is transient or the host is
+    /// shutting down, releases it without charging an attempt.
     /// </summary>
     /// <exception cref="LeaseLostException">
     /// The lease was lost and nothing was written; the caller stops without failing it, since the unit has a new owner.

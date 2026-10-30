@@ -42,7 +42,7 @@ param openAiEmbeddingDeployment string = 'text-embedding-3-small'
 @description('Whether the worker container app has already been deployed (azd: SERVICE_WORKER_RESOURCE_EXISTS).')
 param workerExists bool
 
-@description('Lower bound for worker replicas; at least 1 until the KEDA mssql rule is verified (plan risk R7).')
+@description('Lower bound for worker replicas; at least 1 until the KEDA mssql rule is verified.')
 @minValue(1)
 param workerMinReplicas int = 1
 
@@ -181,7 +181,7 @@ module workerApp 'modules/worker-app.bicep' = {
   }
 }
 
-// The API and the worker share one identity, so one grant covers both. Q6: the account belongs to the owner, so only the
+// The API and the worker share one identity, so one grant covers both. The account belongs to the owner, so only the
 // role assignment is Bicep's; the account may live in another resource group of the subscription.
 module openAiAccess 'modules/openai-access.bicep' = if (!empty(openAiAccountName)) {
   scope: resourceGroup(empty(openAiResourceGroupName) ? rg.name : openAiResourceGroupName)

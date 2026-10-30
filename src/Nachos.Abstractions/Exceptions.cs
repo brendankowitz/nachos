@@ -102,7 +102,7 @@ public sealed class IdempotencyDuplicateException : NachosException
 }
 
 /// <summary>
-/// Thrown by a write made under a <see cref="Domain.WorkLease"/> that is no longer held: it was completed or failed, or
+/// Thrown by a write made under a <see cref="Domain.WorkLease"/> that is no longer held: it was completed, failed or released, or
 /// another owner reclaimed the unit after it expired. Nothing was written. Never surfaced over HTTP.
 /// </summary>
 public sealed class LeaseLostException : NachosException

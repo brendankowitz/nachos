@@ -21,7 +21,6 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     // 7 parameters per message plus 3 shared stay well under SQL Server's 2,100-parameter limit.
     private const int InsertChunk = 200;
 
-    // 4 parameters per work item plus 4 shared.
     private const int WorkItemChunk = 400;
 
     public Task<IReadOnlyList<MessageRecord>> AppendAsync(
@@ -61,7 +60,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     /// serializer's included, rolls everything back, so there is no <c>Seq</c> gap and no work without its message.
     /// </para>
     /// <para>
-    /// <b>Enqueue</b> (spec §10.2, D1): for each message whose <see cref="DeriveIntent.ShouldDerive"/> is set, the
+    /// <b>Enqueue</b> (spec §10.2): for each message whose <see cref="DeriveIntent.ShouldDerive"/> is set, the
     /// observers are resolved with <see cref="ObserverRule"/> at the message's <c>CreatedAt</c>, over the session's
     /// memberships as this transaction leaves them (the <c>Seq</c> allocation's session lock keeps them stable), and one
     /// <see cref="WorkTaskType.Representation"/> item is inserted when there is at least one. Its payload snapshots the
@@ -271,7 +270,10 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         return work;
     }
 
-    /// <summary>Inserts pending work items, available now, in message order (so their ids follow it).</summary>
+    /// <summary>
+    /// Inserts pending work items, available now. <c>INSERT ... SELECT ... ORDER BY</c> assigns identity values in that
+    /// order, which a plain multi-row <c>VALUES</c> does not guarantee, so the ids follow message order.
+    /// </summary>
     private static async Task InsertWorkItemsAsync(
         NachosDbContext db, SessionKey session, List<PendingWork> work, DateTimeOffset now, CancellationToken ct)
     {
@@ -288,7 +290,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             };
             for (var i = start; i < start + count; i++)
             {
-                rows.Add($"(@workspace, @type, @key{i}, @payload{i}, 0, 0, @now, @tokens{i}, @message{i}, @session, @now)");
+                rows.Add($"(@workspace, @type, @key{i}, @payload{i}, 0, 0, @now, @tokens{i}, @message{i}, @session, @now, {i})");
                 parameters.Add(SqlParameters.Text($"@key{i}", work[i].WorkUnitKey));
                 parameters.Add(SqlParameters.LongText($"@payload{i}", work[i].Payload));
                 parameters.Add(SqlParameters.Int($"@tokens{i}", work[i].TokenCount));
@@ -297,8 +299,11 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
 
             await db.Database.ExecuteSqlRawAsync(
                 string.Concat(
-                    "INSERT dbo.WorkItems (WorkspaceId, TaskType, WorkUnitKey, Payload, Status, Attempts, AvailableAt, TokenCount, MessageId, SessionId, CreatedAt) VALUES ",
-                    string.Join(", ", rows)),
+                    "INSERT dbo.WorkItems (WorkspaceId, TaskType, WorkUnitKey, Payload, Status, Attempts, AvailableAt, TokenCount, MessageId, SessionId, CreatedAt) " +
+                    "SELECT WorkspaceId, TaskType, WorkUnitKey, Payload, Status, Attempts, AvailableAt, TokenCount, MessageId, SessionId, CreatedAt " +
+                    "FROM (VALUES ",
+                    string.Join(", ", rows),
+                    ") AS v (WorkspaceId, TaskType, WorkUnitKey, Payload, Status, Attempts, AvailableAt, TokenCount, MessageId, SessionId, CreatedAt, Ordinal) ORDER BY Ordinal"),
                 parameters,
                 ct);
         }

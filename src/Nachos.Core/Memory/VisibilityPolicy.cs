@@ -7,8 +7,8 @@ using Nachos.Abstractions.Filtering;
 namespace Nachos.Core.Memory;
 
 /// <summary>
-/// What one request may read of stored memory (spec §11.8). It is created once per request, and every memory read
-/// takes it: there is no read path without one.
+/// What one request may read of stored memory (spec §11.8). Every memory read takes one: there is no read path
+/// without it. Restricted policies are built per request; <see cref="Unrestricted"/> is shared.
 /// </summary>
 /// <remarks>
 /// <para>

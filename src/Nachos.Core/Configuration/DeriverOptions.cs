@@ -27,6 +27,6 @@ public sealed class DeriverOptions
     /// <summary>Attempts before a unit's items are dead-lettered; default 5.</summary>
     public int MaxAttempts { get; set; } = 5;
 
-    /// <summary>How long one lease is held before it must be renewed; default 5 minutes.</summary>
+    /// <summary>How long a lease lasts unless renewed; default 5 minutes.</summary>
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromMinutes(5);
 }

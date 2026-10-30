@@ -71,7 +71,7 @@ var ringPrefix = 'Nachos__Auth__NachosKey__Keys__'
 var existingEnv = apiExists ? existingImage!.outputs.env : []
 var existingRing = filter(existingEnv, e => startsWith(e.name, ringPrefix))
 var ringEnv = empty(existingRing) ? [ { name: '${ringPrefix}0__Kid', value: '0' } ] : existingRing
-// Without an endpoint the offline fake AI runs; say so explicitly so a deployment never falls into it by accident.
+// An empty openAiEndpoint (the default) deliberately sets Nachos__Ai__Mode=Fake, so the app runs the offline fake AI.
 var openAiEnv = empty(openAiEndpoint) ? [
   { name: 'Nachos__Ai__Mode', value: 'Fake' }
 ] : [

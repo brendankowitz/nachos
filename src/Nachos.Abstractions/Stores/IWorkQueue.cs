@@ -12,7 +12,7 @@ namespace Nachos.Abstractions.Stores;
 /// <para>
 /// <b>Units and leases.</b> Items with the same <see cref="WorkItemRecord.WorkUnitKey"/> form a unit, processed
 /// serially in <see cref="WorkItemRecord.Id"/> order. At most one lease exists per unit. A lease stays held until it is
-/// completed or failed, or until it has expired (the store's clock is strictly past its expiry) <i>and</i> another
+/// completed, failed or released, or until it has expired (the store's clock is strictly past its expiry) <i>and</i> another
 /// owner has taken the unit; an expired lease nobody has taken is still held. Each new lease on a unit gets a fencing token greater than every earlier one on it.
 /// </para>
 /// <para>
@@ -21,7 +21,7 @@ namespace Nachos.Abstractions.Stores;
 /// waiting is not claimable at all, which keeps the unit's order.
 /// </para>
 /// <para>
-/// Every write under a lease (<see cref="RenewAsync"/>, <see cref="CompleteAsync"/>, <see cref="FailAsync"/>,
+/// Every write under a lease (<see cref="RenewAsync"/>, <see cref="CompleteAsync"/>, <see cref="FailAsync"/>, <see cref="ReleaseAsync"/>,
 /// <see cref="IConclusionStore.CommitDerivationAsync"/>) first checks that the lease is still held, and throws
 /// <see cref="LeaseLostException"/> with nothing written when it is not.
 /// </para>

@@ -1,7 +1,7 @@
 CREATE TABLE [dbo].[WorkItems]
 (
     [Id]          BIGINT         IDENTITY (1, 1) NOT NULL,
-    [WorkspaceId] BIGINT         NULL, -- NULL for global work such as the reconciler
+    [WorkspaceId] BIGINT         NULL, -- NULL for global work; none is enqueued yet (the reconciler runs on a timer, not through this table)
     -- 1 representation, 2 summary (M3), 3 dream (M5), 4 webhook (M6), 5 deletion (M3), 6 reconciler, 7 scope_backfill, 8 scope_removal (M6).
     [TaskType]    TINYINT        NOT NULL,
     -- 450 UTF-16 code units: the same key is the clustered key of WorkUnitLeases, whose limit is 900 bytes.

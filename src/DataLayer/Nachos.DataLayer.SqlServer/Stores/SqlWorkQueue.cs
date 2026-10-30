@@ -16,7 +16,7 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// <remarks>
 /// <para>
 /// <b>Leases.</b> A unit's <c>WorkUnitLeases</c> row is never deleted, so its <c>FencingToken</c> only grows. A lease is
-/// held while the row carries its owner and token. Completing or failing releases it by moving the token past the lease's
+/// held while the row carries its owner and token. Completing, failing or releasing it ends the lease by moving the token past the lease's
 /// and the expiry to <see cref="DateTimeOffset.MinValue"/>: the released lease no longer matches, and the unit is free.
 /// Expired means the clock is strictly past <c>ExpiresAt</c>; an expired row keeps proving its lease until another owner
 /// takes it with the single-statement reclaim <c>UPDATE … SET FencingToken = FencingToken + 1 … WHERE ExpiresAt &lt; @now</c>.

@@ -26,7 +26,7 @@ public sealed class PeerContextService(IMemoryStore store, RepresentationBuilder
         return card?.Entries;
     }
 
-    /// <summary>Replaces the card's entries with <paramref name="entries"/>, as sent: no cap or prefix rule (owner decision Q4).</summary>
+    /// <summary>Replaces the card's entries with <paramref name="entries"/>, as sent: no cap or prefix rule.</summary>
     /// <exception cref="NotFoundException">The workspace or either peer does not exist.</exception>
     public Task<PeerCardRecord> SetCardAsync(
         string workspaceName, string observerName, string observedName, IReadOnlyList<string> entries, CancellationToken ct) =>

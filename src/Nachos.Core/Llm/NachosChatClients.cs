@@ -38,7 +38,7 @@ public sealed class NachosChatClients : IDisposable
         {
             if (!_pipelines.TryGetValue(profileName, out var pipeline))
             {
-                // Only successes are cached, so fixing a misconfiguration does not need a restart.
+                // Only successes are cached, so a transient failure while building the pipeline is retried on the next call.
                 pipeline = BuildPipeline(profileName);
                 _pipelines[profileName] = pipeline;
             }

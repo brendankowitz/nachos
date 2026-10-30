@@ -9,7 +9,7 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// <see cref="Gate"/>.
 /// </summary>
 /// <remarks>
-/// A lease is held while its row exists with the caller's owner and token: completing or failing removes the row, and
+/// A lease is held while its row exists with the caller's owner and token: completing, failing or releasing removes the row, and
 /// a reclaim replaces it with a higher token. Expiry alone does not end a lease; it only lets another owner take it.
 /// </remarks>
 internal sealed class WorkQueueState

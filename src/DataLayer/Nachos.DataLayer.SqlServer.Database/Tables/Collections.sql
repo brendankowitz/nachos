@@ -4,7 +4,7 @@ CREATE TABLE [dbo].[Collections]
     [WorkspaceId]      BIGINT         NOT NULL,
     [ObserverPeerId]   BIGINT         NOT NULL,
     [ObservedPeerId]   BIGINT         NOT NULL,
-    -- The three dream columns are the M5 seam: the Deriver maintains them, nothing reads them yet.
+    -- The three dream columns are the M5 seam: the Deriver maintains the first two, LastDreamAt is written by dreaming (M5); nothing reads them yet.
     [NewExplicitCount] INT            NOT NULL CONSTRAINT [DF_Collections_NewExplicitCount] DEFAULT 0,
     [LastActivityAt]   DATETIMEOFFSET (7) NULL,
     [LastDreamAt]      DATETIMEOFFSET (7) NULL,

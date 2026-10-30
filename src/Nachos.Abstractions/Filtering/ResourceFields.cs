@@ -43,7 +43,7 @@ public static class FilterColumns
 
     /// <summary>
     /// On a conclusion: its level, as text, the lowercase wire name (<see cref="Domain.ConclusionLevelNames.Of"/>:
-    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Never set. Core's visibility rules use
+    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Always set. Core's visibility rules use
     /// it; it is deliberately <b>not</b> a wire filter field (not in <see cref="ResourceFields"/>), so only hand-built
     /// nodes name it.
     /// </summary>

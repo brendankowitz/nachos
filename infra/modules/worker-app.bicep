@@ -29,9 +29,9 @@ param workerExists bool
 @description('Image for the very first revision, before `azd deploy` replaces it (main.bicep: placeholderImage).')
 param containerImage string
 
-// The queue is claimed with leases, so more than one replica is safe. Zero would stop memory formation until the R7
+// The queue is claimed with leases, so more than one replica is safe. Zero would stop memory formation until the
 // KEDA scale rule below is verified, because nothing else wakes the app.
-@description('Lower bound for replicas. At least 1 until the KEDA mssql rule is verified (plan risk R7).')
+@description('Lower bound for replicas. At least 1 until the KEDA mssql rule is verified.')
 @minValue(1)
 param workerMinReplicas int = 1
 
@@ -57,7 +57,7 @@ var baseEnv = [
   { name: 'Nachos__SqlServer__ConnectionString', value: sqlConnectionString }
   { name: 'Nachos__SqlServer__AutomaticSchemaDeploymentEnabled', value: 'false' }
 ]
-// Without an endpoint the offline fake AI runs; say so explicitly so a deployment never falls into it by accident.
+// An empty openAiEndpoint (the default) deliberately sets Nachos__Ai__Mode=Fake, so the app runs the offline fake AI.
 var openAiEnv = empty(openAiEndpoint) ? [
   { name: 'Nachos__Ai__Mode', value: 'Fake' }
 ] : [
@@ -116,8 +116,8 @@ resource worker 'Microsoft.App/containerApps@2026-01-01' = {
               }
             }
           }
-          // R7 gate: enable only after an owner-approved run proves the mssql scaler works with the managed identity on
-          // Container Apps, then allow workerMinReplicas = 0. The GetDueWorkCount procedure does not exist yet (plan D2).
+          // Gate: enable only after an owner-approved run proves the mssql scaler works with the managed identity on
+          // Container Apps, then allow workerMinReplicas = 0. The GetDueWorkCount procedure does not exist yet.
           // {
           //   name: 'queue'
           //   custom: {

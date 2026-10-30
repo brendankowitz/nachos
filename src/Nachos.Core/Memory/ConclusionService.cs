@@ -27,7 +27,7 @@ public sealed partial class ConclusionService(
     private readonly ILogger _logger = logger ?? NullLogger<ConclusionService>.Instance;
 
     /// <summary>
-    /// Inserts explicit conclusions, all or nothing and without deduplication, with no source ids (owner decision Q5).
+    /// Inserts explicit conclusions, all or nothing and without deduplication, with no source ids.
     /// They are stored pending and then embedded best-effort; one that is not embedded here is embedded by the
     /// reconciler, which is the guarantee.
     /// </summary>

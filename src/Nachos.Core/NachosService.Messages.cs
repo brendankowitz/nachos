@@ -110,7 +110,7 @@ public sealed partial class NachosService
     }
 
     /// <summary>
-    /// Each message's derivation decision (D4): its <c>reasoning.enabled</c> resolved message over session over workspace
+    /// Each message's derivation decision: its <c>reasoning.enabled</c> resolved message over session over workspace
     /// over global (unset means enabled), together with the message's own reasoning block, which the work item snapshots.
     /// Workspace and session configuration are read once, before the append; a concurrent configuration change may or may
     /// not apply to a request already past this point.

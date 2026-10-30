@@ -17,23 +17,29 @@ representation. Nothing in this path runs inside your request.
 3. **Lease.** A worker claims a due group with a lease and keeps renewing it. If the
    worker dies, the lease expires and another worker retries the group.
 4. **Deriver.** The worker sends the recent conversation to a chat model, which returns
-   facts about each speaker. Reasoning can be turned off per message, session or
-   workspace; those messages are completed without being sent to a model.
+   facts about the peer who sent the targeted messages; other speakers' messages are
+   context only. Reasoning can be turned off per message, session or workspace. In a batch
+   that mixes enabled and disabled messages, the disabled ones are sent as context and
+   only the enabled ones are targets; a batch where every message is disabled is
+   completed without calling a model.
 5. **Deduplication.** A new fact within `Nachos:Deriver:DedupMaxDistance` (cosine, 0.05 by
-   default) of an existing conclusion corroborates that conclusion instead of inserting a
-   copy, and raises its `times_derived`.
-6. **Commit.** New conclusions, corroborations and the completion of the queue items are
+   default) of an existing conclusion from the same session corroborates that conclusion
+   instead of inserting a copy, and raises its `times_derived`. When the new fact is
+   richer than the stored one, it replaces the conclusion's content.
+6. **Commit.** New conclusions, corroborations, replacements and the completion of the queue items are
    written together. A crash leaves either all of it or none of it.
 
 A **reconciler** runs alongside the consumer. It embeds conclusions that were created
 without a vector (for example through the API while a model was unavailable), purges
-tombstoned conclusions and old completed queue items after their retention period, and
-runs as a singleton through its own lease.
+tombstoned conclusions, old completed queue items and expired idempotency keys after
+their retention period, reports the queue backlog gauges, and runs as a singleton
+through its own lease.
 
 Failures retry with exponential backoff. After `Nachos:Deriver:MaxAttempts` (5) the items
 are dead-lettered and reported as completed by `queue/status`, so a poisoned message does
-not block the rest of the queue. A model that is down, throttling or timing out does not use
-up attempts: the work waits and retries for as long as the outage lasts. [Run the
+not block the rest of the queue. A model that is down, throttling or timing out, a
+transient SQL failure (such as a deadlock or failover) and a model authorization failure
+do not use up attempts: the unit is released and retries for as long as the outage lasts. [Run the
 worker](/nachos/guides/run-the-worker/) shows how to redrive dead-lettered work.
 
 ## What you can read back
@@ -44,7 +50,7 @@ worker](/nachos/guides/run-the-worker/) shows how to redrive dead-lettered work.
 | `POST /v3/workspaces/{id}/conclusions/query` | The nearest conclusions to a text query, by embedding distance. |
 | `POST /v3/workspaces/{id}/peers/{id}/representation` | A peer's conclusions rendered as text, optionally searched. |
 | `GET /v3/workspaces/{id}/peers/{id}/context` | The representation together with the peer card. |
-| `GET` and `PUT /v3/workspaces/{id}/peers/{id}/card` | The peer card: a short list of stable facts you or the worker maintain. |
+| `GET` and `PUT /v3/workspaces/{id}/peers/{id}/card` | The peer card: a short list of stable facts that you maintain (dreaming, which will also update it, is not built yet). |
 | `GET /v3/workspaces/{id}/queue/status` | Counts of pending, in-progress and completed work. |
 
 You can also create conclusions directly with `POST /v3/workspaces/{id}/conclusions` and
