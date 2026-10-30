@@ -76,7 +76,7 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
                 ArgumentNullException.ThrowIfNull(lease);
                 lock (state.Queue.Gate)
                 {
-                    state.Queue.Release(lease);
+                    state.Queue.GiveBack(lease);
                 }
             },
             ct);

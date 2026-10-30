@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Schema;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer;
@@ -41,6 +42,7 @@ public static class SqlServerBuilderExtensions
         configure(options);
 
         services.TryAddSingleton(TimeProvider.System);
+        services.AddLogging();
         services.RemoveAll<ISchemaManager>();
         services.AddSingleton<ISchemaManager, SchemaDeployer>();
         services.RemoveAll<SchemaGate>();
@@ -50,7 +52,8 @@ public static class SqlServerBuilderExtensions
         services.AddScoped<IMemoryStore>(provider => new SqlMemoryStore(
             provider.GetRequiredService<SqlServerOptions>(),
             provider.GetRequiredService<SchemaGate>(),
-            provider.GetRequiredService<TimeProvider>()));
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<SqlMemoryStore>>()));
         return builder;
     }
 }

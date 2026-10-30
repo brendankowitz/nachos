@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Schema;
@@ -170,7 +171,7 @@ internal static class GrantCommands
         }
 
         var options = new SqlServerOptions { ConnectionString = parse.GetRequiredValue(connection) };
-        var store = new SqlMemoryStore(options, new SchemaGate(deployer, options), TimeProvider.System);
+        var store = new SqlMemoryStore(options, new SchemaGate(deployer, options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
         return await body(store.Grants);
     }
 

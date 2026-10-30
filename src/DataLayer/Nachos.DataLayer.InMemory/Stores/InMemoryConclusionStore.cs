@@ -50,7 +50,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                             && c.Record.Level == level
                             && string.Equals(c.Record.Content, content, StringComparison.Ordinal))
                         .MinBy(c => c.Order);
-                    return match is null ? null : JsonCopy.Out(match.Record);
+                    return match is null ? null : Out(workspace, match.Record);
                 }
             },
             ct);
@@ -76,7 +76,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                         && c.InCollection(observerName, observedName)
                         && c.InSession(restrictToSession)
                         && c.Record.Level == level);
-                    return Nearest(candidates, query, maxDistance).FirstOrDefault();
+                    return Nearest(workspace, candidates, query, maxDistance).FirstOrDefault();
                 }
             },
             ct);
@@ -98,7 +98,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                         ConclusionOrder.TimesDerived => live.OrderBy(c => c.Record.TimesDerived).ThenBy(c => c.Record.CreatedAt),
                         _ => throw new ArgumentOutOfRangeException(nameof(order), order, "Unknown conclusion order."),
                     };
-                    return Paging.ToPage(ordered.ThenBy(c => c.Order), page, c => JsonCopy.Out(c.Record));
+                    return Paging.ToPage(ordered.ThenBy(c => c.Order), page, c => Out(workspace, c.Record));
                 }
             },
             ct);
@@ -121,7 +121,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 {
                     var candidates = workspace.Conclusions.Values
                         .Where(c => c.IsSearchable && InMemoryFilterEvaluator.Matches(prepared, c.Record));
-                    return [.. Nearest(candidates, query, maxDistance ?? double.PositiveInfinity).Take(topK)];
+                    return [.. Nearest(workspace, candidates, query, maxDistance ?? double.PositiveInfinity).Take(topK)];
                 }
             },
             ct);
@@ -134,7 +134,7 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 lock (workspace.Gate)
                 {
                     return workspace.Conclusions.TryGetValue(publicId, out var stored) && stored.IsLive
-                        ? JsonCopy.Out(stored.Record)
+                        ? Out(workspace, stored.Record)
                         : null;
                 }
             },
@@ -251,14 +251,22 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
             ct);
 
     /// <summary>Nearest first, ties oldest first, leaving out those farther than <paramref name="maxDistance"/>.</summary>
-    private static IEnumerable<ConclusionMatch> Nearest(IEnumerable<StoredConclusion> candidates, float[] query, double maxDistance) =>
+    private static IEnumerable<ConclusionMatch> Nearest(
+        WorkspaceEntry workspace, IEnumerable<StoredConclusion> candidates, float[] query, double maxDistance) =>
         candidates
             .Select(c => (Conclusion: c, Distance: VectorMath.CosineDistance(c.Embedding!, query)))
             .Where(pair => pair.Distance <= maxDistance)
             .OrderBy(pair => pair.Distance)
             .ThenBy(pair => pair.Conclusion.Record.CreatedAt)
             .ThenBy(pair => pair.Conclusion.Order)
-            .Select(pair => new ConclusionMatch(JsonCopy.Out(pair.Conclusion.Record), pair.Distance));
+            .Select(pair => new ConclusionMatch(Out(workspace, pair.Conclusion.Record), pair.Distance));
+
+    /// <summary>
+    /// A detached copy of a stored conclusion for a read. A source that has since been purged is left out of
+    /// <c>SourceIds</c>, as the SQL provider's join on the source rows leaves it out.
+    /// </summary>
+    private static ConclusionRecord Out(WorkspaceEntry workspace, ConclusionRecord record) =>
+        JsonCopy.Out(record) with { SourceIds = [.. record.SourceIds.Where(workspace.Conclusions.ContainsKey)] };
 
     /// <summary>Store-owned, validated copies of the caller's conclusions; no lock is held.</summary>
     private static List<OwnedConclusion> Own(IReadOnlyList<NewConclusion> conclusions)
@@ -286,10 +294,18 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
     }
 
     /// <summary>Inserts validated conclusions, creating their collections; cannot fail.</summary>
+    /// <remarks>
+    /// Source ids are resolved against the workspace's conclusions (live or tombstoned) as they were before this batch, in
+    /// the given order: an id naming no conclusion of the workspace is dropped, as the SQL provider, which stores sources by
+    /// row id, must drop it.
+    /// </remarks>
     private List<ConclusionRecord> Insert(WorkspaceEntry workspace, List<OwnedConclusion> conclusions, DateTimeOffset now)
     {
+        var resolvedSources = conclusions
+            .Select(c => (IReadOnlyList<string>)[.. c.SourceIds.Where(workspace.Conclusions.ContainsKey)])
+            .ToList();
         var inserted = new List<ConclusionRecord>(conclusions.Count);
-        foreach (var (source, metadata, embedding, sourceIds) in conclusions)
+        foreach (var ((source, metadata, embedding, _), sourceIds) in conclusions.Zip(resolvedSources))
         {
             workspace.GetOrAddCollection(source.ObserverName, source.ObservedName, now);
             var record = new ConclusionRecord(

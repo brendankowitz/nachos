@@ -263,6 +263,55 @@ public sealed class NachosServiceTests
         _issuer.ReceivedCalls().ShouldBeEmpty();
     }
 
+    [Fact]
+    public async Task CreateMessages_ReasoningDisabled_EnqueuesNothing()
+    {
+        using var fixture = new InMemoryServiceFixture();
+        await fixture.Service.GetOrCreateWorkspaceAsync("W", configuration: new(Reasoning: new(Enabled: false)));
+        await fixture.Service.GetOrCreateSessionAsync("W", "S");
+
+        await fixture.Service.CreateMessagesAsync("W", "S", [new MessageCreate("hello", "P"), new MessageCreate("again", "P")]);
+
+        (await fixture.Store.Messages.ListAsync("W", "S", null, new PageRequest(), _ct)).Total.ShouldBe(2);
+        (await fixture.Store.WorkQueue.GetStatusAsync("W", null, null, null, _ct)).Totals.Total.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task CreateMessages_MessageReasoningOverridesSession()
+    {
+        using var fixture = new InMemoryServiceFixture();
+        await fixture.Service.GetOrCreateWorkspaceAsync("W");
+        await fixture.Service.GetOrCreateSessionAsync("W", "Off", configuration: new(Reasoning: new(Enabled: false)));
+        await fixture.Service.GetOrCreateSessionAsync("W", "On");
+
+        // Session off: only the message that enables reasoning itself derives, and its reasoning block is snapshotted.
+        await fixture.Service.CreateMessagesAsync("W", "Off",
+        [
+            new MessageCreate("skipped", "P"),
+            new MessageCreate("derived", "P", Configuration: new(new(Enabled: true, CustomInstructions: "Note hobbies."))),
+        ]);
+
+        // Session on (inherited): a message that disables reasoning is skipped; one with only instructions derives.
+        await fixture.Service.CreateMessagesAsync("W", "On",
+        [
+            new MessageCreate("opted out", "P", Configuration: new(new(Enabled: false))),
+            new MessageCreate("instructed", "P", Configuration: new(new(CustomInstructions: "Be brief."))),
+        ]);
+
+        var policy = new Dictionary<WorkTaskType, WorkBatchPolicy> { [WorkTaskType.Representation] = new(0, TimeSpan.Zero, 1000) };
+        var payloads = new List<string>();
+        while (await fixture.Store.WorkQueue.TryAcquireAsync("w", policy, TimeSpan.FromMinutes(1), _ct) is { } lease)
+        {
+            payloads.AddRange(lease.Items.Select(item => $"{item.SessionName}:{item.Payload.ToJsonString()}"));
+        }
+
+        payloads.Order(StringComparer.Ordinal).ShouldBe(
+        [
+            """Off:{"observers":["P"],"reasoning_enabled":true,"custom_instructions":"Note hobbies."}""",
+            """On:{"observers":["P"],"custom_instructions":"Be brief."}""",
+        ]);
+    }
+
     private static void CheckPage<T>(Page<T> page, string id, Func<T, string> getId)
     {
         getId(page.Items.ShouldHaveSingleItem()).ShouldBe(id);

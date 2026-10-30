@@ -226,6 +226,11 @@ public sealed class InMemoryMemoryStoreTests
             store.SeedMessage("ws", "s", "inner-id", "inner", "inner-message", 1, Start, new JsonObject());
             return Task.CompletedTask;
         },
+        ["SeedConclusion"] = store =>
+        {
+            store.SeedConclusion("ws", "inner-conclusion", "inner", "inner", null, "inner fact", Start);
+            return Task.CompletedTask;
+        },
     };
 
     /// <summary>A sixth Seed* method must join the table above, or this fails.</summary>
