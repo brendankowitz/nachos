@@ -70,7 +70,8 @@ public sealed partial class NachosService
             "/v3/workspaces/{w}/sessions/{s}/messages",
             new Dictionary<string, string> { ["w"] = workspaceId, ["s"] = sessionId },
             CanonicalJson.Serialize(requestBody));
-        await RequireSession(workspaceId, sessionId, ct).ConfigureAwait(false);
+        var session = await RequireSession(workspaceId, sessionId, ct).ConfigureAwait(false);
+        var derive = await ResolveDeriveIntentsAsync(workspaceId, session, messages, ct).ConfigureAwait(false);
 
         NewMessage[]? pending = null;
         while (true)
@@ -96,7 +97,7 @@ public sealed partial class NachosService
                 rows => captured = SerializeMessages(rows), TimeSpan.FromHours(24));
             try
             {
-                var rows = await store.Messages.AppendAsync(workspaceId, sessionId, pending, write, ct).ConfigureAwait(false);
+                var rows = await store.Messages.AppendAsync(workspaceId, sessionId, pending, write, derive, ct).ConfigureAwait(false);
                 return new(201, write is null ? SerializeMessages(rows) :
                     captured ?? throw new InvalidOperationException("The store did not capture the response inside the append."));
             }
@@ -106,6 +107,29 @@ public sealed partial class NachosService
                 await Task.Yield();
             }
         }
+    }
+
+    /// <summary>
+    /// Each message's derivation decision: its <c>reasoning.enabled</c> resolved message over session over workspace
+    /// over global (unset means enabled), together with the message's own reasoning block, which the work item snapshots.
+    /// Workspace and session configuration are read once, before the append; a concurrent configuration change may or may
+    /// not apply to a request already past this point.
+    /// </summary>
+    private async Task<DeriveIntent[]> ResolveDeriveIntentsAsync(
+        string workspaceId, SessionRecord session, IReadOnlyList<MessageCreate> messages, CancellationToken ct)
+    {
+        var workspace = await store.Workspaces.GetAsync(workspaceId, ct).ConfigureAwait(false);
+        bool? inherited = null;
+        return
+        [
+            .. messages.Select(message =>
+            {
+                var own = message.Configuration?.Reasoning;
+                var enabled = own?.Enabled
+                    ?? (inherited ??= configurationResolver.Resolve(workspace?.Configuration, session.Configuration).Reasoning.Enabled.Value ?? true);
+                return new DeriveIntent(enabled, own?.Enabled, own?.CustomInstructions);
+            }),
+        ];
     }
 
     private static string SerializeMessages(IReadOnlyList<MessageRecord> rows) =>

@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Schema;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer;
@@ -41,6 +43,7 @@ public static class SqlServerBuilderExtensions
         configure(options);
 
         services.TryAddSingleton(TimeProvider.System);
+        services.AddLogging();
         services.RemoveAll<ISchemaManager>();
         services.AddSingleton<ISchemaManager, SchemaDeployer>();
         services.RemoveAll<SchemaGate>();
@@ -50,7 +53,27 @@ public static class SqlServerBuilderExtensions
         services.AddScoped<IMemoryStore>(provider => new SqlMemoryStore(
             provider.GetRequiredService<SqlServerOptions>(),
             provider.GetRequiredService<SchemaGate>(),
-            provider.GetRequiredService<TimeProvider>()));
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<SqlMemoryStore>>()));
         return builder;
+    }
+
+    /// <summary>
+    /// Selects the SQL Server provider with the connection chosen by <see cref="SqlServerConnectionSelection"/>: the
+    /// whole <see cref="SqlServerOptions.SectionName"/> section binds (so settings such as
+    /// <see cref="SqlServerOptions.AutomaticSchemaDeploymentEnabled"/> keep working), then the selected connection string
+    /// overrides whatever the section itself held.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No usable connection is configured (see <see cref="SqlServerConnectionSelection.Select"/>).</exception>
+    public static NachosBuilder UseSqlServer(this NachosBuilder builder, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var connectionString = SqlServerConnectionSelection.Select(configuration);
+        return builder.UseSqlServer(options =>
+        {
+            configuration.GetSection(SqlServerOptions.SectionName).Bind(options);
+            options.ConnectionString = connectionString;
+        });
     }
 }

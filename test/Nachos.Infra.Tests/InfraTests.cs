@@ -172,7 +172,7 @@ public sealed class InfraTests
     {
         using var template = ArmTemplate();
 
-        var app = Resources(template, "Microsoft.App/containerApps").ShouldHaveSingleItem();
+        var app = ContainerApp(template, "api");
         var properties = app.GetProperty("properties");
 
         var ingress = properties.GetProperty("configuration").GetProperty("ingress");
@@ -351,13 +351,18 @@ public sealed class InfraTests
         const string Seed = "createArray(createObject('name', format('{0}0__Kid', variables('ringPrefix')), 'value', '0'))";
         env.ShouldBe($"{Head}{ring}), {Seed}, {ring}), variables('openAiEnv'))]");
 
+        // One fetch deployment per container app that keeps its deployed image (the API and the worker).
         var fetchOutputs = Descendants(template.RootElement)
             .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("outputs", out var o) && o.ValueKind == JsonValueKind.Object
                 && o.TryGetProperty("image", out _) && o.TryGetProperty("env", out _))
             .Select(e => e.GetProperty("outputs"))
-            .ShouldHaveSingleItem();
-        fetchOutputs.GetProperty("env").GetProperty("value").GetString()!
-            .ShouldMatch(@"^\[coalesce\(tryGet\(reference\(.*\)\.template\.containers\[0\], 'env'\), createArray\(\)\)\]$");
+            .ToList();
+        fetchOutputs.Count.ShouldBe(2);
+        foreach (var outputs in fetchOutputs)
+        {
+            outputs.GetProperty("env").GetProperty("value").GetString()!
+                .ShouldMatch(@"^\[coalesce\(tryGet\(reference\(.*\)\.template\.containers\[0\], 'env'\), createArray\(\)\)\]$");
+        }
     }
 
     [RequiresToolFact("az", "bicep")]
@@ -397,6 +402,139 @@ public sealed class InfraTests
 
         var vault = Resources(template, "Microsoft.KeyVault/vaults").ShouldHaveSingleItem();
         vault.GetProperty("properties").GetProperty("enableRbacAuthorization").ValueKind.ShouldBe(JsonValueKind.True);
+    }
+
+    // ---- Worker (M2) -------------------------------------------------------------------------------
+
+    [RequiresToolFact("az", "bicep")]
+    public void Worker_HasNoIngress_KeepsOneReplica_AndScalesOnCpu()
+    {
+        using var template = ArmTemplate();
+
+        var worker = ContainerApp(template, "worker");
+        worker.GetProperty("properties").GetProperty("configuration").TryGetProperty("ingress", out _)
+            .ShouldBeFalse("the worker only makes outbound calls");
+
+        var scale = worker.GetProperty("properties").GetProperty("template").GetProperty("scale");
+        scale.GetProperty("minReplicas").GetString().ShouldBe("[parameters('workerMinReplicas')]");
+        var rule = scale.GetProperty("rules").EnumerateArray().ShouldHaveSingleItem("only the CPU rule until the KEDA mssql rule passes the R7 gate");
+        rule.GetProperty("custom").GetProperty("type").GetString().ShouldBe("cpu");
+
+        OnlyContainer(worker).TryGetProperty("probes", out _).ShouldBeFalse("a worker host serves no HTTP endpoint to probe");
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void Worker_MinReplicasZero_IsRejected()
+    {
+        using var template = ArmTemplate();
+
+        // Zero replicas would stop memory formation: nothing but the (unverified, commented-out) KEDA rule could wake the app.
+        var parameter = template.RootElement.GetProperty("parameters").GetProperty("workerMinReplicas");
+        parameter.GetProperty("minValue").GetInt32().ShouldBe(1);
+        parameter.GetProperty("defaultValue").GetInt32().ShouldBe(1);
+        WorkerModuleTemplate(template).GetProperty("parameters").GetProperty("workerMinReplicas")
+            .GetProperty("minValue").GetInt32().ShouldBe(1);
+
+        var directory = Directory.CreateTempSubdirectory("nachos-infra-").FullName;
+        try
+        {
+            var relativeMain = Path.GetRelativePath(directory, RepoPaths.Combine(MainBicep)).Replace('\\', '/');
+            var file = Path.Combine(directory, "zero.bicepparam");
+            using var parameters = JsonDocument.Parse(File.ReadAllText(RepoPaths.Combine("infra/main.parameters.json")));
+            var lines = new List<string> { $"using '{relativeMain}'" };
+            lines.AddRange(parameters.RootElement.GetProperty("parameters").EnumerateObject()
+                .Select(p => $"param {p.Name} = {SampleValue(p.Name, "false")}"));
+            lines.Add("param workerMinReplicas = 0");
+            File.WriteAllLines(file, lines);
+
+            var result = BicepCli.BuildParams(file);
+
+            (result.ExitCode != 0 || result.StdErr.Contains("workerMinReplicas", StringComparison.Ordinal))
+                .ShouldBeTrue("Bicep must report or refuse a workerMinReplicas of 0");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void Worker_UsesTheManagedIdentity_WithAzureOpenAISettingsButNoKeys()
+    {
+        using var template = ArmTemplate();
+        var variables = WorkerModuleTemplate(template).GetProperty("variables");
+
+        var baseNames = variables.GetProperty("baseEnv").EnumerateArray().Select(e => e.GetProperty("name").GetString()!).ToList();
+        baseNames.ShouldContain("AZURE_CLIENT_ID");
+        baseNames.ShouldContain("Nachos__SqlServer__ConnectionString");
+        baseNames.ShouldNotContain(name => name.Contains("KEY", StringComparison.OrdinalIgnoreCase));
+        variables.GetProperty("sqlConnectionString").GetString()!.ShouldContain("Authentication=Active Directory Managed Identity");
+        var openAiEnv = variables.GetProperty("openAiEnv").GetString()!;
+        openAiEnv.ShouldContain("AzureOpenAI__Endpoint");
+        openAiEnv.ShouldContain("Nachos__Ai__Mode", Case.Sensitive, "an empty endpoint must say Fake explicitly");
+        openAiEnv.ShouldContain("AzureOpenAI__ChatDeployment");
+        openAiEnv.ShouldContain("AzureOpenAI__EmbeddingDeployment");
+        WorkerModuleTemplate(template).GetRawText().ShouldNotContain("listKeys", Case.Insensitive);
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void BothApps_SelectTheFakeAIExplicitly_WhenNoEndpointIsGiven()
+    {
+        using var template = ArmTemplate();
+
+        // Outside Development the hosts refuse an implicit fake-AI fallback, so an empty endpoint must say Fake itself.
+        foreach (var module in new[] { ApiModuleTemplate(template), WorkerModuleTemplate(template) })
+        {
+            var openAiEnv = module.GetProperty("variables").GetProperty("openAiEnv").GetString()!;
+            openAiEnv.ShouldStartWith("[if(empty(parameters('openAiEndpoint')), ");
+            openAiEnv.ShouldContain("createObject('name', 'Nachos__Ai__Mode', 'value', 'Fake')");
+            openAiEnv.ShouldContain("AzureOpenAI__Endpoint");
+        }
+    }
+
+    [RequiresToolFact("az", "bicep")]
+    public void OpenAI_AccountIsOnlyReferenced_AndTheIdentityGetsTheOpenAIUserRole()
+    {
+        using var template = ArmTemplate();
+
+        // Q6: bring your own endpoint. Nothing here may create or change a Cognitive Services account or its deployments.
+        Resources(template, "Microsoft.CognitiveServices/accounts").ShouldBeEmpty();
+        Resources(template, "Microsoft.CognitiveServices/accounts/deployments").ShouldBeEmpty();
+
+        var access = Descendants(template.RootElement).Single(e =>
+            e.ValueKind == JsonValueKind.Object
+            && e.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String && n.GetString() == "openai-access"
+            && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Resources/deployments");
+        access.GetProperty("condition").GetString().ShouldBe("[not(empty(parameters('openAiAccountName')))]");
+        var assignment = Descendants(access.GetProperty("properties").GetProperty("template").GetProperty("resources"))
+            .Where(e => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Authorization/roleAssignments")
+            .ShouldHaveSingleItem();
+        assignment.GetProperty("scope").GetString()!.ShouldContain("Microsoft.CognitiveServices/accounts");
+        assignment.GetProperty("properties").GetProperty("principalType").GetString().ShouldBe("ServicePrincipal");
+        // Cognitive Services OpenAI User.
+        access.GetProperty("properties").GetProperty("template").GetProperty("variables").GetProperty("openAiUserRoleId")
+            .GetString().ShouldBe("5e0bd9bd-7b93-4f28-af87-19fc36ad61bd");
+    }
+
+    [Fact]
+    public void Parameters_MapAzdValues_ForTheWorkerAndAzureOpenAI()
+    {
+        using var parameters = JsonDocument.Parse(File.ReadAllText(RepoPaths.Combine("infra/main.parameters.json")));
+        var values = parameters.RootElement.GetProperty("parameters");
+
+        values.GetProperty("workerExists").GetProperty("value").GetString().ShouldBe("${SERVICE_WORKER_RESOURCE_EXISTS=false}");
+        values.GetProperty("openAiChatDeployment").GetProperty("value").GetString().ShouldStartWith("${AZURE_OPENAI_CHAT_DEPLOYMENT=");
+        values.GetProperty("openAiEmbeddingDeployment").GetProperty("value").GetString().ShouldStartWith("${AZURE_OPENAI_EMBEDDING_DEPLOYMENT=");
+        values.GetProperty("openAiAccountName").GetProperty("value").GetString().ShouldBe("${AZURE_OPENAI_ACCOUNT_NAME=}");
+    }
+
+    [Fact]
+    public void AzureYaml_DeclaresTheWorkerService()
+    {
+        var yaml = File.ReadAllText(RepoPaths.Combine("azure.yaml"));
+
+        Regex.IsMatch(yaml, @"^  worker:\s*\r?\n    project: \./src/Nachos\.Worker\s*\r?\n    language: dotnet\s*\r?\n    host: containerapp", RegexOptions.Multiline)
+            .ShouldBeTrue("azure.yaml must deploy src/Nachos.Worker as a container app service named worker");
     }
 
     // ---- azure.yaml and hooks ----------------------------------------------------------------------
@@ -1292,9 +1430,17 @@ public sealed class InfraTests
         Regex.IsMatch(reference, @"^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant)
         && !reference.Contains("latest", StringComparison.OrdinalIgnoreCase);
 
-    private static JsonElement ApiContainer(JsonDocument template) =>
-        Resources(template, "Microsoft.App/containerApps").Single()
-            .GetProperty("properties").GetProperty("template").GetProperty("containers").EnumerateArray().Single();
+    private static JsonElement ApiContainer(JsonDocument template) => OnlyContainer(ContainerApp(template, "api"));
+
+    private static JsonElement OnlyContainer(JsonElement app) =>
+        app.GetProperty("properties").GetProperty("template").GetProperty("containers").EnumerateArray().Single();
+
+    /// <summary>The container app azd deploys the named service to: the one tagged <c>azd-service-name</c>.</summary>
+    private static JsonElement ContainerApp(JsonDocument template, string service) =>
+        Resources(template, "Microsoft.App/containerApps")
+            .Where(app => app.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.String
+                && tags.GetString()!.Contains($"'azd-service-name', '{service}'", StringComparison.Ordinal))
+            .ShouldHaveSingleItem($"container app for service '{service}'");
 
     /// <summary>The nested template of the api-app module deployment.</summary>
     private static JsonElement ApiModuleTemplate(JsonDocument template) =>
@@ -1302,6 +1448,14 @@ public sealed class InfraTests
                 e.ValueKind == JsonValueKind.Object
                 && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Resources/deployments"
                 && e.TryGetProperty("name", out var n) && n.GetString() == "api-app")
+            .GetProperty("properties").GetProperty("template");
+
+    /// <summary>The nested template of the worker-app module deployment.</summary>
+    private static JsonElement WorkerModuleTemplate(JsonDocument template) =>
+        Descendants(template.RootElement).Single(e =>
+                e.ValueKind == JsonValueKind.Object
+                && e.TryGetProperty("type", out var t) && t.GetString() == "Microsoft.Resources/deployments"
+                && e.TryGetProperty("name", out var n) && n.GetString() == "worker-app")
             .GetProperty("properties").GetProperty("template");
 
     private static JsonDocument ArmTemplate()
@@ -1392,6 +1546,11 @@ public sealed class InfraTests
         "principalId" => "'00000000-0000-0000-0000-000000000001'",
         "principalLogin" => "'dev@example.com'",
         "openAiEndpoint" => "''",
+        "openAiAccountName" => "''",
+        "openAiResourceGroupName" => "''",
+        "openAiChatDeployment" => "'chat'",
+        "openAiEmbeddingDeployment" => "'embed'",
+        "workerExists" => apiExists,
         "principalType" => "'User'",
         "placeholderImage" => $"'{PlaceholderImage}'",
         _ => throw new InvalidOperationException($"Add a sample value for parameter '{parameter}' to SampleValue()."),

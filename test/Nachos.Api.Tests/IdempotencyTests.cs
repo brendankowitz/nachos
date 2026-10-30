@@ -445,11 +445,18 @@ public sealed class IdempotencyTests(ITestOutputHelper output)
         public IMessageStore Messages => inner.Messages;
         public IGrantStore Grants => inner.Grants;
         public IIdempotencyStore Idempotency => this;
+        public IConclusionStore Conclusions => inner.Conclusions;
+        public IPeerCardStore PeerCards => inner.PeerCards;
+        public IWorkQueue WorkQueue => inner.WorkQueue;
+        public IEmbeddingStore Embeddings => inner.Embeddings;
+        public bool IsTransientFailure(Exception exception) => inner.IsTransientFailure(exception);
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Interlocked.Increment(ref _reads);
             return inner.Idempotency.TryGetAsync(workspaceName, key, ct);
         }
+
+        public Task<int> PurgeExpiredAsync(CancellationToken ct) => inner.Idempotency.PurgeExpiredAsync(ct);
     }
 
     private sealed class UnreadableBody : Stream

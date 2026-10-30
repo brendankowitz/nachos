@@ -4,6 +4,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
+using Nachos.Abstractions.Work;
 using Nachos.DataLayer.InMemory.Storage;
 
 namespace Nachos.DataLayer.InMemory.Stores;
@@ -47,9 +48,29 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
         IReadOnlyList<NewMessage> messages,
         IdempotencyWrite? idempotency,
         CancellationToken ct) =>
+        AppendAsync(workspaceName, sessionName, messages, idempotency, derive: null, ct);
+
+    /// <remarks>
+    /// The work items are built while staging, from the staged peers and memberships, and enqueued under the queue gate
+    /// right after the staged rows are committed, still inside the workspace gate: whatever stops the append (the
+    /// serializer, an idempotency duplicate) stops its work too, and no claimer sees work before its messages.
+    /// </remarks>
+    public Task<IReadOnlyList<MessageRecord>> AppendAsync(
+        string workspaceName,
+        string sessionName,
+        IReadOnlyList<NewMessage> messages,
+        IdempotencyWrite? idempotency,
+        IReadOnlyList<DeriveIntent>? derive,
+        CancellationToken ct) =>
         state.Run<IReadOnlyList<MessageRecord>>(
             () =>
             {
+                if (derive is not null && derive.Count != messages.Count)
+                {
+                    throw new ArgumentException(
+                        $"Expected one derive intent per message ({messages.Count}), got {derive.Count}.", nameof(derive));
+                }
+
                 var ownedMetadata = messages.Select(message => JsonCopy.Own(message.Metadata, "metadata")).ToList();
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
@@ -68,6 +89,7 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                     var staged = new StagedAppend(
                         workspace, session, messages, ownedMetadata, idempotency?.Key, now, state.NextOrder);
                     var result = staged.Messages.Select(JsonCopy.Out).ToList();
+                    List<Func<long, QueuedItem>> pendingWork = derive is null ? [] : RepresentationWork(workspaceName, staged, derive, now);
                     var idempotencyRecord = idempotency is null
                         ? null
                         : new IdempotencyRecord(
@@ -84,10 +106,52 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                     }
 
                     staged.Commit(idempotencyRecord);
+                    if (pendingWork.Count > 0)
+                    {
+                        lock (state.Queue.Gate)
+                        {
+                            foreach (var work in pendingWork)
+                            {
+                                state.Queue.Enqueue(work);
+                            }
+                        }
+                    }
+
                     return result;
                 }
             },
             ct);
+
+    /// <summary>One <see cref="WorkTaskType.Representation"/> item per derived message whose sender has an observer.</summary>
+    private static List<Func<long, QueuedItem>> RepresentationWork(
+        string workspaceName, StagedAppend staged, IReadOnlyList<DeriveIntent> derive, DateTimeOffset now)
+    {
+        var work = new List<Func<long, QueuedItem>>();
+        foreach (var (message, intent) in staged.Messages.Zip(derive))
+        {
+            var observers = intent.ShouldDerive ? staged.ObserversOf(message) : [];
+            if (observers.Count == 0)
+            {
+                continue;
+            }
+
+            var key = WorkUnitKeys.Representation(workspaceName, message.SessionName, message.PeerName);
+            work.Add(id => new QueuedItem(
+                id,
+                workspaceName,
+                WorkTaskType.Representation,
+                key,
+                RepresentationPayload.Create(observers, intent.ReasoningEnabled, intent.CustomInstructions),
+                message.TokenCount,
+                message.SessionName,
+                message.PublicId,
+                message.PeerName,
+                observers,
+                now));
+        }
+
+        return work;
+    }
 
     public Task<MessageRecord?> GetAsync(
         string workspaceName, string sessionName, string publicId, CancellationToken ct) =>
@@ -119,6 +183,21 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                     var updated = message with { Metadata = ownedMetadata };
                     session.ReplaceMessage(updated);
                     return JsonCopy.Out(updated);
+                }
+            },
+            ct);
+
+    public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
+        string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct) =>
+        state.Run<IReadOnlyList<MessageRecord>>(
+            () =>
+            {
+                var workspace = state.RequireWorkspace(workspaceName);
+                lock (workspace.Gate)
+                {
+                    return [.. workspace.RequireSession(sessionName).Messages
+                        .Where(message => message.Seq >= fromSeq && message.Seq <= toSeq)
+                        .Select(JsonCopy.Out)];
                 }
             },
             ct);

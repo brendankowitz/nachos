@@ -63,3 +63,11 @@ internal sealed record GrantCreate(
     [property: JsonPropertyName("object_id")] string ObjectId,
     [property: JsonPropertyName("workspace_id")] string? WorkspaceId,
     [property: JsonPropertyName("role")] string Role);
+
+/// <summary><c>ConclusionBatchCreate</c>.</summary>
+internal sealed record ConclusionBatchCreate(
+    [property: JsonPropertyName("conclusions")] IReadOnlyList<ConclusionCreate> Conclusions);
+
+/// <summary><c>PeerCardSet</c>.</summary>
+internal sealed record PeerCardSet(
+    [property: JsonPropertyName("peer_card")] IReadOnlyList<string> PeerCard);

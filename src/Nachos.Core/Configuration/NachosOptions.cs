@@ -23,7 +23,18 @@ public sealed class NachosOptions
 
     public DeriverOptions Deriver { get; set; } = new();
 
+    /// <exception cref="OptionsValidationException">A value is out of range; the message lists every one.</exception>
     internal void Validate()
+    {
+        if (ValidationErrors() is { Count: > 0 } errors)
+        {
+            throw new OptionsValidationException(Microsoft.Extensions.Options.Options.DefaultName,
+                typeof(NachosOptions), errors);
+        }
+    }
+
+    /// <summary>Every out-of-range value, as a message naming its setting; empty when the options are valid.</summary>
+    internal IReadOnlyList<string> ValidationErrors()
     {
         List<string> errors = [];
         if (Summary is null)
@@ -52,16 +63,40 @@ public sealed class NachosOptions
         {
             errors.Add("Deriver is required.");
         }
-        else if (Deriver.MaxCustomInstructionsTokens < 1)
+        else
         {
-            errors.Add("Deriver.MaxCustomInstructionsTokens must be positive.");
+            if (Deriver.MaxCustomInstructionsTokens < 1)
+            {
+                errors.Add("Deriver.MaxCustomInstructionsTokens must be positive.");
+            }
+
+            if (Deriver.EligibilityTokens < 0 || Deriver.BatchTokenTarget < 0 || Deriver.MaxAge < TimeSpan.Zero)
+            {
+                errors.Add("Deriver.EligibilityTokens, Deriver.BatchTokenTarget and Deriver.MaxAge must not be negative.");
+            }
+
+            if (Deriver.MaxInputTokens < 1)
+            {
+                errors.Add("Deriver.MaxInputTokens must be positive.");
+            }
+
+            if (Deriver.DedupMaxDistance is < 0 or > 2 || double.IsNaN(Deriver.DedupMaxDistance))
+            {
+                errors.Add("Deriver.DedupMaxDistance must be a cosine distance between 0 and 2.");
+            }
+
+            if (Deriver.MaxAttempts < 1)
+            {
+                errors.Add("Deriver.MaxAttempts must be positive.");
+            }
+
+            if (Deriver.LeaseDuration <= TimeSpan.Zero)
+            {
+                errors.Add("Deriver.LeaseDuration must be positive.");
+            }
         }
 
-        if (errors.Count > 0)
-        {
-            throw new OptionsValidationException(Microsoft.Extensions.Options.Options.DefaultName,
-                typeof(NachosOptions), errors);
-        }
+        return errors;
     }
 
     internal WorkspaceConfiguration ToResourceConfiguration() =>

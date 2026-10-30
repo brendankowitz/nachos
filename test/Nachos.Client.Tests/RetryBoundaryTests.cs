@@ -227,6 +227,7 @@ public sealed class RetryBoundaryTests
     [InlineData("POST", "/v3/workspaces/w1/chat", "/v3/workspaces/{workspace_id}/chat", true)]
     [InlineData("POST", "/v3/workspaces/w1/peers/p1/chat", "/v3/workspaces/{workspace_id}/peers/{peer_id}/chat", true)]
     [InlineData("POST", "/v3/keys", "/v3/keys", false)]
+    [InlineData("POST", "/v3/workspaces/w1/conclusions", "/v3/workspaces/{workspace_id}/conclusions", true)]
     public async Task NeverRetryableRoute_IsSentOnce(string method, string path, string template, bool withKey)
     {
         var stub = new StubHandler((_, _) => Error(HttpStatusCode.ServiceUnavailable));
@@ -241,6 +242,47 @@ public sealed class RetryBoundaryTests
 
         response.StatusCode.ShouldBe(HttpStatusCode.ServiceUnavailable);
         stub.Requests.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task CreateConclusions_SendsNoKey_AndIsNotRetried()
+    {
+        var stub = new StubHandler((_, _) => Error(HttpStatusCode.ServiceUnavailable));
+
+        await Should.ThrowAsync<Exception>(() => Client(Retry(stub)).CreateConclusionsAsync("w1", [new ConclusionCreate("c", "alice", "bob")]));
+
+        stub.Requests.Count.ShouldBe(1);
+        stub.Requests[0].IdempotencyKey.ShouldBeNull();
+    }
+
+    public static TheoryData<string> MemoryReads() => [.. MemoryReadCalls.Keys];
+
+    private static readonly Dictionary<string, (Func<INachosClient, Task> Call, string Response)> MemoryReadCalls = new()
+    {
+        ["list"] = (c => c.ListConclusionsAsync("w1", null, new PageRequest()), """{"items":[],"total":0,"page":1,"size":50,"pages":0}"""),
+        ["query"] = (c => c.QueryConclusionsAsync("w1", new ConclusionQuery("q")), "[]"),
+        ["get"] = (c => c.GetConclusionAsync("w1", "c1"), ConclusionJson),
+        ["delete"] = (c => c.DeleteConclusionAsync("w1", "c1"), "{}"),
+        ["card"] = (c => c.GetPeerCardAsync("w1", "alice"), """{"peer_card":null}"""),
+        ["set card"] = (c => c.SetPeerCardAsync("w1", "alice", ["x"]), """{"peer_card":["x"]}"""),
+        ["representation"] = (c => c.GetRepresentationAsync("w1", "alice", new PeerRepresentationGet()), """{"representation":""}"""),
+        ["context"] = (c => c.GetPeerContextAsync("w1", "alice", new PeerContextQuery()), """{"peer_id":"alice","target_id":"alice","representation":null,"peer_card":null}"""),
+        ["queue"] = (c => c.GetQueueStatusAsync("w1"), """{"total_work_units":0,"completed_work_units":0,"in_progress_work_units":0,"pending_work_units":0,"sessions":{}}"""),
+    };
+
+    private const string ConclusionJson =
+        """{"id":"c1","content":"c","observer_id":"alice","observed_id":"bob","session_id":null,"level":"explicit","times_derived":1,"source_ids":[],"created_at":"2026-10-08T12:00:00Z"}""";
+
+    [Theory]
+    [MemberData(nameof(MemoryReads))]
+    public async Task MemoryReadsAndIdempotentWrites_AreRetried(string operation)
+    {
+        var (call, response) = MemoryReadCalls[operation];
+        var stub = new StubHandler((_, attempt) => attempt == 1 ? Error(HttpStatusCode.ServiceUnavailable) : StubHandler.Json(HttpStatusCode.OK, response));
+
+        await call(Client(Retry(stub)));
+
+        stub.Requests.Count.ShouldBe(2);
     }
 
     [Fact]

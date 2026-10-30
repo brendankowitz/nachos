@@ -123,6 +123,69 @@ test('batch messages: create, list, get and metadata update', async () => {
   assert.deepEqual((await session.getMessage(created[3].id)).metadata, { edited: true });
 });
 
+test('conclusions: create, list, get and delete', async () => {
+  const honcho = client(freshWorkspace());
+  const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
+  const session = await honcho.session('s1');
+  await session.addPeers([alice, bob]);
+  const aboutBob = alice.conclusionsOf('bob');
+
+  const created = await aboutBob.create([
+    { content: 'Bob prefers dark mode', sessionId: 's1' },
+    { content: 'Bob works at Acme', sessionId: 's1' },
+  ]);
+  assert.deepEqual(created.map((c) => c.content), ['Bob prefers dark mode', 'Bob works at Acme']);
+  const ids = async (view) => {
+    const page = await view.list();
+    const seen = [];
+    for await (const conclusion of page) {
+      seen.push(conclusion.id);
+    }
+    return seen;
+  };
+  assert.deepEqual(new Set(await ids(aboutBob)), new Set(created.map((c) => c.id)));
+  assert.deepEqual(await ids(alice.conclusions), []);
+
+  assert.equal((await aboutBob.get(created[0].id)).content, 'Bob prefers dark mode');
+  await aboutBob.delete(created[0].id);
+  assert.deepEqual(await ids(aboutBob), [created[1].id]);
+});
+
+test('conclusions: semantic query', async () => {
+  // The conformance host runs the offline fake AI: its deterministic embeddings put identical text at distance 0, so the
+  // query that repeats a conclusion verbatim must rank it first. That checks the wire shape and the embed-on-create path,
+  // not retrieval quality.
+  const honcho = client(freshWorkspace());
+  const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
+  const session = await honcho.session('s1');
+  await session.addPeers([alice, bob]);
+  const aboutBob = alice.conclusionsOf('bob');
+  const created = await aboutBob.create([
+    { content: 'Bob prefers dark mode', sessionId: 's1' },
+    { content: 'Bob works at Acme', sessionId: 's1' },
+  ]);
+
+  const found = await aboutBob.query('Bob works at Acme', 2);
+  assert.equal(found[0].id, created[1].id);
+  assert.equal(found[0].content, 'Bob works at Acme');
+  assert.ok(found.length <= 2);
+  assert.deepEqual(await alice.conclusions.query('Bob works at Acme'), []);
+});
+
+test('peer card get and set', async () => {
+  const honcho = client(freshWorkspace());
+  const alice = await honcho.peer('alice');
+  // @honcho-ai/sdk 2.5.1 sends PUT P/card without creating the target first, and Nachos answers 404 for a missing
+  // target (open parity question, spec §9.3), so the target is created explicitly.
+  await honcho.peer('bob');
+
+  assert.equal(await alice.getCard(), null);
+  assert.deepEqual(await alice.setCard(['Likes TypeScript', 'Lives in NYC']), ['Likes TypeScript', 'Lives in NYC']);
+  await alice.setCard(['Works at Acme'], 'bob');
+  assert.deepEqual(await alice.getCard(), ['Likes TypeScript', 'Lives in NYC']);
+  assert.deepEqual(await alice.getCard('bob'), ['Works at Acme']);
+});
+
 test('idempotent replay returns the same batch', async () => {
   // @honcho-ai/sdk takes extra request headers per client (`defaultHeaders`), so a dedicated client replays one batch
   // under one Idempotency-Key. Spec 9.1: the replay returns the stored response and performs no second mutation.

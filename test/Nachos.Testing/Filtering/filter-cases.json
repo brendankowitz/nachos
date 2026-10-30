@@ -55,6 +55,13 @@
       { "id": "m8", "session": "misc-2", "peer": "dave", "content": "ok", "token_count": 1, "created_at": "2026-03-01T00:00:00Z", "metadata": { "flag": true } },
       { "id": "m9", "session": "misc-2", "peer": "dave", "content": "ok ", "token_count": 3, "created_at": "2026-03-03T00:00:00Z", "metadata": { "score": "5", "flag": "true" } },
       { "id": "m10", "session": "misc-2", "peer": "dave", "content": "*", "token_count": 100, "created_at": "2026-03-04T00:00:00Z", "metadata": {} }
+    ],
+    "conclusions": [
+      { "id": "c1", "observer": "alice", "observed": "bob", "session": "support-1", "content": "Bob needs billing help", "created_at": "2026-02-01T10:03:00Z" },
+      { "id": "c2", "observer": "alice", "observed": "bob", "session": null, "content": "Bob is polite", "created_at": "2026-02-01T10:04:00Z" },
+      { "id": "c3", "observer": "bob", "observed": "alice", "session": "support-1", "content": "Alice had a failed payment", "created_at": "2026-02-02T00:00:00Z" },
+      { "id": "c4", "observer": "carol", "observed": "carol", "session": "sales-1", "content": "Carol finds the price too high", "created_at": "2026-03-02T09:00:00Z" },
+      { "id": "c5", "observer": "alice", "observed": "Alice", "session": "support-2", "content": "Alice is a guest", "created_at": "2026-03-05T00:00:00Z" }
     ]
   },
   "cases": [
@@ -326,6 +333,36 @@
     { "name": "message.token-count-in-ignores-beyond-decimal-elements", "resource": "message", "filter": { "token_count": [1e40, 100] }, "expect": ["m10"] },
     { "name": "message.token-count-in-only-beyond-decimal-matches-nothing", "resource": "message", "filter": { "token_count": [1e40] }, "expect": [] },
     { "name": "message.error.token-count-exponent-string", "resource": "message", "filter": { "token_count": "1e2" }, "error": true },
-    { "name": "message.error.token-count-small-fraction", "resource": "message", "filter": { "token_count": 1e-1 }, "error": true }
+    { "name": "message.error.token-count-small-fraction", "resource": "message", "filter": { "token_count": 1e-1 }, "error": true },
+    { "name": "conclusion.empty-filter-matches-all", "resource": "conclusion", "filter": {}, "expect": ["c1", "c2", "c3", "c4", "c5"] },
+    { "name": "conclusion.id-eq", "resource": "conclusion", "filter": { "id": "c3" }, "expect": ["c3"] },
+    { "name": "conclusion.id-is-case-sensitive", "resource": "conclusion", "filter": { "id": "C3" }, "expect": [] },
+    { "name": "conclusion.id-bare-list-is-in", "resource": "conclusion", "filter": { "id": ["c1", "c4", "missing"] }, "expect": ["c1", "c4"] },
+    { "name": "conclusion.id-null-matches-nothing", "resource": "conclusion", "filter": { "id": null }, "expect": [] },
+    { "name": "conclusion.observer-eq", "resource": "conclusion", "filter": { "observer_id": "alice" }, "expect": ["c1", "c2", "c5"] },
+    { "name": "conclusion.observer-is-case-sensitive", "resource": "conclusion", "filter": { "observer_id": "Alice" }, "expect": [] },
+    { "name": "conclusion.observer-null-matches-nothing", "resource": "conclusion", "filter": { "observer_id": null }, "expect": [] },
+    { "name": "conclusion.observer-ne-null-matches-all", "resource": "conclusion", "filter": { "observer_id": { "ne": null } }, "expect": ["c1", "c2", "c3", "c4", "c5"] },
+    { "name": "conclusion.observer-contains", "resource": "conclusion", "filter": { "observer_id": { "contains": "o" } }, "expect": ["c3", "c4"] },
+    { "name": "conclusion.observed-eq", "resource": "conclusion", "filter": { "observed_id": "Alice" }, "expect": ["c5"] },
+    { "name": "conclusion.observed-icontains", "resource": "conclusion", "filter": { "observed_id": { "icontains": "ALI" } }, "expect": ["c3", "c5"] },
+    { "name": "conclusion.observed-ne", "resource": "conclusion", "filter": { "observed_id": { "ne": "bob" } }, "expect": ["c3", "c4", "c5"] },
+    { "name": "conclusion.observer-and-observed-same-peer", "resource": "conclusion", "filter": { "observer_id": "carol", "observed_id": "carol" }, "expect": ["c4"] },
+    { "name": "conclusion.session-eq", "resource": "conclusion", "filter": { "session_id": "support-1" }, "expect": ["c1", "c3"] },
+    { "name": "conclusion.session-in", "resource": "conclusion", "filter": { "session_id": { "in": ["sales-1", "support-2", "missing"] } }, "expect": ["c4", "c5"] },
+    { "name": "conclusion.session-contains", "resource": "conclusion", "filter": { "session_id": { "contains": "support" } }, "expect": ["c1", "c3", "c5"] },
+    { "name": "conclusion.session-ne-includes-unset", "resource": "conclusion", "filter": { "session_id": { "ne": "support-1" } }, "expect": ["c2", "c4", "c5"] },
+    { "name": "conclusion.session-null-means-unset", "resource": "conclusion", "filter": { "session_id": null }, "expect": ["c2"] },
+    { "name": "conclusion.session-ne-null-means-set", "resource": "conclusion", "filter": { "session_id": { "ne": null } }, "expect": ["c1", "c3", "c4", "c5"] },
+    { "name": "conclusion.session-list-with-null-admits-unset", "resource": "conclusion", "filter": { "session_id": [null, "sales-1"] }, "expect": ["c2", "c4"] },
+    { "name": "conclusion.session-wildcard-matches-all", "resource": "conclusion", "filter": { "session_id": "*" }, "expect": ["c1", "c2", "c3", "c4", "c5"] },
+    { "name": "conclusion.not-session", "resource": "conclusion", "filter": { "NOT": [{ "session_id": "support-1" }] }, "expect": ["c2", "c4", "c5"] },
+    { "name": "conclusion.created-at-gte", "resource": "conclusion", "filter": { "created_at": { "gte": "2026-02-02T00:00:00Z" } }, "expect": ["c3", "c4", "c5"] },
+    { "name": "conclusion.created-at-range", "resource": "conclusion", "filter": { "created_at": { "gt": "2026-02-01T10:03:00Z", "lt": "2026-03-02T09:00:00Z" } }, "expect": ["c2", "c3"] },
+    { "name": "conclusion.and-observer-session", "resource": "conclusion", "filter": { "AND": [{ "observer_id": "alice" }, { "session_id": "support-2" }] }, "expect": ["c5"] },
+    { "name": "conclusion.or-observed-or-unset-session", "resource": "conclusion", "filter": { "OR": [{ "observed_id": "carol" }, { "session_id": null }] }, "expect": ["c2", "c4"] },
+    { "name": "conclusion.field-of-another-resource-ignored", "resource": "conclusion", "filter": { "peer_id": "alice", "token_count": 3 }, "expect": ["c1", "c2", "c3", "c4", "c5"] },
+    { "name": "conclusion.error.session-gt-on-text", "resource": "conclusion", "filter": { "session_id": { "gt": "a" } }, "error": true },
+    { "name": "conclusion.error.observer-not-a-string", "resource": "conclusion", "filter": { "observer_id": 7 }, "error": true }
   ]
 }

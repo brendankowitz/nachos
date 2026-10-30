@@ -1,9 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
     <ProjectReference Include="..\..\src\Nachos.Core\Nachos.Core.csproj" />
     <ProjectReference Include="..\..\src\Nachos.Hosting\Nachos.Hosting.csproj" />
     <ProjectReference Include="..\..\src\DataLayer\Nachos.DataLayer.InMemory\Nachos.DataLayer.InMemory.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Llm\sample-prompt.md" LogicalName="Nachos.Core.Tests.Llm.sample-prompt.md" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Configuration" />

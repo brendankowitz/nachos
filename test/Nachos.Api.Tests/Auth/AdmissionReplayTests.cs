@@ -260,11 +260,18 @@ public sealed class AdmissionReplayTests
         public IMessageStore Messages => this;
         public IGrantStore Grants => inner.Grants;
         public IIdempotencyStore Idempotency => this;
+        public IConclusionStore Conclusions => inner.Conclusions;
+        public IPeerCardStore PeerCards => inner.PeerCards;
+        public IWorkQueue WorkQueue => inner.WorkQueue;
+        public IEmbeddingStore Embeddings => inner.Embeddings;
+        public bool IsTransientFailure(Exception exception) => inner.IsTransientFailure(exception);
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Reads++;
             return inner.Idempotency.TryGetAsync(workspaceName, key, ct);
         }
+
+        public Task<int> PurgeExpiredAsync(CancellationToken ct) => inner.Idempotency.PurgeExpiredAsync(ct);
 
         public Task<IReadOnlyList<MessageRecord>> AppendAsync(string workspaceName, string sessionName,
             IReadOnlyList<NewMessage> messages, IdempotencyWrite? idempotency, CancellationToken ct)
@@ -273,12 +280,23 @@ public sealed class AdmissionReplayTests
             return inner.Messages.AppendAsync(workspaceName, sessionName, messages, idempotency, ct);
         }
 
+        public Task<IReadOnlyList<MessageRecord>> AppendAsync(string workspaceName, string sessionName,
+            IReadOnlyList<NewMessage> messages, IdempotencyWrite? idempotency, IReadOnlyList<DeriveIntent>? derive, CancellationToken ct)
+        {
+            Appends++;
+            return inner.Messages.AppendAsync(workspaceName, sessionName, messages, idempotency, derive, ct);
+        }
+
         public Task<MessageRecord?> GetAsync(string workspaceName, string sessionName, string publicId, CancellationToken ct) =>
             inner.Messages.GetAsync(workspaceName, sessionName, publicId, ct);
 
         public Task<MessageRecord> UpdateMetadataAsync(string workspaceName, string sessionName, string publicId,
             JsonObject metadata, CancellationToken ct) =>
             inner.Messages.UpdateMetadataAsync(workspaceName, sessionName, publicId, metadata, ct);
+
+        public Task<IReadOnlyList<MessageRecord>> ListRangeAsync(string workspaceName, string sessionName, long fromSeq,
+            long toSeq, CancellationToken ct) =>
+            inner.Messages.ListRangeAsync(workspaceName, sessionName, fromSeq, toSeq, ct);
 
         public Task<Page<MessageRecord>> ListAsync(string workspaceName, string sessionName, FilterNode? filter,
             PageRequest page, CancellationToken ct) =>

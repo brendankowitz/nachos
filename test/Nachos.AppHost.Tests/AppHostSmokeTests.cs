@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Testing;
@@ -10,7 +11,7 @@ using Shouldly;
 namespace Nachos.AppHost.Tests;
 
 /// <summary>
-/// Starts the whole AppHost (SQL Server 2025 container plus the API) and exercises the API through the endpoint
+/// Starts the whole AppHost (SQL Server 2025 container, the API and the worker) and exercises the API through the endpoint
 /// Aspire assigns it. Needs Docker, like the SQL Server suite.
 /// </summary>
 public sealed class AppHostSmokeTests
@@ -19,6 +20,7 @@ public sealed class AppHostSmokeTests
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromMinutes(2);
     // Covers the database wait, the API wait and the requests that follow, with margin.
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromMinutes(7);
+    private static readonly TimeSpan ConclusionTimeout = TimeSpan.FromMinutes(2);
 
     /// <summary>
     /// The API receives the <c>nachos</c> connection string from the AppHost, so it selects SQL Server: the first
@@ -33,33 +35,7 @@ public sealed class AppHostSmokeTests
     public async Task ApiReady_AndWorkspaceRoundTrip()
     {
         using var cts = new CancellationTokenSource(StartupTimeout);
-        // Development is stated explicitly: the AppHost passes its environment on to the API, and the auth override below is Development-only.
-        var appHost = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
-            ["--environment=Development", $"--Parameters:sql-password={NewSqlPassword()}"], cts.Token);
-
-        var sql = appHost.Resources.Single(resource => resource.Name == "sql");
-        foreach (var mount in sql.Annotations.OfType<ContainerMountAnnotation>().ToList())
-        {
-            sql.Annotations.Remove(mount);
-        }
-        appHost.CreateResourceBuilder<ProjectResource>("api")
-            .WithEnvironment("Nachos__Auth__Enabled", "false");
-
-        await using var app = await appHost.BuildAsync(cts.Token);
-        // StartAsync returns only once every resource has started, and the API starts only after the database is healthy,
-        // so it is awaited alongside the bounded, named database wait rather than before it.
-        var starting = app.StartAsync(cts.Token);
-        try
-        {
-            await WaitHealthyAsync(app, "nachos", DatabaseTimeout, cts.Token);
-        }
-        catch
-        {
-            await cts.CancelAsync();
-            await starting.ContinueWith(_ => { }, TaskScheduler.Default);
-            throw;
-        }
-        await starting;        await WaitHealthyAsync(app, "api", ApiTimeout, cts.Token);
+        await using var app = await StartAsync(cts.Token);
 
         using var client = app.CreateHttpClient("api");
         using var ready = await client.GetAsync("/health/ready", cts.Token);
@@ -85,6 +61,102 @@ public sealed class AppHostSmokeTests
         (await reader.ReadAsync(cts.Token)).ShouldBeTrue();
         reader.GetInt32(0).ShouldBe(1, "the schema version row of a deployed database");
         reader.GetInt32(1).ShouldBe(1, "the workspace row written through the API");
+    }
+
+    /// <summary>
+    /// End to end through the real hosts and SQL Server: a message posted to the API is claimed by the worker process,
+    /// derived by the fake AI (the AppHost's default) and shows up as a conclusion, listed through the API. The fake AI is
+    /// not a memory-quality mode, so the conclusion is a copy of the message.
+    /// </summary>
+    [Fact]
+    public async Task MessageBecomesConclusion_WithFakeAI()
+    {
+        using var cts = new CancellationTokenSource(StartupTimeout + ConclusionTimeout);
+        await using var app = await StartAsync(cts.Token);
+        using var client = app.CreateHttpClient("api");
+
+        var workspace = $"smoke-{Guid.NewGuid():N}";
+        (await client.PostAsJsonAsync("/v3/workspaces", new { id = workspace }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/v3/workspaces/{workspace}/sessions", new { id = "s" }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        using var posted = await client.PostAsJsonAsync(
+            $"/v3/workspaces/{workspace}/sessions/s/messages",
+            new { messages = new[] { new { content = "alice likes green tea", peer_id = "alice" } } },
+            cts.Token);
+        posted.StatusCode.ShouldBe(HttpStatusCode.Created);
+
+        var conclusion = await WaitForConclusionAsync(client, workspace, "alice likes green tea", cts.Token);
+
+        conclusion.GetProperty("observed_id").GetString().ShouldBe("alice");
+        conclusion.GetProperty("level").GetString().ShouldBe("explicit");
+    }
+
+    private static async Task<JsonElement> WaitForConclusionAsync(HttpClient client, string workspace, string content, CancellationToken cancellationToken)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(ConclusionTimeout);
+        while (!limit.IsCancellationRequested)
+        {
+            using var response = await client.PostAsJsonAsync($"/v3/workspaces/{workspace}/conclusions/list", new { }, cancellationToken);
+            response.StatusCode.ShouldBe(HttpStatusCode.OK);
+            using var page = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            foreach (var item in page.RootElement.GetProperty("items").EnumerateArray())
+            {
+                if (item.GetProperty("content").GetString() == content)
+                {
+                    return item.Clone();
+                }
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        throw new TimeoutException($"The worker produced no conclusion within {ConclusionTimeout}.");
+    }
+
+    /// <summary>
+    /// Starts the AppHost isolated from the developer's machine and returns once the database and the API are healthy.
+    /// The caller disposes the application.
+    /// </summary>
+    private static async Task<DistributedApplication> StartAsync(CancellationToken cancellationToken)
+    {
+        // Development is stated explicitly: the AppHost passes its environment on to the API, and the auth override below is Development-only.
+        var appHost = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
+            ["--environment=Development", "--AzureOpenAI:Endpoint=", $"--Parameters:sql-password={NewSqlPassword()}"], cancellationToken);
+
+        var sql = appHost.Resources.Single(resource => resource.Name == "sql");
+        foreach (var mount in sql.Annotations.OfType<ContainerMountAnnotation>().ToList())
+        {
+            sql.Annotations.Remove(mount);
+        }
+        appHost.CreateResourceBuilder<ProjectResource>("api")
+            .WithEnvironment("Nachos__Auth__Enabled", "false");
+
+        var app = await appHost.BuildAsync(cancellationToken);
+        try
+        {
+            // StartAsync returns only once every resource has started, and the API starts only after the database is healthy,
+            // so it is awaited alongside the bounded, named database wait rather than before it.
+            using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var starting = app.StartAsync(startup.Token);
+            try
+            {
+                await WaitHealthyAsync(app, "nachos", DatabaseTimeout, cancellationToken);
+            }
+            catch
+            {
+                await startup.CancelAsync();
+                await starting.ContinueWith(_ => { }, TaskScheduler.Default);
+                throw;
+            }
+            await starting;
+            await WaitHealthyAsync(app, "api", ApiTimeout, cancellationToken);
+            return app;
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
     }
 
     private static async Task WaitHealthyAsync(DistributedApplication app, string resource, TimeSpan timeout, CancellationToken cancellationToken)

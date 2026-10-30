@@ -3,9 +3,16 @@
   <ItemGroup>
     <ProjectReference Include="..\Nachos.Abstractions\Nachos.Abstractions.csproj" />
     <InternalsVisibleTo Include="Nachos.Core.Tests" />
+    <InternalsVisibleTo Include="Nachos.Hosting" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Deriver\Prompts\deriver.v1.md" LogicalName="Nachos.Core.Deriver.Prompts.deriver.v1.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="System.ClientModel" />
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
     <PackageReference Include="Microsoft.Bcl.Memory" />
     <PackageReference Include="Microsoft.ML.Tokenizers" />

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Schema;
 using Nachos.DataLayer.SqlServer.Storage;
@@ -35,19 +36,24 @@ namespace Nachos.DataLayer.SqlServer;
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore
 {
-    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock)
+    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock, ILogger<SqlMemoryStore> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(schemaGate);
         ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(logger);
 
-        var runtime = new SqlStoreRuntime(options, schemaGate, clock);
+        var runtime = new SqlStoreRuntime(options, schemaGate, clock, logger);
         Workspaces = new SqlWorkspaceStore(runtime);
         Peers = new SqlPeerStore(runtime);
         Sessions = new SqlSessionStore(runtime);
         Messages = new SqlMessageStore(runtime);
         Grants = new SqlGrantStore(runtime);
         Idempotency = new SqlIdempotencyStore(runtime);
+        Conclusions = new SqlConclusionStore(runtime);
+        PeerCards = new SqlPeerCardStore(runtime);
+        WorkQueue = new SqlWorkQueue(runtime);
+        Embeddings = new SqlEmbeddingStore(runtime);
     }
 
     public IWorkspaceStore Workspaces { get; }
@@ -61,4 +67,18 @@ public sealed class SqlMemoryStore : IMemoryStore
     public IGrantStore Grants { get; }
 
     public IIdempotencyStore Idempotency { get; }
+
+    public IConclusionStore Conclusions { get; }
+
+    public IPeerCardStore PeerCards { get; }
+
+    public IWorkQueue WorkQueue { get; }
+
+    public IEmbeddingStore Embeddings { get; }
+
+    public bool IsTransientFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return SqlErrors.IsTransient(exception);
+    }
 }

@@ -53,7 +53,7 @@ ignored old `eng/DocsGen/bin` and `eng/DocsGen/obj` directories before rebuildin
 There is no old-layout fallback.
 
 The producer's `CaptureOptionsXml` build target builds the actual Abstractions,
-Core and SQL projects with XML documentation enabled, then snapshots those
+Core, Hosting and SQL projects with XML documentation enabled, then snapshots those
 compiler outputs in `artifacts/docsgen/obj/options-xml/<Configuration>`. A later normal
 library build may remove XML from its own `bin`; it cannot remove this snapshot.
 No XML summaries are invented or checked in. XML-only builds leave existing

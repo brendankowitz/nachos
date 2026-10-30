@@ -7,20 +7,24 @@ using Nachos.Abstractions.Json;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
+using Nachos.Core.Memory;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 
 namespace Nachos.Core;
 
 /// <summary>
-/// Trusted in-process M1 operations. Transport authentication and authorization belong to the host;
+/// Trusted in-process operations. Transport authentication and authorization belong to the host;
 /// validation and workspace-scoped storage calls apply to every caller.
 /// </summary>
 public sealed partial class NachosService(
     IMemoryStore store,
     ITokenCounter tokenCounter,
     RequestValidator validator,
-    IKeyIssuer keyIssuer) : INachosClient
+    IKeyIssuer keyIssuer,
+    ConclusionService conclusionService,
+    PeerContextService peerContext,
+    IConfigurationResolver configurationResolver) : INachosClient
 {
     public async Task<Workspace> GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null,
         WorkspaceConfiguration? configuration = null, CancellationToken ct = default)

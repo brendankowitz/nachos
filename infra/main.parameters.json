@@ -8,6 +8,11 @@
     "principalLogin": { "value": "${AZURE_PRINCIPAL_LOGIN}" },
     "principalType": { "value": "${AZURE_PRINCIPAL_TYPE=User}" },
     "openAiEndpoint": { "value": "${AZURE_OPENAI_ENDPOINT=}" },
+    "openAiAccountName": { "value": "${AZURE_OPENAI_ACCOUNT_NAME=}" },
+    "openAiResourceGroupName": { "value": "${AZURE_OPENAI_RESOURCE_GROUP=}" },
+    "openAiChatDeployment": { "value": "${AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini}" },
+    "openAiEmbeddingDeployment": { "value": "${AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small}" },
+    "workerExists": { "value": "${SERVICE_WORKER_RESOURCE_EXISTS=false}" },
     "apiExists": { "value": "${SERVICE_API_RESOURCE_EXISTS=false}" },
     "placeholderImage": { "value": "${NACHOS_PLACEHOLDER_IMAGE=ghcr.io/mendhak/http-https-echo@sha256:a265f55c86cb3baead76fdf379dc8e9e6440ed121874e101e60b833e05bce8d4}" }
   }

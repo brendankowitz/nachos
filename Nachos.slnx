@@ -14,6 +14,7 @@
     <Project Path="src/Nachos.Core/Nachos.Core.csproj" />
     <Project Path="src/Nachos.Hosting/Nachos.Hosting.csproj" />
     <Project Path="src/Nachos.ServiceDefaults/Nachos.ServiceDefaults.csproj" />
+    <Project Path="src/Nachos.Worker/Nachos.Worker.csproj" />
   </Folder>
   <Folder Name="/src/DataLayer/">
     <Project Path="src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025/Nachos.DataLayer.SqlServer.Database.Sql2025.sqlproj" Type="42ea0dbd-9cf1-443e-919e-be9c484e4577" />
