@@ -30,31 +30,18 @@ internal sealed class WorkQueueState
         string owner,
         IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes,
         TimeSpan leaseDuration,
-        DateTimeOffset now)
+        DateTimeOffset now) =>
+        DueUnits(taskTypes, now).FirstOrDefault() is ({ } workUnitKey, var claimable, var policy)
+            ? Grant(workUnitKey, owner, leaseDuration, now, Batch(claimable, policy.BatchTokenTarget))
+            : null;
+
+    public QueueBacklog Backlog(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, DateTimeOffset now)
     {
-        // _items is in Id order, so each unit's items, and the units by their lowest open item, come out oldest first.
-        var units = _items
+        var oldest = _items
             .Where(item => item.IsOpen && taskTypes.ContainsKey(item.TaskType))
-            .GroupBy(item => item.WorkUnitKey, StringComparer.Ordinal);
-
-        foreach (var unit in units)
-        {
-            if (IsTakenAt(unit.Key, now) || unit.First().AvailableAt > now)
-            {
-                continue;
-            }
-
-            var claimable = unit.TakeWhile(item => item.AvailableAt <= now).ToList();
-            var policy = taskTypes[claimable[0].TaskType];
-            var isDue = claimable.Sum(item => (long)item.TokenCount) >= policy.EligibilityTokens
-                || now - claimable.Min(item => item.CreatedAt) >= policy.MaxAge;
-            if (isDue)
-            {
-                return Grant(unit.Key, owner, leaseDuration, now, Batch(claimable, policy.BatchTokenTarget));
-            }
-        }
-
-        return null;
+            .Select(item => (DateTimeOffset?)item.CreatedAt)
+            .Min();
+        return new QueueBacklog(DueUnits(taskTypes, now).LongCount(), oldest);
     }
 
     public WorkLease? TryLease(string workUnitKey, string owner, TimeSpan leaseDuration, DateTimeOffset now) =>
@@ -89,12 +76,13 @@ internal sealed class WorkQueueState
     }
 
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
-    public void GiveBack(WorkLease lease)
+    public void GiveBack(WorkLease lease, DateTimeOffset availableAt)
     {
         foreach (var item in Release(lease).Where(item => item.IsOpen))
         {
             item.Status = WorkItemStatus.Pending;
             item.Attempts = Math.Max(0, item.Attempts - 1);
+            item.AvailableAt = availableAt;
         }
     }
 
@@ -152,11 +140,44 @@ internal sealed class WorkQueueState
     public int PruneSucceeded(TimeSpan retention, DateTimeOffset now) =>
         _items.RemoveAll(item => item.Status == WorkItemStatus.Succeeded && item.CompletedAt <= now - retention);
 
+    /// <summary>
+    /// The units <see cref="TryAcquire"/> could lease, oldest lowest open item first, each with its claimable items (in
+    /// <c>Id</c> order, below the first one still backing off) and the policy of its lowest item's type.
+    /// </summary>
+    private IEnumerable<(string WorkUnitKey, List<QueuedItem> Claimable, WorkBatchPolicy Policy)> DueUnits(
+        IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, DateTimeOffset now)
+    {
+        // _items is in Id order, so each unit's items, and the units by their lowest open item, come out oldest first.
+        var units = _items
+            .Where(item => item.IsOpen && taskTypes.ContainsKey(item.TaskType))
+            .GroupBy(item => item.WorkUnitKey, StringComparer.Ordinal);
+
+        foreach (var unit in units)
+        {
+            if (IsTakenAt(unit.Key, now) || unit.First().AvailableAt > now)
+            {
+                continue;
+            }
+
+            var claimable = unit.TakeWhile(item => item.AvailableAt <= now).ToList();
+            var policy = taskTypes[claimable[0].TaskType];
+            var isDue = claimable.Sum(item => (long)item.TokenCount) >= policy.EligibilityTokens
+                || now - claimable.Min(item => item.CreatedAt) >= policy.MaxAge;
+            if (isDue)
+            {
+                yield return (unit.Key, claimable, policy);
+            }
+        }
+    }
+
     /// <summary>True while a lease on the unit has not expired (expired means strictly past <c>ExpiresAt</c>).</summary>
     private bool IsTakenAt(string workUnitKey, DateTimeOffset now) =>
         _leases.TryGetValue(workUnitKey, out var lease) && now <= lease.ExpiresAt;
 
-    /// <summary>Items in <c>Id</c> order while their tokens fit <paramref name="tokenTarget"/>, and always the first.</summary>
+    /// <summary>
+    /// Items in <c>Id</c> order while their tokens fit <paramref name="tokenTarget"/> and their count
+    /// <see cref="WorkLease.MaxItems"/>, and always the first.
+    /// </summary>
     private static List<QueuedItem> Batch(List<QueuedItem> claimable, int tokenTarget)
     {
         var batch = new List<QueuedItem> { claimable[0] };
@@ -164,7 +185,7 @@ internal sealed class WorkQueueState
         foreach (var item in claimable.Skip(1))
         {
             tokens += item.TokenCount;
-            if (tokens > tokenTarget)
+            if (tokens > tokenTarget || batch.Count == WorkLease.MaxItems)
             {
                 break;
             }

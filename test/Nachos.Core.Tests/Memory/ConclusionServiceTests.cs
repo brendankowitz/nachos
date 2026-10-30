@@ -106,6 +106,30 @@ public sealed class ConclusionServiceTests
     }
 
     [Fact]
+    public async Task Query_EmbeddingServiceUnavailable_IsServiceUnavailable()
+    {
+        using var f = await new MemoryFixture().SeedAsync();
+        f.Embeddings.FailNext = true;
+
+        var error = await Should.ThrowAsync<ServiceUnavailableException>(() => f.Service.QueryConclusionsAsync(W, new("query")));
+
+        error.InnerException.ShouldBeOfType<HttpRequestException>();
+        (await f.Service.QueryConclusionsAsync(W, new("query"))).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Create_RecordsTheEmbeddingModel()
+    {
+        using var f = await new MemoryFixture().SeedAsync();
+
+        var created = (await f.Service.CreateConclusionsAsync(W, [Create("alice likes tea")])).Single();
+
+        var stored = (await f.Store.Conclusions.GetAsync(W, created.Id, default)).ShouldNotBeNull();
+        stored.InternalMetadata[Nachos.Abstractions.Domain.VectorSpace.ModelMetadataKey]!.GetValue<string>()
+            .ShouldBe(Nachos.Core.Llm.DeterministicEmbeddingGenerator.ModelId);
+    }
+
+    [Fact]
     public async Task Query_TopKAndDistance()
     {
         using var f = await new MemoryFixture().SeedAsync();

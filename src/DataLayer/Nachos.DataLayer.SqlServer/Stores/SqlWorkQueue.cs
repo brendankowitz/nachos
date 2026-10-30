@@ -139,10 +139,11 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         await transaction.CommitAsync(ct);
     }
 
-    public async Task ReleaseAsync(WorkLease lease, CancellationToken ct)
+    public async Task ReleaseAsync(WorkLease lease, TimeSpan retryDelay, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
         ArgumentNullException.ThrowIfNull(lease);
+        var availableAt = Clamp.Add(runtime.Clock.GetUtcNow(), retryDelay);
         await using var db = await runtime.OpenAsync(ct);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         await RequireHeldAsync(db, lease, ct);
@@ -150,12 +151,16 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         {
             await db.Database.ExecuteSqlRawAsync(
                 """
-                UPDATE i SET Status = 0, Attempts = CASE WHEN i.Attempts > 0 THEN i.Attempts - 1 ELSE 0 END
+                UPDATE i SET Status = 0, Attempts = CASE WHEN i.Attempts > 0 THEN i.Attempts - 1 ELSE 0 END, AvailableAt = @availableAt
                 FROM dbo.WorkItems AS i WITH (FORCESEEK)
                 JOIN OPENJSON(@ids) WITH (Id bigint '$') AS j ON i.Id = j.Id
                 WHERE i.WorkUnitKey = @key AND i.Status IN (0, 1)
                 """,
-                [SqlParameters.LongText("@ids", ItemIds(lease)), SqlParameters.Text("@key", lease.WorkUnitKey)],
+                [
+                    SqlParameters.Time("@availableAt", availableAt),
+                    SqlParameters.LongText("@ids", ItemIds(lease)),
+                    SqlParameters.Text("@key", lease.WorkUnitKey),
+                ],
                 ct);
         }
 
@@ -289,6 +294,28 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         }
     }
 
+    /// <remarks>One snapshot statement; due-ness is the claim's own (<see cref="DueUnitsQuery"/>).</remarks>
+    public async Task<QueueBacklog> GetBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        ArgumentNullException.ThrowIfNull(taskTypes);
+        if (taskTypes.Count == 0)
+        {
+            return new QueueBacklog(0, null);
+        }
+
+        var (cte, parameters) = DueUnitsQuery(taskTypes, runtime.Clock.GetUtcNow());
+        var sql = $"""
+            {cte}
+            SELECT (SELECT COUNT_BIG(*) FROM due) AS EligibleUnits,
+                   (SELECT MIN(i.CreatedAt) FROM dbo.WorkItems AS i
+                    WHERE i.Status IN (0, 1) AND i.TaskType IN (SELECT TaskType FROM policy)) AS OldestOpenItemCreatedAt
+            """;
+        await using var db = await runtime.OpenAsync(ct);
+        var row = (await db.Database.SqlQueryRaw<BacklogRow>(sql, [.. parameters]).ToListAsync(ct)).Single();
+        return new QueueBacklog(row.EligibleUnits, row.OldestOpenItemCreatedAt);
+    }
+
     /// <summary>
     /// The fence of every write under a lease: the lease row still carries the lease's owner and token. Its update lock is
     /// held until the caller's transaction ends, so the lease cannot be reclaimed before the caller commits.
@@ -349,15 +376,34 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
     private static string ItemIds(WorkLease lease) => JsonSerializer.Serialize(lease.Items.Select(item => item.Id).Order());
 
     /// <summary>
-    /// Step 1 of a claim: the due units, as of one snapshot, by their lowest open item. A unit's claimable items are its
-    /// open items of the requested types below the first one still backing off; it is due when they hold enough tokens or
-    /// the oldest is old enough, by the policy of its lowest open item's type.
+    /// Step 1 of a claim: up to <see cref="Candidates"/> due units (<see cref="DueUnitsQuery"/>), as of one snapshot,
+    /// oldest lowest open item first.
     /// </summary>
     private static async Task<List<Candidate>> FindDueUnitsAsync(
         NachosDbContext db, IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, DateTimeOffset now, CancellationToken ct)
     {
+        var (cte, parameters) = DueUnitsQuery(taskTypes, now);
+        parameters.Add(SqlParameters.Int("@candidates", Candidates));
+        var sql = $"""
+            {cte}
+            SELECT TOP (@candidates) d.WorkUnitKey, d.FirstId
+            FROM due AS d
+            ORDER BY d.FirstId
+            """;
+        return await db.Database.SqlQueryRaw<Candidate>(sql, [.. parameters]).ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// The common table expressions ending in <c>due</c>: the due units, each with its lowest open item (<c>FirstId</c>).
+    /// A unit's claimable items are its open items of the requested types below the first one still backing off; it is
+    /// due when no unexpired lease holds it and its claimable items hold enough tokens or the oldest is old enough, by the
+    /// policy of its lowest open item's type. <c>policy</c> lists the requested types.
+    /// </summary>
+    private static (string Cte, List<SqlParameter> Parameters) DueUnitsQuery(
+        IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, DateTimeOffset now)
+    {
         var policies = new List<string>(taskTypes.Count);
-        var parameters = new List<SqlParameter> { SqlParameters.Time("@now", now), SqlParameters.Int("@candidates", Candidates) };
+        var parameters = new List<SqlParameter> { SqlParameters.Time("@now", now) };
         foreach (var ((type, policy), i) in taskTypes.Select((pair, i) => (pair, i)))
         {
             policies.Add($"(@type{i}, @tokens{i}, @cutoff{i})");
@@ -366,7 +412,7 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
             parameters.Add(SqlParameters.Time($"@cutoff{i}", Clamp.Subtract(now, policy.MaxAge)));
         }
 
-        var sql = $"""
+        var cte = $"""
             WITH policy (TaskType, EligibilityTokens, AgeCutoff) AS (SELECT * FROM (VALUES {string.Join(", ", policies)}) AS p (TaskType, EligibilityTokens, AgeCutoff)),
             open_items AS (
                 SELECT i.Id, i.WorkUnitKey, i.TaskType, i.AvailableAt, i.TokenCount, i.CreatedAt
@@ -381,15 +427,15 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                 SELECT u.WorkUnitKey, u.FirstId, SUM(CAST(o.TokenCount AS bigint)) AS Tokens, MIN(o.CreatedAt) AS Oldest
                 FROM units AS u JOIN open_items AS o ON o.WorkUnitKey = u.WorkUnitKey
                 WHERE u.BlockedId IS NULL OR o.Id < u.BlockedId
-                GROUP BY u.WorkUnitKey, u.FirstId)
-            SELECT TOP (@candidates) c.WorkUnitKey, c.FirstId
-            FROM claimable AS c
-            JOIN open_items AS f ON f.Id = c.FirstId
-            JOIN policy AS p ON p.TaskType = f.TaskType
-            WHERE c.Tokens >= p.EligibilityTokens OR c.Oldest <= p.AgeCutoff
-            ORDER BY c.FirstId
+                GROUP BY u.WorkUnitKey, u.FirstId),
+            due AS (
+                SELECT c.WorkUnitKey, c.FirstId
+                FROM claimable AS c
+                JOIN open_items AS f ON f.Id = c.FirstId
+                JOIN policy AS p ON p.TaskType = f.TaskType
+                WHERE c.Tokens >= p.EligibilityTokens OR c.Oldest <= p.AgeCutoff)
             """;
-        return await db.Database.SqlQueryRaw<Candidate>(sql, [.. parameters]).ToListAsync(ct);
+        return (cte, parameters);
     }
 
     /// <summary>Steps 2 to 4 of a claim on one candidate, in one transaction; null (and nothing changed) when it is not claimable.</summary>
@@ -463,7 +509,8 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
 
     /// <summary>
     /// The items one lease takes from a unit's open items (in <c>Id</c> order), or null when the unit is not due: the
-    /// claimable prefix, if due by its lowest item's policy, cut to that policy's token target and always at least one.
+    /// claimable prefix, if due by its lowest item's policy, cut to that policy's token target and to
+    /// <see cref="WorkLease.MaxItems"/>, and always at least one.
     /// </summary>
     private static List<WorkItemRow>? Batch(
         List<WorkItemRow> open, IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, DateTimeOffset now)
@@ -487,7 +534,7 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         foreach (var item in claimable.Skip(1))
         {
             tokens += item.TokenCount;
-            if (tokens > policy.BatchTokenTarget)
+            if (tokens > policy.BatchTokenTarget || batch.Count == WorkLease.MaxItems)
             {
                 break;
             }
@@ -572,6 +619,8 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
 
     /// <summary>A due unit and its lowest open item.</summary>
     private sealed record Candidate(string WorkUnitKey, long FirstId);
+
+    private sealed record BacklogRow(long EligibleUnits, DateTimeOffset? OldestOpenItemCreatedAt);
 
     private sealed record StatusRow(string? SessionName, int Pending, int InProgress, int Completed, int DeadLettered)
     {

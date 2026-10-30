@@ -66,6 +66,7 @@ public sealed partial class DeriverService : IWorkHandler
     private readonly DeriverOptions _options;
     private readonly WorkerMetrics _metrics;
     private readonly ILogger<DeriverService> _logger;
+    private readonly string _embeddingModel;
 
     public DeriverService(
         IMemoryStore store,
@@ -96,6 +97,7 @@ public sealed partial class DeriverService : IWorkHandler
         _options = options.Value.Deriver;
         _metrics = metrics;
         _logger = logger;
+        _embeddingModel = EmbeddingModelName.Of(embeddings);
         BatchPolicy = new WorkBatchPolicy(_options.EligibilityTokens, _options.MaxAge, _options.BatchTokenTarget);
     }
 
@@ -149,7 +151,10 @@ public sealed partial class DeriverService : IWorkHandler
             return new Derivation(batch.Nothing(), 0, 0);
         }
 
-        var targets = await LoadTargetsAsync(batch, targetIds, ct).ConfigureAwait(false);
+        // A blank message states nothing, so it is never sent to the model; its item completes with the batch.
+        var targets = (await LoadTargetsAsync(batch, targetIds, ct).ConfigureAwait(false))
+            .Where(message => !string.IsNullOrWhiteSpace(message.Content))
+            .ToList();
         if (targets.Count == 0)
         {
             return new Derivation(batch.Nothing(), 0, 0);
@@ -165,9 +170,10 @@ public sealed partial class DeriverService : IWorkHandler
         var system = Prompt.Render(new Dictionary<string, string>
         {
             ["target_peer"] = target,
-            ["custom_instructions"] = RenderCustomInstructions(configuration, batch, targets),
+            ["custom_instructions"] = RenderCustomInstructions(configuration),
         });
-        var transcript = await BuildTranscriptAsync(batch, targets, target, system, ct).ConfigureAwait(false);
+        var transcript = await BuildTranscriptAsync(batch, targets, target, MessageInstructions(batch, targets), system, ct)
+            .ConfigureAwait(false);
         var extraction = await ExtractAsync(workUnitKey, batch.WorkspaceName, system, transcript, ct).ConfigureAwait(false);
         var candidates = Validate(workUnitKey, extraction, targets);
         var facts = await EmbedAsync(workUnitKey, candidates, ct).ConfigureAwait(false);
@@ -207,13 +213,18 @@ public sealed partial class DeriverService : IWorkHandler
     }
 
     /// <summary>
-    /// The user message: the target messages marked <c>target</c>, plus up to <see cref="ContextMessages"/> other messages
-    /// ending at the last target, newest first while they fit <see cref="DeriverOptions.MaxInputTokens"/>. The targets are
-    /// always included, even over budget, because they are the subject of the request; context stops at the first message
-    /// that does not fit, so what is shown is contiguous.
+    /// The user message: the message-level instructions, the target messages marked <c>target</c>, plus up to
+    /// <see cref="ContextMessages"/> other messages ending at the last target, newest first while they fit
+    /// <see cref="DeriverOptions.MaxInputTokens"/>. The targets are always included, even over budget, because they are the
+    /// subject of the request; context stops at the first message that does not fit, so what is shown is contiguous.
     /// </summary>
     private async Task<string> BuildTranscriptAsync(
-        WorkBatch batch, List<MessageRecord> targets, string target, string system, CancellationToken ct)
+        WorkBatch batch,
+        List<MessageRecord> targets,
+        string target,
+        IReadOnlyList<string> instructions,
+        string system,
+        CancellationToken ct)
     {
         var targetIds = targets.Select(message => message.PublicId).ToHashSet(StringComparer.Ordinal);
         var lastSeq = targets[^1].Seq;
@@ -227,7 +238,7 @@ public sealed partial class DeriverService : IWorkHandler
 
         var remaining = _options.MaxInputTokens
             - _tokenCounter.Count(system)
-            - _tokenCounter.Count(Transcript(target, []));
+            - _tokenCounter.Count(Transcript(target, instructions, []));
         var included = targets.Select(message => (message.Seq, Entry: Entry(message, isTarget: true))).ToList();
         remaining -= included.Sum(e => Cost(e.Entry));
 
@@ -245,7 +256,7 @@ public sealed partial class DeriverService : IWorkHandler
             included.Add((message.Seq, entry));
         }
 
-        return Transcript(target, [.. included.OrderBy(e => e.Seq).Select(e => e.Entry)]);
+        return Transcript(target, instructions, [.. included.OrderBy(e => e.Seq).Select(e => e.Entry)]);
     }
 
     private static JsonObject Entry(MessageRecord message, bool isTarget)
@@ -265,27 +276,37 @@ public sealed partial class DeriverService : IWorkHandler
 
     private int Cost(JsonObject entry) => _tokenCounter.Count(entry.ToJsonString(TranscriptJson));
 
-    private static string Transcript(string target, IReadOnlyList<JsonObject> entries) =>
-        new JsonObject
-        {
-            ["target_peer"] = target,
-            ["messages"] = new JsonArray([.. entries]),
-        }.ToJsonString(TranscriptJson);
-
     /// <summary>
-    /// The resolved general and reasoning instructions, then each distinct message-level instruction of the target
-    /// messages, in ordinal order.
+    /// The user message's JSON. Message-level instructions arrive with each message, from whoever posts it, so they travel
+    /// here as data under <c>message_instructions</c> (present only when there are some), never in the system prompt.
     /// </summary>
-    private static string RenderCustomInstructions(ResolvedConfiguration configuration, WorkBatch batch, List<MessageRecord> targets)
+    private static string Transcript(string target, IReadOnlyList<string> instructions, IReadOnlyList<JsonObject> entries)
     {
-        var messageLevel = targets
+        var transcript = new JsonObject { ["target_peer"] = target };
+        if (instructions.Count > 0)
+        {
+            transcript["message_instructions"] = new JsonArray([.. instructions.Select(text => JsonValue.Create(text))]);
+        }
+
+        transcript["messages"] = new JsonArray([.. entries]);
+        return transcript.ToJsonString(TranscriptJson);
+    }
+
+    /// <summary>Each distinct non-blank message-level instruction of the target messages, in ordinal order.</summary>
+    private static List<string> MessageInstructions(WorkBatch batch, List<MessageRecord> targets) =>
+        targets
             .Select(message => batch.WorkOf(message.PublicId).CustomInstructions)
             .OfType<string>()
+            .Where(text => !string.IsNullOrWhiteSpace(text))
             .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal);
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>The resolved workspace/session general and reasoning instructions, for the system prompt.</summary>
+    private static string RenderCustomInstructions(ResolvedConfiguration configuration)
+    {
         var present = new[] { configuration.CustomInstructions.Value, configuration.Reasoning.CustomInstructions.Value }
             .OfType<string>()
-            .Concat(messageLevel)
             .Where(text => !string.IsNullOrWhiteSpace(text))
             .ToList();
         return present.Count == 0
@@ -392,11 +413,12 @@ public sealed partial class DeriverService : IWorkHandler
         return (new DerivationChanges(batch.WorkspaceName, inserts, corroborations, replacements), observerFacts);
     }
 
-    private static JsonObject Provenance(DerivedFact fact) => new()
+    private JsonObject Provenance(DerivedFact fact) => new()
     {
         ["prompt_id"] = Prompt.Id,
         ["prompt_version"] = Prompt.Version,
         ["source_message_ids"] = new JsonArray([.. fact.SourceMessageIds.Select(id => JsonValue.Create(id))]),
+        [VectorSpace.ModelMetadataKey] = _embeddingModel,
     };
 
     private sealed record Derivation(DerivationChanges Changes, int Facts, int ObserverFacts);

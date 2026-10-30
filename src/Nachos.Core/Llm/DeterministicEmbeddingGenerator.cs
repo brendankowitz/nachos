@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
+using Nachos.Abstractions.Domain;
 
 namespace Nachos.Core.Llm;
 
@@ -10,14 +11,19 @@ namespace Nachos.Core.Llm;
 /// </summary>
 public sealed class DeterministicEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
 {
+    /// <summary>The model id this generator reports, and so the <c>embedding_model</c> of the conclusions it embeds.</summary>
+    public const string ModelId = "fake";
+
     private const int FloatsPerHash = SHA256.HashSizeInBytes / sizeof(uint);
 
     private readonly int _dimensions;
+    private readonly EmbeddingGeneratorMetadata _metadata;
 
-    public DeterministicEmbeddingGenerator(int dimensions = EmbeddingOptions.RequiredDimensions)
+    public DeterministicEmbeddingGenerator(int dimensions = VectorSpace.Dimensions)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(dimensions, 1);
         _dimensions = dimensions;
+        _metadata = new EmbeddingGeneratorMetadata("nachos-deterministic", defaultModelId: ModelId, defaultModelDimensions: dimensions);
     }
 
     public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
@@ -35,7 +41,10 @@ public sealed class DeterministicEmbeddingGenerator : IEmbeddingGenerator<string
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null) =>
-        serviceKey is null && serviceType.IsInstanceOfType(this) ? this : null;
+        serviceKey is not null ? null
+        : serviceType == typeof(EmbeddingGeneratorMetadata) ? _metadata
+        : serviceType.IsInstanceOfType(this) ? this
+        : null;
 
     public void Dispose()
     {

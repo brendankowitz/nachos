@@ -27,6 +27,8 @@ public abstract class MemoryContractTests : IAsyncLifetime
 
     private static readonly TimeSpan Lease = TimeSpan.FromMinutes(5);
 
+    private const string Model = "test-embedding-model";
+
     private readonly ConcurrentBag<IMemoryStore> _stores = [];
 
     private static CancellationToken Ct => CancellationToken.None;
@@ -330,7 +332,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
 
         var pending = await InsertAsync(store, workspace, Fact("pending", session));
         await Should.ThrowAsync<ArgumentException>(() =>
-            store.Embeddings.SaveAsync(new PendingEmbedding(workspace, pending.PublicId, "pending"), infinite, Ct));
+            store.Embeddings.SaveAsync(new PendingEmbedding(workspace, pending.PublicId, "pending"), infinite, Model, Ct));
         (await ListAllAsync(store, workspace)).ShouldHaveSingleItem().PublicId.ShouldBe(pending.PublicId);
     }
 
@@ -753,12 +755,50 @@ public abstract class MemoryContractTests : IAsyncLifetime
         pending.ShouldBe([new PendingEmbedding(workspace, first.PublicId, "first"), new PendingEmbedding(workspace, second.PublicId, "second")]);
         (await store.Embeddings.ListPendingAsync(1, Ct)).Count.ShouldBe(1);
 
-        await Should.ThrowAsync<ArgumentException>(() => store.Embeddings.SaveAsync(pending[0], new float[4], Ct));
-        await store.Embeddings.SaveAsync(pending[0], Vector(0), Ct);
+        await Should.ThrowAsync<ArgumentException>(() => store.Embeddings.SaveAsync(pending[0], new float[4], Model, Ct));
+        await store.Embeddings.SaveAsync(pending[0], Vector(0), Model, Ct);
 
         (await store.Embeddings.ListPendingAsync(1000, Ct)).Select(p => p.ConclusionId).ShouldNotContain(first.PublicId);
         (await store.Conclusions.QueryAsync(workspace, Vector(0), 1, null, null, Ct))
             .ShouldHaveSingleItem().Conclusion.PublicId.ShouldBe(first.PublicId);
+    }
+
+    [Fact]
+    public async Task Embeddings_Save_RecordsTheModel_AndKeepsTheOtherMetadata()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var conclusion = await InsertAsync(store, workspace, Fact("Bob has a dog.", session) with
+        {
+            InternalMetadata = new JsonObject { ["source_message_ids"] = new JsonArray("m1") },
+        });
+
+        await store.Embeddings.SaveAsync(new PendingEmbedding(workspace, conclusion.PublicId, "Bob has a dog."), Vector(0), Model, Ct);
+
+        var metadata = (await store.Conclusions.GetAsync(workspace, conclusion.PublicId, Ct)).ShouldNotBeNull().InternalMetadata;
+        metadata[VectorSpace.ModelMetadataKey]!.GetValue<string>().ShouldBe(Model);
+        metadata["source_message_ids"]!.AsArray().Select(id => id!.GetValue<string>()).ShouldBe(["m1"]);
+    }
+
+    [Fact]
+    public async Task Embeddings_CountPending_CountsLivePendingConclusionsOnly()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        // The store may be shared by other tests' workspaces, so the count is compared with its starting value.
+        var before = await store.Embeddings.CountPendingAsync(Ct);
+        await InsertAsync(store, workspace, Fact("pending", session));
+        var saved = await InsertAsync(store, workspace, Fact("saved", session));
+        var tombstoned = await InsertAsync(store, workspace, Fact("tombstoned", session));
+        var failed = await InsertAsync(store, workspace, Fact("failed", session));
+        await InsertAsync(store, workspace, Fact("embedded", session, Vector(5)));
+        (await store.Embeddings.CountPendingAsync(Ct)).ShouldBe(before + 4);
+
+        await store.Embeddings.SaveAsync(new PendingEmbedding(workspace, saved.PublicId, "saved"), Vector(1), Model, Ct);
+        await store.Conclusions.TombstoneAsync(workspace, tombstoned.PublicId, Ct);
+        await store.Embeddings.MarkFailedAsync(new PendingEmbedding(workspace, failed.PublicId, "failed"), Ct);
+
+        (await store.Embeddings.CountPendingAsync(Ct)).ShouldBe(before + 1);
     }
 
     [Fact]
@@ -775,7 +815,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
             lease,
             new DerivationChanges(workspace, [], [], [new ConclusionReplacement(conclusion.PublicId, "Bob has a dog named Rex.", null)]),
             Ct);
-        await store.Embeddings.SaveAsync(claimed, Vector(0), Ct);
+        await store.Embeddings.SaveAsync(claimed, Vector(0), Model, Ct);
         await store.Embeddings.MarkFailedAsync(claimed, Ct);
 
         (await store.Conclusions.QueryAsync(workspace, Vector(0), 10, null, null, Ct)).ShouldBeEmpty();
@@ -792,7 +832,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
         var claimed = (await store.Embeddings.ListPendingAsync(1000, Ct)).Single(p => p.ConclusionId == conclusion.PublicId);
 
         await store.Embeddings.MarkFailedAsync(claimed, Ct);
-        await store.Embeddings.SaveAsync(claimed, Vector(0), Ct);
+        await store.Embeddings.SaveAsync(claimed, Vector(0), Model, Ct);
 
         (await store.Embeddings.ListPendingAsync(1000, Ct)).ShouldNotContain(p => p.ConclusionId == conclusion.PublicId);
         (await store.Conclusions.QueryAsync(workspace, Vector(0), 10, null, null, Ct)).ShouldBeEmpty();

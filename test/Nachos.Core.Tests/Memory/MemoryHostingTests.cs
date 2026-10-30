@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Llm;
@@ -39,7 +40,7 @@ public sealed class MemoryHostingTests
         await service.CreateConclusionsAsync("W", [new("alice likes tea", "alice", "alice")]);
 
         (await scope.ServiceProvider.GetRequiredService<IMemoryStore>().Embeddings.ListPendingAsync(10, default)).Count.ShouldBe(1);
-        await Should.ThrowAsync<InvalidOperationException>(() => service.QueryConclusionsAsync("W", new("tea")));
+        await Should.ThrowAsync<ServiceUnavailableException>(() => service.QueryConclusionsAsync("W", new("tea")));
         scope.ServiceProvider.GetRequiredService<PeerContextService>().ShouldNotBeNull();
     }
 

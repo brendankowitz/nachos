@@ -4,7 +4,7 @@ namespace Nachos.Abstractions.Domain;
 /// When a unit of one task type is due, and how much of it one lease takes. A unit is due when its claimable items'
 /// summed <c>TokenCount</c> reaches <see cref="EligibilityTokens"/>, or its oldest claimable item was enqueued at least
 /// <see cref="MaxAge"/> ago. A lease takes items in <c>Id</c> order while their summed <c>TokenCount</c> stays within
-/// <see cref="BatchTokenTarget"/>, and always at least one.
+/// <see cref="BatchTokenTarget"/> (and the count within <see cref="WorkLease.MaxItems"/>), and always at least one.
 /// </summary>
 public sealed record WorkBatchPolicy
 {

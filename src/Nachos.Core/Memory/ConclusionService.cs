@@ -6,6 +6,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Llm;
 
 namespace Nachos.Core.Memory;
 
@@ -15,8 +16,8 @@ namespace Nachos.Core.Memory;
 /// </summary>
 /// <remarks>
 /// The embedding generator is optional so that a host without AI still serves everything else: created conclusions
-/// then stay pending, and a semantic query throws <see cref="InvalidOperationException"/>. Logging is optional because a
-/// bare container may register none.
+/// then stay pending, and a semantic query throws <see cref="ServiceUnavailableException"/>. Logging is optional because
+/// a bare container may register none.
 /// </remarks>
 public sealed partial class ConclusionService(
     IMemoryStore store,
@@ -103,10 +104,11 @@ public sealed partial class ConclusionService(
                 return;
             }
 
+            var model = EmbeddingModelName.Of(embeddings);
             for (var i = 0; i < created.Count; i++)
             {
                 var pending = new PendingEmbedding(workspaceName, created[i].PublicId, created[i].Content);
-                await store.Embeddings.SaveAsync(pending, vectors[i].Vector, ct).ConfigureAwait(false);
+                await store.Embeddings.SaveAsync(pending, vectors[i].Vector, model, ct).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)

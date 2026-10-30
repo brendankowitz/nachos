@@ -1,6 +1,4 @@
-using System.ClientModel;
 using System.Diagnostics;
-using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -47,7 +45,7 @@ public sealed partial class NachosFallbackChatClient : DelegatingChatClient
             {
                 return await client.GetResponseAsync(chat, options, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (attempt < _fallbacks.Count && IsRetryable(ex, cancellationToken))
+            catch (Exception ex) when (attempt < _fallbacks.Count && ProviderFailure.IsTransient(ex, cancellationToken))
             {
                 ReportFallback(attempt, ex);
                 attempt++;
@@ -72,7 +70,7 @@ public sealed partial class NachosFallbackChatClient : DelegatingChatClient
             {
                 hasFirst = await updates.MoveNextAsync().ConfigureAwait(false);
             }
-            catch (Exception ex) when (attempt < _fallbacks.Count && IsRetryable(ex, cancellationToken))
+            catch (Exception ex) when (attempt < _fallbacks.Count && ProviderFailure.IsTransient(ex, cancellationToken))
             {
                 ReportFallback(attempt, ex);
                 attempt++;
@@ -106,7 +104,7 @@ public sealed partial class NachosFallbackChatClient : DelegatingChatClient
     {
         var from = _profileNames[failedAttempt];
         var to = _profileNames[failedAttempt + 1];
-        var status = FindStatus(exception);
+        var status = ProviderFailure.StatusOf(exception);
         LogFallback(_logger, exception, from, exception.GetType().Name, status, to);
         Activity.Current?.AddEvent(new ActivityEvent("nachos.llm.fallback", tags: new ActivityTagsCollection
         {
@@ -119,48 +117,4 @@ public sealed partial class NachosFallbackChatClient : DelegatingChatClient
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Chat profile {FromProfile} failed with {ExceptionType} (status {Status}); falling back to {ToProfile}.")]
     private static partial void LogFallback(ILogger logger, Exception exception, string fromProfile, string exceptionType, int? status, string toProfile);
-
-    private static int? FindStatus(Exception exception)
-    {
-        for (var current = exception; current is not null; current = current.InnerException)
-        {
-            switch (current)
-            {
-                case ClientResultException { Status: > 0 } clientResult:
-                    return clientResult.Status;
-                case HttpRequestException { StatusCode: { } status }:
-                    return (int)status;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsRetryable(Exception exception, CancellationToken cancellationToken)
-    {
-        if (cancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
-
-        for (var current = exception; current is not null; current = current.InnerException)
-        {
-            switch (current)
-            {
-                case ClientResultException { Status: > 0 } clientResult:
-                    return IsRetryableStatus(clientResult.Status);
-                case HttpRequestException { StatusCode: { } status }:
-                    return IsRetryableStatus((int)status);
-                case HttpRequestException:
-                case TimeoutException:
-                case TaskCanceledException:
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool IsRetryableStatus(int status) =>
-        status is (int)HttpStatusCode.RequestTimeout or (int)HttpStatusCode.TooManyRequests or >= 500;
 }

@@ -32,12 +32,27 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
         return [.. rows.Select(row => new PendingEmbedding(row.WorkspaceName, row.PublicId, row.Content))];
     }
 
-    public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, CancellationToken ct)
+    public async Task<long> CountPendingAsync(CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        await using var db = await runtime.OpenAsync(ct);
+        var counts = await db.Database
+            .SqlQueryRaw<long>("SELECT COUNT_BIG(*) AS [Value] FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL")
+            .ToListAsync(ct);
+        return counts.Single();
+    }
+
+    public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
         ArgumentNullException.ThrowIfNull(pending);
+        ArgumentNullException.ThrowIfNull(embeddingModel);
         Vectors.Require(embedding, nameof(embedding));
-        return UpdatePendingAsync(pending, "Embedding = @embedding, EmbeddingState = 1", [SqlParameters.Vector("@embedding", embedding)], ct);
+        return UpdatePendingAsync(
+            pending,
+            $"Embedding = @embedding, EmbeddingState = 1, InternalMetadata = JSON_MODIFY(c.InternalMetadata, '$.{VectorSpace.ModelMetadataKey}', @model)",
+            [SqlParameters.Vector("@embedding", embedding), SqlParameters.Text("@model", embeddingModel)],
+            ct);
     }
 
     public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct)

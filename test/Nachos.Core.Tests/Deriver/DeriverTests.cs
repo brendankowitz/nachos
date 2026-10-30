@@ -49,6 +49,7 @@ public sealed class DeriverTests : IDisposable
                 .ShouldBe([message.PublicId]);
             conclusion.InternalMetadata["prompt_id"]!.GetValue<string>().ShouldBe("deriver");
             conclusion.InternalMetadata["prompt_version"]!.GetValue<string>().ShouldBe("1");
+            conclusion.InternalMetadata[VectorSpace.ModelMetadataKey]!.GetValue<string>().ShouldBe(DeterministicEmbeddingGenerator.ModelId);
         }
 
         var vector = await new DeterministicEmbeddingGenerator().GenerateVectorAsync("Alice lives in Paris.");
@@ -354,7 +355,7 @@ public sealed class DeriverTests : IDisposable
     }
 
     [Fact]
-    public async Task MessageCustomInstructions_ReachThePromptOncePerDistinctText()
+    public async Task MessageCustomInstructions_AreSentAsDataInTheUserMessage_OncePerDistinctText()
     {
         await _fixture.SeedAsync();
         await _fixture.SayAsync("alice", "I run.", new DeriveIntent(true, CustomInstructions: "Zeta: note sports."));
@@ -364,10 +365,38 @@ public sealed class DeriverTests : IDisposable
 
         await _fixture.HandleAsync(await _fixture.AcquireAsync());
 
-        var system = _fixture.Chat.Requests.Single().Messages[0].Text;
-        system.Split("Zeta: note sports.").Length.ShouldBe(2);
-        system.Split("Alpha: note hobbies.").Length.ShouldBe(2);
-        system.IndexOf("Alpha", StringComparison.Ordinal).ShouldBeLessThan(system.IndexOf("Zeta", StringComparison.Ordinal));
+        var request = _fixture.Chat.Requests.Single();
+        var system = request.Messages[0].Text;
+        system.ShouldNotContain("note sports");
+        system.ShouldNotContain("note hobbies");
+        system.ShouldContain("`message_instructions`");
+        Transcript(request)["message_instructions"]!.AsArray().Select(n => n!.GetValue<string>())
+            .ShouldBe(["Alpha: note hobbies.", "Zeta: note sports."]);
+    }
+
+    [Fact]
+    public async Task WithoutMessageInstructions_TheUserMessageHasNone()
+    {
+        await _fixture.SeedAsync();
+        await _fixture.SayAsync("alice", "I run.");
+        _fixture.Facts();
+
+        await _fixture.HandleAsync(await _fixture.AcquireAsync());
+
+        Transcript(_fixture.Chat.Requests.Single()).ContainsKey("message_instructions").ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task BlankMessages_AreNotSentToTheModel_AndComplete()
+    {
+        await _fixture.SeedAsync();
+        await _fixture.SayAsync("alice", "   ");
+        await _fixture.SayAsync("alice", "");
+
+        await _fixture.HandleAsync(await _fixture.AcquireAsync());
+
+        _fixture.Chat.Requests.ShouldBeEmpty();
+        (await _fixture.QueueAsync()).ShouldBe(new QueueCounts(0, 0, 2, 0));
     }
 
     // ---------------------------------------------------------------- prompt injection
@@ -407,8 +436,8 @@ public sealed class DeriverTests : IDisposable
 
     // ---------------------------------------------------------------- deleted sources
 
+    // A deleted workspace is not covered here: its work items go with it (M3 deletion), so the Deriver never sees one.
     [Theory]
-    [InlineData("workspace")]
     [InlineData("session")]
     [InlineData("messages")]
     public async Task DeletedSource_CompletesWithoutChanges(string gone)
@@ -436,11 +465,6 @@ public sealed class DeriverTests : IDisposable
         store.Messages.Returns(inner.Messages);
         switch (gone)
         {
-            case "workspace":
-                var workspaces = Substitute.For<IWorkspaceStore>();
-                workspaces.GetAsync(default!, default).ReturnsForAnyArgs((WorkspaceRecord?)null);
-                store.Workspaces.Returns(workspaces);
-                break;
             case "session":
                 var sessions = Substitute.For<ISessionStore>();
                 sessions.GetAsync(default!, default!, default).ReturnsForAnyArgs((SessionRecord?)null);

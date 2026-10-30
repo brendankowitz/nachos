@@ -69,14 +69,14 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
             },
             ct);
 
-    public Task ReleaseAsync(WorkLease lease, CancellationToken ct) =>
+    public Task ReleaseAsync(WorkLease lease, TimeSpan retryDelay, CancellationToken ct) =>
         state.Run(
             () =>
             {
                 ArgumentNullException.ThrowIfNull(lease);
                 lock (state.Queue.Gate)
                 {
-                    state.Queue.GiveBack(lease);
+                    state.Queue.GiveBack(lease, state.Clock.GetUtcNow() + retryDelay);
                 }
             },
             ct);
@@ -104,6 +104,18 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
                 lock (state.Queue.Gate)
                 {
                     return state.Queue.Status(workspaceName, observerName, senderName, sessionName, state.Clock.GetUtcNow());
+                }
+            },
+            ct);
+
+    public Task<QueueBacklog> GetBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                ArgumentNullException.ThrowIfNull(taskTypes);
+                lock (state.Queue.Gate)
+                {
+                    return state.Queue.Backlog(taskTypes, state.Clock.GetUtcNow());
                 }
             },
             ct);

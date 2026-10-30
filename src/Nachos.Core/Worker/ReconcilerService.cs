@@ -1,12 +1,13 @@
-using System.ClientModel;
 using System.Net;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
+using Nachos.Core.Llm;
 
 namespace Nachos.Core.Worker;
 
@@ -14,7 +15,8 @@ namespace Nachos.Core.Worker;
 /// The cluster's housekeeping, run by one replica at a time under the <see cref="WorkUnitKeys.Reconciler"/> lease. Each
 /// tick embeds pending conclusions, deletes tombstoned conclusions older than
 /// <see cref="ReconcilerOptions.TombstoneRetention"/>, prunes succeeded work items older than
-/// <see cref="ReconcilerOptions.CompletedRetention"/>, and deletes expired idempotency records.
+/// <see cref="ReconcilerOptions.CompletedRetention"/>, refreshes the backlog gauges of <see cref="WorkerMetrics"/>, and
+/// deletes expired idempotency records.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -45,27 +47,38 @@ public sealed partial class ReconcilerService : BackgroundService
     private readonly IMemoryStore _store;
     private readonly TimeProvider _clock;
     private readonly ReconcilerOptions _options;
+    private readonly IServiceScopeFactory _scopes;
+    private readonly WorkerMetrics _metrics;
     private readonly ILogger<ReconcilerService> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
+    private readonly string _embeddingModel;
     private readonly Dictionary<(string Workspace, string Conclusion), int> _embeddingFailures = [];
     private readonly string _owner = $"{Environment.MachineName}:{Environment.ProcessId}:reconciler:{Guid.NewGuid():N}";
 
+    /// <param name="scopes">Reads the handlers' batch policies, which define a due unit for the backlog gauges.</param>
     public ReconcilerService(
         IMemoryStore store,
         TimeProvider clock,
         IOptions<ReconcilerOptions> options,
+        IServiceScopeFactory scopes,
+        WorkerMetrics metrics,
         ILogger<ReconcilerService> logger,
         IEmbeddingGenerator<string, Embedding<float>>? embeddings = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(scopes);
+        ArgumentNullException.ThrowIfNull(metrics);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
         _clock = clock;
         _options = options.Value;
+        _scopes = scopes;
+        _metrics = metrics;
         _logger = logger;
         _embeddings = embeddings;
+        _embeddingModel = embeddings is null ? EmbeddingModelName.Unknown : EmbeddingModelName.Of(embeddings);
     }
 
     private string Owner => _owner.Length <= WorkLease.MaxOwnerLength ? _owner : _owner[^WorkLease.MaxOwnerLength..];
@@ -86,6 +99,7 @@ public sealed partial class ReconcilerService : BackgroundService
         WorkLease? lease = null;
         LeaseKeeper? keeper = null;
         var failedTicks = 0;
+        var policies = await WorkHandlerPolicies.ReadAsync(_scopes).ConfigureAwait(false);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -95,6 +109,7 @@ public sealed partial class ReconcilerService : BackgroundService
                     await keeper.DisposeAsync().ConfigureAwait(false);
                     (keeper, lease) = (null, null);
                     _embeddingFailures.Clear();
+                    _metrics.ClearBacklog();
                 }
 
                 if (keeper is null)
@@ -109,7 +124,7 @@ public sealed partial class ReconcilerService : BackgroundService
 
                 if (keeper is not null)
                 {
-                    failedTicks = await TryTickAsync(keeper, ct).ConfigureAwait(false) ? 0 : failedTicks + 1;
+                    failedTicks = await TryTickAsync(keeper, policies, ct).ConfigureAwait(false) ? 0 : failedTicks + 1;
                 }
 
                 var delay = failedTicks == 0
@@ -123,6 +138,7 @@ public sealed partial class ReconcilerService : BackgroundService
         }
         finally
         {
+            _metrics.ClearBacklog();
             if (keeper is not null)
             {
                 await keeper.DisposeAsync().ConfigureAwait(false);
@@ -164,11 +180,12 @@ public sealed partial class ReconcilerService : BackgroundService
     }
 
     /// <returns>False when a step threw; embedding failures of single conclusions do not count.</returns>
-    private async Task<bool> TryTickAsync(LeaseKeeper keeper, CancellationToken ct)
+    private async Task<bool> TryTickAsync(
+        LeaseKeeper keeper, IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> policies, CancellationToken ct)
     {
         try
         {
-            await TickAsync(keeper.Token).ConfigureAwait(false);
+            await TickAsync(policies, keeper.Token).ConfigureAwait(false);
             return true;
         }
         catch (Exception) when (keeper.IsLost && !ct.IsCancellationRequested)
@@ -182,13 +199,24 @@ public sealed partial class ReconcilerService : BackgroundService
         }
     }
 
-    private async Task TickAsync(CancellationToken ct)
+    private async Task TickAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> policies, CancellationToken ct)
     {
         var embedding = _embeddings is null ? new EmbeddingOutcome(0, 0, 0) : await EmbedPendingAsync(_embeddings, ct).ConfigureAwait(false);
         var tombstones = await _store.Conclusions.PurgeTombstonesAsync(_options.TombstoneRetention, ct).ConfigureAwait(false);
         var items = await _store.WorkQueue.PruneSucceededAsync(_options.CompletedRetention, ct).ConfigureAwait(false);
+        await RefreshBacklogAsync(policies, ct).ConfigureAwait(false);
         var idempotency = await _store.Idempotency.PurgeExpiredAsync(ct).ConfigureAwait(false);
         LogTick(embedding.Embedded, embedding.Failed, embedding.MarkedFailed, tombstones, items, idempotency);
+    }
+
+    private async Task RefreshBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> policies, CancellationToken ct)
+    {
+        var backlog = await _store.WorkQueue.GetBacklogAsync(policies, ct).ConfigureAwait(false);
+        var embeddingPending = await _store.Embeddings.CountPendingAsync(ct).ConfigureAwait(false);
+        var oldestAge = backlog.OldestOpenItemCreatedAt is { } oldest
+            ? TimeSpan.FromTicks(Math.Max(0, (_clock.GetUtcNow() - oldest).Ticks))
+            : TimeSpan.Zero;
+        _metrics.RecordBacklog(backlog.EligibleUnits, oldestAge, embeddingPending);
     }
 
     /// <summary>
@@ -302,24 +330,8 @@ public sealed partial class ReconcilerService : BackgroundService
     /// True when the service refused this input (HTTP 400, which includes content-filter refusals), as opposed to being
     /// unavailable.
     /// </summary>
-    private static bool IsRejection(Exception exception)
-    {
-        for (var current = exception; current is not null; current = current.InnerException)
-        {
-            var status = current switch
-            {
-                HttpRequestException http => (int?)http.StatusCode,
-                ClientResultException client => client.Status,
-                _ => null,
-            };
-            if (status == (int)HttpStatusCode.BadRequest)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool IsRejection(Exception exception) =>
+        ProviderFailure.StatusOf(exception) == (int)HttpStatusCode.BadRequest;
 
     /// <exception cref="InvalidOperationException">The generator returned the wrong number or size of vectors.</exception>
     private static async Task<IReadOnlyList<ReadOnlyMemory<float>>> GenerateAsync(
@@ -338,7 +350,7 @@ public sealed partial class ReconcilerService : BackgroundService
 
     private async Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> vector, CancellationToken ct)
     {
-        await _store.Embeddings.SaveAsync(pending, vector, ct).ConfigureAwait(false);
+        await _store.Embeddings.SaveAsync(pending, vector, _embeddingModel, ct).ConfigureAwait(false);
         _embeddingFailures.Remove((pending.WorkspaceName, pending.ConclusionId));
     }
 

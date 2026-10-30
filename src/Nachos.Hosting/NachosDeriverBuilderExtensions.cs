@@ -34,9 +34,10 @@ public static class NachosDeriverBuilderExtensions
     public static NachosBuilder UseFakeAI(this NachosBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.UseChatClient((_, _) => new FakeDeriverChatClient());
+        // Before UseChatClient, whose empty default profile would otherwise be added first.
         builder.Services.PostConfigure<LlmOptions>(options =>
             options.Profiles.TryAdd(LlmOptions.DefaultProfileName, new ModelProfile { Model = "fake" }));
+        builder.UseChatClient((_, _) => new FakeDeriverChatClient());
         builder.UseEmbeddingGenerator(_ => new DeterministicEmbeddingGenerator());
         return builder;
     }

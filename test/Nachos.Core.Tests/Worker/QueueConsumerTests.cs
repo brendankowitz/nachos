@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using System.Net;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Core.Worker;
@@ -69,6 +70,59 @@ public sealed class QueueConsumerTests
         fixture.Handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe([1, 2, 3]);
         (await fixture.QueueAsync()).ShouldBe(new QueueCounts(0, 0, 0, 1));
         deadLettered.Total.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task TransientProviderFailures_NeverDeadLetter_AndTheUnitSucceedsOnceTheProviderRecovers()
+    {
+        var retryDelay = TimeSpan.FromSeconds(10);
+        await using var fixture = new WorkerFixture(
+            configureNachos: options => options.Deriver.MaxAttempts = 2,
+            configureWorker: options =>
+            {
+                options.RetryDelay = retryDelay;
+                options.MaxRetryDelay = TimeSpan.FromMinutes(1);
+            });
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        const int outage = 5;
+        var calls = 0;
+        handler.Behavior = (lease, ct) => Interlocked.Increment(ref calls) <= outage
+            ? throw new HttpRequestException("model unavailable", null, HttpStatusCode.ServiceUnavailable)
+            : fixture.Store.WorkQueue.CompleteAsync(lease, ct);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.FromSeconds(5));
+
+        // Far more failures than MaxAttempts, yet every run was the unit's first attempt and nothing was failed.
+        handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe(Enumerable.Repeat(1, outage + 1));
+        fixture.Store.Failures.ShouldBeEmpty();
+        (await fixture.QueueAsync()).ShouldBe(new QueueCounts(0, 0, 1, 0));
+
+        // Released with the consumer's backoff, stepped by the consecutive transient failures (10 s, 20 s, 40 s, then the cap).
+        var delays = fixture.Store.ReleaseDelays.ToList();
+        delays.Count.ShouldBe(outage);
+        TimeSpan[] expected = [retryDelay, retryDelay * 2, retryDelay * 4, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1)];
+        for (var i = 0; i < outage; i++)
+        {
+            delays[i].ShouldBeInRange(expected[i] * (1 - Backoff.Jitter), expected[i] * (1 + Backoff.Jitter));
+        }
+    }
+
+    [Fact]
+    public async Task NonTransientProviderFailure_StillDeadLettersAfterMaxAttempts()
+    {
+        await using var fixture = new WorkerFixture(configureNachos: options => options.Deriver.MaxAttempts = 2);
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        fixture.Handler!.Behavior = (_, _) => throw new HttpRequestException("bad request", null, HttpStatusCode.BadRequest);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).DeadLettered == 1, TimeSpan.FromSeconds(5));
+
+        fixture.Handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe([1, 2]);
+        fixture.Store.Releases.ShouldBeEmpty();
     }
 
     [Fact]

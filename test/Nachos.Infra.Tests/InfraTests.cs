@@ -478,6 +478,21 @@ public sealed class InfraTests
     }
 
     [RequiresToolFact("az", "bicep")]
+    public void BothApps_SelectTheFakeAIExplicitly_WhenNoEndpointIsGiven()
+    {
+        using var template = ArmTemplate();
+
+        // Outside Development the hosts refuse an implicit fake-AI fallback, so an empty endpoint must say Fake itself.
+        foreach (var module in new[] { ApiModuleTemplate(template), WorkerModuleTemplate(template) })
+        {
+            var openAiEnv = module.GetProperty("variables").GetProperty("openAiEnv").GetString()!;
+            openAiEnv.ShouldStartWith("[if(empty(parameters('openAiEndpoint')), ");
+            openAiEnv.ShouldContain("createObject('name', 'Nachos__Ai__Mode', 'value', 'Fake')");
+            openAiEnv.ShouldContain("AzureOpenAI__Endpoint");
+        }
+    }
+
+    [RequiresToolFact("az", "bicep")]
     public void OpenAI_AccountIsOnlyReferenced_AndTheIdentityGetsTheOpenAIUserRole()
     {
         using var template = ArmTemplate();

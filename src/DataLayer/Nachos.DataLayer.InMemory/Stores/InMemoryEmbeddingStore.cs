@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.InMemory.Storage;
@@ -31,13 +32,36 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             },
             ct);
 
-    public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, CancellationToken ct) =>
+    public Task<long> CountPendingAsync(CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                long count = 0;
+                foreach (var workspace in state.AllWorkspaces())
+                {
+                    lock (workspace.Gate)
+                    {
+                        count += workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending);
+                    }
+                }
+
+                return count;
+            },
+            ct);
+
+    public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct) =>
         state.Run(
             () =>
             {
                 ArgumentNullException.ThrowIfNull(pending);
+                ArgumentNullException.ThrowIfNull(embeddingModel);
                 var owned = VectorMath.Own(embedding, nameof(embedding));
-                Update(pending, stored => stored with { Embedding = owned, State = EmbeddingState.Synced });
+                Update(pending, stored => stored with
+                {
+                    Record = stored.Record with { InternalMetadata = WithModel(stored.Record.InternalMetadata, embeddingModel) },
+                    Embedding = owned,
+                    State = EmbeddingState.Synced,
+                });
             },
             ct);
 
@@ -49,6 +73,14 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 Update(pending, stored => stored with { State = EmbeddingState.Failed });
             },
             ct);
+
+    /// <summary>A store-owned copy of <paramref name="metadata"/> with the embedding model set; the original is not changed.</summary>
+    private static JsonObject WithModel(JsonObject metadata, string embeddingModel)
+    {
+        var copy = JsonNode.Parse(metadata.ToJsonString())!.AsObject();
+        copy[VectorSpace.ModelMetadataKey] = embeddingModel;
+        return copy;
+    }
 
     /// <summary>Applies <paramref name="change"/> only while the conclusion is still pending with the claimed content.</summary>
     private void Update(PendingEmbedding pending, Func<StoredConclusion, StoredConclusion> change)

@@ -30,7 +30,7 @@ internal static class PeerMemoryEndpoints
             return TypedResults.Ok(await client.GetRepresentationAsync(workspace_id, peer_id,
                 body.As(NachosJsonContext.Default.PeerRepresentationGet), http.RequestAborted));
         }).Accepts<PeerRepresentationGet>("application/json").Produces<RepresentationResponse>()
-            .WithDescription("Any scope value is a 422 until scopes land (M6).");
+            .WithDescription("Any scope value is a 422 until scopes land (M6). A search_query answers 503 when the embedding service is unavailable.");
         group.MapGet("/context", async (string workspace_id, string peer_id, HttpContext http, INachosClient client) =>
         {
             var request = http.Request;

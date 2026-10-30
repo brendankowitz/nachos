@@ -471,8 +471,8 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         await AppendAsync(store, workspace, session, "bob");
 
         var first = (await AcquireAsync(store, "a")).ShouldNotBeNull();
-        await store.WorkQueue.ReleaseAsync(first, Ct);
-        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.ReleaseAsync(first, Ct));
+        await store.WorkQueue.ReleaseAsync(first, TimeSpan.Zero, Ct);
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.ReleaseAsync(first, TimeSpan.Zero, Ct));
         await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.CompleteAsync(first, Ct));
         (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(1, 0, 0, 0));
 
@@ -494,12 +494,37 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         // The second attempt is the last, but releasing it gives the attempt back: no dead letter, no backoff.
         var interrupted = (await AcquireAsync(store)).ShouldNotBeNull();
         interrupted.Items.Single().Attempts.ShouldBe(2);
-        await store.WorkQueue.ReleaseAsync(interrupted, Ct);
+        await store.WorkQueue.ReleaseAsync(interrupted, TimeSpan.Zero, Ct);
         (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(1, 0, 0, 0));
 
         var retried = (await AcquireAsync(store, "worker-2")).ShouldNotBeNull();
         retried.Items.Single().Attempts.ShouldBe(2);
         await store.WorkQueue.FailAsync(retried, "second", TimeSpan.Zero, 2, Ct);
+        (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(0, 0, 0, 1));
+    }
+
+    [Fact]
+    public async Task Release_WithADelay_HoldsTheUnitBack_WithoutConsumingAnAttempt()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        await AppendAsync(store, workspace, session, "bob");
+
+        // Released on its last attempt, three times: never dead-lettered, never further than its first attempt.
+        for (var release = 0; release < 3; release++)
+        {
+            var lease = (await AcquireAsync(store)).ShouldNotBeNull();
+            lease.Items.Single().Attempts.ShouldBe(1);
+            await store.WorkQueue.ReleaseAsync(lease, TimeSpan.FromMinutes(1), Ct);
+            (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(1, 0, 0, 0));
+
+            clock.Advance(TimeSpan.FromMinutes(1) - TimeSpan.FromTicks(1));
+            (await AcquireAsync(store)).ShouldBeNull();
+            clock.Advance(TimeSpan.FromTicks(1));
+        }
+
+        var last = (await AcquireAsync(store)).ShouldNotBeNull();
+        await store.WorkQueue.FailAsync(last, "boom", TimeSpan.Zero, maxAttempts: 1, Ct);
         (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(0, 0, 0, 1));
     }
 
@@ -545,6 +570,31 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         // A dead letter does not block later work of its unit.
         await AppendAsync(store, workspace, session, "bob");
         (await AcquireAsync(store)).ShouldNotBeNull().Items.ShouldHaveSingleItem().Attempts.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Acquire_TakesAtMostMaxItemsPerLease()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var count = WorkLease.MaxItems + 1;
+        // Zero-token messages fit any token target, so only the item cap bounds the batch.
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            [.. Enumerable.Range(0, count).Select(i => new NewMessage("bob", $"message {i}", 0, null, null))],
+            null,
+            [.. Enumerable.Repeat(DeriveIntent.Derive, count)],
+            Ct);
+
+        var batching = Policy(0, TimeSpan.Zero, 1000);
+        var first = (await store.WorkQueue.TryAcquireAsync("w", batching, Lease, Ct)).ShouldNotBeNull();
+        first.Items.Count.ShouldBe(WorkLease.MaxItems);
+        first.Items.Select(item => item.Id).ShouldBeInOrder();
+        await store.WorkQueue.CompleteAsync(first, Ct);
+
+        var rest = (await store.WorkQueue.TryAcquireAsync("w", batching, Lease, Ct)).ShouldNotBeNull();
+        rest.Items.ShouldHaveSingleItem().Id.ShouldBeGreaterThan(first.Items[^1].Id);
     }
 
     [Fact]
@@ -658,6 +708,39 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
         empty.Totals.ShouldBe(QueueCounts.Empty);
         empty.Sessions.ShouldBeEmpty();
         await Should.ThrowAsync<NotFoundException>(() => store.WorkQueue.GetStatusAsync(Unique("missing"), null, null, null, Ct));
+    }
+
+    [Fact]
+    public async Task Backlog_CountsDueUnleasedUnits_AndTheOldestOpenItem()
+    {
+        var (store, clock) = await NewStoreAsync();
+        (await store.WorkQueue.GetBacklogAsync(Representation, Ct)).ShouldBe(new QueueBacklog(0, null));
+
+        var (workspace, session) = await ArrangeAsync(store);
+        var (otherWorkspace, otherSession) = await ArrangeAsync(store);
+        var oldest = (await AppendAsync(store, workspace, session, "bob")).Single().CreatedAt;
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await AppendAsync(store, workspace, session, "carol");
+        await AppendAsync(store, otherWorkspace, otherSession, "bob", tokens: 10);
+        await AppendAsync(store, otherWorkspace, otherSession, "dan");
+
+        // Every unit is due under Immediate; under a token threshold of 15 none is (10 tokens each).
+        (await store.WorkQueue.GetBacklogAsync(Representation, Ct)).ShouldBe(new QueueBacklog(4, oldest));
+        (await store.WorkQueue.GetBacklogAsync(Policy(15, TimeSpan.FromDays(1), 1000), Ct)).ShouldBe(new QueueBacklog(0, oldest));
+
+        // A leased unit is not eligible, but its item is still the oldest unfinished one.
+        var leased = (await AcquireAsync(store)).ShouldNotBeNull();
+        (await store.WorkQueue.GetBacklogAsync(Representation, Ct)).ShouldBe(new QueueBacklog(3, oldest));
+
+        // A unit backing off is not eligible either; completed items do not count.
+        await store.WorkQueue.CompleteAsync(leased, Ct);
+        var failed = (await AcquireAsync(store)).ShouldNotBeNull();
+        await store.WorkQueue.FailAsync(failed, "boom", TimeSpan.FromMinutes(5), 5, Ct);
+        var backlog = await store.WorkQueue.GetBacklogAsync(Representation, Ct);
+        backlog.EligibleUnits.ShouldBe(2);
+        backlog.OldestOpenItemCreatedAt.ShouldBe(failed.Items.Single().CreatedAt);
+
+        (await store.WorkQueue.GetBacklogAsync(new Dictionary<WorkTaskType, WorkBatchPolicy>(), Ct)).ShouldBe(new QueueBacklog(0, null));
     }
 
     [Fact]

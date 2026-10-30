@@ -159,7 +159,7 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
 
 /// <summary>
 /// A host with no embedding generator, which the API only reaches if someone wires <c>AddNachos</c> by hand: semantic reads
-/// fail by design, and everything else still works. The generator, its startup probe and the Deriver that needs it are removed.
+/// answer 503, and everything else still works. The generator, its startup probe and the Deriver that needs it are removed.
 /// </summary>
 public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
 {
@@ -174,13 +174,16 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
     })).CreateClient();
 
     [Fact]
-    public async Task SemanticQuery_Is500_ButCreateAndListWork()
+    public async Task SemanticReads_Are503_ButCreateAndListWork()
     {
         await SeedSession();
         await Post(W + "/peers", """{"id":"alice"}""");
         await Post(W + "/conclusions", """{"conclusions":[{"content":"a","observer_id":"alice","observed_id":"alice"}]}""", 201);
 
-        Problem(await Post(W + "/conclusions/query", """{"query":"a"}""", 500), 500, JsonValueKind.String);
+        var query = await Post(W + "/conclusions/query", """{"query":"a"}""", 503);
+        Problem(query, 503, JsonValueKind.String);
+        query.GetProperty("detail").GetString().ShouldNotBeNull().ShouldContain("no embedding generator");
+        Problem(await Post(W + "/peers/alice/representation", """{"search_query":"a"}""", 503), 503, JsonValueKind.String);
         (await Post(W + "/conclusions/list")).GetProperty("total").GetInt32().ShouldBe(1);
     }
 }

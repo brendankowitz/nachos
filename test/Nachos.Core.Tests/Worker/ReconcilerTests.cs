@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Domain;
@@ -187,7 +188,14 @@ public sealed class ReconcilerTests
     {
         var options = new ReconcilerOptions { Interval = Interval };
         configure?.Invoke(options);
-        var service = new ReconcilerService(store, fixture.Clock, Options.Create(options), NullLogger<ReconcilerService>.Instance, generator);
+        var service = new ReconcilerService(
+            store,
+            fixture.Clock,
+            Options.Create(options),
+            fixture.Services.GetRequiredService<IServiceScopeFactory>(),
+            fixture.Metrics,
+            NullLogger<ReconcilerService>.Instance,
+            generator);
         await service.StartAsync(Ct);
         return new Running(service);
     }

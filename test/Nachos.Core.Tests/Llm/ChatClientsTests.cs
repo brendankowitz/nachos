@@ -151,7 +151,7 @@ public sealed class ChatClientsTests
 
         var chat = root.GetRequiredService<NachosChatClients>().ForAgent("deriver");
         (await chat.GetResponseAsync(Prompt, cancellationToken: CancellationToken.None)).Text.ShouldBe("ok");
-        root.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>().ShouldBeOfType<DeterministicEmbeddingGenerator>();
+        root.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>().GetService<DeterministicEmbeddingGenerator>().ShouldNotBeNull();
     }
 
     [Fact]

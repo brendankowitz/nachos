@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Schema;
@@ -55,5 +56,24 @@ public static class SqlServerBuilderExtensions
             provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<ILogger<SqlMemoryStore>>()));
         return builder;
+    }
+
+    /// <summary>
+    /// Selects the SQL Server provider with the connection chosen by <see cref="SqlServerConnectionSelection"/>: the
+    /// whole <see cref="SqlServerOptions.SectionName"/> section binds (so settings such as
+    /// <see cref="SqlServerOptions.AutomaticSchemaDeploymentEnabled"/> keep working), then the selected connection string
+    /// overrides whatever the section itself held.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No usable connection is configured (see <see cref="SqlServerConnectionSelection.Select"/>).</exception>
+    public static NachosBuilder UseSqlServer(this NachosBuilder builder, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var connectionString = SqlServerConnectionSelection.Select(configuration);
+        return builder.UseSqlServer(options =>
+        {
+            configuration.GetSection(SqlServerOptions.SectionName).Bind(options);
+            options.ConnectionString = connectionString;
+        });
     }
 }

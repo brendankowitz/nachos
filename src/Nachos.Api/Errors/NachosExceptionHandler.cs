@@ -20,6 +20,7 @@ internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHand
             ConflictException => 409,
             RequestValidationException or NachosValidationException or IdempotencyKeyReusedException => 422,
             AuthException => 401,
+            ServiceUnavailableException => 503,
             BadHttpRequestException badRequest => badRequest.StatusCode,
             _ => 500,
         };

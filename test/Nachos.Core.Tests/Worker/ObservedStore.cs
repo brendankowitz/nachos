@@ -35,6 +35,9 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public ConcurrentQueue<WorkLease> Releases { get; } = new();
 
+    /// <summary>The retry delay of each <see cref="ReleaseAsync"/> call, in order.</summary>
+    public ConcurrentQueue<TimeSpan> ReleaseDelays { get; } = new();
+
     /// <summary>
     /// When set, the next renewal hangs until cancelled and then throws <see cref="InvalidOperationException"/>, as a
     /// provider that reports its own cancellation as a provider error would; set when it starts hanging.
@@ -77,10 +80,11 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public Task CompleteAsync(WorkLease lease, CancellationToken ct) => inner.WorkQueue.CompleteAsync(lease, ct);
 
-    public Task ReleaseAsync(WorkLease lease, CancellationToken ct)
+    public Task ReleaseAsync(WorkLease lease, TimeSpan retryDelay, CancellationToken ct)
     {
         Releases.Enqueue(lease);
-        return inner.WorkQueue.ReleaseAsync(lease, ct);
+        ReleaseDelays.Enqueue(retryDelay);
+        return inner.WorkQueue.ReleaseAsync(lease, retryDelay, ct);
     }
 
     public Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct)
@@ -93,6 +97,9 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public Task<QueueStatusRecord> GetStatusAsync(
         string workspaceName, string? observerName, string? senderName, string? sessionName, CancellationToken ct) =>
         inner.WorkQueue.GetStatusAsync(workspaceName, observerName, senderName, sessionName, ct);
+
+    public Task<QueueBacklog> GetBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, CancellationToken ct) =>
+        inner.WorkQueue.GetBacklogAsync(taskTypes, ct);
 
     public Task<int> PruneSucceededAsync(TimeSpan retention, CancellationToken ct) =>
         inner.WorkQueue.PruneSucceededAsync(retention, ct);

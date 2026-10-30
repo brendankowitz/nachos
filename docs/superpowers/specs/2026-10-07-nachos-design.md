@@ -259,10 +259,10 @@ Dependency rule: `Abstractions` ← `Core` ← (`DataLayer.*`, `Hosting`) ← (`
 
 ### 7.1 Abstractions (in `Nachos.Abstractions`)
 
-- `IMemoryStore`: unit-of-work entry point that exposes repositories (`Workspaces`, `Peers`, `Sessions`, `Messages`, `Conclusions`, `PeerCards`, `Summaries`, `Scopes`, `Webhooks`). Every method takes a `WorkspaceRef`.
-- `IVectorIndex`: `SearchMessagesAsync` and `SearchConclusionsAsync` (filters, top-k, max distance).
+- `IMemoryStore`: the entry point that exposes the stores. Δ (M2, D1 and D7) As shipped it is **not a unit of work**: each store method opens its own connection and transaction, and methods take the workspace name, not a `WorkspaceRef`. It exposes `Workspaces`, `Peers`, `Sessions`, `Messages`, `Grants`, `Idempotency`, `Conclusions` (`IConclusionStore`), `PeerCards` (`IPeerCardStore`), `WorkQueue` (`IWorkQueue`) and `Embeddings` (`IEmbeddingStore`, the pending-embedding backlog: `ListPendingAsync`, `CountPendingAsync`, `SaveAsync`, `MarkFailedAsync`). `Summaries`, `Scopes` and `Webhooks` arrive with their milestones (M3, M6). The interfaces live in `Nachos.Abstractions`, which references only the BCL (architecture test), so vectors cross them as `ReadOnlyMemory<float>`; `Microsoft.Extensions.AI` types appear only in Core and Hosting.
+- `IVectorIndex`: Δ (M2, D7) not a separate interface. Conclusion vector reads are `IConclusionStore` members (`QueryAsync` with filters, top-k and max distance; `FindNearestAsync` for dedup). Message vector search (`SearchMessagesAsync`) arrives with M3 search, on the message store or a search interface then.
 - `ILexicalIndex`: full-text message search.
-- `IWorkQueue`: `TryAcquireAsync`, `TryLeaseAsync` (item-less singleton lease), `RenewAsync`, `CompleteAsync`, `FailAsync`, `ReleaseAsync` (give the unit back without consuming an attempt), `GetStatusAsync`, `PruneSucceededAsync`. Δ (M2, D1) There is no ambient transaction and no standalone `EnqueueAsync` yet: each store method owns its transaction, and the append enqueues its own work inside `IMessageStore.AppendAsync` (§10.2). A standalone enqueue arrives with the first non-append producer (M3).
+- `IWorkQueue`: `TryAcquireAsync`, `TryLeaseAsync` (item-less singleton lease), `RenewAsync`, `CompleteAsync`, `FailAsync`, `ReleaseAsync` (give the unit back without consuming an attempt, claimable again after a retry delay: shutdown and transient provider failures), `GetStatusAsync`, `GetBacklogAsync` (cluster-wide due-unit count and oldest open item, for metrics), `PruneSucceededAsync`. A lease takes at most 200 items. Δ (M2, D1) There is no ambient transaction and no standalone `EnqueueAsync` yet: each store method owns its transaction, and the append enqueues its own work inside `IMessageStore.AppendAsync` (§10.2). A standalone enqueue arrives with the first non-append producer (M3).
 - `ISchemaManager`: `GetStatusAsync`, `DeployAsync`. SQL only; in-memory is a no-op.
 
 Providers register through `NachosBuilder.UseSqlServer(...)` and `UseInMemory()`.
@@ -334,7 +334,7 @@ Embedding dimensions: default 1536 (`text-embedding-3-small`). `VECTOR` float32 
 
 ### 7.5 In-memory provider
 
-`ConcurrentDictionary`-backed repositories, brute-force cosine, naive lexical matching, and an in-process `Channel` queue that keeps the same lease and work-unit semantics. It is used by unit tests and quick-start samples. Durability is not guaranteed.
+`ConcurrentDictionary`-backed repositories, brute-force cosine, naive lexical matching, and an in-process queue that keeps the same lease and work-unit semantics. Δ (M2, D8) The queue is a lock-guarded in-memory table with the SQL provider's lease and fencing semantics, not a `Channel`: consumers poll the same `IWorkQueue` contract, so a channel would add nothing. It is used by unit tests and quick-start samples. Durability is not guaranteed.
 
 ---
 
@@ -554,7 +554,7 @@ Multi-row locks are always taken in `Id` order. Integration tests (§17, item 2)
 
 ### 10.4 Outcomes (Δ explicit states)
 
-`Status` is one of `Pending`, `Succeeded`, `Failed` (retryable, `AvailableAt` backoff with jitter), `DeadLettered` (after `MaxAttempts`, default 5), or `PartiallySucceeded` (dreams where one specialist failed). The queue status DTO stays Honcho-shaped. `W/jobs` and metrics expose failures and dead letters, and a `work.dead_lettered` webhook event fires when an item dead-letters.
+`Status` is one of `Pending`, `Succeeded`, `Failed` (retryable, `AvailableAt` backoff with jitter), `DeadLettered` (after `MaxAttempts`, default 5), or `PartiallySucceeded` (dreams where one specialist failed). Δ (M2) A transient model-provider failure (408, 429, 5xx, a connection error or a provider timeout) consumes no attempt: the unit is released with the same backoff, so an outage never dead-letters work, and repeated transient failures are logged as errors after `Worker:TransientFailuresBeforeError` (10) in a row. In M2 dead-lettered items are redriven with SQL (documented in the "Run the worker" guide); there is no command yet. The queue status DTO stays Honcho-shaped. `W/jobs` and metrics expose failures and dead letters, and a `work.dead_lettered` webhook event fires when an item dead-letters.
 
 ### 10.5 Worker-hosted services
 
@@ -600,6 +600,13 @@ Multi-row locks are always taken in `Id` order. Integration tests (§17, item 2)
 2. For each observer collection, run exact then semantic dedup (≤ 0.05). On a duplicate, either record a corroboration (`ConclusionCorroborations`, with the source batch key) or replace the existing fact when the new one is richer.
 3. Insert the remaining facts with provenance.
 4. Update the dream-scheduler counters.
+
+Δ (M2) As shipped:
+
+- **Q5:** an explicit conclusion's wire `source_ids` is **empty** (deriver- and API-created alike). The source message ids are kept in `InternalMetadata.source_message_ids`, with the prompt id and version and the embedding model (`embedding_model`). `ConclusionSources` holds conclusion-to-conclusion premises only. To revisit with black-box SDK evidence.
+- **Q8:** the Deriver writes **no peer cards** in M2, even when `peer_card.create` is true; cards are set with `PUT P/card` until dreams maintain them (M5).
+- Corroboration is not a `ConclusionCorroborations` row: one fenced derivation commit applies the batch (D14).
+- Workspace and session `custom_instructions` (and their `reasoning.custom_instructions`) go in the system prompt. Message-level `reasoning.custom_instructions` travel in the user message as data (`message_instructions`), which the prompt says cannot override its rules. Blank messages are not sent to the model.
 
 ### 11.3 Summarizer
 
@@ -710,7 +717,7 @@ Its tools are the same as the peer dialectic's, parameterized by pair.
 
 **`card_refresh`:** the CardRefreshSpecialist can only search and update the card. `rebuild = true` starts from an empty card.
 
-**Peer card policy:** at most 40 entries. Each entry is prefixed with a category: `IDENTITY`, `ATTRIBUTE`, `RELATIONSHIP`, or `INSTRUCTION`. Cards hold only durable identity facts and stated standing instructions, never inferred traits or transient events.
+**Peer card policy:** at most 40 entries. Each entry is prefixed with a category: `IDENTITY`, `ATTRIBUTE`, `RELATIONSHIP`, or `INSTRUCTION`. Cards hold only durable identity facts and stated standing instructions, never inferred traits or transient events. Δ (M2, Q4) The cap and the prefixes bind **agent-written** cards (dreams, M5). `PUT P/card` stores the entries the caller sends, with no cap or prefix check (the wire has no bound).
 
 All mutation tools validate their inputs server-side (source existence, collection ownership, level rules) and write with fencing tokens. Dream outcomes are recorded as `Succeeded` or `PartiallySucceeded`.
 
@@ -931,9 +938,9 @@ Bicep in `infra/` (modules like Ignixa's `deploy/azure/modules`) provisions:
 | Azure Container Registry | Images built by `azd deploy` |
 | Container Apps environment | Workload profile: consumption |
 | `nachos-api` Container App | External ingress, min 1 / max N replicas, HTTP scaling |
-| `nachos-worker` Container App | No ingress. **Default `minReplicas = 1`**, because the worker hosts timer-driven services (dream scheduler, reconciler, webhook retries) that have no other wake source. Scale-out uses the **KEDA `mssql` scaler** on `dbo.GetDueWorkCount` (see below), or CPU if that scaler is unavailable. |
+| `nachos-worker` Container App | No ingress. **Default `minReplicas = 1`**, because the worker hosts timer-driven services (dream scheduler, reconciler, webhook retries) that have no other wake source. Scale-out uses the **KEDA `mssql` scaler** on `dbo.GetDueWorkCount` (see below), or CPU if that scaler is unavailable. Δ (M2, D2 and R7) As shipped the worker scales on **CPU** with `minReplicas = 1`; the `mssql` rule is written but commented out, and `dbo.GetDueWorkCount` is not created, until an owner-approved run verifies R7 (the scaler authenticating with managed identity). |
 | Azure SQL logical server + database | **Entra-only auth**, MI as a contained user, serverless General Purpose by default (auto-pause off for the worker) |
-| Azure OpenAI / Foundry account | Chat and embedding deployments as parameters, with quota guidance |
+| Azure OpenAI / Foundry account | Chat and embedding deployments as parameters, with quota guidance. Δ (M2, Q6) **Not provisioned:** Bicep takes an existing endpoint (`openAiEndpoint`) and deployment names (`openAiChatDeployment`, `openAiEmbeddingDeployment`), and grants the managed identity the Cognitive Services OpenAI User role on the account when `openAiAccountName` is given. With no endpoint both apps get `Nachos__Ai__Mode=Fake` explicitly; a host outside Development with neither an endpoint nor that setting refuses to start. |
 | Key Vault (RBAC) | JWT signing secrets, webhook secret |
 | (optional) Azure Managed Redis, Front Door/APIM | Disabled by default |
 
@@ -992,7 +999,8 @@ Until both hold, the worker stays at `minReplicas = 1`.
   - `nachos.queue.eligible_units`, `nachos.queue.oldest_age`, `nachos.queue.dead_lettered`
   - `nachos.deriver.facts`, `nachos.dedup.ratio`
   - `nachos.llm.tokens{agent,profile}`, `nachos.llm.cost_estimate`
-  - `nachos.embeddings.pending` (gauge, aggregated with max)
+  - `nachos.conclusions.embedding_pending` (gauge)
+  - Δ (M2) Shipped on the `Nachos.Worker` meter: `nachos.queue.dead_lettered` (counter), `nachos.deriver.facts` (counter), `nachos.dedup.ratio` (histogram), and the gauges `nachos.queue.eligible_units` (`{unit}`), `nachos.queue.oldest_age` (seconds, age of the oldest unfinished item) and `nachos.conclusions.embedding_pending` (`{conclusion}`). The gauges are cluster-wide values refreshed once per reconciler tick and reported only by the replica holding the reconciler lease, so sum and max agree. Token usage comes from the GenAI spans and metrics of the `Nachos.Llm` source (`gen_ai.client.token.usage`), not a separate `nachos.llm.tokens`; `nachos.llm.cost_estimate` is not built in M2.
   - `nachos.dream.outcome`, `nachos.webhook.retries`
   - `nachos.schema.version`
 - Prompt and message payload capture is **off by default**. When enabled, it is redacted and has a retention setting.

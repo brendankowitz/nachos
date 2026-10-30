@@ -34,7 +34,7 @@ internal static class ConclusionEndpoints
                 http.RequestAborted);
             return TypedResults.Ok(found.ToArray());
         }).Accepts<ConclusionQuery>("application/json").Produces<Conclusion[]>()
-            .WithDescription("Semantic query. A host without an embedding generator answers 500 by design.");
+            .WithDescription("Semantic query. Answers 503 when the host has no embedding generator or the embedding service is unavailable.");
         group.MapGet("/{conclusion_id}", async (string workspace_id, string conclusion_id, HttpContext http, INachosClient client) =>
             TypedResults.Ok(await client.GetConclusionAsync(workspace_id, conclusion_id, http.RequestAborted)))
             .Produces<Conclusion>();

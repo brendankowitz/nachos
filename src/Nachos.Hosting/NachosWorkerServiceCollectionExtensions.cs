@@ -31,6 +31,7 @@ public static class NachosWorkerServiceCollectionExtensions
             .Validate(
                 o => o.RetryDelay >= TimeSpan.Zero && o.MaxRetryDelay >= o.RetryDelay,
                 "Worker:RetryDelay must not be negative and Worker:MaxRetryDelay must be at least Worker:RetryDelay.")
+            .Validate(o => o.TransientFailuresBeforeError >= 1, "Worker:TransientFailuresBeforeError must be at least 1.")
             .ValidateOnStart();
         services.AddOptions<ReconcilerOptions>()
             .BindConfiguration("Reconciler")

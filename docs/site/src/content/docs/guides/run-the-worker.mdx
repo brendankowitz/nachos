@@ -57,8 +57,16 @@ deployments) in the AppHost's user secrets or environment; it then passes them t
 instead of selecting fake AI.
 
 Set `Nachos:Ai:Mode` to `Fake` to force the fake AI even when an endpoint is present.
-Per-agent model profiles and fallbacks bind from `Llm`; the option table is in
-[Options](/nachos/reference/options/).
+Outside the Development environment that setting is also the only way to run the fake AI:
+a host with no endpoint and no mode refuses to start, so a deployment that lost its Azure
+OpenAI settings fails loudly instead of filling its database with fake conclusions.
+Per-agent model profiles and fallbacks bind from `Llm`; an agent with no profile of its own
+uses `AzureOpenAI:ChatDeployment`. The option table is in [Options](/nachos/reference/options/).
+
+Each embedded conclusion records the model that produced its vector in its internal metadata
+(`embedding_model`: the deployment name, or `fake`). Vectors from two models cannot be
+compared, and this version does not re-embed existing conclusions, so **switching between the
+fake AI and a real model, or between embedding models, needs a new database**.
 
 ## In Azure
 
@@ -82,5 +90,39 @@ which is written but commented out until a run proves it works with the managed 
   a unit is claimed with a lease, and an expired lease is retried by another replica.
 - `GET /v3/workspaces/{id}/queue/status` shows pending, in-progress and completed work.
   Work that fails repeatedly is dead-lettered and counts as completed.
+- A model outage does not dead-letter work. Throttling (429), timeouts (408), server errors
+  (5xx) and connection failures from the model are retried with backoff (`Worker:RetryDelay`
+  doubling up to `Worker:MaxRetryDelay`) without using one of the unit's
+  `Nachos:Deriver:MaxAttempts`. After `Worker:TransientFailuresBeforeError` (10) such failures in
+  a row, each further one is logged as an error: check the endpoint, deployments and quota.
+  Any other failure uses an attempt, and the last attempt dead-letters the unit's items.
 - Telemetry: the worker exports traces from the `Nachos.Llm` source and metrics from the
   `Nachos.Worker` and `Nachos.Llm` meters, through the same OpenTelemetry settings as the API.
+  The backlog gauges `nachos.queue.eligible_units`, `nachos.queue.oldest_age` (seconds) and
+  `nachos.conclusions.embedding_pending` are refreshed once per reconciler tick and reported
+  only by the replica that holds the reconciler lease.
+
+## Redrive dead-lettered work
+
+There is no command for this yet. Fix the cause first (a dead letter's `Error` column says
+what failed), then return the items to the queue with SQL. Run it against the Nachos
+database as a user that can write `dbo.WorkItems`; the worker picks the items up on its next
+poll:
+
+```sql
+-- Review what is dead-lettered (Status 3), and why.
+SELECT Id, WorkUnitKey, Attempts, Error, CompletedAt
+FROM dbo.WorkItems
+WHERE Status = 3
+ORDER BY Id;
+
+-- Make them pending again with a fresh set of attempts. Narrow the WHERE clause
+-- (for example by Id or WorkUnitKey) to redrive only some of them.
+UPDATE dbo.WorkItems
+SET Status = 0, Attempts = 0, AvailableAt = SYSDATETIMEOFFSET(), CompletedAt = NULL, Error = NULL
+WHERE Status = 3;
+```
+
+Items of one unit are processed in `Id` order, so a redriven item runs before any later
+pending item of its unit. The in-memory provider has no equivalent: restart the API to
+start over.

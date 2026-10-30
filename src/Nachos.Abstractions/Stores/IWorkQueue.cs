@@ -62,11 +62,12 @@ public interface IWorkQueue
     Task CompleteAsync(WorkLease lease, CancellationToken ct);
 
     /// <summary>
-    /// Gives the unit back without a verdict (for instance on shutdown): the lease's items are claimable again at once, and
-    /// the attempt this lease added to each is taken back. Releases the unit.
+    /// Gives the unit back without a verdict (on shutdown, or after a transient provider failure): the attempt this lease
+    /// added to each of its items is taken back, and the items become claimable again <paramref name="retryDelay"/> from
+    /// now (<see cref="TimeSpan.Zero"/>: at once). Nothing is dead-lettered. Releases the unit.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
-    Task ReleaseAsync(WorkLease lease, CancellationToken ct);
+    Task ReleaseAsync(WorkLease lease, TimeSpan retryDelay, CancellationToken ct);
 
     /// <summary>
     /// Records <paramref name="reason"/> (truncated to 4000 characters) on the lease's items and releases the unit. An
@@ -84,6 +85,13 @@ public interface IWorkQueue
     /// <exception cref="NotFoundException">The workspace does not exist.</exception>
     Task<QueueStatusRecord> GetStatusAsync(
         string workspaceName, string? observerName, string? senderName, string? sessionName, CancellationToken ct);
+
+    /// <summary>
+    /// The backlog across every workspace, for monitoring: how many units of <paramref name="taskTypes"/> are due now by
+    /// their policies and not under an unexpired lease (what <see cref="TryAcquireAsync"/> could lease), and when the
+    /// oldest open item of those types (pending, waiting for a retry, or in progress) was enqueued.
+    /// </summary>
+    Task<QueueBacklog> GetBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, CancellationToken ct);
 
     /// <summary>Deletes succeeded items completed at least <paramref name="retention"/> ago, in every workspace.</summary>
     /// <returns>How many items were deleted.</returns>

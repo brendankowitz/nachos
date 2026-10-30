@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Nachos.Abstractions.Domain;
 
 namespace Nachos.Core.Llm;
 
@@ -27,12 +28,12 @@ public sealed partial class EmbeddingDimensionCheck(
         }
 
         var actual = embeddings[0].Vector.Length;
-        if (actual != EmbeddingOptions.RequiredDimensions)
+        if (actual != VectorSpace.Dimensions)
         {
             throw new InvalidOperationException(
-                $"The configured embedding model returned {actual} dimensions but the database stores {EmbeddingOptions.RequiredDimensions}. " +
-                $"Use a {EmbeddingOptions.RequiredDimensions}-dimension model such as text-embedding-3-small, " +
-                $"or set Embeddings:RequestDimensions to {EmbeddingOptions.RequiredDimensions} if the model supports the dimensions parameter.");
+                $"The configured embedding model returned {actual} dimensions but the database stores {VectorSpace.Dimensions}. " +
+                $"Use a {VectorSpace.Dimensions}-dimension model such as text-embedding-3-small, " +
+                $"or set Embeddings:RequestDimensions to {VectorSpace.Dimensions} if the model supports the dimensions parameter.");
         }
     }
 

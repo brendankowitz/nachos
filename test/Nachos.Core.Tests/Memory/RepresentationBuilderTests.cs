@@ -1,3 +1,4 @@
+using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Core.Tests.Deriver;
 using Nachos.Core.Memory;
@@ -115,7 +116,7 @@ public sealed class RepresentationBuilderTests
         var withoutAi = new RepresentationBuilder(f.Store);
         (await withoutAi.BuildAsync(MemoryFixture.W, "bob", "alice", VisibilityPolicy.Unrestricted, new(), default))
             .ShouldContain("- alice likes tea");
-        await Should.ThrowAsync<InvalidOperationException>(() =>
+        await Should.ThrowAsync<ServiceUnavailableException>(() =>
             withoutAi.BuildAsync(MemoryFixture.W, "bob", "alice", VisibilityPolicy.Unrestricted, new(SearchQuery: "tea"), default));
     }
 
