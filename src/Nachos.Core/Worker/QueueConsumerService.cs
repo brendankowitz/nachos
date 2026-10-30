@@ -280,10 +280,11 @@ public sealed partial class QueueConsumerService : BackgroundService
     }
 
     /// <summary>
-    /// A released unit is due again within <see cref="WorkerOptions.MaxRetryDelay"/> (plus jitter); one not seen for three
-    /// times that was taken over by another replica, so its streak here is stale.
+    /// A released unit is due again within <see cref="WorkerOptions.MaxRetryDelay"/> (plus jitter), and its next run may
+    /// last up to a lease before failing again; one not seen for three retry delays plus a lease was taken over by another
+    /// replica, so its streak here is stale.
     /// </summary>
-    private TimeSpan StreakExpiry => _options.MaxRetryDelay * 3;
+    private TimeSpan StreakExpiry => (_options.MaxRetryDelay * 3) + _deriver.LeaseDuration;
 
     private async Task HandleAsync(WorkLease lease, CancellationToken ct)
     {

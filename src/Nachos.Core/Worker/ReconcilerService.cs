@@ -447,7 +447,7 @@ public sealed partial class ReconcilerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Warning, Message = "{Failures} embedding failures this tick are not counted towards marking conclusions failed: the service failed (throttled or unavailable), or nothing was embedded, so it appears to be down.")]
     private partial void LogServiceUnavailable(int failures);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, with transient failures; the embedding service has been unavailable or throttling. Check its health and quota.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, with transient failures; the embedding service has been unavailable or throttling. Check its health and quota; persistent throttling (429) can also mean Reconciler:EmbeddingBatchSize is too large for the deployment's rate limit.")]
     private partial void LogEmbeddingUnavailablePersists(Exception exception, int ticks);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, and not transiently: likely a misconfiguration. Check the Embeddings endpoint, deployment, dimensions and role assignment.")]

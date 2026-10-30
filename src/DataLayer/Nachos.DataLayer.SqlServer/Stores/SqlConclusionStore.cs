@@ -372,7 +372,7 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
                     .SqlQueryRaw<int>(
                         """
                         DECLARE @batch TABLE (Id bigint PRIMARY KEY);
-                        INSERT @batch (Id) SELECT TOP (@size) Id FROM dbo.Conclusions WHERE DeletedAt <= @cutoff ORDER BY Id;
+                        INSERT @batch (Id) SELECT TOP (@size) Id FROM dbo.Conclusions WHERE DeletedAt <= @cutoff ORDER BY DeletedAt, Id;
                         DELETE cs FROM dbo.ConclusionSources AS cs WITH (FORCESEEK) JOIN @batch AS b ON b.Id = cs.DerivedId;
                         DELETE c FROM dbo.Conclusions AS c WITH (FORCESEEK) JOIN @batch AS b ON b.Id = c.Id WHERE c.DeletedAt <= @cutoff;
                         SELECT @@ROWCOUNT AS [Value];

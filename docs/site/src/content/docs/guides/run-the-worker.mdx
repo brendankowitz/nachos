@@ -98,7 +98,9 @@ which is written but commented out until a run proves it works with the managed 
   `Nachos:Deriver:MaxAttempts`. After `Worker:TransientFailuresBeforeError` (10) such failures in
   a row, each further one is logged as an error: check the endpoint, deployments, quota, role
   assignments and the database. Any other failure uses an attempt, and the last attempt
-  dead-letters the unit's items.
+  dead-letters the unit's items. The trade-off: a unit whose own database work always times out
+  (for example a very large unit) is retried indefinitely rather than dead-lettered, and shows up
+  only as those errors.
 - When embedding fails with nothing embedded for `Reconciler:FailedEmbeddingTicksBeforeError`
   (20) reconciler ticks in a row, each further such tick is logged as an error.
 - Telemetry: the worker exports traces from the `Nachos.Llm` source and metrics from the

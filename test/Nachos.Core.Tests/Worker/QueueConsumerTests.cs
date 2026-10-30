@@ -360,11 +360,11 @@ public sealed class QueueConsumerTests
         var handler = fixture.Handler!;
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var wasCancelled = false;
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         handler.Behavior = async (lease, ct) =>
         {
             started.SetResult();
-            await using (ct.Register(() => wasCancelled = true))
+            await using (ct.Register(() => cancelled.TrySetResult()))
             {
                 await release.Task.WaitAsync(ct);
             }
@@ -379,12 +379,12 @@ public sealed class QueueConsumerTests
         await Pump.UntilAsync(
             fixture.Clock, () => fixture.Logs.At(LogLevel.Warning).Any(m => m.Contains("Renewing the lease")), TimeSpan.Zero);
         fixture.Store.RenewalFailure = null;
-        fixture.Clock.Advance(WorkerFixture.Lease / 3);
-        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Renewals >= 1, TimeSpan.Zero);
+        // Stepped, not one jump: the warning is logged before the keeper waits for its next interval.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Renewals >= 1, WorkerFixture.Lease / 6);
         release.SetResult();
         await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.Zero);
 
-        wasCancelled.ShouldBeFalse();
+        cancelled.Task.IsCompleted.ShouldBeFalse();
         fixture.Store.Failures.ShouldBeEmpty();
         handler.Calls.ShouldHaveSingleItem();
     }

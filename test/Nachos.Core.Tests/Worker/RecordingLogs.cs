@@ -3,7 +3,10 @@ using Microsoft.Extensions.Logging;
 
 namespace Nachos.Core.Tests.Worker;
 
-/// <summary>Every entry logged through a <see cref="RecordingLogger{T}"/> sharing this instance, in order.</summary>
+/// <summary>
+/// Every entry at <see cref="LogLevel.Information"/> or above logged through a <see cref="RecordingLogger{T}"/> sharing
+/// this instance, in order.
+/// </summary>
 internal sealed class RecordingLogs
 {
     public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
@@ -15,9 +18,14 @@ internal sealed class RecordingLogger<T>(RecordingLogs logs) : ILogger<T>
 {
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-    public bool IsEnabled(LogLevel logLevel) => true;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
 
     public void Log<TState>(
-        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
-        logs.Entries.Enqueue((logLevel, formatter(state, exception)));
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        if (IsEnabled(logLevel))
+        {
+            logs.Entries.Enqueue((logLevel, formatter(state, exception)));
+        }
+    }
 }
