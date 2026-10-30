@@ -63,9 +63,14 @@ foreach (var project in new[] { api, worker })
     }
     else
     {
-        project.WithEnvironment("AzureOpenAI__Endpoint", azureOpenAiEndpoint)
-            .WithEnvironment("AzureOpenAI__ChatDeployment", builder.Configuration["AzureOpenAI:ChatDeployment"] ?? "")
-            .WithEnvironment("AzureOpenAI__EmbeddingDeployment", builder.Configuration["AzureOpenAI:EmbeddingDeployment"] ?? "");
+        project.WithEnvironment("AzureOpenAI__Endpoint", azureOpenAiEndpoint);
+        foreach (var setting in new[] { "ChatDeployment", "EmbeddingDeployment" })
+        {
+            if (builder.Configuration[$"AzureOpenAI:{setting}"] is { Length: > 0 } deployment)
+            {
+                project.WithEnvironment($"AzureOpenAI__{setting}", deployment);
+            }
+        }
     }
 }
 

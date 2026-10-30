@@ -34,7 +34,8 @@ internal sealed class TestDirectory : IDisposable
         foreach (var (assembly, project) in new (Assembly, string)[] {
             (typeof(NachosOptions).Assembly, "src/Nachos.Core"),
             (typeof(SqlServerOptions).Assembly, "src/DataLayer/Nachos.DataLayer.SqlServer"),
-            (typeof(ReasoningConfiguration).Assembly, "src/Nachos.Abstractions") })
+            (typeof(ReasoningConfiguration).Assembly, "src/Nachos.Abstractions"),
+            (typeof(Nachos.Hosting.AzureOpenAIOptions).Assembly, "src/Nachos.Hosting") })
         {
             var name = assembly.GetName().Name!;
             Write($"{project}/bin/{RealProducerTests.Configuration}/net10.0/{name}.dll", File.ReadAllBytes(assembly.Location));

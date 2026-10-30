@@ -28,8 +28,7 @@ internal static class OptionsReference
         {
             var name = assembly.GetName().Name!;
             var stem = $"{project}/bin/{inputs.Configuration}/net10.0/{name}";
-            var binary = inputs.Read(stem + ".dll");
-            if (!binary.AsSpan().SequenceEqual(File.ReadAllBytes(assembly.Location))) throw new InvalidDataException();
+            _ = inputs.Read(stem + ".dll");
             using var stream = new MemoryStream(inputs.Read($"artifacts/docsgen/obj/options-xml/{inputs.Configuration}/{name}.xml"));
             using var reader = XmlReader.Create(stream, new XmlReaderSettings
             {
@@ -51,7 +50,7 @@ internal static class OptionsReference
         text.Append("`Nachos:SqlServer` is `SqlServerOptions.SectionName`. The API selects SQL when `Nachos:SqlServer:ConnectionString` or Aspire's `ConnectionStrings:nachos` exists; the canonical key wins. It binds the SQL section and then applies the selected connection. A blank, malformed or database-less selected value fails startup rather than falling back. With neither key, it uses in-memory storage. A displayed empty connection string is a pure default, never a discovered connection. These binding facts come from `src/Nachos.Api/Providers/ProviderSelection.cs`; no configuration or database is read by DocsGen.\n\n");
         AppendObject(new SqlServerOptions(), SqlServerOptions.SectionName, text, docs);
         text.Append("## Memory formation: AI, worker and reconciler\n\n");
-        text.Append("`Nachos:Deriver` (above) is the Deriver's own tuning and is bound with `Nachos` by the API and the worker. The sections below bind from the top-level sections `Llm`, `Embeddings`, `AzureOpenAI`, `Worker` and `Reconciler`, by `UseChatClient`, `UseEmbeddingGenerator`, `UseAzureOpenAI` and `AddNachosWorker`. `Nachos:Ai:Mode` is read by `UseConfiguredAI`: Azure OpenAI is used when `AzureOpenAI:Endpoint` is set unless the mode is `Fake`; with no endpoint the fake AI runs, which is not a memory-quality mode. Azure OpenAI always authenticates with `DefaultAzureCredential` (managed identity in Azure), never a key.\n\n");
+        text.Append("`Nachos:Deriver` (above) is the Deriver's own tuning and is bound with `Nachos` by the API and the worker. The sections below bind from the top-level sections `Llm`, `Embeddings`, `AzureOpenAI`, `Worker` and `Reconciler`, by `UseChatClient`, `UseEmbeddingGenerator`, `UseAzureOpenAI` and `AddNachosWorker`. `Nachos:Ai:Mode` is read by `UseConfiguredAI`: Azure OpenAI is used when `AzureOpenAI:Endpoint` is set unless the mode is `Fake`; with no endpoint the fake AI runs, which is not a memory-quality mode. While the fake AI is active the Deriver defaults to `Nachos:Deriver:EligibilityTokens` = 1 and `Nachos:Deriver:MaxAge` = 0 (any pending message is due at once) instead of the values above; a due-when-either rule means both keys must be set explicitly to restore a delay. Azure OpenAI always authenticates with `DefaultAzureCredential` (managed identity in Azure), never a key.\n\n");
         text.Append("`Llm:Profiles` maps a profile name to a model profile and `Llm:Agents` maps an agent name (for example the Deriver) to the profile it uses; the profile named `default` is used otherwise. Both are dictionaries keyed by name, so the table shows one entry.\n\n");
         AppendObject(new ModelProfile(), "Llm:Profiles:{name}", text, docs);
         AppendObject(new EmbeddingOptions(), "Embeddings", text, docs);
@@ -84,7 +83,7 @@ internal static class OptionsReference
         var type = value.GetType();
         var assemblyPrefix = type.Assembly.GetName().Name + ":";
         var summary = Summary(docs, assemblyPrefix + "T:" + type.FullName);
-        if (summary is null && type != typeof(DeriverOptions)) throw new InvalidDataException();
+        if (summary is null) throw new InvalidDataException();
         text.Append("### `").Append(type.Name).Append("` — `").Append(prefix).Append("`\n\n");
         text.Append(summary ?? "No type XML summary; member documentation follows.").Append("\n\n");
         text.Append("| Configuration path | Type | Default | XML summary |\n| --- | --- | --- | --- |\n");

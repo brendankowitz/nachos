@@ -57,7 +57,10 @@ var baseEnv = [
   { name: 'Nachos__SqlServer__ConnectionString', value: sqlConnectionString }
   { name: 'Nachos__SqlServer__AutomaticSchemaDeploymentEnabled', value: 'false' }
 ]
-var openAiEnv = empty(openAiEndpoint) ? [] : [
+// Without an endpoint the offline fake AI runs; say so explicitly so a deployment never falls into it by accident.
+var openAiEnv = empty(openAiEndpoint) ? [
+  { name: 'Nachos__Ai__Mode', value: 'Fake' }
+] : [
   { name: 'AzureOpenAI__Endpoint', value: openAiEndpoint }
   { name: 'AzureOpenAI__ChatDeployment', value: openAiChatDeployment }
   { name: 'AzureOpenAI__EmbeddingDeployment', value: openAiEmbeddingDeployment }

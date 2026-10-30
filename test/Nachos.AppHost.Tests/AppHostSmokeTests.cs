@@ -121,7 +121,7 @@ public sealed class AppHostSmokeTests
     {
         // Development is stated explicitly: the AppHost passes its environment on to the API, and the auth override below is Development-only.
         var appHost = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
-            ["--environment=Development", $"--Parameters:sql-password={NewSqlPassword()}"], cancellationToken);
+            ["--environment=Development", "--AzureOpenAI:Endpoint=", $"--Parameters:sql-password={NewSqlPassword()}"], cancellationToken);
 
         var sql = appHost.Resources.Single(resource => resource.Name == "sql");
         foreach (var mount in sql.Annotations.OfType<ContainerMountAnnotation>().ToList())

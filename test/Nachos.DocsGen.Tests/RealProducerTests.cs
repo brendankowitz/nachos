@@ -35,7 +35,7 @@ public sealed class RealProducerTests
         File.Exists(Path.Combine(restoreMetadata, "project.assets.json")).ShouldBeTrue();
         foreach (var name in new[] { "DocsGen.csproj.nuget.g.props", "DocsGen.csproj.nuget.g.targets", "project.nuget.cache", "DocsGen.csproj.nuget.dgspec.json" })
             File.Exists(Path.Combine(restoreMetadata, name)).ShouldBeTrue();
-        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
+        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.Hosting", "Nachos.DataLayer.SqlServer" })
             File.Exists(Path.Combine(artifacts, "obj", "options-xml", Configuration, name + ".xml")).ShouldBeTrue();
         Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "bin")).ShouldBeFalse();
         Directory.EnumerateFiles(Path.Combine(Root, "eng", "DocsGen"), "*", SearchOption.AllDirectories)
@@ -96,7 +96,7 @@ public sealed class RealProducerTests
         var cliPath = $"src/Nachos.Cli/bin/{Configuration}/net10.0/Nachos.Cli.dll";
         evidence[cliPath]!.GetValue<string>().ShouldBe(Convert.ToHexStringLower(
             SHA256.HashData(File.ReadAllBytes(Path.Combine(Root, cliPath)))));
-        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
+        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.Hosting", "Nachos.DataLayer.SqlServer" })
         {
             var xmlPath = $"artifacts/docsgen/obj/options-xml/{Configuration}/{name}.xml";
             evidence[xmlPath]!.GetValue<string>().ShouldBe(Convert.ToHexStringLower(

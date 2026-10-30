@@ -1,5 +1,6 @@
 using Azure.Identity;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Nachos.Core.Configuration;
 using Nachos.Hosting;
 
@@ -33,6 +34,7 @@ public static class NachosConfiguredAIExtensions
             options.Deriver.EligibilityTokens = 1;
             options.Deriver.MaxAge = TimeSpan.Zero;
         });
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, FakeAiWarning>());
         return builder.UseFakeAI();
     }
 }

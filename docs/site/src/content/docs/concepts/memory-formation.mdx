@@ -56,8 +56,10 @@ Without an Azure OpenAI endpoint, every host the repository starts for local use
 run offline: its "model" returns each message of the speaker, verbatim, as one fact, and
 its embeddings are deterministic hashes. Conclusions are therefore copies of messages, and
 semantic distance only reflects identical text. To make local runs quick, the fake AI also
-makes the Deriver eager, so a single short message is due at once. Set `Nachos:Deriver`
-values explicitly to override that.
+makes the Deriver eager: `Nachos:Deriver:EligibilityTokens` defaults to 1 and `Nachos:Deriver:MaxAge`
+to 0, so a single short message is due at once. A group is due when **either** limit is met, so
+to restore a delay you must set **both** keys explicitly; setting only one leaves the other eager.
+The host logs a warning at startup whenever the fake AI is active.
 
 Real memory needs a model. Set `AzureOpenAI:Endpoint` (and the two deployment names) to use
 your own Azure OpenAI resource; see [Run the worker](/nachos/guides/run-the-worker/). The

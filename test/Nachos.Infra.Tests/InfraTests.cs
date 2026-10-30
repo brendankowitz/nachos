@@ -471,6 +471,7 @@ public sealed class InfraTests
         variables.GetProperty("sqlConnectionString").GetString()!.ShouldContain("Authentication=Active Directory Managed Identity");
         var openAiEnv = variables.GetProperty("openAiEnv").GetString()!;
         openAiEnv.ShouldContain("AzureOpenAI__Endpoint");
+        openAiEnv.ShouldContain("Nachos__Ai__Mode", Case.Sensitive, "an empty endpoint must say Fake explicitly");
         openAiEnv.ShouldContain("AzureOpenAI__ChatDeployment");
         openAiEnv.ShouldContain("AzureOpenAI__EmbeddingDeployment");
         WorkerModuleTemplate(template).GetRawText().ShouldNotContain("listKeys", Case.Insensitive);

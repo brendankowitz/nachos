@@ -7,7 +7,9 @@ namespace Nachos.Api.Tests;
 
 public abstract class ApiTest : IDisposable
 {
-    protected NachosApiFactory Factory { get; } = new();
+    protected ApiTest(bool runWorkerLoops = false) => Factory = new NachosApiFactory { RunWorkerLoops = runWorkerLoops };
+
+    protected NachosApiFactory Factory { get; }
     private HttpClient? _client;
     protected HttpClient Client => _client ??= CreateClient();
     protected virtual HttpClient CreateClient() => Factory.CreateClient();

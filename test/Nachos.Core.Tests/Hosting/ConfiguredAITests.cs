@@ -85,6 +85,30 @@ public sealed class ConfiguredAITests
     }
 
     [Fact]
+    public async Task AHostWithFakeAI_WarnsThatItIsNotAMemoryQualityMode()
+    {
+        var logs = new CapturingProvider();
+        using var provider = Build([], logs);
+
+        foreach (var hosted in provider.GetServices<IHostedService>().Where(h => h is not (QueueConsumerService or ReconcilerService)))
+        {
+            await hosted.StartAsync(CancellationToken.None);
+        }
+
+        logs.Warnings.Count(w => w.Contains("Fake AI is active", StringComparison.Ordinal)).ShouldBe(1);
+    }
+
+    [Fact]
+    public void AHostWithAzureOpenAI_DoesNotRegisterTheFakeAIWarning()
+    {
+        var logs = new CapturingProvider();
+        using var provider = Build(
+            new() { ["AzureOpenAI:Endpoint"] = "https://example.openai.azure.com/", ["AzureOpenAI:EmbeddingDeployment"] = "embed" }, logs);
+
+        provider.GetServices<IHostedService>().Select(h => h.GetType().Name).ShouldNotContain("FakeAiWarning");
+    }
+
+    [Fact]
     public async Task AHostWithFakeAI_DoesNotWarn()
     {
         var logs = new CapturingProvider();

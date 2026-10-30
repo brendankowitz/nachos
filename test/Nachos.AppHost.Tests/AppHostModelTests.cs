@@ -156,7 +156,8 @@ public sealed class AppHostModelTests
 
     private static async Task<IDistributedApplicationTestingBuilder> BuildModelAsync(string environment, bool publish)
     {
-        List<string> args = [$"--environment={environment}"];
+        // An empty endpoint overrides user secrets and the environment, so no test can reach a live Azure OpenAI account.
+        List<string> args = [$"--environment={environment}", "--AzureOpenAI:Endpoint="];
         if (publish)
         {
             // Publish mode, as for `dotnet run --project src/Nachos.AppHost -- --publisher manifest`. The model is only

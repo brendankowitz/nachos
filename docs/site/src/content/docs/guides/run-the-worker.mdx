@@ -70,6 +70,9 @@ API's managed identity for SQL and takes your existing Azure OpenAI endpoint thr
 `openAiResourceGroupName` if it is in another resource group). These definitions are only
 checked offline; deploying them needs the repository owner's approval.
 
+`postdeploy` only checks the API. If `azd deploy worker` fails, the worker keeps running the placeholder image
+and nothing says so; check the worker's revision after a deploy.
+
 The replica count stays at one or more. Scaling to zero would need a queue-length scale rule,
 which is written but commented out until a run proves it works with the managed identity.
 

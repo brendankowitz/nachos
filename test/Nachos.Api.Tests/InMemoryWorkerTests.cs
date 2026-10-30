@@ -8,7 +8,7 @@ namespace Nachos.Api.Tests;
 /// The in-memory provider runs the worker loops inside the API process, with the offline fake AI, so a posted message
 /// becomes conclusions with no other host. Fake AI makes the Deriver eager, so one short message is due at once.
 /// </summary>
-public sealed class InMemoryWorkerTests : ApiTest
+public sealed class InMemoryWorkerTests() : ApiTest(runWorkerLoops: true)
 {
     protected override HttpClient CreateClient() => Factory.WithWebHostBuilder(builder =>
         builder.UseSetting("Worker:IdleDelay", "00:00:00.050").UseSetting("Worker:MaxIdleDelay", "00:00:00.100")).CreateClient();
@@ -46,7 +46,7 @@ public sealed class InMemoryWorkerTests : ApiTest
 
             if (DateTime.UtcNow > deadline)
             {
-                throw new TimeoutException("The in-process worker produced conclusion within 30 seconds. Queue: " + (await Send(HttpMethod.Get, W + "/queue/status")));
+                throw new TimeoutException("The in-process worker produced no conclusion within 30 seconds. Queue: " + (await Send(HttpMethod.Get, W + "/queue/status")));
             }
 
             await Task.Delay(100);

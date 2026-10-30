@@ -1,4 +1,11 @@
 using System.Text;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Nachos.Core.Llm;
+using Nachos.Core.Worker;
 using System.Text.Json;
 using Shouldly;
 
@@ -147,5 +154,33 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
         (await Post(C + "/list")).GetProperty("total").GetInt32().ShouldBe(0);
         await Send(HttpMethod.Delete, C + "/" + id, status: 204);
         await Send(HttpMethod.Delete, C + "/nevercreated", status: 204);
+    }
+}
+
+/// <summary>
+/// A host with no embedding generator, which the API only reaches if someone wires <c>AddNachos</c> by hand: semantic reads
+/// fail by design, and everything else still works. The generator, its startup probe and the Deriver that needs it are removed.
+/// </summary>
+public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
+{
+    protected override HttpClient CreateClient() => Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+    {
+        services.RemoveAll<IEmbeddingGenerator<string, Embedding<float>>>();
+        services.RemoveAll<IWorkHandler>();
+        foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingDimensionCheck)).ToList())
+        {
+            services.Remove(probe);
+        }
+    })).CreateClient();
+
+    [Fact]
+    public async Task SemanticQuery_Is500_ButCreateAndListWork()
+    {
+        await SeedSession();
+        await Post(W + "/peers", """{"id":"alice"}""");
+        await Post(W + "/conclusions", """{"conclusions":[{"content":"a","observer_id":"alice","observed_id":"alice"}]}""", 201);
+
+        Problem(await Post(W + "/conclusions/query", """{"query":"a"}""", 500), 500, JsonValueKind.String);
+        (await Post(W + "/conclusions/list")).GetProperty("total").GetInt32().ShouldBe(1);
     }
 }

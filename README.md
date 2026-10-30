@@ -134,7 +134,7 @@ curl -s -X POST http://127.0.0.1:5080/v3/workspaces/list \
   -H "Content-Type: application/json" -d '{}'
 ```
 
-Conclusions appear on their own: with the in-memory provider the API also runs the worker, and the fake AI is on because no Azure OpenAI endpoint is set. Idle polling backs off to 15 seconds, so allow a few seconds after the message.
+Conclusions appear on their own: with the in-memory provider the API also runs the worker, and the fake AI is on because no Azure OpenAI endpoint is set. Idle polling backs off to 15 seconds, so allow up to about 15 seconds after the message.
 
 ```bash
 curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/conclusions/list   -H "Content-Type: application/json" -d '{}'
