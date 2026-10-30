@@ -124,8 +124,6 @@ test('batch messages: create, list, get and metadata update', async () => {
 });
 
 test('conclusions: create, list, get and delete', async () => {
-  // The semantic query (`.query`) needs an embedding generator, which the conformance host does not configure yet
-  // (Task 9 wires the fake AI provider); it is covered by the .NET round-trip tests until then.
   const honcho = client(freshWorkspace());
   const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
   const session = await honcho.session('s1');
@@ -151,6 +149,27 @@ test('conclusions: create, list, get and delete', async () => {
   assert.equal((await aboutBob.get(created[0].id)).content, 'Bob prefers dark mode');
   await aboutBob.delete(created[0].id);
   assert.deepEqual(await ids(aboutBob), [created[1].id]);
+});
+
+test('conclusions: semantic query', async () => {
+  // The conformance host runs the offline fake AI: its deterministic embeddings put identical text at distance 0, so the
+  // query that repeats a conclusion verbatim must rank it first. That checks the wire shape and the embed-on-create path,
+  // not retrieval quality.
+  const honcho = client(freshWorkspace());
+  const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
+  const session = await honcho.session('s1');
+  await session.addPeers([alice, bob]);
+  const aboutBob = alice.conclusionsOf('bob');
+  const created = await aboutBob.create([
+    { content: 'Bob prefers dark mode', sessionId: 's1' },
+    { content: 'Bob works at Acme', sessionId: 's1' },
+  ]);
+
+  const found = await aboutBob.query('Bob works at Acme', 2);
+  assert.equal(found[0].id, created[1].id);
+  assert.equal(found[0].content, 'Bob works at Acme');
+  assert.ok(found.length <= 2);
+  assert.deepEqual(await alice.conclusions.query('Bob works at Acme'), []);
 });
 
 test('peer card get and set', async () => {

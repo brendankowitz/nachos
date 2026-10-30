@@ -40,15 +40,15 @@ try {
     Write-Fixture "<UnitTestResult testName='ok' outcome='Passed' /><UnitTestResult testName='platform' outcome='NotExecuted'><Output><ErrorInfo><Message>$reason</Message></ErrorInfo></Output></UnitTestResult>" 'total="2" executed="1" passed="1" failed="0"'
     if ($IsWindows) { Check 'documented platform skip remains explicit' { Assert-CiTestResult $path 'Nachos.Infra.Tests' 0 } }
     Check 'platform skip cannot exempt a different suite' { Assert-CiTestResult $path 'Nachos.Api.Tests' 0 } $true
-    $sdkOutput = "============================== 12 passed in 1.23s ==============================`nℹ tests 11`nℹ pass 11`nℹ fail 0`nℹ skipped 0`nℹ todo 0"
+    $sdkOutput = "============================== 13 passed in 1.23s ==============================`nℹ tests 12`nℹ pass 12`nℹ fail 0`nℹ skipped 0`nℹ todo 0"
     Check 'both SDK language counts are required' { Assert-CiSdkResult $sdkOutput }
     Check 'empty SDK output fails' { Assert-CiSdkResult '' } $true
-    Check 'SDK zero-test success fails' { Assert-CiSdkResult ($sdkOutput.Replace('tests 11', 'tests 0')) } $true
+    Check 'SDK zero-test success fails' { Assert-CiSdkResult ($sdkOutput.Replace('tests 12', 'tests 0')) } $true
     Check 'SDK scoped skip fails' { Assert-CiSdkResult ($sdkOutput.Replace('skipped 0', 'skipped 1')) } $true
     Check 'SDK disabled-auth fallback fails' { Assert-CiSdkResult ($sdkOutput + "`nauth: disabled") } $true
-    Check 'SDK xfail success fails' { Assert-CiSdkResult ($sdkOutput.Replace('12 passed', '11 passed, 1 xfailed')) } $true
-    Check 'SDK count mismatch fails' { Assert-CiSdkResult ($sdkOutput.Replace('pass 11', 'pass 10')) } $true
-    Check 'a disappeared Python scenario fails' { Assert-CiSdkResult ($sdkOutput.Replace('12 passed', '11 passed')) } $true
+    Check 'SDK xfail success fails' { Assert-CiSdkResult ($sdkOutput.Replace('13 passed', '12 passed, 1 xfailed')) } $true
+    Check 'SDK count mismatch fails' { Assert-CiSdkResult ($sdkOutput.Replace('pass 12', 'pass 11')) } $true
+    Check 'a disappeared Python scenario fails' { Assert-CiSdkResult ($sdkOutput.Replace('13 passed', '12 passed')) } $true
     $env:Nachos__SqlServer__ConnectionString = 'injected-test-value'
     $env:ConnectionStrings__nachos = 'injected-test-value'
     $env:AZURE_CLIENT_SECRET = 'injected-test-value'

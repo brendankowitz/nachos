@@ -23,9 +23,7 @@ internal static class ProviderSelection
     /// </exception>
     internal static NachosBuilder Use(NachosBuilder nachos, IConfiguration configuration)
     {
-        var key = configuration.GetSection(CanonicalKey).Exists() ? CanonicalKey
-            : configuration.GetSection(AspireKey).Exists() ? AspireKey
-            : null;
+        var key = SelectedKey(configuration);
         if (key is null)
         {
             return nachos.UseInMemory();
@@ -46,6 +44,14 @@ internal static class ProviderSelection
             options.ConnectionString = connectionString!;
         });
     }
+
+    /// <summary>True when <see cref="Use"/> will select SQL Server, so a separate worker host owns the background loops.</summary>
+    internal static bool UsesSqlServer(IConfiguration configuration) => SelectedKey(configuration) is not null;
+
+    private static string? SelectedKey(IConfiguration configuration) =>
+        configuration.GetSection(CanonicalKey).Exists() ? CanonicalKey
+        : configuration.GetSection(AspireKey).Exists() ? AspireKey
+        : null;
 
     private static bool NamesDatabase(string? connectionString)
     {

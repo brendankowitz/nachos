@@ -23,8 +23,28 @@ param principalType string = 'User'
 @description('Whether the API container app has already been deployed (azd: SERVICE_API_RESOURCE_EXISTS).')
 param apiExists bool
 
-@description('Azure OpenAI endpoint. Empty in M1 (no AI resources yet).')
+@description('Endpoint of an EXISTING Azure OpenAI account (bring your own; Bicep never provisions one). Empty runs the offline fake AI, which is not a memory-quality mode.')
 param openAiEndpoint string = ''
+
+@description('Name of that existing account. When set, the managed identity is granted Cognitive Services OpenAI User on it; leave empty if the role is granted elsewhere.')
+param openAiAccountName string = ''
+
+@description('Resource group of that account in this subscription; empty means the deployment resource group.')
+param openAiResourceGroupName string = ''
+
+@description('Chat deployment name on the account (a deployment name, not a model name).')
+param openAiChatDeployment string = 'gpt-4.1-mini'
+
+@description('Embedding deployment name on the account; the model must produce 1536 dimensions, for example text-embedding-3-small.')
+param openAiEmbeddingDeployment string = 'text-embedding-3-small'
+
+// Same azd-templates convention as apiExists (SERVICE_WORKER_RESOURCE_EXISTS); not provable offline.
+@description('Whether the worker container app has already been deployed (azd: SERVICE_WORKER_RESOURCE_EXISTS).')
+param workerExists bool
+
+@description('Lower bound for worker replicas; at least 1 until the KEDA mssql rule is verified (plan risk R7).')
+@minValue(1)
+param workerMinReplicas int = 1
 
 // Image of the very first revision, until `azd deploy` replaces it. mendhak/http-https-echo (MIT) listens on 8080
 // and answers 200 on every path, so the always-on /health probes pass from revision 1 and azd copies them onto the
@@ -131,8 +151,44 @@ module apiApp 'modules/api-app.bicep' = {
     sqlServerFqdn: sql.outputs.serverFqdn
     sqlDatabaseName: sql.outputs.databaseName
     openAiEndpoint: openAiEndpoint
+    openAiChatDeployment: openAiChatDeployment
+    openAiEmbeddingDeployment: openAiEmbeddingDeployment
     apiExists: apiExists
     containerImage: placeholderImage
+  }
+}
+
+module workerApp 'modules/worker-app.bicep' = {
+  scope: rg
+  name: 'worker-app'
+  params: {
+    name: 'nachos-worker'
+    location: location
+    tags: tags
+    environmentId: containerAppsEnvironment.outputs.id
+    identityId: identity.outputs.id
+    identityClientId: identity.outputs.clientId
+    registryLoginServer: registry.outputs.loginServer
+    appInsightsConnectionString: monitoring.outputs.applicationInsightsConnectionString
+    sqlServerFqdn: sql.outputs.serverFqdn
+    sqlDatabaseName: sql.outputs.databaseName
+    openAiEndpoint: openAiEndpoint
+    openAiChatDeployment: openAiChatDeployment
+    openAiEmbeddingDeployment: openAiEmbeddingDeployment
+    workerExists: workerExists
+    workerMinReplicas: workerMinReplicas
+    containerImage: placeholderImage
+  }
+}
+
+// The API and the worker share one identity, so one grant covers both. Q6: the account belongs to the owner, so only the
+// role assignment is Bicep's; the account may live in another resource group of the subscription.
+module openAiAccess 'modules/openai-access.bicep' = if (!empty(openAiAccountName)) {
+  scope: resourceGroup(empty(openAiResourceGroupName) ? rg.name : openAiResourceGroupName)
+  name: 'openai-access'
+  params: {
+    accountName: openAiAccountName
+    principalId: identity.outputs.principalId
   }
 }
 

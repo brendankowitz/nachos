@@ -45,4 +45,34 @@ if (developmentRun)
         .WithEnvironment("Nachos__Auth__NachosKey__Keys__0__Secret", signingKey);
 }
 
+// The worker runs the Deriver and the reconciler against the same database. It waits for the API, which deploys the schema
+// on its first readiness check in Development; the worker never deploys it.
+var worker = builder.AddProject<Projects.Nachos_Worker>("worker")
+    .WithReference(nachosDb)
+    .WaitFor(api);
+
+// Offline fake AI unless an Azure OpenAI endpoint is configured for the AppHost (AzureOpenAI:Endpoint in user secrets or the
+// environment). The fake AI is not a memory-quality mode: conclusions are copies of messages. Real Azure OpenAI authenticates
+// with DefaultAzureCredential, so the developer's `az login` is what the hosts use.
+var azureOpenAiEndpoint = builder.Configuration["AzureOpenAI:Endpoint"];
+foreach (var project in new[] { api, worker })
+{
+    if (string.IsNullOrWhiteSpace(azureOpenAiEndpoint))
+    {
+        project.WithEnvironment("Nachos__Ai__Mode", "Fake");
+    }
+    else
+    {
+        project.WithEnvironment("AzureOpenAI__Endpoint", azureOpenAiEndpoint)
+            .WithEnvironment("AzureOpenAI__ChatDeployment", builder.Configuration["AzureOpenAI:ChatDeployment"] ?? "")
+            .WithEnvironment("AzureOpenAI__EmbeddingDeployment", builder.Configuration["AzureOpenAI:EmbeddingDeployment"] ?? "");
+    }
+}
+
+if (developmentRun && string.IsNullOrWhiteSpace(azureOpenAiEndpoint))
+{
+    // Idle polling backs off to 15 seconds by default; a local demo should not wait that long for its first conclusion.
+    worker.WithEnvironment("Worker__MaxIdleDelay", "00:00:02");
+}
+
 builder.Build().Run();

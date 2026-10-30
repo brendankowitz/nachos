@@ -14,6 +14,12 @@ builder.AddServiceDefaults();
 builder.Services.AddNachos(nachos =>
 {
     ProviderSelection.Use(nachos, builder.Configuration);
+    nachos.UseConfiguredAI(builder.Configuration);
+    if (!ProviderSelection.UsesSqlServer(builder.Configuration))
+    {
+        // In-memory state is only visible to this process, so the loops cannot run in a separate worker.
+        nachos.AddNachosWorker();
+    }
     nachos.BindSigningKeys(builder.Configuration.GetSection("Nachos:Auth:NachosKey"));
 });
 builder.Services.AddNachosAuthentication(builder.Configuration);

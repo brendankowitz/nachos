@@ -8,5 +8,6 @@
     <ProjectReference Include="..\..\src\Nachos.Api\Nachos.Api.csproj" />
     <ProjectReference Include="..\..\src\Nachos.Cli\Nachos.Cli.csproj" />
     <ProjectReference Include="..\..\src\Nachos.ServiceDefaults\Nachos.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\..\src\Nachos.Worker\Nachos.Worker.csproj" />
   </ItemGroup>
 </Project>

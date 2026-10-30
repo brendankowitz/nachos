@@ -15,8 +15,14 @@ param appInsightsConnectionString string
 param sqlServerFqdn string
 param sqlDatabaseName string
 
-@description('Azure OpenAI endpoint; empty in M1, in which case the variable is not set.')
+@description('Azure OpenAI endpoint. When empty the API uses the offline fake AI (it embeds queries and API-created conclusions).')
 param openAiEndpoint string = ''
+
+@description('Azure OpenAI chat deployment name.')
+param openAiChatDeployment string
+
+@description('Azure OpenAI embedding deployment name. It must match the worker, or query vectors will not line up with stored ones.')
+param openAiEmbeddingDeployment string
 
 @description('True once the app exists (azd sets SERVICE_API_RESOURCE_EXISTS). Then the image and the key ring currently on the app are kept.')
 param apiExists bool
@@ -66,7 +72,9 @@ var existingEnv = apiExists ? existingImage!.outputs.env : []
 var existingRing = filter(existingEnv, e => startsWith(e.name, ringPrefix))
 var ringEnv = empty(existingRing) ? [ { name: '${ringPrefix}0__Kid', value: '0' } ] : existingRing
 var openAiEnv = empty(openAiEndpoint) ? [] : [
-  { name: 'AZURE_OPENAI_ENDPOINT', value: openAiEndpoint }
+  { name: 'AzureOpenAI__Endpoint', value: openAiEndpoint }
+  { name: 'AzureOpenAI__ChatDeployment', value: openAiChatDeployment }
+  { name: 'AzureOpenAI__EmbeddingDeployment', value: openAiEmbeddingDeployment }
 ]
 
 resource api 'Microsoft.App/containerApps@2026-01-01' = {

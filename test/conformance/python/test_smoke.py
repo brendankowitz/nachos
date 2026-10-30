@@ -105,8 +105,6 @@ def test_batch_messages_list_get_and_update(honcho: Honcho):
 
 
 def test_conclusions_create_list_get_delete(honcho: Honcho):
-    # The semantic query (`.query`) needs an embedding generator, which the conformance host does not configure yet
-    # (Task 9 wires the fake AI provider); it is covered by the .NET round-trip tests until then.
     alice, bob = honcho.peer("alice"), honcho.peer("bob")
     session = honcho.session("s1")
     session.add_peers([alice, bob])
@@ -123,6 +121,26 @@ def test_conclusions_create_list_get_delete(honcho: Honcho):
     assert about_bob.get(created[0].id).content == "Bob prefers dark mode"
     about_bob.delete(created[0].id)
     assert [c.id for c in about_bob.list()] == [created[1].id]
+
+
+def test_conclusions_semantic_query(honcho: Honcho):
+    # The conformance host runs the offline fake AI: its deterministic embeddings put identical text at distance 0, so the
+    # query that repeats a conclusion verbatim must rank it first. That checks the wire shape and the embed-on-create path,
+    # not retrieval quality.
+    alice, bob = honcho.peer("alice"), honcho.peer("bob")
+    session = honcho.session("s1")
+    session.add_peers([alice, bob])
+    about_bob = alice.conclusions_of("bob")
+    created = about_bob.create([
+        {"content": "Bob prefers dark mode", "session_id": "s1"},
+        {"content": "Bob works at Acme", "session_id": "s1"},
+    ])
+
+    found = about_bob.query("Bob works at Acme", top_k=2)
+    assert found[0].id == created[1].id
+    assert found[0].content == "Bob works at Acme"
+    assert len(found) <= 2
+    assert alice.conclusions.query("Bob works at Acme") == []
 
 
 def test_peer_card_get_and_set(honcho: Honcho):

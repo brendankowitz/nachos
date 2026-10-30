@@ -1,5 +1,6 @@
 namespace Nachos.Core.Llm;
 
+/// <summary>Embedding settings, bound from <c>Embeddings</c>. The generator itself comes from <c>UseAzureOpenAI</c> or <c>UseEmbeddingGenerator</c>.</summary>
 public sealed class EmbeddingOptions
 {
     /// <summary>The dimension fixed by the database schema (VECTOR(1536)).</summary>

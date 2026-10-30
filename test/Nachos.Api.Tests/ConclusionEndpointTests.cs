@@ -149,18 +149,3 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
         await Send(HttpMethod.Delete, C + "/nevercreated", status: 204);
     }
 }
-
-/// <summary>A host with no embedding generator: semantic reads fail by design, and everything else still works.</summary>
-public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
-{
-    [Fact]
-    public async Task SemanticQuery_Is500_ButCreateAndListWork()
-    {
-        await SeedSession();
-        await Post(W + "/peers", """{"id":"alice"}""");
-        await Post(W + "/conclusions", """{"conclusions":[{"content":"a","observer_id":"alice","observed_id":"alice"}]}""", 201);
-
-        Problem(await Post(W + "/conclusions/query", """{"query":"a"}""", 500), 500, JsonValueKind.String);
-        (await Post(W + "/conclusions/list")).GetProperty("total").GetInt32().ShouldBe(1);
-    }
-}

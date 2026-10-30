@@ -1,6 +1,7 @@
 namespace Nachos.Core.Configuration;
 
 /// <summary>Deriver budgets and queue policy. Defaults are the Honcho parity values (spec §8).</summary>
+/// <summary>Deriver (memory formation) tuning, bound from <c>Nachos:Deriver</c>.</summary>
 public sealed class DeriverOptions
 {
     /// <summary>Maximum o200k_base tokens in each custom-instruction value; default 2000.</summary>

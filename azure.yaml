@@ -7,6 +7,10 @@ services:
     project: ./src/Nachos.Api
     language: dotnet
     host: containerapp
+  worker:
+    project: ./src/Nachos.Worker
+    language: dotnet
+    host: containerapp
 
 hooks:
   postprovision:

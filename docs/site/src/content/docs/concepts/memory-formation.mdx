@@ -1,0 +1,77 @@
+---
+title: Memory formation
+---
+
+Posting a message stores it and, when its sender has an observer, queues one unit of
+work. A background **worker** later turns that work into **conclusions**: short
+statements about a peer that other calls can list, query and read back as a
+representation. Nothing in this path runs inside your request.
+
+## What happens to a message
+
+1. **Queue.** The append that stores the message also enqueues a work item, in the same
+   transaction with SQL Server. Work is grouped per workspace, session and sender.
+2. **Eligibility.** A group becomes due when its pending messages reach
+   `Nachos:Deriver:EligibilityTokens` (512 by default) or its oldest message is
+   `Nachos:Deriver:MaxAge` old (30 minutes by default).
+3. **Lease.** A worker claims a due group with a lease and keeps renewing it. If the
+   worker dies, the lease expires and another worker retries the group.
+4. **Deriver.** The worker sends the recent conversation to a chat model, which returns
+   facts about each speaker. Reasoning can be turned off per message, session or
+   workspace; those messages are completed without being sent to a model.
+5. **Deduplication.** A new fact within `Nachos:Deriver:DedupMaxDistance` (cosine, 0.05 by
+   default) of an existing conclusion corroborates that conclusion instead of inserting a
+   copy, and raises its `times_derived`.
+6. **Commit.** New conclusions, corroborations and the completion of the queue items are
+   written together. A crash leaves either all of it or none of it.
+
+A **reconciler** runs alongside the consumer. It embeds conclusions that were created
+without a vector (for example through the API while a model was unavailable), purges
+tombstoned conclusions and old completed queue items after their retention period, and
+runs as a singleton through its own lease.
+
+Failures retry with exponential backoff. After `Nachos:Deriver:MaxAttempts` (5) the items
+are dead-lettered and reported as completed by `queue/status`, so a poisoned message does
+not block the rest of the queue.
+
+## What you can read back
+
+| Call | Returns |
+| --- | --- |
+| `POST /v3/workspaces/{id}/conclusions/list` | Conclusions, filtered and paged. |
+| `POST /v3/workspaces/{id}/conclusions/query` | The nearest conclusions to a text query, by embedding distance. |
+| `POST /v3/workspaces/{id}/peers/{id}/representation` | A peer's conclusions rendered as text, optionally searched. |
+| `GET /v3/workspaces/{id}/peers/{id}/context` | The representation together with the peer card. |
+| `GET` and `PUT /v3/workspaces/{id}/peers/{id}/card` | The peer card: a short list of stable facts you or the worker maintain. |
+| `GET /v3/workspaces/{id}/queue/status` | Counts of pending, in-progress and completed work. |
+
+You can also create conclusions directly with `POST /v3/workspaces/{id}/conclusions` and
+delete them by id. Dialectic chat, search, session context, summaries and dreaming are not
+built yet and answer `501`.
+
+## Fake AI is not memory quality
+
+Without an Azure OpenAI endpoint, every host the repository starts for local use runs the
+**fake AI**. It exists so the whole pipeline (queue, lease, dedup, embeddings, commit) can
+run offline: its "model" returns each message of the speaker, verbatim, as one fact, and
+its embeddings are deterministic hashes. Conclusions are therefore copies of messages, and
+semantic distance only reflects identical text. To make local runs quick, the fake AI also
+makes the Deriver eager, so a single short message is due at once. Set `Nachos:Deriver`
+values explicitly to override that.
+
+Real memory needs a model. Set `AzureOpenAI:Endpoint` (and the two deployment names) to use
+your own Azure OpenAI resource; see [Run the worker](/nachos/guides/run-the-worker/). The
+embedding deployment must produce 1536 dimensions, because the database stores
+`VECTOR(1536)`; a host with another size fails at startup.
+
+## Where the loops run
+
+| Provider | Where the worker runs |
+| --- | --- |
+| SQL Server | In its own host, `Nachos.Worker`. The API never runs the loops. Replicas share the queue through leases. |
+| In-memory | Inside the API process, because another process cannot see in-memory state. |
+
+The in-memory provider is not durable, so its conclusions disappear with the process.
+
+All options are in [Options](/nachos/reference/options/); the section "Memory formation: AI,
+worker and reconciler" lists `Llm`, `Embeddings`, `AzureOpenAI`, `Worker` and `Reconciler`.

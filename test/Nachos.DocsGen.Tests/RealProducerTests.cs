@@ -107,9 +107,9 @@ public sealed class RealProducerTests
             "/" + otherConfiguration + "/", StringComparison.Ordinal));
         var counts = compatibility["counts"]!;
         counts["actualOperations"]!.GetValue<int>().ShouldBe(56);
-        counts["declaredImplemented"]!.GetValue<int>().ShouldBe(21);
+        counts["declaredImplemented"]!.GetValue<int>().ShouldBe(31);
         counts["declaredPartial"]!.GetValue<int>().ShouldBe(1);
-        counts["staged501"]!.GetValue<int>().ShouldBe(34);
+        counts["staged501"]!.GetValue<int>().ShouldBe(24);
         counts["missing"]!.GetValue<int>().ShouldBe(1);
         counts["extensions"]!.GetValue<int>().ShouldBe(2);
         foreach (var path in new[] { "/v3/keys", "/v3/admin/grants" })
@@ -175,7 +175,7 @@ public sealed class RealProducerTests
         {
             var value = property.GetValue(options);
             var path = prefix + ":" + property.Name;
-            if (value is null or string or bool or int) yield return (path, value);
+            if (value is null or string or bool or int or double or float or TimeSpan) yield return (path, value);
             else foreach (var child in Defaults(value, path)) yield return child;
         }
     }

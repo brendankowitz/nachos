@@ -32,6 +32,7 @@ public static class NachosServiceCollectionExtensions
         services.TryAddScoped<PeerContextService>();
         services.TryAddScoped<NachosService>();
         services.TryAddScoped<INachosClient>(provider => provider.GetRequiredService<NachosService>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, MissingEmbeddingGeneratorWarning>());
         configure(new NachosBuilder(services));
         return services;
     }

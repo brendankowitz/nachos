@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Nachos.Api\Nachos.Api.csproj" />
+    <ProjectReference Include="..\Nachos.Worker\Nachos.Worker.csproj" />
   </ItemGroup>
 </Project>
 

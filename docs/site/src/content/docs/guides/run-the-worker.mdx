@@ -1,0 +1,83 @@
+---
+title: Run the worker
+---
+
+The worker is the host that turns queued messages into conclusions. With SQL Server it is
+`src/Nachos.Worker`, a separate process from the API. With the in-memory provider you do
+not run it: the API runs the same loops itself. Read [Memory formation](/nachos/concepts/memory-formation/)
+first for what the loops do.
+
+## Prerequisites
+
+- **A database with the M2 schema.** The worker never deploys the schema. The schema
+  version number stays `1` before the first release, so a database created by an earlier
+  build reads as current but lacks the memory tables. Recreate a pre-release database, or
+  review and apply the change once:
+
+  ```powershell
+  dotnet run --project src\Nachos.Cli -- schema report --connection "<connection string>"
+  dotnet run --project src\Nachos.Cli -- schema upgrade --connection "<connection string>" --approve-reviewed
+  ```
+
+  Read [Schema upgrades](/nachos/guides/schema-upgrades/) before touching real data.
+- The same connection string the API uses: `Nachos:SqlServer:ConnectionString`, or
+  Aspire's `ConnectionStrings:nachos`. The canonical key wins.
+
+## Locally with Aspire and fake AI
+
+```powershell
+dotnet run --project src\Nachos.AppHost --launch-profile http
+```
+
+The AppHost starts SQL Server, the API and the worker. The worker waits for the API, which
+deploys the schema in a Development run. Both hosts get `Nachos__Ai__Mode=Fake`, so no
+Azure credentials are needed. The AppHost does not disable authentication; mint a key as
+described in the [authentication guide](/nachos/guides/auth/), post a message, then list
+conclusions. In a Development run the worker polls for new work at least every two seconds.
+
+## With your own Azure OpenAI
+
+Nachos does not create the Azure OpenAI account and never uses an API key. Create or reuse an
+account with a chat deployment and an embedding deployment whose model produces 1536
+dimensions (for example `text-embedding-3-small`), then configure **both** the API and the
+worker with the same values:
+
+| Setting | Meaning |
+| --- | --- |
+| `AzureOpenAI:Endpoint` | The account endpoint, for example `https://contoso.openai.azure.com/`. Selects real AI. |
+| `AzureOpenAI:ChatDeployment` | The chat deployment name used by profiles that name no model. |
+| `AzureOpenAI:EmbeddingDeployment` | The embedding deployment name. |
+
+The API needs them too: it embeds the text of `conclusions/query` and of
+API-created conclusions with the same model the worker uses, or the vectors would not be
+comparable. Authentication uses `DefaultAzureCredential`: managed identity in Azure, your
+`az login` locally. Grant that identity the **Cognitive Services OpenAI User** role on the
+account. To run the AppHost against Azure OpenAI, set `AzureOpenAI:Endpoint` (and the
+deployments) in the AppHost's user secrets or environment; it then passes them to both hosts
+instead of selecting fake AI.
+
+Set `Nachos:Ai:Mode` to `Fake` to force the fake AI even when an endpoint is present.
+Per-agent model profiles and fallbacks bind from `Llm`; the option table is in
+[Options](/nachos/reference/options/).
+
+## In Azure
+
+[`infra/`](https://github.com/brendankowitz/nachos/tree/main/infra) defines a `nachos-worker`
+Container App with no ingress, at least one replica, and CPU-based scaling. It reuses the
+API's managed identity for SQL and takes your existing Azure OpenAI endpoint through the
+`openAiEndpoint`, `openAiChatDeployment` and `openAiEmbeddingDeployment` parameters. Setting
+`openAiAccountName` also grants the identity the OpenAI User role on that account (in
+`openAiResourceGroupName` if it is in another resource group). These definitions are only
+checked offline; deploying them needs the repository owner's approval.
+
+The replica count stays at one or more. Scaling to zero would need a queue-length scale rule,
+which is written but commented out until a run proves it works with the managed identity.
+
+## Operating notes
+
+- `Worker:MaxConcurrency` bounds the units one process handles at once. Replicas are safe:
+  a unit is claimed with a lease, and an expired lease is retried by another replica.
+- `GET /v3/workspaces/{id}/queue/status` shows pending, in-progress and completed work.
+  Work that fails repeatedly is dead-lettered and counts as completed.
+- Telemetry: the worker exports traces from the `Nachos.Llm` source and metrics from the
+  `Nachos.Worker` and `Nachos.Llm` meters, through the same OpenTelemetry settings as the API.

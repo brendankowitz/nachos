@@ -109,6 +109,51 @@ public sealed class AppHostModelTests
         image.Tag.ShouldBe("2025-CU9-ubuntu-24.04", "keep in step with eng/docker/mssql-fts/Dockerfile");
     }
 
+    [Theory]
+    [MemberData(nameof(AllModes))]
+    public async Task Worker_ReferencesTheDatabase_AndWaitsForTheApi(string environment, bool publish)
+    {
+        var model = await BuildModelAsync(environment, publish);
+        var worker = Resource(model, "worker");
+
+        (await EnvironmentAsync(model, "worker"))["ConnectionStrings__nachos"]
+            .ShouldBeOfType<ConnectionStringReference>().Resource.ShouldBeSameAs(Resource(model, "nachos"));
+        worker.Annotations.OfType<WaitAnnotation>().ShouldContain(
+            wait => ReferenceEquals(wait.Resource, Resource(model, "api")) && wait.WaitType == WaitType.WaitUntilHealthy,
+            "the worker needs the schema the API deploys, so it waits for the API to be ready");
+        worker.Annotations.OfType<EndpointAnnotation>().ShouldBeEmpty("the worker exposes no endpoint");
+    }
+
+    [Theory]
+    [MemberData(nameof(AllModes))]
+    public async Task FakeAI_IsTheDefaultForBothHosts(string environment, bool publish)
+    {
+        var model = await BuildModelAsync(environment, publish);
+
+        foreach (var host in new[] { "api", "worker" })
+        {
+            var env = await EnvironmentAsync(model, host);
+            env["Nachos__Ai__Mode"].ShouldBe("Fake");
+            env.Keys.ShouldNotContain("AzureOpenAI__Endpoint");
+        }
+    }
+
+    [Fact]
+    public async Task AConfiguredAzureOpenAIEndpoint_IsPassedToBothHosts_InsteadOfFakeAI()
+    {
+        var model = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
+            ["--environment=Development", "--AzureOpenAI:Endpoint=https://example.openai.azure.com/", "--AzureOpenAI:ChatDeployment=chat", "--AzureOpenAI:EmbeddingDeployment=embed"]);
+
+        foreach (var host in new[] { "api", "worker" })
+        {
+            var env = await EnvironmentAsync(model, host);
+            env["AzureOpenAI__Endpoint"].ShouldBe("https://example.openai.azure.com/");
+            env["AzureOpenAI__ChatDeployment"].ShouldBe("chat");
+            env["AzureOpenAI__EmbeddingDeployment"].ShouldBe("embed");
+            env.Keys.ShouldNotContain("Nachos__Ai__Mode");
+        }
+    }
+
     private static async Task<IDistributedApplicationTestingBuilder> BuildModelAsync(string environment, bool publish)
     {
         List<string> args = [$"--environment={environment}"];
@@ -128,9 +173,13 @@ public sealed class AppHostModelTests
         model.Resources.Single(resource => resource.Name == name);
 
     /// <summary>The API's environment as the AppHost declares it, before any value is resolved.</summary>
-    private static async Task<Dictionary<string, object>> ApiEnvironmentAsync(IDistributedApplicationTestingBuilder model)
+    private static Task<Dictionary<string, object>> ApiEnvironmentAsync(IDistributedApplicationTestingBuilder model) =>
+        EnvironmentAsync(model, "api");
+
+    /// <summary>A project's environment as the AppHost declares it, before any value is resolved.</summary>
+    private static async Task<Dictionary<string, object>> EnvironmentAsync(IDistributedApplicationTestingBuilder model, string resource)
     {
-        var api = Resource(model, "api");
+        var api = Resource(model, resource);
         var values = new Dictionary<string, object>();
         var context = new EnvironmentCallbackContext(model.ExecutionContext, api, values);
         foreach (var annotation in api.Annotations.OfType<EnvironmentCallbackAnnotation>())
