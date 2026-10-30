@@ -62,6 +62,13 @@ public interface IWorkQueue
     Task CompleteAsync(WorkLease lease, CancellationToken ct);
 
     /// <summary>
+    /// Gives the unit back without a verdict (for instance on shutdown): the lease's items are claimable again at once, and
+    /// the attempt this lease added to each is taken back. Releases the unit.
+    /// </summary>
+    /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
+    Task ReleaseAsync(WorkLease lease, CancellationToken ct);
+
+    /// <summary>
     /// Records <paramref name="reason"/> (truncated to 4000 characters) on the lease's items and releases the unit. An
     /// item whose <see cref="WorkItemRecord.Attempts"/> has reached <paramref name="maxAttempts"/> is dead-lettered;
     /// the others become claimable again <paramref name="retryDelay"/> from now.

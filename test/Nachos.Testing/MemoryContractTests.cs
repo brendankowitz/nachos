@@ -259,6 +259,29 @@ public abstract class MemoryContractTests : IAsyncLifetime
             store.Conclusions.ListAsync(Unique("missing"), null, ConclusionOrder.CreatedAt, new PageRequest(), Ct));
     }
 
+    /// <summary>
+    /// The internal level column (not in the wire allowlist; VisibilityPolicy adds it), whose operand is the level's
+    /// lowercase name. Keyed by its name until <c>FilterColumns.Level</c> reaches this branch.
+    /// </summary>
+    [Fact]
+    public async Task ListAndQuery_FilterByLevelName()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        await InsertAsync(store, workspace, Fact("stated", session, Vector(0)));
+        await InsertAsync(store, workspace, Fact("deduced", null, Vector(0, tilt: 0.1f), level: ConclusionLevel.Deductive));
+        await InsertAsync(store, workspace, Fact("induced", null, level: ConclusionLevel.Inductive));
+        FilterNode Level(FilterOp op, JsonNode value) => new FilterNode.Field("Level", op, value);
+
+        (await ListAllAsync(store, workspace, Level(FilterOp.Eq, "explicit"))).Select(c => c.Content).ShouldBe(["stated"]);
+        (await ListAllAsync(store, workspace, Level(FilterOp.Ne, "explicit"))).Select(c => c.Content).ShouldBe(["deduced", "induced"]);
+        (await ListAllAsync(store, workspace, Level(FilterOp.In, new JsonArray("inductive", "contradiction"))))
+            .Select(c => c.Content).ShouldBe(["induced"]);
+        (await ListAllAsync(store, workspace, Level(FilterOp.Eq, "Explicit"))).ShouldBeEmpty();
+        (await store.Conclusions.QueryAsync(workspace, Vector(0), 10, null, Level(FilterOp.Eq, "deductive"), Ct))
+            .ShouldHaveSingleItem().Conclusion.Content.ShouldBe("deduced");
+    }
+
     [Fact]
     public async Task Query_RanksByCosineDistance()
     {
@@ -552,6 +575,26 @@ public abstract class MemoryContractTests : IAsyncLifetime
         (await store.Conclusions.FindExactAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, "embedded", null, Ct)).ShouldBeNull();
         (await store.Conclusions.FindNearestAsync(workspace, "alice", "bob", ConclusionLevel.Explicit, Vector(0), 2, null, Ct)).ShouldBeNull();
         (await store.Embeddings.ListPendingAsync(1000, Ct)).ShouldNotContain(p => p.ConclusionId == pending.PublicId);
+    }
+
+    /// <summary>
+    /// Public ids are workspace-scoped for every read and write: a dropped workspace predicate would let a caller of one
+    /// workspace read or delete another's conclusion, and a delete of a missing id is a silent no-op (204) either way.
+    /// </summary>
+    [Fact]
+    public async Task GetAndTombstone_ThroughAnotherWorkspace_SeeNothingAndChangeNothing()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspaceA, _) = await ArrangeAsync(store);
+        var (workspaceB, sessionB) = await ArrangeAsync(store);
+        var inB = await InsertAsync(store, workspaceB, Fact("Bob lives in Lisbon.", sessionB));
+
+        (await store.Conclusions.GetAsync(workspaceA, inB.PublicId, Ct)).ShouldBeNull();
+        await store.Conclusions.TombstoneAsync(workspaceA, inB.PublicId, Ct);
+
+        Describe((await store.Conclusions.GetAsync(workspaceB, inB.PublicId, Ct)).ShouldNotBeNull()).ShouldBe(Describe(inB));
+        (await ListAllAsync(store, workspaceB)).ShouldHaveSingleItem().PublicId.ShouldBe(inB.PublicId);
+        (await ListAllAsync(store, workspaceA)).ShouldBeEmpty();
     }
 
     [Fact]

@@ -103,6 +103,15 @@ internal static class InMemoryFilterEvaluator
             FilterColumns.ObservedId => conclusion.ObservedName,
             FilterColumns.SessionId => new AnyOf(conclusion.SessionName is { } session ? [session] : []),
             FilterColumns.CreatedAt => conclusion.CreatedAt,
+
+            // The internal FilterColumns.Level (M2 Task 7), keyed by its name: the level's lowercase name, as on the wire.
+            "Level" or "level" => conclusion.Level switch
+            {
+                ConclusionLevel.Explicit => "explicit",
+                ConclusionLevel.Deductive => "deductive",
+                ConclusionLevel.Inductive => "inductive",
+                _ => "contradiction",
+            },
             _ => throw UnknownColumn(column, ResourceKind.Conclusion),
         }));
 

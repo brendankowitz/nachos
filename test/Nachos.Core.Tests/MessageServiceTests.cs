@@ -157,7 +157,7 @@ public sealed class MessageServiceTests
         var f = new Fixture();
         using var cts = new CancellationTokenSource();
         f.Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<NewMessage>>(),
-            Arg.Any<IdempotencyWrite?>(), cts.Token).Returns(_ =>
+            Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), cts.Token).Returns(_ =>
         {
             cts.Cancel();
             return Task.FromException<IReadOnlyList<MessageRecord>>(new IdempotencyDuplicateException("key"));
@@ -354,7 +354,7 @@ public sealed class MessageServiceTests
     public async Task MisbehavingStoreWithoutResponseCallback_IsNotReportedAsSuccessfulCapture()
     {
         var f = new Fixture();
-        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), default)
+        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), default)
             .Returns(Task.FromResult<IReadOnlyList<MessageRecord>>([]));
 
         await Should.ThrowAsync<InvalidOperationException>(() =>
@@ -369,7 +369,7 @@ public sealed class MessageServiceTests
         await Should.ThrowAsync<NotFoundException>(() => f.Service.CreateMessagesResponseAsync("W", "missing", Json(Body), "key", default));
         f.Attempts.ShouldBe(0);
         var failure = new InvalidOperationException("provider unavailable");
-        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), default)
+        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), default)
             .Returns(Task.FromException<IReadOnlyList<MessageRecord>>(failure));
         (await Should.ThrowAsync<InvalidOperationException>(() => f.Service.CreateMessagesResponseAsync("W", "S", Json(Body), null, default)))
             .ShouldBeSameAs(failure);
@@ -393,13 +393,13 @@ public sealed class MessageServiceTests
         public Fixture(ITokenCounter? tokenCounter = null)
         {
             var counter = tokenCounter ?? new TiktokenTokenCounter();
-            Service = new(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
+            Service = new(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>(), new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
             Store.Sessions.GetAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(info => new SessionRecord(info.ArgAt<string>(0), info.ArgAt<string>(1), LifecycleState.Active, new(), new(), Clock.GetUtcNow()));
             Store.Idempotency.TryGetAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(_ => Saved is { } record && record.ExpiresAt > Clock.GetUtcNow() ? record : null);
             Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<NewMessage>>(),
-                Arg.Any<IdempotencyWrite?>(), Arg.Any<CancellationToken>()).Returns(info =>
+                Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), Arg.Any<CancellationToken>()).Returns(info =>
             {
                 lock (_gate)
                 {

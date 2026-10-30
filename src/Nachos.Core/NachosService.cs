@@ -20,7 +20,8 @@ public sealed partial class NachosService(
     IMemoryStore store,
     ITokenCounter tokenCounter,
     RequestValidator validator,
-    IKeyIssuer keyIssuer) : INachosClient
+    IKeyIssuer keyIssuer,
+    IConfigurationResolver configurationResolver) : INachosClient
 {
     public async Task<Workspace> GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null,
         WorkspaceConfiguration? configuration = null, CancellationToken ct = default)

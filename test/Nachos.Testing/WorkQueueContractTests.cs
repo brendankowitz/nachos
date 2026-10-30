@@ -464,6 +464,26 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Release_ReturnsItemsWithoutConsumingAnAttempt()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        await AppendAsync(store, workspace, session, "bob");
+
+        var first = (await AcquireAsync(store, "a")).ShouldNotBeNull();
+        await store.WorkQueue.ReleaseAsync(first, Ct);
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.ReleaseAsync(first, Ct));
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.CompleteAsync(first, Ct));
+        (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(1, 0, 0, 0));
+
+        // Claimable again at once, by anyone, still on its first attempt, under a newer token.
+        var second = (await AcquireAsync(store, "b")).ShouldNotBeNull();
+        second.Items.ShouldHaveSingleItem().Id.ShouldBe(first.Items.Single().Id);
+        second.Items.Single().Attempts.ShouldBe(1);
+        second.FencingToken.ShouldBeGreaterThan(first.FencingToken);
+    }
+
+    [Fact]
     public async Task Renew_ExtendsLease()
     {
         var (store, clock) = await NewStoreAsync();

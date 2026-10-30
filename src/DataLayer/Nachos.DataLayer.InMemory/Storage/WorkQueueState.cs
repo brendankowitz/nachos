@@ -89,6 +89,16 @@ internal sealed class WorkQueueState
     }
 
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
+    public void GiveBack(WorkLease lease)
+    {
+        foreach (var item in Release(lease).Where(item => item.IsOpen))
+        {
+            item.Status = WorkItemStatus.Pending;
+            item.Attempts = Math.Max(0, item.Attempts - 1);
+        }
+    }
+
+    /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
     public void Fail(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, DateTimeOffset now)
     {
         var error = reason.Length > MaxErrorLength ? reason[..MaxErrorLength] : reason;

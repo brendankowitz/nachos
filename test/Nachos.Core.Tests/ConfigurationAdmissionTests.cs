@@ -55,7 +55,7 @@ public sealed class ConfigurationAdmissionTests
     {
         var store = Substitute.For<IMemoryStore>();
         var counter = new LengthCounter();
-        var service = new NachosService(store, counter, CreateValidator(), Substitute.For<IKeyIssuer>());
+        var service = new NachosService(store, counter, CreateValidator(), Substitute.For<IKeyIssuer>(), new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
         var error = await Should.ThrowAsync<RequestValidationException>(() => operation switch
         {
             "workspace create" => service.GetOrCreateWorkspaceAsync("W",

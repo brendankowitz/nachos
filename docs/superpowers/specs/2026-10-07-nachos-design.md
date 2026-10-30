@@ -262,7 +262,7 @@ Dependency rule: `Abstractions` ← `Core` ← (`DataLayer.*`, `Hosting`) ← (`
 - `IMemoryStore`: unit-of-work entry point that exposes repositories (`Workspaces`, `Peers`, `Sessions`, `Messages`, `Conclusions`, `PeerCards`, `Summaries`, `Scopes`, `Webhooks`). Every method takes a `WorkspaceRef`.
 - `IVectorIndex`: `SearchMessagesAsync` and `SearchConclusionsAsync` (filters, top-k, max distance).
 - `ILexicalIndex`: full-text message search.
-- `IWorkQueue`: `EnqueueAsync` (joins the ambient transaction), `TryAcquireWorkUnitAsync`, `CompleteAsync`, `FailAsync`, `RenewLeaseAsync`, `GetStatusAsync`.
+- `IWorkQueue`: `TryAcquireAsync`, `TryLeaseAsync` (item-less singleton lease), `RenewAsync`, `CompleteAsync`, `FailAsync`, `GetStatusAsync`, `PruneSucceededAsync`. Δ (M2, D1) There is no ambient transaction and no standalone `EnqueueAsync` yet: each store method owns its transaction, and the append enqueues its own work inside `IMessageStore.AppendAsync` (§10.2). A standalone enqueue arrives with the first non-append producer (M3).
 - `ISchemaManager`: `GetStatusAsync`, `DeployAsync`. SQL only; in-memory is a no-op.
 
 Providers register through `NachosBuilder.UseSqlServer(...)` and `UseInMemory()`.
@@ -297,7 +297,7 @@ All tables use a `bigint IDENTITY` surrogate PK. They are workspace-scoped throu
 
 The embedding dimension is fixed in DDL at **1536** (`text-embedding-3-small`); another model must use the `dimensions` request parameter, and startup fails on a mismatch. JSON columns, including `PeerCards.Entries` and `WorkItems.Payload`, are `nvarchar(max)` with an `ISJSON` check, like every M1 table. `Conclusions` has no filtered pending-embedding index: the project declares `ANSI_NULLS OFF`, and SQL Server refuses to create a filtered index on a table created that way, so it carries a plain index on `EmbeddingState`.
 
-Queue claim, sequence allocation, and status aggregation live in stored procedures (`AcquireWorkUnit`, `AllocateMessageSeq`, `GetQueueStatus`). Everything else is EF Core or parameterized SqlClient.
+Δ (M2, D2) Queue claim, sequence allocation, and status aggregation are inline parameterized SQL in the provider (`SqlWorkQueue`, `SqlMessageStore`), not stored procedures; the claim follows the normative rules of §10.3. Everything else is EF Core or parameterized SqlClient. `GetDueWorkCount` is added only when the KEDA scaler (R7) is verified.
 
 ### 7.3 Schema lifecycle (Ignixa pattern)
 
@@ -500,24 +500,23 @@ Work within a unit is processed **serially, in `Id` order**. Different units run
 
 ### 10.2 Enqueue (transactional)
 
-`MessageIngestionService` runs these steps **in one SQL transaction**:
+Core validates the batch (1–100 messages, each ≤ 25,000 characters) and resolves each message's `reasoning.enabled` (message > session > workspace > global; §8), then calls `IMessageStore.AppendAsync` with one `DeriveIntent` per message. Δ (M2, D1) The store runs these steps **in one SQL transaction**:
 
-1. Validate the batch (1–100 messages, each ≤ 25,000 characters).
-2. Upsert the sender peers.
-3. Allocate seq numbers.
-4. Insert the messages and pending `MessageEmbeddings` chunks.
-5. Insert `representation` work items for each sender that has at least one observer.
-6. Insert a `summary` work item when the short or long threshold is crossed.
-7. Commit.
+1. Allocate seq numbers (the session row lock serializes appends to the session).
+2. Upsert the sender peers and their memberships.
+3. Insert the messages.
+4. Insert one `representation` work item per derived message whose sender has at least one observer (`ObserverRule`, resolved at the message's `CreatedAt`); the payload snapshots the observers and the message's own reasoning block.
+5. (M3) Insert pending `MessageEmbeddings` chunks and a `summary` work item when the short or long threshold is crossed (D13).
+6. Commit.
 
 Δ This closes the upstream window where a message could commit without its work being enqueued.
 
 ### 10.3 Claim and lease
 
-`AcquireWorkUnit(@owner, @taskTypes, @leaseSeconds)` does the following:
+`IWorkQueue.TryAcquireAsync(owner, taskTypes, leaseDuration)` (Δ M2, D2: inline SQL in `SqlWorkQueue`) does the following:
 
-1. Selects the oldest eligible unit not present in `WorkUnitLeases`. For `representation`, a unit is eligible when its accumulated `TokenCount` reaches the eligibility threshold or its oldest item exceeds the max age.
-2. Inserts the lease with a fresh `FencingToken`.
+1. Selects, from a snapshot, the oldest eligible units without an unexpired lease. For `representation`, a unit is eligible when its accumulated `TokenCount` reaches the eligibility threshold or its oldest item exceeds the max age.
+2. Per candidate, locks its lowest open item and takes the lease: a fresh row with `FencingToken = 1`, or the reclaim below. Lease rows are never deleted, so tokens only grow; complete and fail release a lease by moving its token on and expiring it.
 3. Returns the unit's items, up to the batch token target.
 
 The worker renews the lease while it processes. All writes made by a handler check the fencing token. Expired leases are reclaimed.

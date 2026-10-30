@@ -330,17 +330,30 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
 
     private string WriteField(FilterNode.Field field) => (kind, field.Column) switch
     {
-        (not ResourceKind.Message, FilterColumns.Name) => TextColumn($"{table}.Name", binary: true, field),
-        (ResourceKind.Message, FilterColumns.PublicId) => TextColumn($"{table}.PublicId", binary: true, field),
+        (ResourceKind.Workspace or ResourceKind.Peer or ResourceKind.Session, FilterColumns.Name) => TextColumn($"{table}.Name", binary: true, field),
+        (ResourceKind.Message or ResourceKind.Conclusion, FilterColumns.PublicId) => TextColumn($"{table}.PublicId", binary: true, field),
         (ResourceKind.Message, FilterColumns.Content) => TextColumn($"{table}.Content", binary: false, field),
-        (ResourceKind.Message, FilterColumns.SessionId) => RelatedName("dbo.Sessions", $"{table}.SessionId", field),
-        (ResourceKind.Message, FilterColumns.PeerId) => RelatedName("dbo.Peers", $"{table}.PeerId", field),
+        (ResourceKind.Message, FilterColumns.SessionId) => RelatedName("dbo.Sessions", $"{table}.SessionId", field, optional: false),
+        (ResourceKind.Message, FilterColumns.PeerId) => RelatedName("dbo.Peers", $"{table}.PeerId", field, optional: false),
+        (ResourceKind.Conclusion, FilterColumns.SessionId) => RelatedName("dbo.Sessions", $"{table}.SessionId", field, optional: true),
+        (ResourceKind.Conclusion, FilterColumns.ObserverId) => CollectionPeerName("ObserverPeerId", field),
+        (ResourceKind.Conclusion, FilterColumns.ObservedId) => CollectionPeerName("ObservedPeerId", field),
+        (ResourceKind.Conclusion, LevelColumn or "level") => TextColumn(LevelName, binary: false, field),
         (ResourceKind.Message, FilterColumns.TokenCount) => OrderedColumn($"{table}.TokenCount", field, ColumnType.TokenCount),
         (ResourceKind.Session, FilterColumns.PeerId) => ActiveMemberNames(field),
         (ResourceKind.Session, FilterColumns.IsActive) => IsActive(field),
         (_, FilterColumns.CreatedAt) => OrderedColumn($"{table}.CreatedAt", field, ColumnType.Timestamp),
         _ => throw new NotSupportedException($"Column '{field.Column}' is not filterable on a {kind}."),
     };
+
+    /// <summary>
+    /// The internal conclusion column <c>FilterColumns.Level</c> (M2 Task 7; not in the wire allowlist), keyed by its name
+    /// until the constant reaches this branch. Its operand is the level's lowercase name, as on the wire.
+    /// </summary>
+    private const string LevelColumn = "Level";
+
+    /// <summary>A conclusion's stored level (tinyint 0-3, the <c>ConclusionLevel</c> values) as its lowercase name.</summary>
+    private string LevelName => $"CHOOSE({table}.Level + 1, N'explicit', N'deductive', N'inductive', N'contradiction')";
 
     /// <summary>A text column that is never NULL.</summary>
     /// <param name="binary">True when the column's own collation is binary, so equality may use it (and its index).</param>
@@ -373,13 +386,35 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         }
     }
 
-    /// <summary>The name of the row a foreign key points at (a message's session or sender): never unset.</summary>
-    private string RelatedName(string relatedTable, string foreignKey, FilterNode.Field field)
+    /// <summary>
+    /// The name of the row a foreign key points at: a message's session or sender (never unset), or a conclusion's session
+    /// (<paramref name="optional"/>: a NULL key is unset, which only the null checks and <c>ne</c> match).
+    /// </summary>
+    private string RelatedName(string relatedTable, string foreignKey, FilterNode.Field field, bool optional)
     {
         string Exists(FilterOp op)
         {
             var row = Alias();
             return $"EXISTS (SELECT 1 FROM {relatedTable} AS {row} WHERE {row}.Id = {foreignKey} AND {TextCondition($"{row}.Name", binary: true, op, field.Value!)})";
+        }
+
+        return field.Op switch
+        {
+            FilterOp.IsNull => optional ? $"({foreignKey} IS NULL)" : False,
+            FilterOp.NotNull => optional ? $"({foreignKey} IS NOT NULL)" : True,
+            FilterOp.Ne => $"(NOT {Exists(FilterOp.Eq)})",
+            _ => Exists(field.Op),
+        };
+    }
+
+    /// <summary>A conclusion's observer or observed peer: the name behind its collection's <paramref name="peerColumn"/>, never unset.</summary>
+    private string CollectionPeerName(string peerColumn, FilterNode.Field field)
+    {
+        string Exists(FilterOp op)
+        {
+            var collection = Alias();
+            var peer = Alias();
+            return $"EXISTS (SELECT 1 FROM dbo.Collections AS {collection} JOIN dbo.Peers AS {peer} ON {peer}.Id = {collection}.{peerColumn} WHERE {collection}.Id = {table}.CollectionId AND {TextCondition($"{peer}.Name", binary: true, op, field.Value!)})";
         }
 
         return field.Op switch
