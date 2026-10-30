@@ -29,8 +29,8 @@ public static class NachosWorkerServiceCollectionExtensions
                 o => o.IdleDelay > TimeSpan.Zero && o.MaxIdleDelay >= o.IdleDelay,
                 "Worker:IdleDelay must be positive and Worker:MaxIdleDelay at least Worker:IdleDelay.")
             .Validate(
-                o => o.RetryDelay >= TimeSpan.Zero && o.MaxRetryDelay >= o.RetryDelay,
-                "Worker:RetryDelay must not be negative and Worker:MaxRetryDelay must be at least Worker:RetryDelay.")
+                o => o.RetryDelay > TimeSpan.Zero && o.MaxRetryDelay >= o.RetryDelay,
+                "Worker:RetryDelay must be positive and Worker:MaxRetryDelay must be at least Worker:RetryDelay.")
             .Validate(o => o.TransientFailuresBeforeError >= 1, "Worker:TransientFailuresBeforeError must be at least 1.")
             .ValidateOnStart();
         services.AddOptions<ReconcilerOptions>()

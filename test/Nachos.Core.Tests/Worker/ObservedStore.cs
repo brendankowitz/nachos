@@ -98,8 +98,13 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
         string workspaceName, string? observerName, string? senderName, string? sessionName, CancellationToken ct) =>
         inner.WorkQueue.GetStatusAsync(workspaceName, observerName, senderName, sessionName, ct);
 
+    /// <summary>While set, <see cref="GetBacklogAsync"/> throws, as an unavailable store would.</summary>
+    public volatile bool FailBacklog;
+
     public Task<QueueBacklog> GetBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, CancellationToken ct) =>
-        inner.WorkQueue.GetBacklogAsync(taskTypes, ct);
+        FailBacklog
+            ? throw new InvalidOperationException("The store is unavailable.")
+            : inner.WorkQueue.GetBacklogAsync(taskTypes, ct);
 
     public Task<int> PruneSucceededAsync(TimeSpan retention, CancellationToken ct) =>
         inner.WorkQueue.PruneSucceededAsync(retention, ct);

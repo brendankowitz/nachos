@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -178,6 +179,48 @@ public sealed class ReconcilerTests
         await Pump.UntilAsync(fixture.Clock, () => second.Ticks >= 1, Interval / 6);
         (fixture.Clock.GetUtcNow() - stoppedAt).ShouldBeLessThan(new ReconcilerOptions().LeaseDuration, "taken over before the lease could expire");
         first.Ticks.ShouldBe(ticks);
+    }
+
+    [Fact]
+    public async Task BacklogGauges_ReportTheLastTick_AndClearWhenATickFails()
+    {
+        await using var fixture = new WorkerFixture();
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        await InsertAsync(fixture.Store, "pending conclusion");
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+        Gauge(fixture.Metrics, "nachos.queue.eligible_units").ShouldBe([1]);
+        Gauge(fixture.Metrics, "nachos.conclusions.embedding_pending").ShouldBe([1]);
+        Gauge(fixture.Metrics, "nachos.queue.oldest_age").ShouldHaveSingleItem().ShouldBeGreaterThanOrEqualTo(0);
+
+        fixture.Store.FailBacklog = true;
+        await Pump.UntilAsync(fixture.Clock, () => Gauge(fixture.Metrics, "nachos.queue.eligible_units").Count == 0, Interval);
+        Gauge(fixture.Metrics, "nachos.conclusions.embedding_pending").ShouldBeEmpty();
+        Gauge(fixture.Metrics, "nachos.queue.oldest_age").ShouldBeEmpty();
+
+        fixture.Store.FailBacklog = false;
+        await Pump.UntilAsync(fixture.Clock, () => Gauge(fixture.Metrics, "nachos.queue.eligible_units").Count == 1, Interval);
+    }
+
+    /// <summary>The values an observable gauge of <paramref name="metrics"/> reports right now.</summary>
+    private static List<double> Gauge(WorkerMetrics metrics, string instrument)
+    {
+        var values = new List<double>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (published, l) =>
+        {
+            if (ReferenceEquals(published.Meter.Scope, metrics) && published.Name == instrument)
+            {
+                l.EnableMeasurementEvents(published);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, _, _) => values.Add(value));
+        listener.SetMeasurementEventCallback<double>((_, value, _, _) => values.Add(value));
+        listener.Start();
+        listener.RecordObservableInstruments();
+        return values;
     }
 
     private static async Task<Running> StartAsync(

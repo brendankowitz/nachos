@@ -17,7 +17,8 @@ public sealed class WorkerOptions
 
     /// <summary>
     /// The retry delay after a unit's first failed attempt; doubles per attempt up to <see cref="MaxRetryDelay"/>, each
-    /// delay jittered by ±20%; default 30 seconds.
+    /// delay jittered by ±20%; must be positive, since transient failures retry indefinitely with this backoff; default
+    /// 30 seconds.
     /// </summary>
     /// <remarks>
     /// For failures that consume an attempt, with the default <see cref="Configuration.DeriverOptions.MaxAttempts"/> of 5,

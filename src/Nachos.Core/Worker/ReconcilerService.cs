@@ -190,10 +190,13 @@ public sealed partial class ReconcilerService : BackgroundService
         }
         catch (Exception) when (keeper.IsLost && !ct.IsCancellationRequested)
         {
+            _metrics.ClearBacklog();
             return true;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
+            // The gauges would otherwise keep reporting the last good tick's values while the store is failing.
+            _metrics.ClearBacklog();
             LogTickFailed(ex);
             return false;
         }

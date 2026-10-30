@@ -38,6 +38,8 @@ public sealed class WorkerHostingTests
     [Theory]
     [InlineData("Worker:MaxConcurrency", "0", "Worker:MaxConcurrency")]
     [InlineData("Worker:MaxIdleDelay", "00:00:00.5", "Worker:IdleDelay")]
+    [InlineData("Worker:RetryDelay", "00:00:00", "Worker:RetryDelay")]
+    [InlineData("Worker:TransientFailuresBeforeError", "0", "Worker:TransientFailuresBeforeError")]
     [InlineData("Reconciler:EmbeddingBatchSize", "0", "Reconciler:EmbeddingBatchSize")]
     [InlineData("Reconciler:LeaseDuration", "00:00:00", "Reconciler:LeaseDuration")]
     public void InvalidOptions_FailWithTheirKey(string key, string value, string expected)
