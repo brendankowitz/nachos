@@ -3,6 +3,7 @@ using Nachos.Abstractions;
 using Nachos.Core;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
+using Nachos.Core.Memory;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 using Nachos.Hosting;
@@ -24,6 +25,11 @@ public static class NachosServiceCollectionExtensions
         services.TryAddSingleton<ITokenCounter, TiktokenTokenCounter>();
         services.TryAddScoped<IConfigurationResolver, ConfigurationResolver>();
         services.TryAddScoped<RequestValidator>();
+        // Their embedding generator and logger are optional constructor parameters: a host without AI still serves
+        // every other route, and a bare container may have no logging.
+        services.TryAddScoped<ConclusionService>();
+        services.TryAddScoped<RepresentationBuilder>();
+        services.TryAddScoped<PeerContextService>();
         services.TryAddScoped<NachosService>();
         services.TryAddScoped<INachosClient>(provider => provider.GetRequiredService<NachosService>());
         configure(new NachosBuilder(services));

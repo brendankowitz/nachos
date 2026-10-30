@@ -186,7 +186,7 @@ public sealed class ServiceBoundaryTests
         public Fixture()
         {
             var counter = Substitute.For<ITokenCounter>();
-            Service = new(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>(), new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
+            Service = Memory.NachosServiceFactory.Create(Store, counter, new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
         }
     }
 

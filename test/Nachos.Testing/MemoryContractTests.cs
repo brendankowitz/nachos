@@ -260,8 +260,8 @@ public abstract class MemoryContractTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The internal level column (not in the wire allowlist; VisibilityPolicy adds it), whose operand is the level's
-    /// lowercase name. Keyed by its name until <c>FilterColumns.Level</c> reaches this branch.
+    /// The internal <see cref="FilterColumns.Level"/> column (not in the wire allowlist; VisibilityPolicy adds it), whose
+    /// operand is the level's wire name.
     /// </summary>
     [Fact]
     public async Task ListAndQuery_FilterByLevelName()
@@ -271,7 +271,7 @@ public abstract class MemoryContractTests : IAsyncLifetime
         await InsertAsync(store, workspace, Fact("stated", session, Vector(0)));
         await InsertAsync(store, workspace, Fact("deduced", null, Vector(0, tilt: 0.1f), level: ConclusionLevel.Deductive));
         await InsertAsync(store, workspace, Fact("induced", null, level: ConclusionLevel.Inductive));
-        FilterNode Level(FilterOp op, JsonNode value) => new FilterNode.Field("Level", op, value);
+        FilterNode Level(FilterOp op, JsonNode value) => new FilterNode.Field(FilterColumns.Level, op, value);
 
         (await ListAllAsync(store, workspace, Level(FilterOp.Eq, "explicit"))).Select(c => c.Content).ShouldBe(["stated"]);
         (await ListAllAsync(store, workspace, Level(FilterOp.Ne, "explicit"))).Select(c => c.Content).ShouldBe(["deduced", "induced"]);

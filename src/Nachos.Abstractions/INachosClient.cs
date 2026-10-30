@@ -5,7 +5,7 @@ using Nachos.Abstractions.Domain;
 namespace Nachos.Abstractions;
 
 /// <summary>
-/// The M1 API surface, one method per route. Implemented in-process by Nachos.Core and over HTTP by Nachos.Client.
+/// The API surface, one method per route. Implemented in-process by Nachos.Core and over HTTP by Nachos.Client.
 /// </summary>
 /// <remarks>
 /// <c>filters</c> is the Honcho filter body (<c>{"metadata":{...}}</c> and friends), or null for none. Filters, metadata
@@ -200,4 +200,74 @@ public interface INachosClient
     /// <exception cref="NotFoundException">The named workspace does not exist.</exception>
     Task AddGrantAsync(
         string objectId, string? workspaceId, string role, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates 1 to 100 explicit conclusions (<c>POST C</c>, 201), all or nothing and without deduplication. They have
+    /// no source ids, and their embeddings are computed in the background if not immediately.
+    /// </summary>
+    /// <exception cref="RequestValidationException">The batch or a content length is out of bounds.</exception>
+    /// <exception cref="NotFoundException">The workspace, a named peer or a named session does not exist.</exception>
+    Task<IReadOnlyList<Conclusion>> CreateConclusionsAsync(
+        string workspaceId, IReadOnlyList<ConclusionCreate> conclusions, CancellationToken ct = default);
+
+    /// <summary>Lists the workspace's conclusions in creation order (reversed when <see cref="PageRequest.Reverse"/>).</summary>
+    Task<Page<Conclusion>> ListConclusionsAsync(
+        string workspaceId, JsonObject? filters, PageRequest page, CancellationToken ct = default);
+
+    /// <summary>
+    /// The conclusions nearest to the query text, nearest first. Conclusions still waiting for their embedding are not
+    /// found.
+    /// </summary>
+    /// <exception cref="RequestValidationException"><c>top_k</c> or <c>distance</c> is out of bounds.</exception>
+    Task<IReadOnlyList<Conclusion>> QueryConclusionsAsync(
+        string workspaceId, ConclusionQuery query, CancellationToken ct = default);
+
+    /// <summary>Returns one conclusion.</summary>
+    /// <exception cref="NotFoundException">The conclusion does not exist or was deleted.</exception>
+    Task<Conclusion> GetConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default);
+
+    /// <summary>Deletes the conclusion (204 on the wire). Deleting a missing conclusion is a no-op.</summary>
+    Task DeleteConclusionAsync(string workspaceId, string conclusionId, CancellationToken ct = default);
+
+    /// <summary>The card <paramref name="peerId"/> keeps about <paramref name="target"/> (itself when null).</summary>
+    Task<PeerCardResponse> GetPeerCardAsync(
+        string workspaceId, string peerId, string? target = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Replaces the card <paramref name="peerId"/> keeps about <paramref name="target"/> (itself when null) with
+    /// <paramref name="peerCard"/>, stored as sent.
+    /// </summary>
+    /// <exception cref="NotFoundException">The workspace or either peer does not exist.</exception>
+    Task<PeerCardResponse> SetPeerCardAsync(
+        string workspaceId,
+        string peerId,
+        IReadOnlyList<string> peerCard,
+        string? target = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// The working representation <paramref name="peerId"/> holds of its target: recent, optionally most frequent and
+    /// optionally semantically matched conclusions, as Markdown sections by level. No model is called.
+    /// </summary>
+    /// <exception cref="RequestValidationException">A bound is violated.</exception>
+    /// <exception cref="NachosValidationException"><c>scope</c> is set; scopes are not supported in this version.</exception>
+    Task<RepresentationResponse> GetRepresentationAsync(
+        string workspaceId, string peerId, PeerRepresentationGet request, CancellationToken ct = default);
+
+    /// <summary>The representation and peer card <paramref name="peerId"/> holds of its target (<c>GET P/context</c>).</summary>
+    /// <exception cref="RequestValidationException">A bound is violated.</exception>
+    Task<PeerContext> GetPeerContextAsync(
+        string workspaceId, string peerId, PeerContextQuery query, CancellationToken ct = default);
+
+    /// <summary>
+    /// Counts the workspace's reasoning work, optionally only that observed by <paramref name="observerId"/>, sent by
+    /// <paramref name="senderId"/> or in <paramref name="sessionId"/>.
+    /// </summary>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    Task<QueueStatus> GetQueueStatusAsync(
+        string workspaceId,
+        string? observerId = null,
+        string? senderId = null,
+        string? sessionId = null,
+        CancellationToken ct = default);
 }

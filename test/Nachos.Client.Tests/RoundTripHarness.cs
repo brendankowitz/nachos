@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions;
+using Nachos.Core.Llm;
 using Nachos.Testing;
 
 namespace Nachos.Client.Tests;
@@ -13,7 +15,8 @@ namespace Nachos.Client.Tests;
 /// real <see cref="RetryHandler"/> pipeline) against a fresh <see cref="NachosApiFactory"/> server, and
 /// <see cref="InProcess"/> is the in-process client of <c>AddNachos(b =&gt; b.UseInMemory())</c> in a separate
 /// container. Both stores start empty, and both clocks are frozen at <see cref="Start"/>, so server-generated
-/// <c>created_at</c> values are deterministic and compared as they are.
+/// <c>created_at</c> values are deterministic and compared as they are. Both sides have the same offline embedding
+/// generator, so semantic reads rank identically.
 /// </summary>
 /// <remarks>
 /// Seams for later tasks, so their round trips need no restructuring: <c>configureServer</c> reaches the server's
@@ -37,7 +40,11 @@ internal sealed class RoundTripHarness : IDisposable
         _factory = new NachosApiFactory();
         _server = _factory.WithWebHostBuilder(builder =>
         {
-            builder.ConfigureTestServices(services => services.AddSingleton<TimeProvider>(new FakeTimeProvider(Start)));
+            builder.ConfigureTestServices(services =>
+            {
+                services.AddSingleton<TimeProvider>(new FakeTimeProvider(Start));
+                services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new DeterministicEmbeddingGenerator());
+            });
             configureServer?.Invoke(builder);
         });
         var testServer = _server.Server;
@@ -55,6 +62,7 @@ internal sealed class RoundTripHarness : IDisposable
 
         var inProcess = new ServiceCollection();
         inProcess.AddSingleton<TimeProvider>(new FakeTimeProvider(Start));
+        inProcess.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new DeterministicEmbeddingGenerator());
         inProcess.AddLogging();
         inProcess.AddNachos(nachos => nachos.UseInMemory());
         _inProcessServices = inProcess.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

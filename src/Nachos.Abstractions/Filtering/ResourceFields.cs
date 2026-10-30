@@ -41,6 +41,14 @@ public static class FilterColumns
     /// <summary>On a conclusion: the observed peer's name.</summary>
     public const string ObservedId = "ObservedId";
 
+    /// <summary>
+    /// On a conclusion: its level, as text, the lowercase wire name (<see cref="Domain.ConclusionLevelNames.Of"/>:
+    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Never set. Core's visibility rules use
+    /// it; it is deliberately <b>not</b> a wire filter field (not in <see cref="ResourceFields"/>), so only hand-built
+    /// nodes name it.
+    /// </summary>
+    public const string Level = "Level";
+
     /// <summary>A message's text content.</summary>
     public const string Content = "Content";
 

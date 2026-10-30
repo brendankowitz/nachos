@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.DataLayer.SqlServer.Storage;
 
@@ -338,7 +339,7 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         (ResourceKind.Conclusion, FilterColumns.SessionId) => RelatedName("dbo.Sessions", $"{table}.SessionId", field, optional: true),
         (ResourceKind.Conclusion, FilterColumns.ObserverId) => CollectionPeerName("ObserverPeerId", field),
         (ResourceKind.Conclusion, FilterColumns.ObservedId) => CollectionPeerName("ObservedPeerId", field),
-        (ResourceKind.Conclusion, LevelColumn or "level") => TextColumn(LevelName, binary: false, field),
+        (ResourceKind.Conclusion, FilterColumns.Level) => TextColumn(LevelName, binary: false, field),
         (ResourceKind.Message, FilterColumns.TokenCount) => OrderedColumn($"{table}.TokenCount", field, ColumnType.TokenCount),
         (ResourceKind.Session, FilterColumns.PeerId) => ActiveMemberNames(field),
         (ResourceKind.Session, FilterColumns.IsActive) => IsActive(field),
@@ -347,13 +348,13 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
     };
 
     /// <summary>
-    /// The internal conclusion column <c>FilterColumns.Level</c> (M2 Task 7; not in the wire allowlist), keyed by its name
-    /// until the constant reaches this branch. Its operand is the level's lowercase name, as on the wire.
+    /// A conclusion's stored level (tinyint 0-3, the <c>ConclusionLevel</c> values) as its wire name
+    /// (<see cref="ConclusionLevelNames"/>), the text of <see cref="FilterColumns.Level"/>. The names are fixed constants.
     /// </summary>
-    private const string LevelColumn = "Level";
-
-    /// <summary>A conclusion's stored level (tinyint 0-3, the <c>ConclusionLevel</c> values) as its lowercase name.</summary>
-    private string LevelName => $"CHOOSE({table}.Level + 1, N'explicit', N'deductive', N'inductive', N'contradiction')";
+    private string LevelName => string.Concat(
+        $"CHOOSE({table}.Level + 1, ",
+        string.Join(", ", Enum.GetValues<ConclusionLevel>().Order().Select(level => $"N'{ConclusionLevelNames.Of(level)}'")),
+        ")");
 
     /// <summary>A text column that is never NULL.</summary>
     /// <param name="binary">True when the column's own collation is binary, so equality may use it (and its index).</param>

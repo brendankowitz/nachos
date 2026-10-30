@@ -23,8 +23,8 @@ public sealed class NachosServiceTests
     private readonly CancellationToken _ct = new CancellationTokenSource().Token;
     private static readonly DateTimeOffset Created = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
 
-    private NachosService Service => new(_store, _tokens,
-        new RequestValidator(Options.Create(new NachosOptions()), _tokens), _issuer, new ConfigurationResolver(Options.Create(new NachosOptions()), _tokens));
+    private NachosService Service => Memory.NachosServiceFactory.Create(_store, _tokens,
+        new RequestValidator(Options.Create(new NachosOptions()), _tokens), _issuer);
 
     private static WorkspaceRecord WorkspaceRow() =>
         new("W", new() { ["m"] = 1 }, new() { ["c"] = 2 }, LifecycleState.Active, Created);

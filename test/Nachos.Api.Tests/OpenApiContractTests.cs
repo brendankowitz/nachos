@@ -47,6 +47,19 @@ public sealed class OpenApiContractTests : ApiTest
     [InlineData("Page_Peer_")]
     [InlineData("Page_Session_")]
     [InlineData("Page_Message_")]
+    [InlineData("Conclusion")]
+    [InlineData("ConclusionCreate")]
+    [InlineData("ConclusionBatchCreate")]
+    [InlineData("ConclusionGet")]
+    [InlineData("ConclusionQuery")]
+    [InlineData("PeerCardSet")]
+    [InlineData("PeerCardResponse")]
+    [InlineData("PeerRepresentationGet")]
+    [InlineData("RepresentationResponse")]
+    [InlineData("PeerContext")]
+    [InlineData("QueueStatus")]
+    [InlineData("SessionQueueStatus")]
+    [InlineData("Page_Conclusion_")]
     public async Task Schemas_MatchManifestTypesNullabilityRequirednessAndBounds(string name)
     {
         var document = await Send(HttpMethod.Get, "/openapi/v1.json");
@@ -188,8 +201,15 @@ public sealed class OpenApiContractTests : ApiTest
     {
         var type = wire.TryGetProperty("type", out var declared) ? declared.GetString()! : "object";
         var nullable = wire.TryGetProperty("nullable", out var nullFlag) && nullFlag.GetBoolean();
+        // The manifest writes a union as "array|string".
+        var types = type.Split('|');
         Types(document, field).Distinct().Order()
-            .ShouldBe((nullable ? new[] { type, "null" } : [type]).Order(), name);
+            .ShouldBe((nullable ? [.. types, "null"] : types).Order(), name);
+        if (types.Length > 1)
+        {
+            // The manifest's flattened bounds do not say which member of a union they bound.
+            return;
+        }
         foreach (var (manifestBound, schemaBound) in type switch
         {
             "array" => new[] { ("min", "minItems"), ("max", "maxItems") },

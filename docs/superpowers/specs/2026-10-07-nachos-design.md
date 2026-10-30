@@ -379,7 +379,8 @@ Key defaults (parity values):
 - Errors use `{"detail": "..."}` with Honcho-equivalent status codes. ASP.NET validation errors are mapped to the same shape. Responses also include RFC 9457 `type`/`title`/`status` (additive Δ).
 - **SSE**: `data: {"delta":{"content":"…"},"done":false}\n\n` …, then a terminal `data: {"done":true, "evidence":{…}?}\n\n`. Written directly to the response. `HttpContext.RequestAborted` is passed through to the model call.
 - **Rate limiting** (Δ, opt-in): ASP.NET Core rate limiter partitioned by workspace, returning `429` with `Retry-After`.
-- **Idempotency** (Δ extension): non-idempotent mutations (`POST M`, `M/upload`, `POST C`, `S/clone`) accept an optional `Idempotency-Key` header.
+- **Idempotency** (Δ extension): non-idempotent mutations (`POST M`, `M/upload`, `S/clone`) accept an optional `Idempotency-Key` header.
+  - **`POST C` does not support it in M2** (coordinator ruling). The route does not advertise the header in OpenAPI, the server ignores one if sent (a repeat stores a second batch, exactly as without it), and `NachosHttpClient` never sends one and never retries the call. Support may be added later with its own `IdempotencyRecords` path.
   - Storage: `(WorkspaceId, Key)` is stored in `IdempotencyRecords` **in the same transaction** as the mutation, with a request hash, response status, response body, and 24 h expiry.
   - `RequestHash` = SHA-256 over:
     - the HTTP method;
@@ -412,6 +413,16 @@ Key defaults (parity values):
   - `Nachos.Admin` maps to `ad`.
   - `Nachos.Workspace` grants workspace access via `PrincipalGrants` rows (`ObjectId` → workspace(s)). These rows are managed by `nachos grants` and `POST /v3/admin/grants` (admin, Nachos extension).
 - Entra identities never map to peer or session scope implicitly.
+
+**M2 memory routes (owner Q7: mirror Honcho's scoped-key behaviour).** Evidence is Honcho's public docs only (clean-room, §3); no black-box run against Honcho was possible, and the pinned SDKs cannot exercise a peer-scoped key on these routes because their handles first get-or-create the workspace (a workspace write).
+
+| Route | Access | Evidence |
+|---|---|---|
+| `GET` / `PUT P/card`, `GET P/context`, `POST P/representation` | peer: `p == peer_id`; workspace and admin keys pass | Documented. [Platform reference](https://honcho.dev/docs/v3/documentation/reference/platform): "Scoped keys are authorized by their narrowest claim and never widen to the whole workspace"; "A peer-scoped key acts on its own peer … It cannot … act on other peers"; "A session-scoped key is confined to its own session and cannot reach peer routes." |
+| `POST C`, `C/list`, `C/query`, `GET` / `DELETE C/{conclusion_id}` | workspace | **Fallback** (docs silent on conclusions). |
+| `GET W/queue/status` | workspace | **Fallback** (docs silent on queue status). |
+
+A peer-scoped key reaches its own peer's view of any `target` (`P/card?target=…`, `P/context?target=…`, `P/representation` `target`): the route's `peer_id` is the observer, and the docs scope the key by the peer it acts as. `P/representation` `session_id` only narrows that observer view to one session's explicit conclusions, so no session-membership check is applied for a peer key. Member-read (above) is unchanged and covers no M2 route.
 
 Both schemes produce a single `NachosPrincipal` (`IsAdmin`, `Workspaces`, `Peer?`, `Session?`). **One** `IAuthorizationHandler` evaluates route requirements, so policies are declared per route (`RequireWorkspace("workspace_id")`, `AllowMemberRead()`, and so on). `Auth:Enabled = false` is allowed only in Development. **Every authentication or authorization failure, including scope mismatch, returns `401 {"detail": …}`**, matching Honcho's documented behavior.
 
@@ -464,6 +475,16 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 **Filter compiler:** `FilterCompiler` translates Honcho's JSON filter DSL (field equality, `gt/gte/lt/lte/ne/in/contains/icontains`, nested `metadata`, `AND/OR/NOT`) into parameterized SQL. Each resource has its own field allowlist, and `source_ids` filtering on conclusions gets special handling. The in-memory provider evaluates the same AST.
 
 - **Strict JSON-data ingress:** in-process filters, and stored metadata and configuration built as a `JsonNode`, accept only explicit JSON containers (`JsonObject`, `JsonArray`), JSON-backed values and the literal scalars `string`, `char`, `bool`, the integer and floating-point primitives (finite), `decimal`, `DateTime`, `DateTimeOffset` and `Guid`. A value is classified by its backing runtime value, so any other CLR value (collections, POCOs, enums, `TimeSpan` and so on), including an interface or base-type projection of a non-allowlisted runtime type, is a 422 that names its type; callers convert it first with `JsonSerializer.SerializeToNode`. Lone surrogates, repeated keys and nesting beyond 64 containers are a 422 too. Data already converted by the caller is treated as data and cannot prove its earlier CLR source was well formed: `SerializeToNode` has already turned a lone surrogate into U+FFFD, so callers who need that guarantee must build `JsonObject`/`JsonArray` with literal strings. Every provider and in-process client **must** pass constructed values through the one shared helper, `Nachos.Abstractions.Json.StrictJsonData.ToCanonical`, at ingress, and store or parse only its result (see the strict-data cases in the shared store contract tests). The HTTP path is unchanged.
+
+**M2 memory route notes:**
+
+- **Queue status counts work items.** The wire fields are named `*_work_units`, but Nachos queues one work item per message, covering all of that message's observers, and `W/queue/status` counts those items one to one: `pending` = claimable items (including failed ones waiting to retry), `in_progress` = open items of a unit with an unexpired lease, `completed` = succeeded **plus dead-lettered** items (no further work happens on either), and `total` = their sum. `sessions` maps each session id with selected work to the same counts. Whether Honcho counts per message or per observer is an open parity question, to settle from black-box SDK evidence.
+- **`scope` fails closed.** `P/representation` with any `scope` value returns `422 scope is not supported in this Nachos version` until scopes land (M6), rather than reading without the restriction.
+- **`P/representation` `session_id`** is the §11.8 session allowlist: only explicit conclusions stated in that session are used, and no card is read. The level and session rules are applied inside the store query (the internal, non-wire filter column `Level`), so pages and totals count only visible conclusions.
+- **`VisibilityPolicy` holds only the allowlist and scope rules.** The perspective (which observer's collection about which observed peer) is applied by each caller, not by the policy. M3 search and M4 tools must apply it themselves.
+- **Provisional parity defaults (open questions, to confirm from black-box SDK evidence):** `max_conclusions` 25, `search_top_k` 10 and `include_most_frequent` false on `P/representation` and `P/context`; `top_k` 10 on `C/query`; `DELETE C/{id}` on a missing conclusion is a no-op `204`.
+- **`PUT P/card` with a missing `target` is `404` (open parity question).** Honcho's SDK docs say `set_card` "creates the peer automatically", but black-box, the pinned SDKs (2.5.1) send the `PUT` without creating the target first, so against Nachos the call fails with `404` unless the target exists. M2 keeps the `404`: a server-side get-or-create would let a peer-scoped key create arbitrary peers. A later option is to auto-create the target only for workspace and admin keys and keep `404` for peer keys.
+- **The embedding generator is optional in API hosts.** Without one, a semantic read (`C/query`, or a `search_query`) is a `500`, and `POST C` stores conclusions pending for the reconciler.
 
 ### 9.4 Intentional deviations (Δ summary)
 
@@ -832,7 +853,7 @@ Until M7, the upstream TS MCP server is run against Nachos as a conformance clie
   - reads: `GET`, plus the read-only `POST …/list`, `…/search`, `…/query`, and `…/representation`;
   - idempotent writes: `PUT`, get-or-create `POST` keyed by `id`, and `DELETE`.
   `GET H/test` and all chat calls are never auto-retried.
-  Non-idempotent mutations (message batch create, upload, conclusion create, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically.
+  Non-idempotent mutations (message batch create, upload, session clone) are retried **only** when the client sends an `Idempotency-Key` (§9.1). `NachosHttpClient` always generates one for these calls. Without a key, they are never replayed automatically. Conclusion create (`POST C`) has no key support in M2, so it is never auto-retried, even when a request carries a key.
   Retry policy details (Δ, recorded on PR #6):
   - **Never auto-retried:** `501` (permanent "not implemented", §9.1); `POST /v3/keys` and `/v3/admin/grants`; linking sessions to a scope (`POST …/scopes/{id}/sessions`) until its `scope_backfill` enqueue (§14) is shown to be idempotent.
   - **Status precedence:** once a response status is received, that status decides. A non-retryable status (`4xx` other than `408`/`429`, and `501`) is final even if reading its body then fails; the client surfaces it without resending. A transport failure while reading the body of a `2xx` or retryable status may be retried, but only for operations that are retryable under the rules above, so a lost successful response to a keyed mutation is replayed safely.
