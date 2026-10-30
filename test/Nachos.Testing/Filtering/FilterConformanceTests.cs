@@ -26,8 +26,8 @@ namespace Nachos.Testing.Filtering;
 /// these operations: set <c>CreatedAt</c> per workspace, peer and session row; set a session's
 /// <c>LifecycleState = Inactive</c> where <c>IsActive</c> is false; insert messages with the given public ids (and
 /// <c>CreatedAt</c>, token count and metadata), in dataset order within a session so <c>Seq</c> follows it; and
-/// insert memberships with <c>LeftAt</c> set for members whose <c>Active</c> is false. For SQL, direct inserts are
-/// fine.
+/// insert memberships with <c>LeftAt</c> set for members whose <c>Active</c> is false; and insert conclusions with the
+/// given public ids and <c>CreatedAt</c>. For SQL, direct inserts are fine.
 /// </para>
 /// </remarks>
 public abstract class FilterConformanceTests : IAsyncLifetime
@@ -50,7 +50,7 @@ public abstract class FilterConformanceTests : IAsyncLifetime
     /// <summary>
     /// Lists <b>all</b> rows of <paramref name="kind"/> matching <paramref name="filter"/> (null means no filter) and
     /// returns their ids: names for workspaces, peers (<c>PeerKind.All</c>) and sessions of the scope workspace, and
-    /// public ids for messages. Messages are listed per session, so run the filter against every dataset session
+    /// public ids for messages and conclusions (of the scope workspace). Messages are listed per session, so run the filter against every dataset session
     /// and return the union. Implementations page through the whole result.
     /// </summary>
     protected abstract Task<IReadOnlyList<string>> QueryAsync(ResourceKind kind, FilterNode? filter);
@@ -166,6 +166,7 @@ public abstract class FilterConformanceTests : IAsyncLifetime
         ResourceKind.Workspace => dataset.Workspaces.Select(w => w.Name),
         ResourceKind.Peer => dataset.Peers.Select(p => p.Name),
         ResourceKind.Session => dataset.Sessions.Select(s => s.Name),
+        ResourceKind.Conclusion => dataset.Conclusions.Select(c => c.Id),
         _ => dataset.Messages.Select(m => m.Id),
     }).ToHashSet(StringComparer.Ordinal);
 }

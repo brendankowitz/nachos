@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
 using Nachos.Core.Tokens;
@@ -14,6 +16,7 @@ internal static class NachosServiceFactory
     {
         return new(store, counter, validator, issuer,
             new ConclusionService(store, NullLogger<ConclusionService>.Instance),
-            new PeerContextService(store, new RepresentationBuilder(store)));
+            new PeerContextService(store, new RepresentationBuilder(store)),
+            new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
     }
 }

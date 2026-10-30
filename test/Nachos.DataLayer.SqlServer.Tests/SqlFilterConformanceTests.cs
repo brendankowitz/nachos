@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Microsoft.Data.SqlClient;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
@@ -110,6 +112,34 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 ("@c", message.CreatedAt));
         }
 
+        var collectionIds = new Dictionary<(string, string), long>();
+        foreach (var conclusion in dataset.Conclusions)
+        {
+            if (!collectionIds.TryGetValue((conclusion.Observer, conclusion.Observed), out var collectionId))
+            {
+                collectionId = collectionIds[(conclusion.Observer, conclusion.Observed)] = await InsertAsync(
+                    connection,
+                    transaction,
+                    "INSERT dbo.Collections (WorkspaceId, ObserverPeerId, ObservedPeerId, CreatedAt) OUTPUT inserted.Id VALUES (@w, @o, @d, @c)",
+                    ("@w", scope),
+                    ("@o", peerIds[conclusion.Observer]),
+                    ("@d", peerIds[conclusion.Observed]),
+                    ("@c", conclusion.CreatedAt));
+            }
+
+            await InsertAsync(
+                connection,
+                transaction,
+                "INSERT dbo.Conclusions (WorkspaceId, PublicId, CollectionId, SessionId, Level, Content, ContentHash, EmbeddingState, CreatedAt) OUTPUT inserted.Id VALUES (@w, @i, @l, @s, 0, @t, @h, 0, @c)",
+                ("@w", scope),
+                ("@i", conclusion.Id),
+                ("@l", collectionId),
+                ("@s", conclusion.Session is { } session ? sessionIds[session] : null),
+                ("@t", conclusion.Content),
+                ("@h", SHA256.HashData(MemoryMarshal.AsBytes(conclusion.Content.AsSpan()))),
+                ("@c", conclusion.CreatedAt));
+        }
+
         await transaction.CommitAsync(Ct);
     }
 
@@ -127,6 +157,9 @@ public sealed class SqlFilterConformanceTests(SqlServerFixture fixture) : Filter
                 return await CollectAsync((page, ct) => store.Peers.ListAsync(scope, PeerKind.All, filter, page, ct), p => p.Name);
             case ResourceKind.Session:
                 return await CollectAsync((page, ct) => store.Sessions.ListAsync(scope, filter, page, ct), s => s.Name);
+            case ResourceKind.Conclusion:
+                return await CollectAsync(
+                    (page, ct) => store.Conclusions.ListAsync(scope, filter, ConclusionOrder.CreatedAt, page, ct), c => c.PublicId);
             default:
                 var ids = new List<string>();
                 foreach (var session in dataset.Sessions)

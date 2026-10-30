@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
@@ -103,7 +104,7 @@ public sealed class SqlLeastPrivilegeTests(SqlServerFixture fixture)
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
             AutomaticSchemaDeploymentEnabled = false,
         };
-        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
+        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
     }
 
     private static async Task ExecuteAsync(string connectionString, string sql)

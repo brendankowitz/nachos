@@ -1,15 +1,19 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Nachos.DataLayer.SqlServer.Schema;
 
 namespace Nachos.DataLayer.SqlServer.Storage;
 
 /// <summary>What every sub-store of one <see cref="SqlMemoryStore"/> shares: the clock and the gated way in.</summary>
-internal sealed class SqlStoreRuntime(SqlServerOptions options, SchemaGate gate, TimeProvider clock)
+internal sealed class SqlStoreRuntime(SqlServerOptions options, SchemaGate gate, TimeProvider clock, ILogger logger)
 {
     private readonly DbContextOptions<NachosDbContext> _contextOptions =
         new DbContextOptionsBuilder<NachosDbContext>().UseSqlServer(options.ConnectionString).Options;
 
     public TimeProvider Clock { get; } = clock;
+
+    /// <summary>For events a store handles itself and must not hide, such as a claim lost to a deadlock.</summary>
+    public ILogger Logger { get; } = logger;
 
     /// <summary>
     /// The way into the database for one operation: waits for <see cref="SchemaGate"/> (a remembered success after the

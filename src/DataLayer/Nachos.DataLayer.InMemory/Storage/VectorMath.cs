@@ -6,12 +6,23 @@ namespace Nachos.DataLayer.InMemory.Storage;
 internal static class VectorMath
 {
     /// <summary>A store-owned copy of an input vector.</summary>
-    /// <exception cref="ArgumentException">The vector is not <see cref="VectorSpace.Dimensions"/> long.</exception>
-    public static float[] Own(ReadOnlyMemory<float> vector, string paramName) =>
-        vector.Length == VectorSpace.Dimensions
-            ? vector.ToArray()
-            : throw new ArgumentException(
+    /// <exception cref="ArgumentException">
+    /// The vector is not <see cref="VectorSpace.Dimensions"/> long, or has a NaN or infinite component (which the SQL
+    /// provider's <c>VECTOR</c> column cannot store).
+    /// </exception>
+    public static float[] Own(ReadOnlyMemory<float> vector, string paramName)
+    {
+        if (vector.Length != VectorSpace.Dimensions)
+        {
+            throw new ArgumentException(
                 $"A vector must have {VectorSpace.Dimensions} dimensions; this one has {vector.Length}.", paramName);
+        }
+
+        var owned = vector.ToArray();
+        return owned.All(float.IsFinite)
+            ? owned
+            : throw new ArgumentException("A vector's components must all be finite numbers.", paramName);
+    }
 
     /// <summary>A store-owned copy of an optional input vector; null stays null.</summary>
     /// <exception cref="ArgumentException">The vector is not <see cref="VectorSpace.Dimensions"/> long.</exception>

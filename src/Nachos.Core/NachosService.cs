@@ -23,7 +23,8 @@ public sealed partial class NachosService(
     RequestValidator validator,
     IKeyIssuer keyIssuer,
     ConclusionService conclusionService,
-    PeerContextService peerContext) : INachosClient
+    PeerContextService peerContext,
+    IConfigurationResolver configurationResolver) : INachosClient
 {
     public async Task<Workspace> GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null,
         WorkspaceConfiguration? configuration = null, CancellationToken ct = default)
