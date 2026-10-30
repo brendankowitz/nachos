@@ -118,6 +118,8 @@ public sealed class SqlMemoryStore : IMemoryStore
 
         public Task CompleteAsync(WorkLease lease, CancellationToken ct) => throw Pending();
 
+        public Task ReleaseAsync(WorkLease lease, CancellationToken ct) => throw Pending();
+
         public Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct) => throw Pending();
 
         public Task<QueueStatusRecord> GetStatusAsync(string workspaceName, string? observerName, string? senderName, string? sessionName, CancellationToken ct) => throw Pending();

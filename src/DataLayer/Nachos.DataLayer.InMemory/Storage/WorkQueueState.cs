@@ -81,10 +81,20 @@ internal sealed class WorkQueueState
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
     public void Complete(WorkLease lease, DateTimeOffset now)
     {
-        foreach (var item in Release(lease))
+        foreach (var item in TakeBack(lease))
         {
             item.Status = WorkItemStatus.Succeeded;
             item.CompletedAt = now;
+        }
+    }
+
+    /// <summary>Ends the lease and gives back the attempt its acquire counted; the items were claimable, so they still are.</summary>
+    /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
+    public void Release(WorkLease lease)
+    {
+        foreach (var item in TakeBack(lease))
+        {
+            item.Attempts--;
         }
     }
 
@@ -92,7 +102,7 @@ internal sealed class WorkQueueState
     public void Fail(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, DateTimeOffset now)
     {
         var error = reason.Length > MaxErrorLength ? reason[..MaxErrorLength] : reason;
-        foreach (var item in Release(lease))
+        foreach (var item in TakeBack(lease))
         {
             item.Error = error;
             if (item.Attempts >= maxAttempts)
@@ -179,7 +189,7 @@ internal sealed class WorkQueueState
     }
 
     /// <summary>Ends a held lease and returns the items it claimed (by the store's record, not the caller's copy).</summary>
-    private List<QueuedItem> Release(WorkLease lease)
+    private List<QueuedItem> TakeBack(WorkLease lease)
     {
         RequireHeld(lease);
         var ids = _leases[lease.WorkUnitKey].ItemIds;

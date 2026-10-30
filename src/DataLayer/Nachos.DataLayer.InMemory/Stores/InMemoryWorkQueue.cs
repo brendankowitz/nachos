@@ -69,6 +69,18 @@ internal sealed class InMemoryWorkQueue(InMemoryState state) : IWorkQueue
             },
             ct);
 
+    public Task ReleaseAsync(WorkLease lease, CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                ArgumentNullException.ThrowIfNull(lease);
+                lock (state.Queue.Gate)
+                {
+                    state.Queue.Release(lease);
+                }
+            },
+            ct);
+
     public Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct) =>
         state.Run(
             () =>

@@ -508,6 +508,29 @@ public abstract class WorkQueueContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Release_ReturnsItemsWithoutConsumingAnAttempt()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        await AppendAsync(store, workspace, session, "bob");
+        await store.WorkQueue.FailAsync((await AcquireAsync(store)).ShouldNotBeNull(), "first", TimeSpan.Zero, 2, Ct);
+
+        // The second attempt is the last, but releasing it gives the attempt back: no dead letter, no backoff.
+        var interrupted = (await AcquireAsync(store)).ShouldNotBeNull();
+        interrupted.Items.Single().Attempts.ShouldBe(2);
+        await store.WorkQueue.ReleaseAsync(interrupted, Ct);
+
+        (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(1, 0, 0, 0));
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.ReleaseAsync(interrupted, Ct));
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.CompleteAsync(interrupted, Ct));
+        var retried = (await AcquireAsync(store, "worker-2")).ShouldNotBeNull();
+        retried.FencingToken.ShouldBeGreaterThan(interrupted.FencingToken);
+        retried.Items.Single().Attempts.ShouldBe(2);
+        await store.WorkQueue.FailAsync(retried, "second", TimeSpan.Zero, 2, Ct);
+        (await TotalsAsync(store, workspace)).ShouldBe(new QueueCounts(0, 0, 0, 1));
+    }
+
+    [Fact]
     public async Task Fail_BackingOffItem_HoldsBackLaterItemsOfItsUnit()
     {
         var (store, clock) = await NewStoreAsync();

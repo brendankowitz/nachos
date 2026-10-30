@@ -1,3 +1,5 @@
+using System.ClientModel;
+using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -22,16 +24,24 @@ namespace Nachos.Core.Worker;
 /// </para>
 /// <para>
 /// Embedding: pending conclusions are embedded oldest first in batches of
-/// <see cref="ReconcilerOptions.EmbeddingBatchSize"/>, while batches come back full. When a batch call fails each of its
-/// conclusions is retried alone, so one bad conclusion cannot hold back the rest. A conclusion that has failed
-/// <see cref="ReconcilerOptions.EmbeddingMaxAttempts"/> times, once per tick, is marked failed and leaves the backlog
-/// (until its content is replaced). Failure counts live in memory and restart with the lease holder. Without an
-/// embedding generator nothing is embedded and the other steps still run.
+/// <see cref="ReconcilerOptions.EmbeddingBatchSize"/>, while batches come back full (at most 100 per tick). When a
+/// batch call fails each of its conclusions is retried alone, so one bad conclusion cannot hold back the rest. A
+/// conclusion's failure counts only when the service was evidently up (another embedding of the tick succeeded) or it
+/// rejected that input (HTTP 400); during an outage nothing counts. A conclusion with
+/// <see cref="ReconcilerOptions.EmbeddingMaxAttempts"/> counted failures, at most one per tick, is marked failed and
+/// leaves the backlog (until its content is replaced). Failure counts live in memory and restart with the lease holder.
+/// Without an embedding generator nothing is embedded and the other steps still run.
 /// </para>
-/// <para>A tick with any failure delays the next one exponentially, up to <see cref="ReconcilerOptions.MaxInterval"/>.</para>
+/// <para>
+/// A tick whose step throws (the store is unavailable) delays the next one exponentially, up to
+/// <see cref="ReconcilerOptions.MaxInterval"/>; embedding failures of single conclusions do not.
+/// </para>
 /// </remarks>
 public sealed partial class ReconcilerService : BackgroundService
 {
+    /// <summary>Bounds one tick's embedding work, so the other steps run even under a large backlog.</summary>
+    private const int MaxBatchesPerTick = 100;
+
     private readonly IMemoryStore _store;
     private readonly TimeProvider _clock;
     private readonly ReconcilerOptions _options;
@@ -153,12 +163,13 @@ public sealed partial class ReconcilerService : BackgroundService
         }
     }
 
-    /// <returns>True when every step of the tick succeeded.</returns>
+    /// <returns>False when a step threw; embedding failures of single conclusions do not count.</returns>
     private async Task<bool> TryTickAsync(LeaseKeeper keeper, CancellationToken ct)
     {
         try
         {
-            return await TickAsync(keeper.Token).ConfigureAwait(false);
+            await TickAsync(keeper.Token).ConfigureAwait(false);
+            return true;
         }
         catch (Exception) when (keeper.IsLost && !ct.IsCancellationRequested)
         {
@@ -171,40 +182,67 @@ public sealed partial class ReconcilerService : BackgroundService
         }
     }
 
-    private async Task<bool> TickAsync(CancellationToken ct)
+    private async Task TickAsync(CancellationToken ct)
     {
         var embedding = _embeddings is null ? new EmbeddingOutcome(0, 0, 0) : await EmbedPendingAsync(_embeddings, ct).ConfigureAwait(false);
         var tombstones = await _store.Conclusions.PurgeTombstonesAsync(_options.TombstoneRetention, ct).ConfigureAwait(false);
         var items = await _store.WorkQueue.PruneSucceededAsync(_options.CompletedRetention, ct).ConfigureAwait(false);
         var idempotency = await _store.Idempotency.PurgeExpiredAsync(ct).ConfigureAwait(false);
         LogTick(embedding.Embedded, embedding.Failed, embedding.MarkedFailed, tombstones, items, idempotency);
-        return embedding.Failed == 0;
     }
 
+    /// <summary>
+    /// Embeds the backlog, then counts the tick's failures: a failure counts towards
+    /// <see cref="ReconcilerOptions.EmbeddingMaxAttempts"/> only when another embedding of the tick succeeded (so the
+    /// service was up) or the service rejected that input. Otherwise the service is taken to be down and nothing counts,
+    /// so an outage never marks conclusions failed.
+    /// </summary>
     private async Task<EmbeddingOutcome> EmbedPendingAsync(IEmbeddingGenerator<string, Embedding<float>> generator, CancellationToken ct)
     {
-        var total = new EmbeddingOutcome(0, 0, 0);
-        while (true)
+        var embedded = 0;
+        var failures = new List<(PendingEmbedding Pending, Exception Error)>();
+        IReadOnlyList<PendingEmbedding> previous = [];
+        for (var batch = 0; batch < MaxBatchesPerTick; batch++)
         {
             var pending = await _store.Embeddings.ListPendingAsync(_options.EmbeddingBatchSize, ct).ConfigureAwait(false);
-            if (pending.Count == 0)
+            // A save that did not take (the store kept the conclusion pending) would otherwise repeat one batch forever.
+            if (pending.Count == 0 || pending.Select(p => p.ConclusionId).SequenceEqual(previous.Select(p => p.ConclusionId)))
             {
-                return total;
+                break;
             }
 
-            var batch = await EmbedBatchAsync(generator, pending, ct).ConfigureAwait(false);
-            total = new EmbeddingOutcome(
-                total.Embedded + batch.Embedded, total.Failed + batch.Failed, total.MarkedFailed + batch.MarkedFailed);
-            // A failed conclusion stays pending until it is marked failed, so keep going only after a clean, full batch.
-            if (batch.Failed > 0 || pending.Count < _options.EmbeddingBatchSize)
+            var failed = failures.Count;
+            embedded += await EmbedBatchAsync(generator, pending, failures, ct).ConfigureAwait(false);
+            // A failed conclusion stays pending, so keep going only after a clean, full batch.
+            if (failures.Count > failed || pending.Count < _options.EmbeddingBatchSize)
             {
-                return total;
+                break;
             }
+
+            previous = pending;
         }
+
+        var counted = embedded > 0 ? failures : [.. failures.Where(f => IsRejection(f.Error))];
+        if (counted.Count < failures.Count)
+        {
+            LogServiceUnavailable(failures.Count - counted.Count);
+        }
+
+        var markedFailed = 0;
+        foreach (var (pending, _) in counted)
+        {
+            markedFailed += await RecordFailureAsync(pending, ct).ConfigureAwait(false) ? 1 : 0;
+        }
+
+        return new EmbeddingOutcome(embedded, failures.Count, markedFailed);
     }
 
-    private async Task<EmbeddingOutcome> EmbedBatchAsync(
-        IEmbeddingGenerator<string, Embedding<float>> generator, IReadOnlyList<PendingEmbedding> pending, CancellationToken ct)
+    /// <returns>How many conclusions were embedded; the failed ones are added to <paramref name="failures"/>.</returns>
+    private async Task<int> EmbedBatchAsync(
+        IEmbeddingGenerator<string, Embedding<float>> generator,
+        IReadOnlyList<PendingEmbedding> pending,
+        List<(PendingEmbedding Pending, Exception Error)> failures,
+        CancellationToken ct)
     {
         IReadOnlyList<ReadOnlyMemory<float>> vectors;
         try
@@ -216,13 +254,12 @@ public sealed partial class ReconcilerService : BackgroundService
             if (pending.Count == 1)
             {
                 LogEmbeddingFailed(ex, pending[0].ConclusionId);
-                return await RecordFailureAsync(pending[0], ct).ConfigureAwait(false)
-                    ? new EmbeddingOutcome(0, 1, 1)
-                    : new EmbeddingOutcome(0, 1, 0);
+                failures.Add((pending[0], ex));
+                return 0;
             }
 
             LogBatchFailed(ex, pending.Count);
-            return await EmbedOneByOneAsync(generator, pending, ct).ConfigureAwait(false);
+            return await EmbedOneByOneAsync(generator, pending, failures, ct).ConfigureAwait(false);
         }
 
         for (var i = 0; i < pending.Count; i++)
@@ -230,13 +267,16 @@ public sealed partial class ReconcilerService : BackgroundService
             await SaveAsync(pending[i], vectors[i], ct).ConfigureAwait(false);
         }
 
-        return new EmbeddingOutcome(pending.Count, 0, 0);
+        return pending.Count;
     }
 
-    private async Task<EmbeddingOutcome> EmbedOneByOneAsync(
-        IEmbeddingGenerator<string, Embedding<float>> generator, IReadOnlyList<PendingEmbedding> pending, CancellationToken ct)
+    private async Task<int> EmbedOneByOneAsync(
+        IEmbeddingGenerator<string, Embedding<float>> generator,
+        IReadOnlyList<PendingEmbedding> pending,
+        List<(PendingEmbedding Pending, Exception Error)> failures,
+        CancellationToken ct)
     {
-        int embedded = 0, failed = 0, markedFailed = 0;
+        var embedded = 0;
         foreach (var item in pending)
         {
             ReadOnlyMemory<float> vector;
@@ -247,8 +287,7 @@ public sealed partial class ReconcilerService : BackgroundService
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 LogEmbeddingFailed(ex, item.ConclusionId);
-                failed++;
-                markedFailed += await RecordFailureAsync(item, ct).ConfigureAwait(false) ? 1 : 0;
+                failures.Add((item, ex));
                 continue;
             }
 
@@ -256,7 +295,30 @@ public sealed partial class ReconcilerService : BackgroundService
             embedded++;
         }
 
-        return new EmbeddingOutcome(embedded, failed, markedFailed);
+        return embedded;
+    }
+
+    /// <summary>
+    /// True when the service refused this input (HTTP 400, which includes content-filter refusals), as opposed to being
+    /// unavailable.
+    /// </summary>
+    private static bool IsRejection(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            var status = current switch
+            {
+                HttpRequestException http => (int?)http.StatusCode,
+                ClientResultException client => client.Status,
+                _ => null,
+            };
+            if (status == (int)HttpStatusCode.BadRequest)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <exception cref="InvalidOperationException">The generator returned the wrong number or size of vectors.</exception>
@@ -313,6 +375,9 @@ public sealed partial class ReconcilerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "A reconciler tick failed; the next one is delayed.")]
     private partial void LogTickFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The embedding service appears unavailable: {Failures} embeddings failed and none succeeded this tick, so their failures are not counted.")]
+    private partial void LogServiceUnavailable(int failures);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} conclusions failed; embedding them one by one.")]
     private partial void LogBatchFailed(Exception exception, int count);

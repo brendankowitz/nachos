@@ -11,17 +11,21 @@ namespace Nachos.Core.Worker;
 /// </summary>
 /// <remarks>
 /// A renewal that fails for another reason (the store is briefly unavailable) is logged and retried at the next
-/// interval: the lease still has two thirds of its duration left.
+/// interval: the lease still has two thirds of its duration left. Once stopping, every exception is ignored, since a
+/// provider may report its own cancellation as something other than <see cref="OperationCanceledException"/>. Neither
+/// the renewal loop nor <see cref="DisposeAsync"/> ever throws, so a renewal cannot take down the caller.
 /// </remarks>
 internal sealed partial class LeaseKeeper : IAsyncDisposable
 {
     private readonly CancellationTokenSource _work;
     private readonly CancellationTokenSource _stop;
+    private readonly ILogger _logger;
     private Task _loop = Task.CompletedTask;
     private volatile bool _isLost;
 
-    private LeaseKeeper(CancellationToken ct)
+    private LeaseKeeper(ILogger logger, CancellationToken ct)
     {
+        _logger = logger;
         _work = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
     }
@@ -36,48 +40,53 @@ internal sealed partial class LeaseKeeper : IAsyncDisposable
     public static LeaseKeeper Start(
         IWorkQueue queue, WorkLease lease, TimeSpan duration, TimeProvider clock, ILogger logger, CancellationToken ct)
     {
-        var keeper = new LeaseKeeper(ct);
-        keeper._loop = keeper.RenewAsync(queue, lease, duration, clock, logger, keeper._stop.Token);
+        var keeper = new LeaseKeeper(logger, ct);
+        keeper._loop = keeper.RenewAsync(queue, lease, duration, clock, keeper._stop.Token);
         return keeper;
     }
 
     /// <summary>Stops renewing and waits for an in-flight renewal, so no renewal overlaps what the caller does next.</summary>
     public async ValueTask DisposeAsync()
     {
-        await _stop.CancelAsync().ConfigureAwait(false);
-        await _loop.ConfigureAwait(false);
+        try
+        {
+            await _stop.CancelAsync().ConfigureAwait(false);
+            await _loop.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogStopFailed(_logger, ex);
+        }
+
         _stop.Dispose();
         _work.Dispose();
     }
 
-    private async Task RenewAsync(
-        IWorkQueue queue, WorkLease lease, TimeSpan duration, TimeProvider clock, ILogger logger, CancellationToken ct)
+    private async Task RenewAsync(IWorkQueue queue, WorkLease lease, TimeSpan duration, TimeProvider clock, CancellationToken ct)
     {
         var interval = duration / 3;
-        try
+        while (!ct.IsCancellationRequested)
         {
-            while (true)
+            try
             {
                 await Task.Delay(interval, clock, ct).ConfigureAwait(false);
-                try
-                {
-                    await queue.RenewAsync(lease, duration, ct).ConfigureAwait(false);
-                }
-                catch (LeaseLostException)
-                {
-                    _isLost = true;
-                    LogLeaseLost(logger, lease.WorkUnitKey);
-                    await _work.CancelAsync().ConfigureAwait(false);
-                    return;
-                }
-                catch (Exception ex) when (!ct.IsCancellationRequested)
-                {
-                    LogRenewalFailed(logger, ex, lease.WorkUnitKey);
-                }
+                await queue.RenewAsync(lease, duration, ct).ConfigureAwait(false);
             }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
+            catch (LeaseLostException)
+            {
+                _isLost = true;
+                LogLeaseLost(_logger, lease.WorkUnitKey);
+                await _work.CancelAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                LogRenewalFailed(_logger, ex, lease.WorkUnitKey);
+            }
         }
     }
 
@@ -86,4 +95,7 @@ internal sealed partial class LeaseKeeper : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Renewing the lease on work unit {WorkUnitKey} failed; retrying at the next interval.")]
     private static partial void LogRenewalFailed(ILogger logger, Exception exception, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Stopping a lease renewal failed.")]
+    private static partial void LogStopFailed(ILogger logger, Exception exception);
 }

@@ -12,6 +12,7 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 {
     private int _renewals;
     private int _ticks;
+    private TaskCompletionSource? _hang;
 
     public IWorkspaceStore Workspaces => inner.Workspaces;
     public IPeerStore Peers => inner.Peers;
@@ -28,6 +29,17 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public ConcurrentQueue<IReadOnlyList<WorkTaskType>> Acquires { get; } = new();
 
     public ConcurrentQueue<WorkLease> Failures { get; } = new();
+
+    /// <summary>The retry delay of each <see cref="FailAsync"/> call, in order.</summary>
+    public ConcurrentQueue<TimeSpan> RetryDelays { get; } = new();
+
+    public ConcurrentQueue<WorkLease> Releases { get; } = new();
+
+    /// <summary>
+    /// When set, the next renewal hangs until cancelled and then throws <see cref="InvalidOperationException"/>, as a
+    /// provider that reports its own cancellation as a provider error would; set when it starts hanging.
+    /// </summary>
+    public TaskCompletionSource? HangNextRenewal { get => _hang; set => _hang = value; }
 
     public int Renewals => Volatile.Read(ref _renewals);
 
@@ -46,15 +58,35 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public async Task RenewAsync(WorkLease lease, TimeSpan leaseDuration, CancellationToken ct)
     {
+        if (Interlocked.Exchange(ref _hang, null) is { } hanging)
+        {
+            hanging.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new InvalidOperationException("Operation cancelled by user.");
+            }
+        }
+
         await inner.WorkQueue.RenewAsync(lease, leaseDuration, ct);
         Interlocked.Increment(ref _renewals);
     }
 
     public Task CompleteAsync(WorkLease lease, CancellationToken ct) => inner.WorkQueue.CompleteAsync(lease, ct);
 
+    public Task ReleaseAsync(WorkLease lease, CancellationToken ct)
+    {
+        Releases.Enqueue(lease);
+        return inner.WorkQueue.ReleaseAsync(lease, ct);
+    }
+
     public Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct)
     {
         Failures.Enqueue(lease);
+        RetryDelays.Enqueue(retryDelay);
         return inner.WorkQueue.FailAsync(lease, reason, retryDelay, maxAttempts, ct);
     }
 

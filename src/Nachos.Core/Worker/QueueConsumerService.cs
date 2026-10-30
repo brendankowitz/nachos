@@ -25,14 +25,17 @@ namespace Nachos.Core.Worker;
 /// item already past <see cref="DeriverOptions.MaxAttempts"/> (its workers kept dying) is dead-lettered without running.
 /// </para>
 /// <para>
-/// On shutdown a running handler is cancelled and its lease released for immediate retry, without counting towards
-/// dead-lettering, so another replica need not wait for the lease to expire.
+/// On shutdown a running handler is cancelled and its unit released (<see cref="IWorkQueue.ReleaseAsync"/>): claimable
+/// at once by another replica, and with the interrupted attempt given back, so a unit on its last attempt is not
+/// dead-lettered by a restart.
+/// </para>
+/// <para>
+/// An unexpected exception while processing a unit (outside the handler) is logged and the loop carries on after an
+/// idle delay, so one bad unit cannot stop a loop or the host.
 /// </para>
 /// </remarks>
 public sealed partial class QueueConsumerService : BackgroundService
 {
-    private const string ShutdownReason = "The worker stopped before the unit finished.";
-
     private readonly IServiceScopeFactory _scopes;
     private readonly IMemoryStore _store;
     private readonly TimeProvider _clock;
@@ -145,7 +148,18 @@ public sealed partial class QueueConsumerService : BackgroundService
             }
 
             idle = 0;
-            await ProcessAsync(lease, ct).ConfigureAwait(false);
+            try
+            {
+                await ProcessAsync(lease, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                LogProcessFailed(ex, lease.WorkUnitKey);
+                if (!await DelayAsync(Backoff.Delay(_options.IdleDelay, _options.MaxIdleDelay, 1), ct).ConfigureAwait(false))
+                {
+                    return;
+                }
+            }
         }
     }
 
@@ -157,14 +171,14 @@ public sealed partial class QueueConsumerService : BackgroundService
             LogAbandoned(lease.WorkUnitKey, attempts);
             await FailAsync(
                 lease,
-                $"Abandoned after {attempts - 1} attempts that ended without a result (the worker stopped or crashed).",
+                $"Attempts exhausted ({attempts - 1}; the last attempts ended without a result).",
                 TimeSpan.Zero,
                 _deriver.MaxAttempts,
                 ct).ConfigureAwait(false);
             return;
         }
 
-        // Null after the loop below only when the handler was cancelled by shutdown.
+        // Null after the block below only when the handler was interrupted by shutdown.
         Exception? failure = null;
         var keeper = LeaseKeeper.Start(_store.WorkQueue, lease, _deriver.LeaseDuration, _clock, _logger, ct);
         await using (keeper.ConfigureAwait(false))
@@ -183,8 +197,9 @@ public sealed partial class QueueConsumerService : BackgroundService
             {
                 return;
             }
-            catch (Exception) when (ct.IsCancellationRequested)
+            catch (Exception ex) when (ct.IsCancellationRequested)
             {
+                LogInterrupted(ex, lease.WorkUnitKey);
             }
             catch (Exception ex)
             {
@@ -195,8 +210,7 @@ public sealed partial class QueueConsumerService : BackgroundService
         // The keeper is stopped by now, so no renewal races the release.
         if (failure is null)
         {
-            // CancellationToken.None: the stopping token is already cancelled, and the host's shutdown timeout bounds this.
-            await FailAsync(lease, ShutdownReason, TimeSpan.Zero, int.MaxValue, CancellationToken.None).ConfigureAwait(false);
+            await ReleaseAsync(lease).ConfigureAwait(false);
             return;
         }
 
@@ -250,6 +264,20 @@ public sealed partial class QueueConsumerService : BackgroundService
         _metrics.RecordDeadLettered(lease.Items.Count(item => item.Attempts >= maxAttempts));
     }
 
+    /// <summary>Releases an interrupted unit; if that fails, the lease expires and the unit is reclaimed.</summary>
+    private async Task ReleaseAsync(WorkLease lease)
+    {
+        try
+        {
+            // CancellationToken.None: the stopping token is already cancelled, and the host's shutdown timeout bounds this.
+            await _store.WorkQueue.ReleaseAsync(lease, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogReleaseFailed(ex, lease.WorkUnitKey);
+        }
+    }
+
     private static string Describe(Exception exception) => $"{exception.GetType().FullName}: {exception.Message}";
 
     /// <returns>False when <paramref name="ct"/> was cancelled.</returns>
@@ -287,6 +315,15 @@ public sealed partial class QueueConsumerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "Failing the lease on work unit {WorkUnitKey} failed; the unit is retried when the lease expires.")]
     private partial void LogFailFailed(Exception exception, string workUnitKey);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} was leased for attempt {Attempt}, past the maximum: earlier attempts ended without a result. Dead-lettering it.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Work unit {WorkUnitKey} was interrupted by shutdown; releasing it for another worker.")]
+    private partial void LogInterrupted(Exception exception, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Releasing interrupted work unit {WorkUnitKey} failed; it is retried when its lease expires.")]
+    private partial void LogReleaseFailed(Exception exception, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Processing work unit {WorkUnitKey} failed unexpectedly; the loop continues.")]
+    private partial void LogProcessFailed(Exception exception, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} was leased for attempt {Attempt}, past the maximum: attempts exhausted (the last attempts ended without a result). Dead-lettering it.")]
     private partial void LogAbandoned(string workUnitKey, int attempt);
 }

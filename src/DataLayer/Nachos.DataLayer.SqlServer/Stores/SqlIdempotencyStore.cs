@@ -30,12 +30,25 @@ internal sealed class SqlIdempotencyStore(SqlStoreRuntime runtime) : IIdempotenc
             : new IdempotencyRecord(record.Key, record.RequestHash, record.ResponseStatus, record.ResponseBody, record.ExpiresAt);
     }
 
-    /// <remarks>Seeks <c>IX_IdempotencyRecords_ExpiresAt</c>.</remarks>
+    /// <remarks>
+    /// Seeks <c>IX_IdempotencyRecords_ExpiresAt</c>, deleting in batches below SQL Server's lock-escalation threshold
+    /// (5000 locks) so a large backlog never locks the whole table against concurrent appends.
+    /// </remarks>
     public async Task<int> PurgeExpiredAsync(CancellationToken ct)
     {
+        const int batchSize = 4000;
         ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
-        return await db.IdempotencyRecords.Where(r => r.ExpiresAt <= now).ExecuteDeleteAsync(ct);
+        var purged = 0;
+        int deleted;
+        do
+        {
+            deleted = await db.IdempotencyRecords.Where(r => r.ExpiresAt <= now).Take(batchSize).ExecuteDeleteAsync(ct);
+            purged += deleted;
+        }
+        while (deleted == batchSize);
+
+        return purged;
     }
 }

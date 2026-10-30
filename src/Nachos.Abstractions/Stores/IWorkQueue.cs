@@ -21,7 +21,7 @@ namespace Nachos.Abstractions.Stores;
 /// waiting is not claimable at all, which keeps the unit's order.
 /// </para>
 /// <para>
-/// Every write under a lease (<see cref="RenewAsync"/>, <see cref="CompleteAsync"/>, <see cref="FailAsync"/>,
+/// Every write under a lease (<see cref="RenewAsync"/>, <see cref="CompleteAsync"/>, <see cref="ReleaseAsync"/>, <see cref="FailAsync"/>,
 /// <see cref="IConclusionStore.CommitDerivationAsync"/>) first checks that the lease is still held, and throws
 /// <see cref="LeaseLostException"/> with nothing written when it is not.
 /// </para>
@@ -60,6 +60,14 @@ public interface IWorkQueue
     /// <summary>Marks the lease's items succeeded and releases the unit.</summary>
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
     Task CompleteAsync(WorkLease lease, CancellationToken ct);
+
+    /// <summary>
+    /// Releases the unit without a result and without using up an attempt: the lease's items get back the
+    /// <see cref="WorkItemRecord.Attempts"/> count they had before it was acquired and are claimable again at once. For
+    /// work interrupted by something other than the work itself, such as the worker shutting down.
+    /// </summary>
+    /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
+    Task ReleaseAsync(WorkLease lease, CancellationToken ct);
 
     /// <summary>
     /// Records <paramref name="reason"/> (truncated to 4000 characters) on the lease's items and releases the unit. An

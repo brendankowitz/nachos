@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -39,13 +40,14 @@ public sealed class ReconcilerTests
     {
         await using var fixture = new WorkerFixture(handlerType: null);
         await fixture.SeedAsync();
-        var generator = new SelectiveEmbeddings { Failing = { "poison" } };
+        var generator = new SelectiveEmbeddings { Rejected = { "poison" } };
         await InsertAsync(fixture.Store, "alice likes tea", "poison");
 
         await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 3);
         await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
 
         // Tick 1: the batch fails, then each conclusion alone (the good one is saved); ticks 2 and 3 retry the poison alone.
+        // The service rejects the poison (400), so every failure counts even when nothing else succeeds.
         generator.Calls.ShouldBe([
             ["alice likes tea", "poison"],
             ["alice likes tea"],
@@ -54,6 +56,43 @@ public sealed class ReconcilerTests
             ["poison"],
         ]);
         (await QueryAsync(fixture.Store, "alice likes tea")).Select(m => m.Conclusion.Content).ShouldBe(["alice likes tea"]);
+    }
+
+    [Fact]
+    public async Task AllFail_AdvancesNoCounts()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings { IsDown = true };
+        await InsertAsync(fixture.Store, "alice likes tea", "alice owns a cat");
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 2);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 6, Interval);
+
+        // An outage: nothing succeeded in any tick, so nothing was marked failed and the backlog is intact.
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count.ShouldBe(2);
+        generator.IsDown = false;
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
+        (await QueryAsync(fixture.Store, "alice owns a cat")).Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task UnavailableFailure_CountsOnlyInTicksWhereAnotherEmbeddingSucceeded()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings { Unavailable = { "flaky" } };
+        await InsertAsync(fixture.Store, "alice likes tea", "flaky");
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 2);
+        // Tick 1 counts (tea succeeded); the ticks after, with flaky alone, do not.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 6, Interval);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().Content.ShouldBe("flaky");
+
+        // With another conclusion embedded in the same tick, the second failure counts and marks it failed.
+        await InsertAsync(fixture.Store, "alice owns a cat");
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
+        (await QueryAsync(fixture.Store, "flaky")).ShouldNotContain(m => m.Conclusion.Content == "flaky");
     }
 
     [Fact]
@@ -184,12 +223,19 @@ public sealed class ReconcilerTests
         }
     }
 
-    /// <summary>Deterministic embeddings that fail any call containing one of <see cref="Failing"/>.</summary>
+    /// <summary>
+    /// Deterministic embeddings that fail any call containing a <see cref="Rejected"/> text with HTTP 400, or an
+    /// <see cref="Unavailable"/> text with HTTP 503, and every call with 503 while <see cref="IsDown"/>.
+    /// </summary>
     private sealed class SelectiveEmbeddings : IEmbeddingGenerator<string, Embedding<float>>
     {
         private readonly DeterministicEmbeddingGenerator _inner = new();
 
-        public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> Rejected { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Unavailable { get; } = new(StringComparer.Ordinal);
+
+        public volatile bool IsDown;
 
         public ConcurrentQueue<string[]> Calls { get; } = new();
 
@@ -198,8 +244,13 @@ public sealed class ReconcilerTests
         {
             var texts = values.ToArray();
             Calls.Enqueue(texts);
-            return texts.Any(Failing.Contains)
-                ? throw new HttpRequestException("input rejected")
+            if (texts.Any(Rejected.Contains))
+            {
+                throw new HttpRequestException("input rejected", null, HttpStatusCode.BadRequest);
+            }
+
+            return IsDown || texts.Any(Unavailable.Contains)
+                ? throw new HttpRequestException("service unavailable", null, HttpStatusCode.ServiceUnavailable)
                 : _inner.GenerateAsync(texts, options, cancellationToken);
         }
 
