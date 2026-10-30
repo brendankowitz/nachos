@@ -4,7 +4,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -40,7 +39,8 @@ internal sealed class WorkerFixture : IAsyncDisposable
         Inner = new InMemoryMemoryStore(Clock);
         Store = new ObservedStore(Inner);
         var services = new ServiceCollection();
-        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Logs);
+        services.AddSingleton(typeof(ILogger<>), typeof(RecordingLogger<>));
         services.AddSingleton<TimeProvider>(Clock);
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["Llm:Profiles:default:Model"] = "fake" })
@@ -77,6 +77,9 @@ internal sealed class WorkerFixture : IAsyncDisposable
     public FakeTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 10, 29, 9, 0, 0, TimeSpan.Zero));
 
     public InMemoryMemoryStore Inner { get; }
+
+    /// <summary>What every <see cref="ILogger{TCategoryName}"/> from <see cref="Services"/> logged.</summary>
+    public RecordingLogs Logs { get; } = new();
 
     public ObservedStore Store { get; }
 

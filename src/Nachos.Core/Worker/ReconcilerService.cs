@@ -27,12 +27,17 @@ namespace Nachos.Core.Worker;
 /// <para>
 /// Embedding: pending conclusions are embedded oldest first in batches of
 /// <see cref="ReconcilerOptions.EmbeddingBatchSize"/>, while batches come back full (at most 100 per tick). When a
-/// batch call fails each of its conclusions is retried alone, so one bad conclusion cannot hold back the rest. A
-/// conclusion's failure counts only when the service was evidently up (another embedding of the tick succeeded) or it
-/// rejected that input (HTTP 400); during an outage nothing counts. A conclusion with
+/// batch call fails each of its conclusions is retried alone, so one bad conclusion cannot hold back the rest; but a
+/// failure of the service rather than of an input (429, 503, a gateway error, a timeout, a connection error; not 500,
+/// which one input can provoke) ends the step for the tick instead, since retrying alone would only add load to a
+/// struggling service. A conclusion's failure counts only when the service was evidently up (another embedding of the
+/// tick succeeded) and the failure was not the service's, or the service rejected that input (HTTP 400); during an
+/// outage nothing counts. A conclusion with
 /// <see cref="ReconcilerOptions.EmbeddingMaxAttempts"/> counted failures, at most one per tick, is marked failed and
 /// leaves the backlog (until its content is replaced). Failure counts live in memory and restart with the lease holder.
-/// Without an embedding generator nothing is embedded and the other steps still run.
+/// From the <see cref="ReconcilerOptions.FailedEmbeddingTicksBeforeError"/>th consecutive tick in which embeddings
+/// failed and none succeeded, each such tick is logged as an error. Without an embedding generator nothing is embedded
+/// and the other steps still run.
 /// </para>
 /// <para>
 /// A tick whose step throws (the store is unavailable) delays the next one exponentially, up to
@@ -53,6 +58,7 @@ public sealed partial class ReconcilerService : BackgroundService
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
     private readonly string _embeddingModel;
     private readonly Dictionary<(string Workspace, string Conclusion), int> _embeddingFailures = [];
+    private int _failedEmbeddingTicks;
     private readonly string _owner = $"{Environment.MachineName}:{Environment.ProcessId}:reconciler:{Guid.NewGuid():N}";
 
     /// <param name="scopes">Reads the handlers' batch policies, which define a due unit for the backlog gauges.</param>
@@ -109,6 +115,7 @@ public sealed partial class ReconcilerService : BackgroundService
                     await keeper.DisposeAsync().ConfigureAwait(false);
                     (keeper, lease) = (null, null);
                     _embeddingFailures.Clear();
+                    _failedEmbeddingTicks = 0;
                     _metrics.ClearBacklog();
                 }
 
@@ -133,8 +140,9 @@ public sealed partial class ReconcilerService : BackgroundService
                 await Task.Delay(delay, _clock, ct).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception) when (ct.IsCancellationRequested)
         {
+            // Shutdown; a provider may report its own cancellation as something other than OperationCanceledException.
         }
         finally
         {
@@ -225,8 +233,8 @@ public sealed partial class ReconcilerService : BackgroundService
     /// <summary>
     /// Embeds the backlog, then counts the tick's failures: a failure counts towards
     /// <see cref="ReconcilerOptions.EmbeddingMaxAttempts"/> only when another embedding of the tick succeeded (so the
-    /// service was up) or the service rejected that input. Otherwise the service is taken to be down and nothing counts,
-    /// so an outage never marks conclusions failed.
+    /// service was up) and it was not a failure of the service, or the service rejected that input. Otherwise the
+    /// service is taken to be down and nothing counts, so an outage never marks conclusions failed.
     /// </summary>
     private async Task<EmbeddingOutcome> EmbedPendingAsync(IEmbeddingGenerator<string, Embedding<float>> generator, CancellationToken ct)
     {
@@ -253,11 +261,15 @@ public sealed partial class ReconcilerService : BackgroundService
             previous = pending;
         }
 
-        var counted = embedded > 0 ? failures : [.. failures.Where(f => IsRejection(f.Error))];
+        var counted = failures
+            .Where(f => IsRejection(f.Error) || (embedded > 0 && !IsServiceFailure(f.Error, ct)))
+            .ToList();
         if (counted.Count < failures.Count)
         {
             LogServiceUnavailable(failures.Count - counted.Count);
         }
+
+        TrackFailedTick(embedded, failures, ct);
 
         var markedFailed = 0;
         foreach (var (pending, _) in counted)
@@ -266,6 +278,32 @@ public sealed partial class ReconcilerService : BackgroundService
         }
 
         return new EmbeddingOutcome(embedded, failures.Count, markedFailed);
+    }
+
+    /// <summary>Counts consecutive ticks in which embeddings failed and none succeeded, and escalates a long run.</summary>
+    private void TrackFailedTick(int embedded, List<(PendingEmbedding Pending, Exception Error)> failures, CancellationToken ct)
+    {
+        if (embedded > 0 || failures.Count == 0)
+        {
+            _failedEmbeddingTicks = 0;
+            return;
+        }
+
+        _failedEmbeddingTicks++;
+        if (_failedEmbeddingTicks < _options.FailedEmbeddingTicksBeforeError)
+        {
+            return;
+        }
+
+        var last = failures[^1].Error;
+        if (failures.Any(f => ProviderFailure.IsTransient(f.Error, ct)))
+        {
+            LogEmbeddingUnavailablePersists(last, _failedEmbeddingTicks);
+        }
+        else
+        {
+            LogEmbeddingMisconfigured(last, _failedEmbeddingTicks);
+        }
     }
 
     /// <returns>How many conclusions were embedded; the failed ones are added to <paramref name="failures"/>.</returns>
@@ -286,6 +324,13 @@ public sealed partial class ReconcilerService : BackgroundService
             {
                 LogEmbeddingFailed(ex, pending[0].ConclusionId);
                 failures.Add((pending[0], ex));
+                return 0;
+            }
+
+            if (IsServiceFailure(ex, ct))
+            {
+                LogBatchFailedAtService(ex, pending.Count);
+                failures.AddRange(pending.Select(item => (item, ex)));
                 return 0;
             }
 
@@ -335,6 +380,14 @@ public sealed partial class ReconcilerService : BackgroundService
     /// </summary>
     private static bool IsRejection(Exception exception) =>
         ProviderFailure.StatusOf(exception) == (int)HttpStatusCode.BadRequest;
+
+    /// <summary>
+    /// True when the service failed rather than this input: a transient failure (429, 503, a gateway error, a timeout, a
+    /// connection error) other than HTTP 500, which one input can provoke.
+    /// </summary>
+    private static bool IsServiceFailure(Exception exception, CancellationToken ct) =>
+        ProviderFailure.IsTransient(exception, ct) &&
+        ProviderFailure.StatusOf(exception) != (int)HttpStatusCode.InternalServerError;
 
     /// <exception cref="InvalidOperationException">The generator returned the wrong number or size of vectors.</exception>
     private static async Task<IReadOnlyList<ReadOnlyMemory<float>>> GenerateAsync(
@@ -391,11 +444,20 @@ public sealed partial class ReconcilerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "A reconciler tick failed; the next one is delayed.")]
     private partial void LogTickFailed(Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "The embedding service appears unavailable: {Failures} embeddings failed and none succeeded this tick, so their failures are not counted.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "{Failures} embedding failures this tick are not counted towards marking conclusions failed: the service failed (throttled or unavailable), or nothing was embedded, so it appears to be down.")]
     private partial void LogServiceUnavailable(int failures);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, with transient failures; the embedding service has been unavailable or throttling. Check its health and quota.")]
+    private partial void LogEmbeddingUnavailablePersists(Exception exception, int ticks);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, and not transiently: likely a misconfiguration. Check the Embeddings endpoint, deployment, dimensions and role assignment.")]
+    private partial void LogEmbeddingMisconfigured(Exception exception, int ticks);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} conclusions failed; embedding them one by one.")]
     private partial void LogBatchFailed(Exception exception, int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} conclusions failed at the service (throttled or unavailable); retrying them next tick, not one by one.")]
+    private partial void LogBatchFailedAtService(Exception exception, int count);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding conclusion {ConclusionId} failed.")]
     private partial void LogEmbeddingFailed(Exception exception, string conclusionId);

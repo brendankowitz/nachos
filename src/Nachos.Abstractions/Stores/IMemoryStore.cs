@@ -63,4 +63,11 @@ public interface IMemoryStore
 
     /// <summary>The conclusion embedding backlog.</summary>
     IEmbeddingStore Embeddings { get; }
+
+    /// <summary>
+    /// True when <paramref name="exception"/>, thrown by an operation of this store, is a failure that retrying later
+    /// can fix: a deadlock, a timeout, a dropped connection, or a database that is briefly unavailable or throttling.
+    /// The background workers retry such a failure without charging it to the work.
+    /// </summary>
+    bool IsTransientFailure(Exception exception);
 }

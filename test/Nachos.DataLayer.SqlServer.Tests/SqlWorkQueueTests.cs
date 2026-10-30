@@ -133,7 +133,7 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
             var leases = 0;
             while (committed.Count < total && DateTime.UtcNow < deadline)
             {
-                var lease = await store.WorkQueue.TryAcquireAsync($"claimer-{claimer}", Immediate, TimeSpan.FromMilliseconds(250), Ct);
+                var lease = await store.WorkQueue.TryAcquireAsync($"claimer-{claimer}", Immediate, TimeSpan.FromSeconds(1), Ct);
                 if (lease is null)
                 {
                     await Task.Delay(5, Ct);
@@ -143,9 +143,10 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
                 acquisitions.Add((lease.WorkUnitKey, lease.FencingToken));
 
                 // Half the claimers outlive the expiry of their first lease, and every fourth lease after that does, so
-                // other claimers reclaim units while they are still being worked.
+                // other claimers reclaim units while they are still being worked. A 1 s lease leaves the others ample
+                // time to commit on a loaded machine.
                 var outlivesLease = leases++ == 0 ? claimer % 2 == 0 : random.Next(4) == 0;
-                await Task.Delay(outlivesLease ? 400 : random.Next(20), Ct);
+                await Task.Delay(outlivesLease ? 1500 : random.Next(20), Ct);
                 try
                 {
                     await store.Conclusions.CommitDerivationAsync(lease, OneConclusionPerItem(workspace, lease), Ct);
@@ -484,5 +485,65 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
             [DeriveIntent.Derive],
             Ct));
         (await ScalarAsync<string>(database, Counts, ("@s", session))).ShouldBe("160:160");
+    }
+
+    // ---------------------------------------------------------------- transient failures
+
+    [Fact]
+    public async Task DeadlocksAndTimeouts_AreTransient_AConstraintViolationIsNot()
+    {
+        var database = await DatabaseAsync();
+        var store = database.CreateStore(TimeProvider.System);
+
+        var deadlock = await DeadlockAsync(database);
+        deadlock.Number.ShouldBe(1205);
+        store.IsTransientFailure(deadlock).ShouldBeTrue();
+        store.IsTransientFailure(new InvalidOperationException("wrapped", deadlock)).ShouldBeTrue();
+
+        var timeout = await Should.ThrowAsync<SqlException>(() => ExecuteAsync(database, "WAITFOR DELAY '00:00:05';", timeoutSeconds: 1));
+        timeout.Number.ShouldBe(-2);
+        store.IsTransientFailure(timeout).ShouldBeTrue();
+
+        var violation = await Should.ThrowAsync<SqlException>(() => ExecuteAsync(
+            database, "DECLARE @t TABLE (Id int PRIMARY KEY); INSERT @t VALUES (1), (1);"));
+        store.IsTransientFailure(violation).ShouldBeFalse();
+        store.IsTransientFailure(new InvalidOperationException("not SQL")).ShouldBeFalse();
+    }
+
+    private static async Task ExecuteAsync(SqlTestDatabase database, string sql, int timeoutSeconds = 30)
+    {
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(Ct);
+        await using var command = new SqlCommand(sql, connection) { CommandTimeout = timeoutSeconds };
+        await command.ExecuteNonQueryAsync(Ct);
+    }
+
+    /// <summary>Two transactions that lock two rows in opposite orders; SQL Server rolls one back with error 1205.</summary>
+    private static async Task<SqlException> DeadlockAsync(SqlTestDatabase database)
+    {
+        var table = $"##deadlock_{Guid.NewGuid():N}";
+        await using var first = new SqlConnection(database.ConnectionString);
+        await using var second = new SqlConnection(database.ConnectionString);
+        await first.OpenAsync(Ct);
+        await second.OpenAsync(Ct);
+        await Run(first, null, $"CREATE TABLE {table} (Id int PRIMARY KEY, Value int); INSERT {table} VALUES (1, 0), (2, 0);");
+        await using var firstTransaction = (SqlTransaction)await first.BeginTransactionAsync(Ct);
+        await using var secondTransaction = (SqlTransaction)await second.BeginTransactionAsync(Ct);
+        await Run(first, firstTransaction, $"UPDATE {table} SET Value = 1 WHERE Id = 1;");
+        await Run(second, secondTransaction, $"UPDATE {table} SET Value = 1 WHERE Id = 2;");
+
+        var crossing = new[]
+        {
+            Run(first, firstTransaction, $"UPDATE {table} SET Value = 2 WHERE Id = 2;"),
+            Run(second, secondTransaction, $"UPDATE {table} SET Value = 2 WHERE Id = 1;"),
+        };
+        await Should.ThrowAsync<SqlException>(() => Task.WhenAll(crossing));
+        return crossing.Select(task => task.Exception?.InnerException).OfType<SqlException>().Single();
+
+        static async Task Run(SqlConnection connection, SqlTransaction? transaction, string sql)
+        {
+            await using var command = new SqlCommand(sql, connection, transaction);
+            await command.ExecuteNonQueryAsync(Ct);
+        }
     }
 }

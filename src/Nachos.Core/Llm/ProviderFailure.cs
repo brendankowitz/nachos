@@ -55,6 +55,34 @@ internal static class ProviderFailure
         return null;
     }
 
+    /// <summary>
+    /// True for HTTP 401 or 403, or an <c>Azure.Identity.AuthenticationFailedException</c> (a token could not be acquired),
+    /// anywhere in the chain. Usually a misconfiguration, so not <see cref="IsTransient"/>; but a new role assignment
+    /// also fails this way for minutes until it propagates.
+    /// </summary>
+    public static bool IsAuthorizationFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (StatusOf(exception) is (int)HttpStatusCode.Unauthorized or (int)HttpStatusCode.Forbidden)
+        {
+            return true;
+        }
+
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            // Matched by name, so Core takes no Azure.Identity dependency; base types cover its subclasses.
+            for (var type = current.GetType(); type is not null; type = type.BaseType)
+            {
+                if (type.FullName == "Azure.Identity.AuthenticationFailedException")
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsTransientStatus(int status) =>
         status is (int)HttpStatusCode.RequestTimeout or (int)HttpStatusCode.TooManyRequests or >= 500;
 }

@@ -80,4 +80,11 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
     public IWorkQueue WorkQueue { get; }
 
     public IEmbeddingStore Embeddings { get; }
+
+    /// <returns>False: nothing this store throws is fixed by retrying.</returns>
+    public bool IsTransientFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return false;
+    }
 }

@@ -60,3 +60,8 @@ GO
 -- ANSI_NULLS OFF (the box defaults), and SQL Server refuses to create a filtered index on a table created that way.
 CREATE NONCLUSTERED INDEX [IX_Conclusions_EmbeddingState]
     ON [dbo].[Conclusions] ([EmbeddingState]);
+GO
+
+-- Serves the reconciler's tombstone purge (DeletedAt <= cutoff).
+CREATE NONCLUSTERED INDEX [IX_Conclusions_DeletedAt]
+    ON [dbo].[Conclusions] ([DeletedAt]);

@@ -28,4 +28,10 @@ public sealed class ReconcilerOptions
     /// Failed embedding attempts, one per tick, before a conclusion is marked failed and leaves the backlog; default 5.
     /// </summary>
     public int EmbeddingMaxAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// Consecutive ticks in which embeddings failed and none succeeded from which each further one is logged as an error;
+    /// default 20, about 10 minutes at the default <see cref="Interval"/>.
+    /// </summary>
+    public int FailedEmbeddingTicksBeforeError { get; set; } = 20;
 }

@@ -324,7 +324,8 @@ public sealed partial class DeriverService : IWorkHandler
         return response.TryGetResult(out var result)
             ? result
             : throw new InvalidOperationException(
-                $"The deriver model's answer for work unit '{workUnitKey}' is not a valid ExtractionResult JSON object; the unit will be retried.");
+                $"The deriver model's answer for work unit '{workUnitKey}' is not a valid ExtractionResult JSON object " +
+                $"(finish reason: {response.FinishReason?.Value ?? "none"}); the unit will be retried.");
     }
 
     /// <summary>
@@ -336,6 +337,11 @@ public sealed partial class DeriverService : IWorkHandler
     {
         var order = targets.Select((message, index) => (message.PublicId, index))
             .ToDictionary(pair => pair.PublicId, pair => pair.index, StringComparer.Ordinal);
+        if (extraction.Facts is null)
+        {
+            LogFactsMissing(workUnitKey);
+        }
+
         var proposed = extraction.Facts ?? [];
         var valid = new List<(string, IReadOnlyList<string>)>();
         foreach (var fact in proposed)
@@ -431,6 +437,9 @@ public sealed partial class DeriverService : IWorkHandler
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Dropped {Dropped} of {Proposed} facts for work unit {WorkUnitKey}: blank content, or sources outside the batch.")]
     private partial void LogInvalidFactsDropped(string workUnitKey, int dropped, int proposed);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The deriver model's answer for work unit {WorkUnitKey} has no 'facts' field; treating it as no facts.")]
+    private partial void LogFactsMissing(string workUnitKey);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Committed work unit {WorkUnitKey}: {Facts} facts, {Inserts} inserts, {Corroborations} corroborations, {Replacements} replacements.")]
     private partial void LogCommitted(string workUnitKey, int facts, int inserts, int corroborations, int replacements);

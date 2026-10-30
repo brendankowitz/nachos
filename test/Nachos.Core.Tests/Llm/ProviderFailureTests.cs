@@ -42,6 +42,30 @@ public sealed class ProviderFailureTests
         ProviderFailure.IsTransient(new TaskCanceledException(), cancelled.Token).ShouldBeFalse();
     }
 
+    public static TheoryData<string, Exception, bool> AuthorizationCases => new()
+    {
+        { "http 401", new HttpRequestException("auth", null, HttpStatusCode.Unauthorized), true },
+        { "client result 403", new ClientResultException(StatusResponse(403)), true },
+        { "wrapped 403", new InvalidOperationException("wrapper", new HttpRequestException("rbac", null, HttpStatusCode.Forbidden)), true },
+        { "token not acquired", Azure("Azure.Identity.AuthenticationFailedException, Azure.Identity"), true },
+        // Azure.Core carries its own copy of the Azure.Identity types; a subclass counts too.
+        { "credential unavailable", Azure("Azure.Identity.CredentialUnavailableException, Azure.Core"), true },
+        { "http 400", new HttpRequestException("bad", null, HttpStatusCode.BadRequest), false },
+        { "http 503", new HttpRequestException("down", null, HttpStatusCode.ServiceUnavailable), false },
+        { "unrelated", new InvalidOperationException("bad answer"), false },
+    };
+
+    [Theory]
+    [MemberData(nameof(AuthorizationCases))]
+    public void IsAuthorizationFailure_ClassifiesProviderFailures(string name, Exception exception, bool authorization)
+    {
+        ProviderFailure.IsAuthorizationFailure(exception).ShouldBe(authorization, name);
+    }
+
+    /// <summary>By name: Azure.Core and Azure.Identity both define these types, so a compile-time reference is ambiguous.</summary>
+    private static Exception Azure(string typeName) =>
+        (Exception)Activator.CreateInstance(Type.GetType(typeName, throwOnError: true)!, "no token")!;
+
     private static PipelineResponse StatusResponse(int status)
     {
         var response = Substitute.For<PipelineResponse>();

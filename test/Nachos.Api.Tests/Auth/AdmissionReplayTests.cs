@@ -264,6 +264,7 @@ public sealed class AdmissionReplayTests
         public IPeerCardStore PeerCards => inner.PeerCards;
         public IWorkQueue WorkQueue => inner.WorkQueue;
         public IEmbeddingStore Embeddings => inner.Embeddings;
+        public bool IsTransientFailure(Exception exception) => inner.IsTransientFailure(exception);
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Reads++;

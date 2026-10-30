@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 using System.Net;
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Core.Worker;
@@ -303,6 +304,167 @@ public sealed class QueueConsumerTests
 
         fixture.Store.Acquires.ShouldBeEmpty();
     }
+
+    [Fact]
+    public async Task AcquireFailing_KeepsTheLoopRunning()
+    {
+        await using var fixture = new WorkerFixture();
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        fixture.Store.FailAcquire = true;
+
+        var consumer = await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Acquires.Count >= 3, Step);
+        fixture.Store.FailAcquire = false;
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, Step);
+
+        consumer.ExecuteTask.ShouldNotBeNull().IsCompleted.ShouldBeFalse();
+        fixture.Handler!.Calls.ShouldHaveSingleItem();
+    }
+
+    [Fact]
+    public async Task LeaseLostOnRenewal_CancelsTheHandler_WithoutFailingOrReleasing()
+    {
+        await using var fixture = new WorkerFixture();
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        handler.Behavior = async (_, ct) =>
+        {
+            await using var registration = ct.Register(() => cancelled.TrySetResult());
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        };
+        fixture.Store.RenewalFailure = lease => new LeaseLostException(lease.WorkUnitKey);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, () => handler.Calls.Count == 1, Step);
+        await Pump.UntilAsync(fixture.Clock, () => cancelled.Task.IsCompleted, WorkerFixture.Lease / 6);
+
+        fixture.Store.RenewalFailure = null;
+        handler.Behavior = null;
+        // Not failed or released: it has a new owner. Here nobody holds it, so it runs again once the lease expires.
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.FromSeconds(30));
+        fixture.Store.Failures.ShouldBeEmpty();
+        fixture.Store.Releases.ShouldBeEmpty();
+        handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe([1, 2]);
+        fixture.Logs.At(LogLevel.Warning).ShouldContain(m => m.Contains("was lost to another owner"));
+    }
+
+    [Fact]
+    public async Task OneRenewalError_DoesNotCancelTheHandler()
+    {
+        await using var fixture = new WorkerFixture();
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wasCancelled = false;
+        handler.Behavior = async (lease, ct) =>
+        {
+            started.SetResult();
+            await using (ct.Register(() => wasCancelled = true))
+            {
+                await release.Task.WaitAsync(ct);
+            }
+
+            await fixture.Store.WorkQueue.CompleteAsync(lease, ct);
+        };
+        fixture.Store.RenewalFailure = _ => new InvalidOperationException("The store is briefly unavailable.");
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, () => started.Task.IsCompleted, Step);
+        fixture.Clock.Advance(WorkerFixture.Lease / 3);
+        await Pump.UntilAsync(
+            fixture.Clock, () => fixture.Logs.At(LogLevel.Warning).Any(m => m.Contains("Renewing the lease")), TimeSpan.Zero);
+        fixture.Store.RenewalFailure = null;
+        fixture.Clock.Advance(WorkerFixture.Lease / 3);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Renewals >= 1, TimeSpan.Zero);
+        release.SetResult();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.Zero);
+
+        wasCancelled.ShouldBeFalse();
+        fixture.Store.Failures.ShouldBeEmpty();
+        handler.Calls.ShouldHaveSingleItem();
+    }
+
+    [Fact]
+    public async Task TransientStoreFailures_ReleaseWithoutUsingAnAttempt()
+    {
+        await using var fixture = new WorkerFixture(configureNachos: options => options.Deriver.MaxAttempts = 2);
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        const int deadlocks = 3;
+        var calls = 0;
+        handler.Behavior = (lease, ct) => Interlocked.Increment(ref calls) <= deadlocks
+            ? throw new TransientStoreException()
+            : fixture.Store.WorkQueue.CompleteAsync(lease, ct);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.FromSeconds(30));
+
+        handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe(Enumerable.Repeat(1, deadlocks + 1));
+        fixture.Store.Failures.ShouldBeEmpty();
+        fixture.Store.Releases.Count.ShouldBe(deadlocks);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task AuthorizationFailures_NeverDeadLetter(HttpStatusCode status)
+    {
+        await using var fixture = new WorkerFixture(configureNachos: options => options.Deriver.MaxAttempts = 2);
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        const int propagation = 3;
+        var calls = 0;
+        handler.Behavior = (lease, ct) => Interlocked.Increment(ref calls) <= propagation
+            ? throw new HttpRequestException("role assignment not yet propagated", null, status)
+            : fixture.Store.WorkQueue.CompleteAsync(lease, ct);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.FromSeconds(30));
+
+        handler.Calls.Select(c => c.Lease.Items.Single().Attempts).ShouldBe(Enumerable.Repeat(1, propagation + 1));
+        fixture.Store.Failures.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task TransientStreak_EscalatesToErrorAtTheThreshold_AndResetsAfterSuccess()
+    {
+        await using var fixture = new WorkerFixture(configureWorker: options => options.TransientFailuresBeforeError = 3);
+        await fixture.SeedAsync();
+        await fixture.SayAsync("one");
+        var handler = fixture.Handler!;
+        var failing = 4;
+        handler.Behavior = (lease, ct) => Interlocked.Decrement(ref failing) >= 0
+            ? throw new HttpRequestException("model unavailable", null, HttpStatusCode.ServiceUnavailable)
+            : fixture.Store.WorkQueue.CompleteAsync(lease, ct);
+
+        await fixture.StartConsumerAsync();
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 1, TimeSpan.FromSeconds(30));
+
+        // Failures 1 and 2 are warnings; 3 and 4, at and past the threshold, are errors.
+        Transient(fixture, LogLevel.Warning).Count.ShouldBe(2);
+        var errors = Transient(fixture, LogLevel.Error);
+        errors.Count.ShouldBe(2);
+        errors[0].ShouldContain("number 3 in a row");
+        errors[1].ShouldContain("number 4 in a row");
+
+        // The success reset the streak: the unit's next transient failure is the first again.
+        Interlocked.Exchange(ref failing, 1);
+        await fixture.SayAsync("two");
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.QueueAsync()).Completed == 2, TimeSpan.FromSeconds(30));
+        Transient(fixture, LogLevel.Warning).Count.ShouldBe(3);
+        Transient(fixture, LogLevel.Warning)[^1].ShouldContain("(1 in a row)");
+        Transient(fixture, LogLevel.Error).Count.ShouldBe(2);
+    }
+
+    private static List<string> Transient(WorkerFixture fixture, LogLevel level) =>
+        [.. fixture.Logs.At(level).Where(m => m.Contains("transient failure"))];
 }
 
 /// <summary>Sums the measurements of one instrument of one <see cref="WorkerMetrics"/> instance.</summary>

@@ -27,6 +27,13 @@ public sealed partial class EmbeddingDimensionCheck(
             return;
         }
 
+        if (embeddings.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"The configured embedding generator returned {embeddings.Count} embeddings for one probe input. " +
+                "Check the Embeddings configuration.");
+        }
+
         var actual = embeddings[0].Vector.Length;
         if (actual != VectorSpace.Dimensions)
         {

@@ -23,12 +23,17 @@ namespace Nachos.Core.Worker;
 /// A lost lease (<see cref="LeaseLostException"/>) ends the unit without failing it, since it has a new owner.
 /// </para>
 /// <para>
-/// A transient model-provider failure (HTTP 408, 429 or 5xx, a connection error or a provider timeout) is not the unit's
-/// fault, so it consumes no attempt: the unit is released (<see cref="IWorkQueue.ReleaseAsync"/>) with the attempt given
-/// back and the same backoff, stepped by the unit's consecutive transient failures. An outage therefore never
-/// dead-letters work; from the <see cref="WorkerOptions.TransientFailuresBeforeError"/>th consecutive one on, each is
-/// logged as an error, so a configuration that only ever fails this way (a wrong endpoint) still surfaces. The counts are
-/// per process and reset when the unit ends any other way.
+/// A transient failure is not the unit's fault, so it consumes no attempt: the unit is released
+/// (<see cref="IWorkQueue.ReleaseAsync"/>) with the attempt given back and the same backoff, stepped by the unit's
+/// consecutive transient failures. Transient are a model-provider failure that retrying can fix (HTTP 408, 429 or 5xx, a
+/// connection error or a provider timeout), a store failure the store reports as transient
+/// (<see cref="IMemoryStore.IsTransientFailure"/>: a deadlock, a database failover), and a model-provider authorization
+/// failure (HTTP 401 or 403, a token that cannot be acquired). The last is usually a misconfiguration, but it is also what
+/// a new role assignment returns until it propagates, and dead-lettering work for that would lose it. An outage therefore
+/// never dead-letters work; from the <see cref="WorkerOptions.TransientFailuresBeforeError"/>th consecutive one on, each
+/// is logged as an error, so a configuration that only ever fails this way (a wrong endpoint, a missing role) still
+/// surfaces. The counts are per process, reset when the unit ends any other way, and are forgotten for a unit not seen
+/// again within three <see cref="WorkerOptions.MaxRetryDelay"/>s (another replica took it over).
 /// </para>
 /// <para>
 /// Attempts are counted when a unit is leased, so a worker that dies mid-unit still uses one up. A unit leased with an
@@ -54,7 +59,7 @@ public sealed partial class QueueConsumerService : BackgroundService
     private readonly WorkerMetrics _metrics;
     private readonly ILogger<QueueConsumerService> _logger;
     private readonly string _instance = Guid.NewGuid().ToString("N")[..8];
-    private readonly ConcurrentDictionary<string, int> _transientFailures = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TransientStreak> _transientFailures = new(StringComparer.Ordinal);
 
     public QueueConsumerService(
         IServiceScopeFactory scopes,
@@ -164,8 +169,7 @@ public sealed partial class QueueConsumerService : BackgroundService
                 lease,
                 $"Attempts exhausted ({attempts - 1}; the last attempts ended without a result).",
                 TimeSpan.Zero,
-                _deriver.MaxAttempts,
-                ct).ConfigureAwait(false);
+                _deriver.MaxAttempts).ConfigureAwait(false);
             return;
         }
 
@@ -186,9 +190,18 @@ public sealed partial class QueueConsumerService : BackgroundService
                 LogLeaseLost(lease.WorkUnitKey);
                 return;
             }
-            catch (Exception) when (keeper.IsLost)
+            catch (Exception ex) when (keeper.IsLost)
             {
                 _transientFailures.TryRemove(lease.WorkUnitKey, out _);
+                if (ex is OperationCanceledException)
+                {
+                    LogStoppedAfterLeaseLost(ex, lease.WorkUnitKey);
+                }
+                else
+                {
+                    LogFailedAfterLeaseLost(ex, lease.WorkUnitKey);
+                }
+
                 return;
             }
             catch (Exception ex) when (ct.IsCancellationRequested)
@@ -208,9 +221,9 @@ public sealed partial class QueueConsumerService : BackgroundService
             return;
         }
 
-        if (ProviderFailure.IsTransient(failure, ct))
+        if (IsTransient(failure, ct))
         {
-            var streak = _transientFailures.AddOrUpdate(lease.WorkUnitKey, 1, (_, count) => count + 1);
+            var streak = RecordTransientFailure(lease.WorkUnitKey);
             var retryDelay = Backoff.Delay(_options.RetryDelay, _options.MaxRetryDelay, streak);
             if (streak >= _options.TransientFailuresBeforeError)
             {
@@ -237,8 +250,40 @@ public sealed partial class QueueConsumerService : BackgroundService
             LogHandlerFailed(failure, lease.WorkUnitKey, attempts, delay);
         }
 
-        await FailAsync(lease, Describe(failure), delay, _deriver.MaxAttempts, ct).ConfigureAwait(false);
+        await FailAsync(lease, Describe(failure), delay, _deriver.MaxAttempts).ConfigureAwait(false);
     }
+
+    private bool IsTransient(Exception failure, CancellationToken ct) =>
+        ProviderFailure.IsTransient(failure, ct) || ProviderFailure.IsAuthorizationFailure(failure) || _store.IsTransientFailure(failure);
+
+    /// <summary>
+    /// Counts one more consecutive transient failure of the unit, and forgets every unit not seen for
+    /// <see cref="StreakExpiry"/>, so units that another replica finished cannot pile up here.
+    /// </summary>
+    /// <returns>The unit's streak, this failure included.</returns>
+    private int RecordTransientFailure(string workUnitKey)
+    {
+        var now = _clock.GetUtcNow();
+        var expiry = StreakExpiry;
+        foreach (var entry in _transientFailures)
+        {
+            if (now - entry.Value.LastFailedAt > expiry)
+            {
+                _transientFailures.TryRemove(entry);
+            }
+        }
+
+        return _transientFailures.AddOrUpdate(
+            workUnitKey,
+            new TransientStreak(1, now),
+            (_, streak) => new TransientStreak(now - streak.LastFailedAt > expiry ? 1 : streak.Count + 1, now)).Count;
+    }
+
+    /// <summary>
+    /// A released unit is due again within <see cref="WorkerOptions.MaxRetryDelay"/> (plus jitter); one not seen for three
+    /// times that was taken over by another replica, so its streak here is stale.
+    /// </summary>
+    private TimeSpan StreakExpiry => _options.MaxRetryDelay * 3;
 
     private async Task HandleAsync(WorkLease lease, CancellationToken ct)
     {
@@ -252,19 +297,17 @@ public sealed partial class QueueConsumerService : BackgroundService
     }
 
     /// <summary>Fails the lease; a failure to fail is logged, and the lease then expires and the unit is reclaimed.</summary>
-    private async Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts, CancellationToken ct)
+    private async Task FailAsync(WorkLease lease, string reason, TimeSpan retryDelay, int maxAttempts)
     {
         try
         {
-            await _store.WorkQueue.FailAsync(lease, reason, retryDelay, maxAttempts, ct).ConfigureAwait(false);
+            // CancellationToken.None, as in ReleaseAsync: on shutdown the stopping token may already be cancelled, and a
+            // failure not recorded would skip its retry delay. The host's shutdown timeout bounds this.
+            await _store.WorkQueue.FailAsync(lease, reason, retryDelay, maxAttempts, CancellationToken.None).ConfigureAwait(false);
         }
         catch (LeaseLostException)
         {
             LogLeaseLost(lease.WorkUnitKey);
-            return;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
             return;
         }
         catch (Exception ex)
@@ -293,6 +336,8 @@ public sealed partial class QueueConsumerService : BackgroundService
             LogReleaseFailed(ex, lease.WorkUnitKey);
         }
     }
+
+    private readonly record struct TransientStreak(int Count, DateTimeOffset LastFailedAt);
 
     private static string Describe(Exception exception) => $"{exception.GetType().FullName}: {exception.Message}";
 
@@ -331,13 +376,19 @@ public sealed partial class QueueConsumerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "Failing the lease on work unit {WorkUnitKey} failed; the unit is retried when the lease expires.")]
     private partial void LogFailFailed(Exception exception, string workUnitKey);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Work unit {WorkUnitKey} stopped after its lease was lost.")]
+    private partial void LogStoppedAfterLeaseLost(Exception exception, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Work unit {WorkUnitKey} failed after its lease was lost; it has a new owner, so it is not failed.")]
+    private partial void LogFailedAfterLeaseLost(Exception exception, string workUnitKey);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Work unit {WorkUnitKey} was interrupted by shutdown; releasing it for another worker.")]
     private partial void LogInterrupted(Exception exception, string workUnitKey);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Work unit {WorkUnitKey} hit a transient model-provider failure ({Streak} in a row); released without using an attempt, retrying in {RetryDelay}.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Work unit {WorkUnitKey} hit a transient failure ({Streak} in a row); released without using an attempt, retrying in {RetryDelay}.")]
     private partial void LogTransientFailure(Exception exception, string workUnitKey, int streak, TimeSpan retryDelay);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} hit transient model-provider failure number {Streak} in a row; released without using an attempt, retrying in {RetryDelay}. Check the model endpoint, deployments and quota.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} hit transient failure number {Streak} in a row; released without using an attempt, retrying in {RetryDelay}. Check the model endpoint, deployments, quota and role assignments, and the database.")]
     private partial void LogTransientFailurePersists(Exception exception, string workUnitKey, int streak, TimeSpan retryDelay);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Releasing work unit {WorkUnitKey} failed; it is retried when its lease expires.")]

@@ -1,9 +1,11 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Nachos.Core.Llm;
 using Nachos.Core.Worker;
 using System.Text.Json;
@@ -163,8 +165,11 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
 /// </summary>
 public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
 {
+    private readonly WarningCapture _warnings = new();
+
     protected override HttpClient CreateClient() => Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
     {
+        services.AddSingleton<ILoggerProvider>(_warnings);
         services.RemoveAll<IEmbeddingGenerator<string, Embedding<float>>>();
         services.RemoveAll<IWorkHandler>();
         foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingDimensionCheck)).ToList())
@@ -185,5 +190,45 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
         query.GetProperty("detail").GetString().ShouldNotBeNull().ShouldContain("no embedding generator");
         Problem(await Post(W + "/peers/alice/representation", """{"search_query":"a"}""", 503), 503, JsonValueKind.String);
         (await Post(W + "/conclusions/list")).GetProperty("total").GetInt32().ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task A503_SaysWhenToRetry_AndIsLoggedAsAWarning()
+    {
+        await SeedSession();
+
+        using var response = await Client.PostAsync(
+            W + "/conclusions/query", new StringContent("""{"query":"a"}""", Encoding.UTF8, "application/json"));
+
+        ((int)response.StatusCode).ShouldBe(503);
+        response.Headers.RetryAfter.ShouldNotBeNull().Delta.ShouldBe(TimeSpan.FromSeconds(30));
+        _warnings.Messages.ShouldContain(m => m.Contains("service it depends on is unavailable"));
+    }
+
+    private sealed class WarningCapture : ILoggerProvider
+    {
+        public ConcurrentQueue<string> Messages { get; } = new();
+
+        public ILogger CreateLogger(string categoryName) => new Capture(Messages);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Capture(ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+
+            public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                if (logLevel == LogLevel.Warning)
+                {
+                    messages.Enqueue(formatter(state, exception));
+                }
+            }
+        }
     }
 }

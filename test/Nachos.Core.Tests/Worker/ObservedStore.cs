@@ -8,10 +8,11 @@ namespace Nachos.Core.Tests.Worker;
 /// Passes every call to <paramref name="inner"/> and records the worker-facing queue and idempotency calls, so tests can
 /// wait for a poll, a renewal or a reconciler tick instead of guessing how long one takes.
 /// </summary>
-internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore
+internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore, IEmbeddingStore
 {
     private int _renewals;
     private int _ticks;
+    private int _leaseAttempts;
     private TaskCompletionSource? _hang;
 
     public IWorkspaceStore Workspaces => inner.Workspaces;
@@ -23,7 +24,26 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public IConclusionStore Conclusions => inner.Conclusions;
     public IPeerCardStore PeerCards => inner.PeerCards;
     public IWorkQueue WorkQueue => this;
-    public IEmbeddingStore Embeddings => inner.Embeddings;
+    public IEmbeddingStore Embeddings => this;
+
+    /// <summary>A <see cref="TransientStoreException"/> is transient, as a store would report a deadlock.</summary>
+    public bool IsTransientFailure(Exception exception) =>
+        exception is TransientStoreException || inner.IsTransientFailure(exception);
+
+    /// <summary>While set, <see cref="TryAcquireAsync"/> throws, as an unavailable store would.</summary>
+    public volatile bool FailAcquire;
+
+    /// <summary>While set, <see cref="TryLeaseAsync"/> throws, as an unavailable store would.</summary>
+    public volatile bool FailLease;
+
+    /// <summary>While set, each renewal throws what it returns instead of renewing.</summary>
+    public volatile Func<WorkLease, Exception>? RenewalFailure;
+
+    /// <summary>While set, <see cref="SaveAsync"/> saves nothing, as a save that did not take.</summary>
+    public volatile bool DropEmbeddingSaves;
+
+    /// <summary>Calls of <see cref="TryLeaseAsync"/>, failed ones included.</summary>
+    public int LeaseAttempts => Volatile.Read(ref _leaseAttempts);
 
     /// <summary>The task types of every <see cref="TryAcquireAsync"/> call.</summary>
     public ConcurrentQueue<IReadOnlyList<WorkTaskType>> Acquires { get; } = new();
@@ -53,11 +73,18 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
         string owner, IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes, TimeSpan leaseDuration, CancellationToken ct)
     {
         Acquires.Enqueue([.. taskTypes.Keys.Order()]);
-        return inner.WorkQueue.TryAcquireAsync(owner, taskTypes, leaseDuration, ct);
+        return FailAcquire
+            ? throw new InvalidOperationException("The store is unavailable.")
+            : inner.WorkQueue.TryAcquireAsync(owner, taskTypes, leaseDuration, ct);
     }
 
-    public Task<WorkLease?> TryLeaseAsync(string workUnitKey, string owner, TimeSpan leaseDuration, CancellationToken ct) =>
-        inner.WorkQueue.TryLeaseAsync(workUnitKey, owner, leaseDuration, ct);
+    public Task<WorkLease?> TryLeaseAsync(string workUnitKey, string owner, TimeSpan leaseDuration, CancellationToken ct)
+    {
+        Interlocked.Increment(ref _leaseAttempts);
+        return FailLease
+            ? throw new InvalidOperationException("The store is unavailable.")
+            : inner.WorkQueue.TryLeaseAsync(workUnitKey, owner, leaseDuration, ct);
+    }
 
     public async Task RenewAsync(WorkLease lease, TimeSpan leaseDuration, CancellationToken ct)
     {
@@ -72,6 +99,11 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
             {
                 throw new InvalidOperationException("Operation cancelled by user.");
             }
+        }
+
+        if (RenewalFailure is { } failure)
+        {
+            throw failure(lease);
         }
 
         await inner.WorkQueue.RenewAsync(lease, leaseDuration, ct);
@@ -118,4 +150,17 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
         Interlocked.Increment(ref _ticks);
         return purged;
     }
+
+    public Task<IReadOnlyList<PendingEmbedding>> ListPendingAsync(int limit, CancellationToken ct) =>
+        inner.Embeddings.ListPendingAsync(limit, ct);
+
+    public Task<long> CountPendingAsync(CancellationToken ct) => inner.Embeddings.CountPendingAsync(ct);
+
+    public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct) =>
+        DropEmbeddingSaves ? Task.CompletedTask : inner.Embeddings.SaveAsync(pending, embedding, embeddingModel, ct);
+
+    public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct) => inner.Embeddings.MarkFailedAsync(pending, ct);
 }
+
+/// <summary>A store failure that <see cref="ObservedStore.IsTransientFailure"/> reports as transient.</summary>
+internal sealed class TransientStoreException() : Exception("The database chose this transaction as a deadlock victim.");

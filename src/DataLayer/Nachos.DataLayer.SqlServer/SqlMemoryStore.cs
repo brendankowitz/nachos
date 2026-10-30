@@ -75,4 +75,10 @@ public sealed class SqlMemoryStore : IMemoryStore
     public IWorkQueue WorkQueue { get; }
 
     public IEmbeddingStore Embeddings { get; }
+
+    public bool IsTransientFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return SqlErrors.IsTransient(exception);
+    }
 }

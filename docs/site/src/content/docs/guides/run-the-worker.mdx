@@ -90,12 +90,17 @@ which is written but commented out until a run proves it works with the managed 
   a unit is claimed with a lease, and an expired lease is retried by another replica.
 - `GET /v3/workspaces/{id}/queue/status` shows pending, in-progress and completed work.
   Work that fails repeatedly is dead-lettered and counts as completed.
-- A model outage does not dead-letter work. Throttling (429), timeouts (408), server errors
-  (5xx) and connection failures from the model are retried with backoff (`Worker:RetryDelay`
-  doubling up to `Worker:MaxRetryDelay`) without using one of the unit's
+- A model or database outage does not dead-letter work. Throttling (429), timeouts (408), server
+  errors (5xx) and connection failures from the model, authorization failures from the model
+  (401, 403, a token that cannot be acquired, as while a new role assignment propagates), and
+  deadlocks, timeouts and failovers of the database are retried with backoff
+  (`Worker:RetryDelay` doubling up to `Worker:MaxRetryDelay`) without using one of the unit's
   `Nachos:Deriver:MaxAttempts`. After `Worker:TransientFailuresBeforeError` (10) such failures in
-  a row, each further one is logged as an error: check the endpoint, deployments and quota.
-  Any other failure uses an attempt, and the last attempt dead-letters the unit's items.
+  a row, each further one is logged as an error: check the endpoint, deployments, quota, role
+  assignments and the database. Any other failure uses an attempt, and the last attempt
+  dead-letters the unit's items.
+- When embedding fails with nothing embedded for `Reconciler:FailedEmbeddingTicksBeforeError`
+  (20) reconciler ticks in a row, each further such tick is logged as an error.
 - Telemetry: the worker exports traces from the `Nachos.Llm` source and metrics from the
   `Nachos.Worker` and `Nachos.Llm` meters, through the same OpenTelemetry settings as the API.
   The backlog gauges `nachos.queue.eligible_units`, `nachos.queue.oldest_age` (seconds) and

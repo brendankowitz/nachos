@@ -73,6 +73,13 @@ public sealed class WorkUnitKeysTests
     }
 
     [Fact]
+    public void RepresentationPayload_RejectsAnEmptyOrNullObserver()
+    {
+        Should.Throw<ArgumentException>(() => RepresentationPayload.Create(["alice", ""]));
+        Should.Throw<ArgumentException>(() => RepresentationPayload.Create([null!]));
+    }
+
+    [Fact]
     public void RepresentationPayload_RoundTripsTheMessageReasoningSnapshot()
     {
         var payload = RepresentationPayload.Create(["alice"], reasoningEnabled: false, customInstructions: "Be brief.");

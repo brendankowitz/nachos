@@ -327,8 +327,9 @@ public sealed class DeriverTests : IDisposable
         _fixture.Chat.EnqueueText("I could not find any facts.");
         var lease = await _fixture.AcquireAsync();
 
-        await Should.ThrowAsync<InvalidOperationException>(() => _fixture.HandleAsync(lease));
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => _fixture.HandleAsync(lease));
 
+        failure.Message.ShouldContain("finish reason");
         (await _fixture.QueueAsync()).Completed.ShouldBe(0);
     }
 

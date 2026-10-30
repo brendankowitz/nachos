@@ -3,10 +3,11 @@ using System.Diagnostics.Metrics;
 using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Abstractions.Work;
 using Nachos.Core.Llm;
 using Nachos.Core.Worker;
 using Shouldly;
@@ -79,11 +80,12 @@ public sealed class ReconcilerTests
     }
 
     [Fact]
-    public async Task UnavailableFailure_CountsOnlyInTicksWhereAnotherEmbeddingSucceeded()
+    public async Task ServerErrorFailure_CountsOnlyInTicksWhereAnotherEmbeddingSucceeded()
     {
         await using var fixture = new WorkerFixture(handlerType: null);
         await fixture.SeedAsync();
-        var generator = new SelectiveEmbeddings { Unavailable = { "flaky" } };
+        // A 500, unlike a 503, can be provoked by one input, so the batch is retried one by one.
+        var generator = new SelectiveEmbeddings { Erroring = { "flaky" } };
         await InsertAsync(fixture.Store, "alice likes tea", "flaky");
 
         await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 2);
@@ -162,14 +164,17 @@ public sealed class ReconcilerTests
         await fixture.SeedAsync();
         var first = new ObservedStore(fixture.Inner);
         var second = new ObservedStore(fixture.Inner);
+        // A renewal is due every 10 minutes and the lease lasts 30, so a renewal would have to lag 20 minutes of pumped
+        // clock (40 steps) for the lease to lapse: a slow continuation cannot hand the follower a tick.
+        var leaseDuration = TimeSpan.FromMinutes(30);
+        void Configure(ReconcilerOptions options) => options.LeaseDuration = leaseDuration;
 
-        var leader = await StartAsync(fixture, first, generator: null);
+        var leader = await StartAsync(fixture, first, generator: null, Configure);
         await Pump.UntilAsync(fixture.Clock, () => first.Ticks >= 1, TimeSpan.Zero);
-        await using var follower = await StartAsync(fixture, second, generator: null);
+        await using var follower = await StartAsync(fixture, second, generator: null, Configure);
 
-        // Well past several lease durations: the leader keeps renewing, so the follower never runs a tick.
-        // Small steps, so a slow continuation cannot let the clock run past a lease before its renewal.
-        await Pump.UntilAsync(fixture.Clock, () => first.Ticks >= 12, Interval / 6);
+        // Past several lease durations: the leader keeps renewing, so the follower never runs a tick.
+        await Pump.UntilAsync(fixture.Clock, () => first.Renewals >= 4, Interval);
         second.Ticks.ShouldBe(0);
 
         // Stopping releases the lease, and the follower takes over at its next attempt.
@@ -177,7 +182,7 @@ public sealed class ReconcilerTests
         var ticks = first.Ticks;
         var stoppedAt = fixture.Clock.GetUtcNow();
         await Pump.UntilAsync(fixture.Clock, () => second.Ticks >= 1, Interval / 6);
-        (fixture.Clock.GetUtcNow() - stoppedAt).ShouldBeLessThan(new ReconcilerOptions().LeaseDuration, "taken over before the lease could expire");
+        (fixture.Clock.GetUtcNow() - stoppedAt).ShouldBeLessThan(leaseDuration, "taken over before the lease could expire");
         first.Ticks.ShouldBe(ticks);
     }
 
@@ -203,6 +208,142 @@ public sealed class ReconcilerTests
         fixture.Store.FailBacklog = false;
         await Pump.UntilAsync(fixture.Clock, () => Gauge(fixture.Metrics, "nachos.queue.eligible_units").Count == 1, Interval);
     }
+
+    [Fact]
+    public async Task DrainsTheBacklogInFullBatches()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings();
+        await InsertAsync(fixture.Store, "a", "b", "c", "d", "e");
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingBatchSize = 2);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        generator.Calls.Select(call => call.Length).ShouldBe([2, 2, 1]);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task ASaveThatDoesNotTake_EndsTheTicksEmbeddingInsteadOfRepeatingTheBatch()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings();
+        await InsertAsync(fixture.Store, "a", "b", "c");
+        fixture.Store.DropEmbeddingSaves = true;
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingBatchSize = 2);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        // The second listing returned the same batch, so the step stopped rather than embed it again.
+        generator.Calls.ShouldBe([["a", "b"]]);
+    }
+
+    [Fact]
+    public async Task ServiceFailureOfABatch_EndsTheStep_WithoutOneByOneRetries_AndCountsNothing()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings { Unavailable = { "d" } };
+        await InsertAsync(fixture.Store, "a", "b", "c", "d", "e");
+
+        await using var reconciler = await StartAsync(
+            fixture,
+            fixture.Store,
+            generator,
+            options =>
+            {
+                options.EmbeddingBatchSize = 2;
+                options.EmbeddingMaxAttempts = 1;
+            });
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        // A 503 is a failure of the service: no retry one by one, and although "a" and "b" were embedded this tick, the
+        // failures do not count, so with one attempt allowed neither conclusion was marked failed.
+        generator.Calls.ShouldBe([["a", "b"], ["c", "d"]]);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Select(p => p.Content).ShouldBe(["c", "d", "e"]);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "has been unavailable or throttling")]
+    [InlineData(HttpStatusCode.NotFound, "likely a misconfiguration")]
+    public async Task TicksThatOnlyFail_EscalateToErrorAtTheThreshold(HttpStatusCode status, string wording)
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings { IsDown = true, DownStatus = status };
+        await InsertAsync(fixture.Store, "alice likes tea");
+
+        await using var reconciler = await StartAsync(
+            fixture, fixture.Store, generator, options => options.FailedEmbeddingTicksBeforeError = 3);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 2, Interval);
+        Escalations(fixture).ShouldBeEmpty();
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 4, Interval);
+
+        // Ticks 3 and 4, at and past the threshold.
+        var escalations = Escalations(fixture);
+        escalations.Count.ShouldBe(2);
+        escalations.ShouldAllBe(message => message.Contains(wording));
+
+        // A tick that embeds something resets the run.
+        generator.IsDown = false;
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
+        generator.IsDown = true;
+        await InsertAsync(fixture.Store, "alice owns a cat");
+        var ticks = fixture.Store.Ticks;
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= ticks + 2, Interval);
+        Escalations(fixture).Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task LeaseAttemptFailing_KeepsTheServiceRunning()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        fixture.Store.FailLease = true;
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.LeaseAttempts >= 1, Interval);
+        fixture.Store.FailLease = false;
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        reconciler.IsRunning.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task LostLeadership_StopsTicking_UntilTheLeaseIsTakenBack()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var leaseDuration = new ReconcilerOptions().LeaseDuration;
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        // Renewals fail until the lease expires and another replica takes it.
+        fixture.Store.RenewalFailure = _ => new InvalidOperationException("The store is briefly unavailable.");
+        WorkLease? other = null;
+        await Pump.UntilAsync(
+            fixture.Clock,
+            async () => (other = await fixture.Inner.WorkQueue.TryLeaseAsync(WorkUnitKeys.Reconciler, "other", leaseDuration, Ct)) is not null,
+            Interval / 6);
+        fixture.Store.RenewalFailure = null;
+
+        // The next renewal finds the lease lost, and the service goes back to trying to take it.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.LeaseAttempts >= 2, Interval / 6);
+        var ticks = fixture.Store.Ticks;
+        var attempts = fixture.Store.LeaseAttempts;
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.LeaseAttempts >= attempts + 2, Interval / 6);
+        fixture.Store.Ticks.ShouldBe(ticks);
+
+        // Once the other replica lets go, it leads again.
+        await fixture.Inner.WorkQueue.CompleteAsync(other!, Ct);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks > ticks, Interval);
+    }
+
+    private static List<string> Escalations(WorkerFixture fixture) =>
+        [.. fixture.Logs.At(LogLevel.Error).Where(message => message.Contains("reconciler ticks in a row"))];
 
     /// <summary>The values an observable gauge of <paramref name="metrics"/> reports right now.</summary>
     private static List<double> Gauge(WorkerMetrics metrics, string instrument)
@@ -237,7 +378,7 @@ public sealed class ReconcilerTests
             Options.Create(options),
             fixture.Services.GetRequiredService<IServiceScopeFactory>(),
             fixture.Metrics,
-            NullLogger<ReconcilerService>.Instance,
+            new RecordingLogger<ReconcilerService>(fixture.Logs),
             generator);
         await service.StartAsync(Ct);
         return new Running(service);
@@ -260,6 +401,8 @@ public sealed class ReconcilerTests
     {
         private bool _disposed;
 
+        public bool IsRunning => service.ExecuteTask is { IsCompleted: false };
+
         public async ValueTask DisposeAsync()
         {
             if (_disposed)
@@ -275,8 +418,9 @@ public sealed class ReconcilerTests
     }
 
     /// <summary>
-    /// Deterministic embeddings that fail any call containing a <see cref="Rejected"/> text with HTTP 400, or an
-    /// <see cref="Unavailable"/> text with HTTP 503, and every call with 503 while <see cref="IsDown"/>.
+    /// Deterministic embeddings that fail any call containing a <see cref="Rejected"/> text with HTTP 400, an
+    /// <see cref="Erroring"/> text with HTTP 500, or an <see cref="Unavailable"/> text with HTTP 503, and every call with
+    /// <see cref="DownStatus"/> while <see cref="IsDown"/>.
     /// </summary>
     private sealed class SelectiveEmbeddings : IEmbeddingGenerator<string, Embedding<float>>
     {
@@ -284,9 +428,13 @@ public sealed class ReconcilerTests
 
         public HashSet<string> Rejected { get; } = new(StringComparer.Ordinal);
 
+        public HashSet<string> Erroring { get; } = new(StringComparer.Ordinal);
+
         public HashSet<string> Unavailable { get; } = new(StringComparer.Ordinal);
 
         public volatile bool IsDown;
+
+        public HttpStatusCode DownStatus { get; set; } = HttpStatusCode.ServiceUnavailable;
 
         public ConcurrentQueue<string[]> Calls { get; } = new();
 
@@ -300,7 +448,17 @@ public sealed class ReconcilerTests
                 throw new HttpRequestException("input rejected", null, HttpStatusCode.BadRequest);
             }
 
-            return IsDown || texts.Any(Unavailable.Contains)
+            if (texts.Any(Erroring.Contains))
+            {
+                throw new HttpRequestException("server error", null, HttpStatusCode.InternalServerError);
+            }
+
+            if (IsDown)
+            {
+                throw new HttpRequestException("service down", null, DownStatus);
+            }
+
+            return texts.Any(Unavailable.Contains)
                 ? throw new HttpRequestException("service unavailable", null, HttpStatusCode.ServiceUnavailable)
                 : _inner.GenerateAsync(texts, options, cancellationToken);
         }

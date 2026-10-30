@@ -45,6 +45,9 @@ public static class NachosWorkerServiceCollectionExtensions
             .Validate(
                 o => o.EmbeddingBatchSize >= 1 && o.EmbeddingMaxAttempts >= 1,
                 "Reconciler:EmbeddingBatchSize and Reconciler:EmbeddingMaxAttempts must be at least 1.")
+            .Validate(
+                o => o.FailedEmbeddingTicksBeforeError >= 1,
+                "Reconciler:FailedEmbeddingTicksBeforeError must be at least 1.")
             .ValidateOnStart();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, QueueConsumerService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, ReconcilerService>());

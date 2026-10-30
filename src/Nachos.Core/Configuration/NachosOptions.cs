@@ -23,7 +23,18 @@ public sealed class NachosOptions
 
     public DeriverOptions Deriver { get; set; } = new();
 
+    /// <exception cref="OptionsValidationException">A value is out of range; the message lists every one.</exception>
     internal void Validate()
+    {
+        if (ValidationErrors() is { Count: > 0 } errors)
+        {
+            throw new OptionsValidationException(Microsoft.Extensions.Options.Options.DefaultName,
+                typeof(NachosOptions), errors);
+        }
+    }
+
+    /// <summary>Every out-of-range value, as a message naming its setting; empty when the options are valid.</summary>
+    internal IReadOnlyList<string> ValidationErrors()
     {
         List<string> errors = [];
         if (Summary is null)
@@ -85,11 +96,7 @@ public sealed class NachosOptions
             }
         }
 
-        if (errors.Count > 0)
-        {
-            throw new OptionsValidationException(Microsoft.Extensions.Options.Options.DefaultName,
-                typeof(NachosOptions), errors);
-        }
+        return errors;
     }
 
     internal WorkspaceConfiguration ToResourceConfiguration() =>

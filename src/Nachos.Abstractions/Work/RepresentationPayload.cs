@@ -16,13 +16,19 @@ public static class RepresentationPayload
     private const string ReasoningEnabledKey = "reasoning_enabled";
     private const string CustomInstructionsKey = "custom_instructions";
 
-    /// <param name="observers">The observers resolved when the message was appended.</param>
+    /// <param name="observers">The observers resolved when the message was appended; none null or empty.</param>
+    /// <exception cref="ArgumentException">An observer is null or empty.</exception>
     /// <param name="reasoningEnabled">The message's own <c>reasoning.enabled</c>; null leaves the field out.</param>
     /// <param name="customInstructions">The message's own <c>reasoning.custom_instructions</c>; null leaves the field out.</param>
     public static JsonObject Create(
         IReadOnlyList<string> observers, bool? reasoningEnabled = null, string? customInstructions = null)
     {
         ArgumentNullException.ThrowIfNull(observers);
+        if (observers.Any(string.IsNullOrEmpty))
+        {
+            throw new ArgumentException("Every observer must be a non-empty peer name.", nameof(observers));
+        }
+
         var payload = new JsonObject { [ObserversKey] = new JsonArray([.. observers.Select(observer => JsonValue.Create(observer))]) };
         if (reasoningEnabled is { } enabled)
         {

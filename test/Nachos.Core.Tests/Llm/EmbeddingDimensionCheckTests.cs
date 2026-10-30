@@ -25,6 +25,16 @@ public sealed class EmbeddingDimensionCheckTests
     }
 
     [Fact]
+    public async Task NoEmbeddingForTheProbe_FailsStartupWithActionableMessage()
+    {
+        var check = Check(new EmptyGenerator());
+
+        var error = await Should.ThrowAsync<InvalidOperationException>(() => check.StartAsync(CancellationToken.None));
+
+        error.Message.ShouldContain("returned 0 embeddings");
+    }
+
+    [Fact]
     public async Task MatchingDimensions_StartsNormally()
     {
         await Check(new DeterministicEmbeddingGenerator()).StartAsync(CancellationToken.None);
@@ -59,6 +69,19 @@ public sealed class EmbeddingDimensionCheckTests
         public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
             IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default) =>
             Task.FromException<GeneratedEmbeddings<Embedding<float>>>(failure);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class EmptyGenerator : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new GeneratedEmbeddings<Embedding<float>>());
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
 

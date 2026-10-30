@@ -42,6 +42,7 @@ public sealed class WorkerHostingTests
     [InlineData("Worker:TransientFailuresBeforeError", "0", "Worker:TransientFailuresBeforeError")]
     [InlineData("Reconciler:EmbeddingBatchSize", "0", "Reconciler:EmbeddingBatchSize")]
     [InlineData("Reconciler:LeaseDuration", "00:00:00", "Reconciler:LeaseDuration")]
+    [InlineData("Reconciler:FailedEmbeddingTicksBeforeError", "0", "Reconciler:FailedEmbeddingTicksBeforeError")]
     public void InvalidOptions_FailWithTheirKey(string key, string value, string expected)
     {
         using var provider = Build(new() { [key] = value });

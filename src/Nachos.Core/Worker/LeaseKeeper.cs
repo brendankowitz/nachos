@@ -75,7 +75,16 @@ internal sealed partial class LeaseKeeper : IAsyncDisposable
             catch (LeaseLostException)
             {
                 _isLost = true;
-                LogLeaseLost(_logger, lease.WorkUnitKey);
+                if (ct.IsCancellationRequested)
+                {
+                    // Stopping: the work has finished, and it usually completed the lease while this renewal ran.
+                    LogLostWhileStopping(_logger, lease.WorkUnitKey);
+                }
+                else
+                {
+                    LogLeaseLost(_logger, lease.WorkUnitKey);
+                }
+
                 await _work.CancelAsync().ConfigureAwait(false);
                 return;
             }
@@ -92,6 +101,9 @@ internal sealed partial class LeaseKeeper : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The lease on work unit {WorkUnitKey} was lost to another owner; stopping its work.")]
     private static partial void LogLeaseLost(ILogger logger, string workUnitKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "A renewal found the lease on work unit {WorkUnitKey} no longer held as its work finished.")]
+    private static partial void LogLostWhileStopping(ILogger logger, string workUnitKey);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Renewing the lease on work unit {WorkUnitKey} failed; retrying at the next interval.")]
     private static partial void LogRenewalFailed(ILogger logger, Exception exception, string workUnitKey);

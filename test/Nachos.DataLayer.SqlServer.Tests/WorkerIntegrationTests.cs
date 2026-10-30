@@ -76,7 +76,8 @@ public sealed class WorkerIntegrationTests(SqlServerFixture fixture)
             while ((await TotalsAsync(store, workspace)).Completed < said.Count)
             {
                 watch.Elapsed.ShouldBeLessThan(Timeout, "the queue was not drained");
-                clock.Advance(TimeSpan.FromSeconds(1));
+                // Small steps, so a slow commit cannot let the clock run past a lease before its renewal.
+                clock.Advance(TimeSpan.FromMilliseconds(100));
                 // A real yield, so the consumers' continuations run; the outcome never depends on how long it takes.
                 await Task.Delay(10);
             }

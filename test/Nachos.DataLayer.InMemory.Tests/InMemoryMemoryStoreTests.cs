@@ -379,7 +379,8 @@ public sealed class InMemoryMemoryStoreTests
 
     /// <summary>
     /// <see cref="AllEntryPoints"/> only sees methods of the sub-stores, so a store-level method on the
-    /// <see cref="IMemoryStore"/> itself would escape the guard unnoticed: fail loudly instead.
+    /// <see cref="IMemoryStore"/> itself would escape the guard unnoticed: fail loudly instead. The one exception,
+    /// <see cref="IMemoryStore.IsTransientFailure"/>, classifies an exception and touches no state, so it needs no guard.
     /// </summary>
     [Fact]
     public void MemoryStoreInterface_DeclaresOnlySubStoreGetters()
@@ -393,7 +394,7 @@ public sealed class InMemoryMemoryStoreTests
         typeof(IMemoryStore).GetProperties().Select(p => p.Name).Order(StringComparer.Ordinal)
             .ShouldBe(subStores.Order(StringComparer.Ordinal));
         typeof(IMemoryStore).GetMethods().Select(m => m.Name).Order(StringComparer.Ordinal)
-            .ShouldBe(subStores.Select(name => $"get_{name}").Order(StringComparer.Ordinal));
+            .ShouldBe(subStores.Select(name => $"get_{name}").Append(nameof(IMemoryStore.IsTransientFailure)).Order(StringComparer.Ordinal));
     }
 
     /// <summary>
