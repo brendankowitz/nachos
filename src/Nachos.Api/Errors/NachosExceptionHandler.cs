@@ -8,9 +8,6 @@ namespace Nachos.Api.Errors;
 
 internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHandler> logger) : IExceptionHandler
 {
-    /// <summary>The Retry-After of a 503: a dependency such as the embedding model is briefly unavailable.</summary>
-    private const string RetryAfterSeconds = "30";
-
     public async ValueTask<bool> TryHandleAsync(HttpContext context, Exception exception, CancellationToken cancellationToken)
     {
         if (context.RequestAborted.IsCancellationRequested)
@@ -44,7 +41,11 @@ internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHand
             else if (status == 503)
             {
                 ServiceUnavailable(logger, exception);
-                context.Response.Headers.RetryAfter = RetryAfterSeconds;
+                if (exception is ServiceUnavailableException { RetryAfter: { } retryAfter })
+                {
+                    context.Response.Headers.RetryAfter =
+                        ((long)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
             }
             var detail = status == 500 ? "An unexpected error occurred." : exception.Message;
             var type = exception is IdempotencyKeyReusedException ? ProblemTypes.IdempotencyKeyReused : "about:blank";

@@ -193,15 +193,16 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
     }
 
     [Fact]
-    public async Task A503_SaysWhenToRetry_AndIsLoggedAsAWarning()
+    public async Task AMissingGenerator_Is503WithoutRetryAfter_AndIsLoggedAsAWarning()
     {
         await SeedSession();
 
         using var response = await Client.PostAsync(
             W + "/conclusions/query", new StringContent("""{"query":"a"}""", Encoding.UTF8, "application/json"));
 
+        // Not configured is not briefly down: no Retry-After to wait out.
         ((int)response.StatusCode).ShouldBe(503);
-        response.Headers.RetryAfter.ShouldNotBeNull().Delta.ShouldBe(TimeSpan.FromSeconds(30));
+        response.Headers.RetryAfter.ShouldBeNull();
         _warnings.Messages.ShouldContain(m => m.Contains("service it depends on is unavailable"));
     }
 
@@ -229,6 +230,38 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
                     messages.Enqueue(formatter(state, exception));
                 }
             }
+        }
+    }
+}
+
+/// <summary>A host whose embedding service is down: semantic reads answer 503 with a Retry-After.</summary>
+public sealed class ConclusionEndpointWithEmbeddingsDownTests : ApiTest
+{
+    protected override HttpClient CreateClient() => Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new DownGenerator()))).CreateClient();
+
+    [Fact]
+    public async Task ATransientEmbeddingFailure_Is503WithRetryAfter()
+    {
+        await SeedSession();
+
+        using var response = await Client.PostAsync(
+            W + "/conclusions/query", new StringContent("""{"query":"a"}""", Encoding.UTF8, "application/json"));
+
+        ((int)response.StatusCode).ShouldBe(503);
+        response.Headers.RetryAfter.ShouldNotBeNull().Delta.ShouldBe(TimeSpan.FromSeconds(30));
+    }
+
+    private sealed class DownGenerator : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new HttpRequestException("embedding service down", null, System.Net.HttpStatusCode.ServiceUnavailable);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
         }
     }
 }

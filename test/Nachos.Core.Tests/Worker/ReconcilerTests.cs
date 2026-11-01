@@ -39,26 +39,64 @@ public sealed class ReconcilerTests
     }
 
     [Fact]
-    public async Task EmbeddingFailure_RetriesThenMarksFailed()
+    public async Task RejectedConclusion_CountsInTicksThatEmbedSomething_ThenIsMarkedFailed()
     {
         await using var fixture = new WorkerFixture(handlerType: null);
         await fixture.SeedAsync();
         var generator = new SelectiveEmbeddings { Rejected = { "poison" } };
         await InsertAsync(fixture.Store, "alice likes tea", "poison");
 
-        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 3);
-        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 2);
+        // Tick 1: the batch fails, then each conclusion alone; tea is saved, so the poison's rejection counts.
+        // The ticks after retry the poison alone: a rejection of everything with nothing embedded does not count.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 4, Interval);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().Content.ShouldBe("poison");
 
-        // Tick 1: the batch fails, then each conclusion alone (the good one is saved); ticks 2 and 3 retry the poison alone.
-        // The service rejects the poison (400), so every failure counts even when nothing else succeeds.
-        generator.Calls.ShouldBe([
-            ["alice likes tea", "poison"],
-            ["alice likes tea"],
-            ["poison"],
-            ["poison"],
-            ["poison"],
-        ]);
-        (await QueryAsync(fixture.Store, "alice likes tea")).Select(m => m.Conclusion.Content).ShouldBe(["alice likes tea"]);
+        // With another conclusion embedded in the same tick, the second rejection counts and marks it failed.
+        await InsertAsync(fixture.Store, "alice owns a cat");
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count == 0, Interval);
+        generator.Calls.Take(2).ShouldBe([["alice likes tea", "poison"], ["alice likes tea"]]);
+        (await QueryAsync(fixture.Store, "alice owns a cat")).Select(m => m.Conclusion.Content)
+            .ShouldBe(["alice owns a cat", "alice likes tea"], ignoreOrder: true);
+    }
+
+    [Fact]
+    public async Task EveryInputRejected_MarksNothingFailed()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        // As when a setting the model does not support (RequestDimensions) makes every request a 400.
+        var generator = new SelectiveEmbeddings { IsDown = true, DownStatus = HttpStatusCode.BadRequest };
+        await InsertAsync(fixture.Store, "a", "b", "c");
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 1);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 3, Interval);
+
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count.ShouldBe(3);
+    }
+
+    [Theory]
+    [InlineData("wrong shape")]
+    [InlineData("404")]
+    [InlineData("403")]
+    public async Task MisconfiguredGenerator_IsNotRetriedOneByOne_AndCountsNothing(string failure)
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = failure switch
+        {
+            "wrong shape" => new SelectiveEmbeddings { ReturnsNothing = true },
+            "404" => new SelectiveEmbeddings { IsDown = true, DownStatus = HttpStatusCode.NotFound },
+            _ => new SelectiveEmbeddings { IsDown = true, DownStatus = HttpStatusCode.Forbidden },
+        };
+        await InsertAsync(fixture.Store, "a", "b", "c");
+
+        await using var reconciler = await StartAsync(
+            fixture, fixture.Store, generator, options => options.EmbeddingMaxAttempts = 1);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 2, Interval);
+
+        generator.Calls.ShouldAllBe(call => call.Length == 3);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Count.ShouldBe(3);
     }
 
     [Fact]
@@ -436,6 +474,9 @@ public sealed class ReconcilerTests
 
         public HttpStatusCode DownStatus { get; set; } = HttpStatusCode.ServiceUnavailable;
 
+        /// <summary>While set, every call succeeds with no embeddings at all, as a misconfigured generator might.</summary>
+        public volatile bool ReturnsNothing;
+
         public ConcurrentQueue<string[]> Calls { get; } = new();
 
         public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
@@ -456,6 +497,11 @@ public sealed class ReconcilerTests
             if (IsDown)
             {
                 throw new HttpRequestException("service down", null, DownStatus);
+            }
+
+            if (ReturnsNothing)
+            {
+                return Task.FromResult(new GeneratedEmbeddings<Embedding<float>>());
             }
 
             return texts.Any(Unavailable.Contains)

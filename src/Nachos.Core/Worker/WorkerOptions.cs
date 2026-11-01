@@ -22,9 +22,10 @@ public sealed class WorkerOptions
     /// </summary>
     /// <remarks>
     /// For failures that consume an attempt, with the default <see cref="Configuration.DeriverOptions.MaxAttempts"/> of 5,
-    /// the four retries wait 30 s, 1, 2 and 4 minutes before the unit is dead-lettered. Transient model-provider failures
-    /// (408, 429, 5xx, connection errors, timeouts) consume no attempt and back off the same way, so an outage of any
-    /// length never dead-letters work.
+    /// the four retries wait 30 s, 1, 2 and 4 minutes before the unit is dead-lettered. Transient failures consume no
+    /// attempt and back off the same way, so an outage of any length does not dead-letter work: model-provider failures
+    /// (408, 429, 5xx, connection errors, timeouts), provider authorization failures (401, 403, a token that cannot be
+    /// acquired) and store failures the store reports as transient (a deadlock, a failover).
     /// </remarks>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -32,9 +33,9 @@ public sealed class WorkerOptions
     public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// Consecutive transient model-provider failures of one unit from which each further one is logged as an error rather
-    /// than a warning; the unit keeps retrying and is never dead-lettered for them. Default 10, about an hour of backoff
-    /// with the default delays.
+    /// Consecutive transient failures of one unit (model provider, provider authorization or store; see
+    /// <see cref="RetryDelay"/>) from which each further one is logged as an error rather than a warning; the unit keeps
+    /// retrying and is never dead-lettered for them. Default 10, about an hour of backoff with the default delays.
     /// </summary>
     public int TransientFailuresBeforeError { get; set; } = 10;
 }

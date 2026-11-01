@@ -30,10 +30,11 @@ namespace Nachos.Core.Worker;
 /// (<see cref="IMemoryStore.IsTransientFailure"/>: a deadlock, a database failover), and a model-provider authorization
 /// failure (HTTP 401 or 403, a token that cannot be acquired). The last is usually a misconfiguration, but it is also what
 /// a new role assignment returns until it propagates, and dead-lettering work for that would lose it. An outage therefore
-/// never dead-letters work; from the <see cref="WorkerOptions.TransientFailuresBeforeError"/>th consecutive one on, each
-/// is logged as an error, so a configuration that only ever fails this way (a wrong endpoint, a missing role) still
-/// surfaces. The counts are per process, reset when the unit ends any other way, and are forgotten for a unit not seen
-/// again within three <see cref="WorkerOptions.MaxRetryDelay"/>s (another replica took it over).
+/// does not dead-letter work, as long as the store can record the release (when it cannot, the lease expires and the
+/// attempt counts); from the <see cref="WorkerOptions.TransientFailuresBeforeError"/>th consecutive one on, each is logged
+/// as an error, so a configuration that only ever fails this way (a wrong endpoint, a missing role) still surfaces. The
+/// counts are per process, reset when the unit ends any other way, and are forgotten for a unit not seen again within
+/// three <see cref="WorkerOptions.MaxRetryDelay"/>s plus a lease (another replica took it over).
 /// </para>
 /// <para>
 /// Attempts are counted when a unit is leased, so a worker that dies mid-unit still uses one up. A unit leased with an

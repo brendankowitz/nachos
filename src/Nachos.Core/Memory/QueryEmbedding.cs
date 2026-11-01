@@ -8,6 +8,8 @@ namespace Nachos.Core.Memory;
 /// <summary>Embeds a query on the request path, for the reads that compare conclusions with a query text.</summary>
 internal static class QueryEmbedding
 {
+    private static readonly TimeSpan TransientRetryAfter = TimeSpan.FromSeconds(30);
+
     /// <exception cref="ServiceUnavailableException">
     /// No embedding generator is registered, or the embedding service failed transiently (408, 429, 5xx, a connection
     /// error or a timeout).
@@ -30,7 +32,8 @@ internal static class QueryEmbedding
         }
         catch (Exception ex) when (ProviderFailure.IsTransient(ex, ct))
         {
-            throw new ServiceUnavailableException("The embedding service is unavailable; retry the semantic query later.", ex);
+            throw new ServiceUnavailableException(
+                "The embedding service is unavailable; retry the semantic query later.", ex, TransientRetryAfter);
         }
 
         return vector.Length == VectorSpace.Dimensions

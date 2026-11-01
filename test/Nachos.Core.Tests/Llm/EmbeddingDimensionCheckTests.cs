@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,18 +41,38 @@ public sealed class EmbeddingDimensionCheckTests
         await Check(new DeterministicEmbeddingGenerator()).StartAsync(CancellationToken.None);
     }
 
+    public static TheoryData<string, Exception> PassingFailures => new()
+    {
+        { "connection error", new HttpRequestException("refused") },
+        { "503", new HttpRequestException("down", null, HttpStatusCode.ServiceUnavailable) },
+        { "403 while a role propagates", new HttpRequestException("forbidden", null, HttpStatusCode.Forbidden) },
+        { "timeout", new TimeoutException() },
+    };
+
     [Theory]
-    [InlineData(typeof(HttpRequestException))]
-    [InlineData(typeof(UnauthorizedAccessException))]
-    [InlineData(typeof(TimeoutException))]
-    public async Task ProbeFailure_LogsAWarning_AndStartupContinues(Type failure)
+    [MemberData(nameof(PassingFailures))]
+    public async Task TransientOrAuthorizationProbeFailure_LogsAWarning_AndStartupContinues(string name, Exception failure)
     {
         var logger = new WarningLogger();
-        var check = Check(new ThrowingGenerator((Exception)Activator.CreateInstance(failure)!), logger);
+        var check = Check(new ThrowingGenerator(failure), logger);
 
         await check.StartAsync(CancellationToken.None);
 
-        logger.Warnings.ShouldBe(1);
+        logger.Warnings.ShouldBe(1, name);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.NotFound)]
+    public async Task RefusedProbe_FailsStartup(HttpStatusCode status)
+    {
+        var refusal = new HttpRequestException("refused", null, status);
+        var check = Check(new ThrowingGenerator(refusal));
+
+        var error = await Should.ThrowAsync<InvalidOperationException>(() => check.StartAsync(CancellationToken.None));
+
+        error.InnerException.ShouldBeSameAs(refusal);
+        error.Message.ShouldContain("Embeddings settings");
     }
 
     [Fact]

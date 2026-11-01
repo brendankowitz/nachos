@@ -6,9 +6,10 @@ using Nachos.Abstractions.Domain;
 namespace Nachos.Core.Llm;
 
 /// <summary>
-/// Embeds one probe string at startup and fails the host if the vector size is not the one the schema stores. A probe that
-/// cannot complete (an outage, throttling, a role assignment that has not propagated yet) only logs a warning: a
-/// configuration mistake is the dimension mismatch, not a service that is briefly unreachable.
+/// Embeds one probe string at startup and fails the host if the vector size is not the one the schema stores, or if the
+/// probe is refused for a reason retrying cannot fix (a 400 for an unsupported setting, a 404 for a missing deployment).
+/// A probe that fails transiently (an outage, throttling) or for authorization (a role assignment that has not propagated
+/// yet) only logs a warning: the service may be briefly unreachable.
 /// </summary>
 public sealed partial class EmbeddingDimensionCheck(
     IEmbeddingGenerator<string, Embedding<float>> generator, ILogger<EmbeddingDimensionCheck> logger) : IHostedService
@@ -23,6 +24,14 @@ public sealed partial class EmbeddingDimensionCheck(
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
+            if (!ProviderFailure.IsTransient(exception, cancellationToken) && !ProviderFailure.IsAuthorizationFailure(exception))
+            {
+                throw new InvalidOperationException(
+                    "The embedding dimension probe was refused, so the embedding configuration cannot work. Check the " +
+                    "Embeddings settings (deployment or model name, RequestDimensions) and the embedding endpoint.",
+                    exception);
+            }
+
             LogProbeFailed(logger, exception);
             return;
         }

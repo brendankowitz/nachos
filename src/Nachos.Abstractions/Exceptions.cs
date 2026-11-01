@@ -64,14 +64,21 @@ public sealed class AuthException : NachosException
 
 /// <summary>
 /// A service the request depends on is missing or unavailable, such as the embedding model a semantic read needs (503).
-/// Retrying later may succeed; the message says what is missing.
+/// The message says what is missing.
 /// </summary>
 public sealed class ServiceUnavailableException : NachosException
 {
-    public ServiceUnavailableException(string message, Exception? innerException = null)
+    /// <param name="retryAfter">
+    /// When the service is expected back (sent as <c>Retry-After</c>); null when it is missing rather than briefly down,
+    /// so retrying soon will not help.
+    /// </param>
+    public ServiceUnavailableException(string message, Exception? innerException = null, TimeSpan? retryAfter = null)
         : base(message, innerException)
     {
+        RetryAfter = retryAfter;
     }
+
+    public TimeSpan? RetryAfter { get; }
 }
 
 /// <summary>
