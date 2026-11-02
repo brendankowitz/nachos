@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,12 +13,13 @@ public sealed class TelemetryTests
     [Fact]
     public async Task TokenUsageCarriesAgentAndWorkspaceTags()
     {
-        var spans = new List<Activity>();
+        var workspaceName = $"ws-{Guid.NewGuid():N}";
+        var spans = new ConcurrentQueue<Activity>();
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == NachosChatClients.TelemetrySourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStopped = spans.Add,
+            ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
 
@@ -27,13 +29,15 @@ public sealed class TelemetryTests
 
         await clients.ForAgent("deriver").GetResponseAsync(
             [new ChatMessage(ChatRole.User, "hi")],
-            AgentCallTags.CreateOptions("deriver", "ws-1"),
+            AgentCallTags.CreateOptions("deriver", workspaceName),
             CancellationToken.None);
 
-        var span = spans.ShouldHaveSingleItem();
+        var span = spans
+            .Where(activity => activity.GetTagItem(AgentCallTags.WorkspaceTag) as string == workspaceName)
+            .ShouldHaveSingleItem();
         span.GetTagItem("gen_ai.usage.input_tokens").ShouldBe(12);
         span.GetTagItem("gen_ai.usage.output_tokens").ShouldBe(3);
         span.GetTagItem(AgentCallTags.AgentTag).ShouldBe("deriver");
-        span.GetTagItem(AgentCallTags.WorkspaceTag).ShouldBe("ws-1");
+        span.GetTagItem(AgentCallTags.WorkspaceTag).ShouldBe(workspaceName);
     }
 }
