@@ -14,11 +14,7 @@ internal static class NotImplementedEndpoints
     // Explicit method/path pairs: a typo or wrong verb must remain a 404/405, not a blanket 501.
     public static IReadOnlyList<(string Method, string Path)> Routes { get; } =
     [
-        ("DELETE", W), ("POST", W + "/chat"),
-        ("POST", W + "/conclusions"), ("POST", W + "/conclusions/list"), ("POST", W + "/conclusions/query"),
-        ("DELETE", W + "/conclusions/{conclusion_id}"), ("GET", W + "/conclusions/{conclusion_id}"),
-        ("GET", P + "/card"), ("PUT", P + "/card"), ("POST", P + "/chat"), ("GET", P + "/context"),
-        ("POST", P + "/representation"), ("POST", P + "/search"), ("GET", W + "/queue/status"),
+        ("DELETE", W), ("POST", W + "/chat"), ("POST", P + "/chat"), ("POST", P + "/search"),
         ("POST", W + "/schedule_dream"), ("POST", W + "/scopes"), ("POST", W + "/scopes/list"),
         ("GET", Q), ("POST", Q + "/sessions"), ("POST", Q + "/sessions/list"),
         ("DELETE", Q + "/sessions/{session_id}"), ("GET", Q + "/status"), ("POST", W + "/search"),

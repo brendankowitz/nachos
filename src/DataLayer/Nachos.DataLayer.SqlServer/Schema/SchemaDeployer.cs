@@ -27,10 +27,19 @@ public sealed class SchemaDeployer(SqlServerOptions options) : ISchemaManager
     private static readonly string[] SystemDatabases = ["master", "model", "msdb", "tempdb"];
 
     /// <inheritdoc />
+    /// <exception cref="InvalidOperationException">The database is stamped current but lacks a table the schema defines. Reports and deploys still work, so the reviewed upgrade can repair it.</exception>
     public async Task<SchemaStatus> GetStatusAsync(CancellationToken ct)
     {
         RequireNamedUserDatabase();
-        return (await ReadAsync(ct)).Status;
+        var observed = await ReadAsync(ct);
+        if (observed.Status.State == SchemaState.Current
+            && await SchemaProbe.FindMissingTableAsync(options.ConnectionString, observed.Target, ct) is { } missing)
+        {
+            throw new InvalidOperationException(
+                $"Schema is stamped current but table {missing} is missing; recreate the database or run 'nachos schema upgrade --approve-reviewed'.");
+        }
+
+        return observed.Status;
     }
 
     /// <inheritdoc />

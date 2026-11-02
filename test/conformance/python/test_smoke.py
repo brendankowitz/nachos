@@ -104,6 +104,58 @@ def test_batch_messages_list_get_and_update(honcho: Honcho):
     assert session.get_message(created[3].id).metadata == {"edited": True}
 
 
+def test_conclusions_create_list_get_delete(honcho: Honcho):
+    alice, bob = honcho.peer("alice"), honcho.peer("bob")
+    session = honcho.session("s1")
+    session.add_peers([alice, bob])
+    about_bob = alice.conclusions_of("bob")
+
+    created = about_bob.create([
+        {"content": "Bob prefers dark mode", "session_id": "s1"},
+        {"content": "Bob works at Acme", "session_id": "s1"},
+    ])
+    assert [c.content for c in created] == ["Bob prefers dark mode", "Bob works at Acme"]
+    assert {c.id for c in about_bob.list()} == {c.id for c in created}
+    assert list(alice.conclusions.list()) == []
+
+    assert about_bob.get(created[0].id).content == "Bob prefers dark mode"
+    about_bob.delete(created[0].id)
+    assert [c.id for c in about_bob.list()] == [created[1].id]
+
+
+def test_conclusions_semantic_query(honcho: Honcho):
+    # The conformance host runs the offline fake AI: its deterministic embeddings put identical text at distance 0, so the
+    # query that repeats a conclusion verbatim must rank it first. That checks the wire shape and the embed-on-create path,
+    # not retrieval quality.
+    alice, bob = honcho.peer("alice"), honcho.peer("bob")
+    session = honcho.session("s1")
+    session.add_peers([alice, bob])
+    about_bob = alice.conclusions_of("bob")
+    created = about_bob.create([
+        {"content": "Bob prefers dark mode", "session_id": "s1"},
+        {"content": "Bob works at Acme", "session_id": "s1"},
+    ])
+
+    found = about_bob.query("Bob works at Acme", top_k=2)
+    assert found[0].id == created[1].id
+    assert found[0].content == "Bob works at Acme"
+    assert len(found) <= 2
+    assert alice.conclusions.query("Bob works at Acme") == []
+
+
+def test_peer_card_get_and_set(honcho: Honcho):
+    alice = honcho.peer("alice")
+    # honcho-ai 2.5.1 sends PUT P/card without creating the target first, and Nachos answers 404 for a missing target
+    # (open parity question, spec §9.3), so the target is created explicitly.
+    honcho.peer("bob")
+
+    assert alice.get_card() is None
+    assert alice.set_card(["Likes Python", "Lives in NYC"]) == ["Likes Python", "Lives in NYC"]
+    alice.set_card(["Works at Acme"], target="bob")
+    assert alice.get_card() == ["Likes Python", "Lives in NYC"]
+    assert alice.get_card(target="bob") == ["Works at Acme"]
+
+
 def test_idempotent_replay_returns_same_batch(nachos, workspace_id: str):
     # honcho-ai takes extra request headers per client (`default_headers`), so a dedicated client replays one batch
     # under one Idempotency-Key. Spec 9.1: the replay returns the stored response and performs no second mutation.

@@ -3,13 +3,15 @@ title: Architecture & ADRs
 ---
 
 The diagram maps the implemented source-MVP boundaries. It does not imply
-production deployment approval or a working reasoning/derivation pipeline.
+production deployment approval. The worker host (queue consumer and reconciler) is
+described in [Memory formation](/nachos/concepts/memory-formation/).
 
 ```mermaid
 flowchart LR
   Client["HTTP client"] --> Api["API and auth"]
   Library["In-process host"] --> Core["Memory core"]
   Api --> Core
+  Worker["Worker host"] --> Core
   Core --> Contracts["Storage contracts"]
   Contracts --> Sql["SQL provider"]
   Contracts --> InMemory["In-memory provider"]
@@ -21,6 +23,7 @@ flowchart LR
 | Core and hosting | Memory operations and in-process composition |
 | API and client | HTTP hosting and a .NET transport client |
 | Providers | SQL and in-memory implementations of the storage boundary |
+| Worker | Queue consumer (Deriver) and reconciler against the same storage; the API runs them itself with the in-memory provider |
 | CLI and AppHost | Bootstrap operations and local orchestration |
 
 The full [approved design](https://github.com/brendankowitz/nachos/blob/main/docs/superpowers/specs/2026-10-07-nachos-design.md)

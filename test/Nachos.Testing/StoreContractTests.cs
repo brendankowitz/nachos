@@ -927,6 +927,34 @@ public abstract class StoreContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Idempotency_PurgeExpired_DeletesOnlyExpiredRecordsInEveryWorkspace()
+    {
+        // A clock long before every other test's, so a provider shared between tests purges only this test's records.
+        var clock = new FakeTimeProvider(Start - TimeSpan.FromDays(365));
+        var store = CreateStore(clock);
+        _stores.Add(store);
+        var (first, firstSession) = await NewSessionAsync(store);
+        var (second, secondSession) = await NewSessionAsync(store);
+        var ttl = TimeSpan.FromMinutes(1);
+        await store.Messages.AppendAsync(first, firstSession, [Msg("alice", "one")], Write("short-1", ttl: ttl), Ct);
+        await store.Messages.AppendAsync(second, secondSession, [Msg("alice", "two")], Write("short-2", ttl: ttl), Ct);
+        await store.Messages.AppendAsync(first, firstSession, [Msg("alice", "three")], Write("long", ttl: ttl * 10), Ct);
+
+        clock.Advance(ttl - TimeSpan.FromTicks(1));
+        (await store.Idempotency.PurgeExpiredAsync(Ct)).ShouldBe(0);
+
+        // Expired exactly at the TTL, as for reads.
+        clock.Advance(TimeSpan.FromTicks(1));
+        (await store.Idempotency.PurgeExpiredAsync(Ct)).ShouldBe(2);
+        (await store.Idempotency.PurgeExpiredAsync(Ct)).ShouldBe(0);
+        (await store.Idempotency.TryGetAsync(first, "long", Ct)).ShouldNotBeNull();
+
+        // A purged key is free again.
+        await store.Messages.AppendAsync(first, firstSession, [Msg("alice", "four")], Write("short-1", "again", ttl), Ct);
+        (await store.Idempotency.TryGetAsync(first, "short-1", Ct))!.RequestHash.ShouldBe(Hash("again"));
+    }
+
+    [Fact]
     public async Task Append_ConcurrentReuseOfExpiredKey_OneWinner()
     {
         var (store, clock) = NewStore();

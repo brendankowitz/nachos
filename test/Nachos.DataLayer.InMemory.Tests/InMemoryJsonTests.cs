@@ -19,7 +19,8 @@ public sealed class InMemoryJsonTests
     public static TheoryData<ResourceKind, string> NonStringBackedValues()
     {
         var data = new TheoryData<ResourceKind, string>();
-        foreach (var kind in Enum.GetValues<ResourceKind>())
+        // Conclusions have no metadata.
+        foreach (var kind in Enum.GetValues<ResourceKind>().Where(kind => kind != ResourceKind.Conclusion))
         {
             foreach (var key in ValueKeys)
             {

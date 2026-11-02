@@ -17,7 +17,8 @@ namespace Nachos.Client.Tests;
 /// <see cref="NachosHttpClient"/> (the <c>AddNachosClient</c> pipeline) against the real API host, gives the same
 /// result or the same exception as the in-process client for the same call sequence. Each scenario runs once per
 /// client on a fresh <see cref="RoundTripHarness"/>; every step is recorded as text and the two recordings must be
-/// equal. Only server-generated message ids are normalized (to <c>&lt;message#n&gt;</c> by first appearance); clocks
+/// equal. Only server-generated message and conclusion ids are normalized (to <c>&lt;message#n&gt;</c> and
+/// <c>&lt;conclusion#n&gt;</c> by first appearance); clocks
 /// are frozen at one instant on both sides, so every <c>created_at</c> is compared as it is. One outcome differs by
 /// design and is asserted on each side instead of compared: an invalid body <c>id</c> on a create (see
 /// <c>Steps.DoInvalidBodyId</c>).
@@ -237,6 +238,104 @@ public sealed class RoundTripTests
                     [new MessageCreate(new string('x', 25_001), "alice")]));
                 await s.Do("nothing was added by the failures", c => c.ListMessagesAsync("w", "s", null, FirstPage));
             }),
+        new(
+            "conclusions: create, list, query, get, delete",
+            [
+                nameof(INachosClient.CreateConclusionsAsync), nameof(INachosClient.ListConclusionsAsync),
+                nameof(INachosClient.QueryConclusionsAsync), nameof(INachosClient.GetConclusionAsync),
+                nameof(INachosClient.DeleteConclusionAsync),
+            ],
+            async s =>
+            {
+                await s.Do("create in a missing workspace", c => c.CreateConclusionsAsync("w", [new ConclusionCreate("x", "alice", "alice")]));
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("alice", c => c.GetOrCreatePeerAsync("w", "alice"));
+                await s.Do("bob", c => c.GetOrCreatePeerAsync("w", "bob"));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                var created = await s.Do("create a batch", c => c.CreateConclusionsAsync("w",
+                [
+                    new ConclusionCreate("Bob enjoys green tea in the morning", "alice", "bob", "s"),
+                    new ConclusionCreate("Bob owns a red bicycle", "alice", "bob"),
+                    new ConclusionCreate("Alice is learning Japanese 😀", "alice", "alice"),
+                ]));
+                await s.Do("unknown observer stores nothing", c => c.CreateConclusionsAsync("w",
+                    [new ConclusionCreate("a", "alice", "bob"), new ConclusionCreate("b", "nobody", "bob")]));
+                await s.Do("unknown session", c => c.CreateConclusionsAsync("w", [new ConclusionCreate("a", "alice", "bob", "missing")]));
+                await s.Do("empty batch", c => c.CreateConclusionsAsync("w", []));
+                await s.Do("101 conclusions", c => c.CreateConclusionsAsync("w", [.. Enumerable.Range(0, 101).Select(i => new ConclusionCreate($"c{i}", "alice", "bob"))]));
+                await s.Do("empty content at index 1", c => c.CreateConclusionsAsync("w", [new ConclusionCreate("ok", "alice", "bob"), new ConclusionCreate("", "alice", "bob")]));
+                await s.Do("content over the limit", c => c.CreateConclusionsAsync("w", [new ConclusionCreate(new string('x', 65_536), "alice", "bob")]));
+                await s.Do("invalid observer id", c => c.CreateConclusionsAsync("w", [new ConclusionCreate("a", "bad id!", "bob")]));
+                await s.Do("list", c => c.ListConclusionsAsync("w", null, FirstPage));
+                await s.Do("list about bob, reversed and paged", c => c.ListConclusionsAsync("w", Obj("""{"observed_id":"bob"}"""), new PageRequest(1, 1, Reverse: true)));
+                await s.Do("list by session", c => c.ListConclusionsAsync("w", Obj("""{"session_id":"s"}"""), FirstPage));
+                await s.Do("list bad filter", c => c.ListConclusionsAsync("w", Obj("""{"observer_id":{"regex":"a"}}"""), FirstPage));
+                await s.Do("query top 1", c => c.QueryConclusionsAsync("w", new ConclusionQuery("Bob enjoys green tea in the morning", 1)));
+                await s.Do("query with defaults", c => c.QueryConclusionsAsync("w", new ConclusionQuery("bicycle")));
+                await s.Do("query filtered to alice", c => c.QueryConclusionsAsync("w", new ConclusionQuery("Japanese", Filters: Obj("""{"observed_id":"alice"}"""))));
+                await s.Do("query top_k 0", c => c.QueryConclusionsAsync("w", new ConclusionQuery("q", 0)));
+                await s.Do("query distance 2", c => c.QueryConclusionsAsync("w", new ConclusionQuery("q", Distance: 2)));
+                var first = created?[0].Id ?? "unavailable";
+                await s.Do("get", c => c.GetConclusionAsync("w", first));
+                await s.Do("get a missing conclusion", c => c.GetConclusionAsync("w", "missingconclusion"));
+                await s.Do("get an invalid id", c => c.GetConclusionAsync("w", "bad id!"));
+                await s.Do("delete", c => c.DeleteConclusionAsync("w", first));
+                await s.Do("get after delete", c => c.GetConclusionAsync("w", first));
+                await s.Do("delete again", c => c.DeleteConclusionAsync("w", first));
+                await s.Do("delete a missing conclusion", c => c.DeleteConclusionAsync("w", "missingconclusion"));
+                await s.Do("list after delete", c => c.ListConclusionsAsync("w", null, FirstPage));
+            }),
+        new(
+            "peer memory: card, representation, context",
+            [
+                nameof(INachosClient.GetPeerCardAsync), nameof(INachosClient.SetPeerCardAsync),
+                nameof(INachosClient.GetRepresentationAsync), nameof(INachosClient.GetPeerContextAsync),
+            ],
+            async s =>
+            {
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("alice", c => c.GetOrCreatePeerAsync("w", "alice"));
+                await s.Do("bob", c => c.GetOrCreatePeerAsync("w", "bob"));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                await s.Do("no card yet", c => c.GetPeerCardAsync("w", "alice"));
+                await s.Do("set own card", c => c.SetPeerCardAsync("w", "alice", ["IDENTITY: Alice", "likes tea"]));
+                await s.Do("set card about bob", c => c.SetPeerCardAsync("w", "alice", ["Bob is a friend"], "bob"));
+                await s.Do("replace own card", c => c.SetPeerCardAsync("w", "alice", []));
+                await s.Do("own card", c => c.GetPeerCardAsync("w", "alice"));
+                await s.Do("card about bob", c => c.GetPeerCardAsync("w", "alice", "bob"));
+                await s.Do("card about a missing target", c => c.SetPeerCardAsync("w", "alice", ["x"], "nobody"));
+                await s.Do("card with an invalid target", c => c.GetPeerCardAsync("w", "alice", "bad id!"));
+                await s.Do("conclusions", c => c.CreateConclusionsAsync("w",
+                [
+                    new ConclusionCreate("Bob enjoys green tea", "alice", "bob", "s"),
+                    new ConclusionCreate("Bob owns a red bicycle", "alice", "bob"),
+                    new ConclusionCreate("Alice is learning Japanese", "alice", "alice"),
+                ]));
+                await s.Do("own representation", c => c.GetRepresentationAsync("w", "alice", new PeerRepresentationGet()));
+                await s.Do("representation of bob with search", c => c.GetRepresentationAsync("w", "alice",
+                    new PeerRepresentationGet(Target: "bob", SearchQuery: "bicycle", SearchTopK: 1, IncludeMostFrequent: true, MaxConclusions: 5)));
+                await s.Do("representation limited to session s", c => c.GetRepresentationAsync("w", "alice", new PeerRepresentationGet(SessionId: "s", Target: "bob")));
+                await s.Do("representation with a filter", c => c.GetRepresentationAsync("w", "alice",
+                    new PeerRepresentationGet(Target: "bob", Filters: Obj("""{"session_id":"s"}"""))));
+                await s.Do("representation max_conclusions 0", c => c.GetRepresentationAsync("w", "alice", new PeerRepresentationGet(MaxConclusions: 0)));
+                await s.Do("representation with a scope", c => c.GetRepresentationAsync("w", "alice", new PeerRepresentationGet(Scope: JsonValue.Create("named"))));
+                await s.Do("context about bob", c => c.GetPeerContextAsync("w", "alice", new PeerContextQuery(Target: "bob", SearchQuery: "tea", SearchTopK: 2, SearchMaxDistance: 1, IncludeMostFrequent: false, MaxConclusions: 10)));
+                await s.Do("own context", c => c.GetPeerContextAsync("w", "alice", new PeerContextQuery()));
+                await s.Do("context search_top_k 101", c => c.GetPeerContextAsync("w", "alice", new PeerContextQuery(SearchTopK: 101)));
+            }),
+        new(
+            "queue status",
+            [nameof(INachosClient.GetQueueStatusAsync)],
+            async s =>
+            {
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("empty", c => c.GetQueueStatusAsync("w"));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                await s.Do("messages", c => c.CreateMessagesAsync("w", "s", [new MessageCreate("I like tea", "alice"), new MessageCreate("I like coffee", "bob")]));
+                await s.Do("after messages", c => c.GetQueueStatusAsync("w"));
+                await s.Do("filtered", c => c.GetQueueStatusAsync("w", observerId: "alice", senderId: "bob", sessionId: "s"));
+                await s.Do("invalid observer id", c => c.GetQueueStatusAsync("w", observerId: "bad id!"));
+            }),
     ];
 
     public static TheoryData<string> ScenarioNames => [.. Scenarios.Select(s => s.Name)];
@@ -274,7 +373,8 @@ public sealed class RoundTripTests
     [Fact]
     public void EveryOperation_HasARoundTrip()
     {
-        var operations = typeof(INachosClient).GetMethods().Select(m => m.Name).Distinct().Order().ToArray();
+        var operations = typeof(INachosClient).GetMethods().Select(m => m.Name)
+            .Distinct().Order().ToArray();
         var covered = Scenarios.SelectMany(s => s.Covers).Concat(AdminOperations).ToHashSet();
 
         operations.Where(o => !covered.Contains(o)).ShouldBeEmpty("INachosClient operations without a round trip");
@@ -535,6 +635,7 @@ public sealed class RoundTripTests
         private readonly INachosClient _client;
         private readonly Side _side;
         private readonly Dictionary<string, string> _messageIds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _conclusionIds = new(StringComparer.Ordinal);
         private readonly HashSet<string> _called = [];
         private readonly Func<int>? _wireCount;
 
@@ -663,19 +764,32 @@ public sealed class RoundTripTests
             Entries.Add($"{label} !! {ex.GetType().Name}: {detail}");
         }
 
-        // Message ids are server-generated: each new one gets the next alias, in order of first appearance.
+        // Message and conclusion ids are server-generated: each new one gets the next alias of its kind, in order of first
+        // appearance.
         private void Alias(object? result)
         {
-            IEnumerable<Message> messages = result switch
+            IEnumerable<string> messages = result switch
             {
-                Message m => [m],
-                IEnumerable<Message> list => list,
-                Page<Message> page => page.Items,
+                Message m => [m.Id],
+                IEnumerable<Message> list => list.Select(m => m.Id),
+                Page<Message> page => page.Items.Select(m => m.Id),
                 _ => [],
             };
-            foreach (var message in messages)
+            foreach (var id in messages)
             {
-                _messageIds.TryAdd(message.Id, $"<message#{_messageIds.Count}>");
+                _messageIds.TryAdd(id, $"<message#{_messageIds.Count}>");
+            }
+
+            IEnumerable<string> conclusions = result switch
+            {
+                Conclusion c => [c.Id],
+                IEnumerable<Conclusion> list => list.Select(c => c.Id),
+                Page<Conclusion> page => page.Items.Select(c => c.Id),
+                _ => [],
+            };
+            foreach (var id in conclusions)
+            {
+                _conclusionIds.TryAdd(id, $"<conclusion#{_conclusionIds.Count}>");
             }
         }
 
@@ -715,7 +829,8 @@ public sealed class RoundTripTests
 
         private void AliasOwnId(JsonNode? record)
         {
-            if (record is JsonObject entity && entity["id"] is JsonValue value && value.TryGetValue<string>(out var id) && _messageIds.TryGetValue(id, out var alias))
+            if (record is JsonObject entity && entity["id"] is JsonValue value && value.TryGetValue<string>(out var id) &&
+                (_messageIds.TryGetValue(id, out var alias) || _conclusionIds.TryGetValue(id, out alias)))
             {
                 entity["id"] = alias;
             }

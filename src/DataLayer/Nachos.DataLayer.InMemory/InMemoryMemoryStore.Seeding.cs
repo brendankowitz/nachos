@@ -93,6 +93,30 @@ public sealed partial class InMemoryMemoryStore
         }
     }
 
+    /// <summary>Seeds a pending explicit conclusion, creating its collection; the peers and session must be seeded first.</summary>
+    internal void SeedConclusion(
+        string workspaceName,
+        string publicId,
+        string observerName,
+        string observedName,
+        string? sessionName,
+        string content,
+        DateTimeOffset createdAt)
+    {
+        RejectSerializeResponseReentry();
+        var workspace = _state.RequireWorkspace(workspaceName);
+        lock (workspace.Gate)
+        {
+            workspace.RequirePeer(observerName);
+            workspace.RequirePeer(observedName);
+            workspace.RequireSessionExists(sessionName);
+            workspace.GetOrAddCollection(observerName, observedName, createdAt);
+            var record = new ConclusionRecord(
+                publicId, workspaceName, observerName, observedName, sessionName, ConclusionLevel.Explicit, content, 1, [], new JsonObject(), createdAt);
+            workspace.Conclusions.Add(publicId, new StoredConclusion(record, null, EmbeddingState.Pending, null, _state.NextOrder()));
+        }
+    }
+
     private void RejectSerializeResponseReentry()
     {
         if (_state.SerializeResponseGuard.Reject() is { } rejection)

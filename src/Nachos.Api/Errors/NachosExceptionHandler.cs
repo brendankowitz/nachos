@@ -20,6 +20,7 @@ internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHand
             ConflictException => 409,
             RequestValidationException or NachosValidationException or IdempotencyKeyReusedException => 422,
             AuthException => 401,
+            ServiceUnavailableException => 503,
             BadHttpRequestException badRequest => badRequest.StatusCode,
             _ => 500,
         };
@@ -37,6 +38,15 @@ internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHand
             {
                 ServerFailure(logger, exception);
             }
+            else if (status == 503)
+            {
+                ServiceUnavailable(logger, exception);
+                if (exception is ServiceUnavailableException { RetryAfter: { } retryAfter })
+                {
+                    context.Response.Headers.RetryAfter =
+                        ((long)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
             var detail = status == 500 ? "An unexpected error occurred." : exception.Message;
             var type = exception is IdempotencyKeyReusedException ? ProblemTypes.IdempotencyKeyReused : "about:blank";
             await context.Response.WriteAsJsonAsync(new ErrorResponse(detail, type, title, status),
@@ -52,4 +62,7 @@ internal sealed partial class NachosExceptionHandler(ILogger<NachosExceptionHand
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Unhandled Nachos request failure.")]
     private static partial void ServerFailure(ILogger logger, Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "A Nachos request failed because a service it depends on is unavailable.")]
+    private static partial void ServiceUnavailable(ILogger logger, Exception exception);
 }

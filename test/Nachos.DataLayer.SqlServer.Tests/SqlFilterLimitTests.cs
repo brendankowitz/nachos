@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
@@ -69,7 +70,7 @@ public sealed class SqlFilterLimitTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { CommandTimeout = 120 }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System);
+        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
         var filter = FilterParser.Parse(
             "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 1750).Select(i => "{\"metadata\":{\"k" + I(i) + "\":1,\"c" + I(i) + "\":{\"contains\":\"secret\"}}}")) + "]}",
             ResourceKind.Peer);

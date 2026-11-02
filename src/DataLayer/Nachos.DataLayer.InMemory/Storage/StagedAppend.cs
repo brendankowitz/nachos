@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
+using Nachos.Abstractions.Observation;
 
 namespace Nachos.DataLayer.InMemory.Storage;
 
@@ -79,6 +80,27 @@ internal sealed class StagedAppend
 
     /// <summary>The staged messages. Store-owned: clone before handing them out.</summary>
     public IReadOnlyList<MessageRecord> Messages => _messages;
+
+    /// <summary>
+    /// The observers of one staged message (<see cref="ObserverRule"/>), over the peers and memberships as the commit
+    /// will leave them. Reads stored state, so the caller holds the workspace gate.
+    /// </summary>
+    public IReadOnlyList<string> ObserversOf(MessageRecord message)
+    {
+        var memberships = new Dictionary<string, Membership>(_session.Members, StringComparer.Ordinal);
+        foreach (var (name, membership) in _memberships)
+        {
+            memberships[name] = membership;
+        }
+
+        var sender = message.PeerName;
+        var senderPeer = _newPeers.GetValueOrDefault(sender) ?? _workspace.Peers[sender];
+        var observation = PeerObservation.From(sender, senderPeer.Record.Configuration, memberships[sender].Config);
+        var members = memberships
+            .Select(pair => new MemberObservation(pair.Key, pair.Value.Config.ObserveOthers, pair.Value.JoinedAt, pair.Value.LeftAt))
+            .ToList();
+        return ObserverRule.Resolve(observation, members, message.CreatedAt);
+    }
 
     /// <summary>
     /// True when nothing the append depends on has changed. Fails if any state the staging relied on, or any

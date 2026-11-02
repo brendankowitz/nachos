@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -62,7 +63,7 @@ public sealed class SqlFilterErrorPropagationTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { CommandTimeout = 1 }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System);
+        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
 
         var thrown = await CatchAsync(() => ListAsync(store, SlowFilter, Ct));
 
@@ -88,7 +89,7 @@ public sealed class SqlFilterErrorPropagationTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
+        var store = new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
 
         var thrown = await CatchAsync(() => ListAsync(store, NumericFilter, Ct));
 

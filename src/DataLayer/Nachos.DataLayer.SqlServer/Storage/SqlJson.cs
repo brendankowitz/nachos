@@ -58,7 +58,7 @@ internal static class SqlJson
         {
             // The helper's text never echoes a key or value; it names the CLR type of a value outside the allowlist.
             throw new NachosValidationException(
-                $"{(field == JsonField.Metadata ? "metadata" : "configuration")} contains a value that is not valid JSON or is nested too deeply. {ex.Detail}", ex);
+                $"{Describe(field)} contains a value that is not valid JSON or is nested too deeply. {ex.Detail}", ex);
         }
 
         if (field == JsonField.Metadata)
@@ -68,6 +68,13 @@ internal static class SqlJson
 
         return canonical.ToJsonString(StorageText);
     }
+
+    private static string Describe(JsonField field) => field switch
+    {
+        JsonField.Metadata => "metadata",
+        JsonField.Configuration => "configuration",
+        _ => "internal_metadata",
+    };
 
     /// <summary>
     /// The writer for stored text: the column is data, never HTML, so non-ASCII text is written as itself rather than as
@@ -120,4 +127,7 @@ internal enum JsonField
 {
     Metadata,
     Configuration,
+
+    /// <summary>A conclusion's provenance, never filtered.</summary>
+    InternalMetadata,
 }

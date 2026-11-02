@@ -37,6 +37,12 @@ dotnet build src\Nachos.Api -c Release
 dotnet run --project src\Nachos.Api -c Release --no-build --no-launch-profile
 ```
 
+Outside the Development environment the API also needs an AI backend: set
+`AzureOpenAI:Endpoint`, `AzureOpenAI:ChatDeployment` and `AzureOpenAI:EmbeddingDeployment`
+(see [Run the worker](/nachos/guides/run-the-worker/)), or set `Nachos:Ai:Mode=Fake` to run
+the offline fake AI on purpose. With neither, startup fails rather than silently using the
+fake AI.
+
 Production hosting still needs TLS, secret rotation, backups, monitoring and
 reviewed dependency redistribution. Docsite CI does not start SQL or deploy
 schemas. Existing SQL integration CI tests the provider against Docker.

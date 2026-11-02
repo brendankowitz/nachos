@@ -1,11 +1,13 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Keys;
+using Nachos.Core.Llm;
 using Nachos.Testing;
 using Shouldly;
 
@@ -42,6 +44,8 @@ internal sealed class AuthHost : NachosApiFactory
         builder.ConfigureServices(services =>
         {
             services.Configure<SigningKeyOptions>(options => options.Keys = (SigningKeys ?? Ring).Keys);
+            // Semantic routes (C/query, a search_query) need a generator; an offline one keeps the matrix hermetic.
+            services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(new DeterministicEmbeddingGenerator());
             Entra?.Configure(services);
             ServicesOverride?.Invoke(services);
         });

@@ -10,10 +10,24 @@ using Nachos.Core.Keys;
 using Nachos.ServiceDefaults;
 
 var builder = WebApplication.CreateBuilder(args);
+var generatingOpenApi = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name == "GetDocument.Insider";
+if (generatingOpenApi)
+{
+    // Build-time OpenAPI generation starts this host in Production with no configuration; it only needs the routes, so
+    // it asks for the fake AI explicitly instead of tripping the guard against an implicit fallback to it.
+    builder.Configuration["Nachos:Ai:Mode"] = "Fake";
+}
 builder.AddServiceDefaults();
 builder.Services.AddNachos(nachos =>
 {
     ProviderSelection.Use(nachos, builder.Configuration);
+    nachos.UseConfiguredAI(builder.Configuration);
+    if (!ProviderSelection.UsesSqlServer(builder.Configuration) && !generatingOpenApi)
+    {
+        // In-memory state is only visible to this process, so the loops cannot run in a separate worker. OpenAPI
+        // generation needs only the routes, not the loops.
+        nachos.AddNachosWorker();
+    }
     nachos.BindSigningKeys(builder.Configuration.GetSection("Nachos:Auth:NachosKey"));
 });
 builder.Services.AddNachosAuthentication(builder.Configuration);
@@ -69,6 +83,9 @@ routes.MapWorkspaceEndpoints();
 routes.MapPeerEndpoints();
 routes.MapSessionEndpoints();
 routes.MapMessageEndpoints();
+routes.MapConclusionEndpoints();
+routes.MapPeerMemoryEndpoints();
+routes.MapQueueEndpoints();
 routes.MapKeyEndpoints();
 routes.MapGrantEndpoints();
 routes.MapNotImplementedEndpoints();

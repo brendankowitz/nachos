@@ -22,9 +22,11 @@ unresolved license gates. Source availability is not production-release approval
 
 ## What is not implemented
 
-Reasoning/chat, conclusions, representations, peer cards, summaries, context,
-dreaming, workers and native MCP remain future milestones. Their staged routes
-return **501**. Some operations have both implemented and staged variants;
+Dialectic chat, search, session context and summaries, dreaming, webhooks, scopes
+and native MCP remain future milestones. Their staged routes return **501**.
+Conclusions, peer cards, representations and the queue status route work, formed
+by a background worker; with the offline fake AI they are copies of messages, not
+memory quality (see [Memory formation](/nachos/concepts/memory-formation/)). Some operations have both implemented and staged variants;
 inspect the [compatibility matrix](/nachos/reference/compatibility/).
 
 Do not assume production durability, complete upstream compatibility or a

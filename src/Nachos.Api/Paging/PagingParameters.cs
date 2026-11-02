@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.OpenApi;
 using Nachos.Abstractions;
@@ -9,8 +8,8 @@ namespace Nachos.Api.Paging;
 internal static class PagingParameters
 {
     public static PageRequest Read(HttpRequest request, bool allowReverse = true) =>
-        new(Integer(request, "page", 1), Integer(request, "size", PageRequest.DefaultSize),
-            allowReverse && Boolean(request, "reverse"));
+        new(QueryParameters.Integer(request, "page") ?? 1, QueryParameters.Integer(request, "size") ?? PageRequest.DefaultSize,
+            allowReverse && (QueryParameters.Boolean(request, "reverse") ?? false));
 
     public static RouteHandlerBuilder WithPaging(this RouteHandlerBuilder endpoint, bool allowReverse = true) =>
         endpoint.AddOpenApiOperationTransformer((operation, _, cancellationToken) =>
@@ -41,31 +40,4 @@ internal static class PagingParameters
             }
             return Task.CompletedTask;
         });
-
-    private static int Integer(HttpRequest request, string field, int fallback)
-    {
-        if (!request.Query.TryGetValue(field, out var values))
-        {
-            return fallback;
-        }
-        if (int.TryParse(values[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-        {
-            return value;
-        }
-        throw RequestBody.Invalid(["query", field], "Input should be a valid integer.", "int_parsing");
-    }
-
-    private static bool Boolean(HttpRequest request, string field)
-    {
-        if (!request.Query.TryGetValue(field, out var values))
-        {
-            return false;
-        }
-        return values[^1]?.ToLowerInvariant() switch
-        {
-            "true" or "1" or "yes" or "on" or "t" or "y" => true,
-            "false" or "0" or "no" or "off" or "f" or "n" => false,
-            _ => throw RequestBody.Invalid(["query", field], "Input should be a valid boolean.", "bool_parsing"),
-        };
-    }
 }

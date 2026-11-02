@@ -118,4 +118,41 @@ public sealed class HostingTests
         Should.Throw<ArgumentNullException>(() => services.AddNachos(null!));
         services.ShouldBeEmpty();
     }
+
+    [Theory]
+    [InlineData("Deriver.MaxAttempts")]
+    [InlineData("Deriver.LeaseDuration")]
+    [InlineData("Deriver.MaxInputTokens")]
+    [InlineData("Deriver.DedupMaxDistance")]
+    [InlineData("Deriver.BatchTokenTarget")]
+    public void InvalidNachosOptions_FailHostStartup(string setting)
+    {
+        var services = new ServiceCollection();
+        services.AddNachos(builder => builder.Services.Configure<NachosOptions>(options =>
+        {
+            switch (setting)
+            {
+                case "Deriver.MaxAttempts": options.Deriver.MaxAttempts = 0; break;
+                case "Deriver.LeaseDuration": options.Deriver.LeaseDuration = TimeSpan.Zero; break;
+                case "Deriver.MaxInputTokens": options.Deriver.MaxInputTokens = 0; break;
+                case "Deriver.DedupMaxDistance": options.Deriver.DedupMaxDistance = 2.5; break;
+                case "Deriver.BatchTokenTarget": options.Deriver.BatchTokenTarget = -1; break;
+            }
+        }));
+        using var provider = services.BuildServiceProvider();
+
+        // What the host runs at start for ValidateOnStart.
+        var failure = Should.Throw<OptionsValidationException>(() => provider.GetRequiredService<IStartupValidator>().Validate());
+        failure.Message.ShouldContain(setting);
+    }
+
+    [Fact]
+    public void ValidNachosOptions_PassHostStartup()
+    {
+        var services = new ServiceCollection();
+        services.AddNachos(_ => { });
+        using var provider = services.BuildServiceProvider();
+
+        Should.NotThrow(() => provider.GetRequiredService<IStartupValidator>().Validate());
+    }
 }

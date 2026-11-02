@@ -22,11 +22,11 @@
 
 ## Overview
 
-**Nachos** is an independent, MIT-licensed .NET 10 memory service for stateful agents. It stores workspaces, peers, sessions and messages, and you can embed it in a process or run it as an HTTP API you host yourself.
+**Nachos** is an independent, MIT-licensed .NET 10 memory service for stateful agents. It stores workspaces, peers, sessions and messages, forms conclusions from those messages in the background, and you can embed it in a process or run it as an HTTP API you host yourself.
 
 The same `INachosClient` surface is implemented in-process and over HTTP. Storage is either a non-durable in-memory provider or SQL Server, with the schema owned by a database project. Authentication fails closed unless you explicitly disable it for local development.
 
-Reasoning is not in this milestone. Conclusions, dialectic chat, search, context, summaries, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. The [documentation site](https://brendankowitz.github.io/nachos/) is built from [`docs/site`](docs/site).
+Memory formation is in this milestone: a background worker turns messages into conclusions and peer representations. Dialectic chat, search, session context and summaries, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. The [documentation site](https://brendankowitz.github.io/nachos/) is built from [`docs/site`](docs/site).
 
 ## ✨ What works today
 
@@ -36,6 +36,16 @@ Reasoning is not in this milestone. Conclusions, dialectic chat, search, context
 - **Idempotent message batches.** An `Idempotency-Key` replays the captured response for 24 hours when the body and target match.
 - **Stable gaps.** Routes that are not built yet return `501`, not `404`, so clients can tell "later" from "unknown".
 - **Local inspectability.** In `Development`: `/health`, `/health/live`, `/health/ready`, and OpenAPI at `/openapi/v1.json`.
+
+### 🧠 Memory formation
+
+- **Conclusions.** A worker claims queued messages, asks a chat model for facts about each speaker, drops near-duplicates, and commits the new conclusions together with the queue update. `POST /v3/workspaces/{id}/conclusions` (create), `/list`, `/query` (semantic), `GET` and `DELETE` by id.
+- **Peer cards and representations.** Get and put a peer `card`; `POST .../peers/{id}/representation` and `GET .../peers/{id}/context` read what is known about a peer. `GET .../queue/status` reports pending work.
+- **Where the worker runs.** With SQL Server, `Nachos.Worker` is its own host; replicas share the queue through leases. With the in-memory provider the API runs the loops itself, because another process cannot see in-memory state.
+- **Azure OpenAI or fake AI.** Set `AzureOpenAI:Endpoint` to use your own Azure OpenAI resource with managed identity or `az login` (`DefaultAzureCredential`; never a key). Without an endpoint every local (Development) host runs the **fake AI**, which copies each message into a conclusion with a deterministic embedding. It exercises the pipeline offline and is **not a memory-quality mode**. Outside Development a host without an endpoint refuses to start unless `Nachos:Ai:Mode=Fake` asks for the fake AI explicitly.
+- **SQL Server needs the M2 schema.** The schema version stays `1`, so a database made by an earlier build lacks the new tables. Recreate a pre-release database, or run `nachos schema report` then `schema upgrade --approve-reviewed`.
+
+See [Memory formation](https://brendankowitz.github.io/nachos/concepts/memory-formation/) and [Run the worker](https://brendankowitz.github.io/nachos/guides/run-the-worker/).
 
 ### 🧩 Embeddable .NET library
 
@@ -47,7 +57,7 @@ Reasoning is not in this milestone. Conclusions, dialectic chat, search, context
 
 - **In-memory** for tests and local experiments. It is not durable, and it warns at startup outside `Development`.
 - **SQL Server**, with DDL owned by database projects and deployed from an embedded dacpac.
-- An [Aspire](https://aspire.dev) AppHost that starts SQL Server 2025 and the API for local development.
+- An [Aspire](https://aspire.dev) AppHost that starts SQL Server 2025, the API and the worker (fake AI by default) for local development.
 
 ### 🔐 Authentication that fails closed
 
@@ -57,7 +67,7 @@ Reasoning is not in this milestone. Conclusions, dialectic chat, search, context
 
 ### ☁️ Azure definitions, not a supported deploy
 
-[`infra/`](infra) and [`azure.yaml`](azure.yaml) describe Container Apps and Azure SQL for `azd`. They have been checked offline. Deploying them creates cloud resources and needs the repository owner's explicit approval. Do not treat that path as verified.
+[`infra/`](infra) and [`azure.yaml`](azure.yaml) describe Container Apps (API and worker) and Azure SQL for `azd`, and take an existing Azure OpenAI endpoint; they never create the Azure OpenAI account. They have been checked offline. Deploying them creates cloud resources and needs the repository owner's explicit approval. Do not treat that path as verified.
 
 ## Still ahead
 
@@ -65,13 +75,11 @@ These are specified and, where a route exists, return **501**:
 
 | Area | Staged surface |
 | --- | --- |
-| Conclusions | create, list, query, get, delete |
-| Reasoning | workspace, peer and session chat, search, context, representation, summaries |
-| Peer cards | get and put `card` |
+| Reasoning | workspace and peer chat, workspace, peer and session search, session context and summaries |
 | Sessions | delete, clone, `messages/upload`; a create with nonempty `scopes` |
 | Scopes | create, list, get, status, and scope-session link, list, delete |
 | Webhooks | list, create, test, delete |
-| Workspace ops | delete, `queue/status`, `schedule_dream`, `jobs` |
+| Workspace ops | delete, `schedule_dream`, `jobs` |
 
 The exact method and path pairs live in [`NotImplementedEndpoints.cs`](src/Nachos.Api/Endpoints/NotImplementedEndpoints.cs).
 
@@ -126,6 +134,13 @@ curl -s -X POST http://127.0.0.1:5080/v3/workspaces/list \
   -H "Content-Type: application/json" -d '{}'
 ```
 
+Conclusions appear on their own: with the in-memory provider the API also runs the worker, and the fake AI is on because no Azure OpenAI endpoint is set. Idle polling backs off to 15 seconds, so allow up to about 15 seconds after the message.
+
+```bash
+curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/conclusions/list   -H "Content-Type: application/json" -d '{}'
+curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/peers/alice/representation   -H "Content-Type: application/json" -d '{}'
+```
+
 To call an authenticated server, configure a signing key and send a NachosKey minted with that same secret. See the [authentication guide](https://brendankowitz.github.io/nachos/guides/auth/).
 
 The API selects SQL Server when `Nachos:SqlServer:ConnectionString` is set, or when `ConnectionStrings:nachos` is set (that is what the AppHost provides). A configured value that is blank or has no database fails startup. It does not fall back to memory.
@@ -136,7 +151,7 @@ The API selects SQL Server when `Nachos:SqlServer:ConnectionString` is set, or w
 dotnet run --project src/Nachos.AppHost --launch-profile http
 ```
 
-This starts the Aspire dashboard (`http://localhost:15180`; the login URL is printed in the console), a SQL Server 2025 container with a persistent data volume, and the API. In a Development run the AppHost deploys the schema and injects a signing key whose id is `dev`. It does **not** disable authentication, so `/v3` returns `401` until you present a NachosKey minted with that same secret and `--kid dev`. `GET /health/ready` reports `Healthy` once the schema is deployed. The API port is the one Aspire assigns; read it from the dashboard.
+This starts the Aspire dashboard (`http://localhost:15180`; the login URL is printed in the console), a SQL Server 2025 container with a persistent data volume, the API, and the worker, which waits for the API (and so for the schema). Both run the fake AI unless `AzureOpenAI:Endpoint` is configured for the AppHost. In a Development run the AppHost deploys the schema and injects a signing key whose id is `dev`. It does **not** disable authentication, so `/v3` returns `401` until you present a NachosKey minted with that same secret and `--kid dev`. `GET /health/ready` reports `Healthy` once the schema is deployed. The API port is the one Aspire assigns; read it from the dashboard.
 
 Use the in-memory commands above when you want to try the resources without minting a key.
 
@@ -230,15 +245,16 @@ flowchart LR
 | Project | Role |
 | --- | --- |
 | [`Nachos.Abstractions`](src/Nachos.Abstractions) | Domain records, request and response contracts, `INachosClient`, store interfaces, filters. |
-| [`Nachos.Core`](src/Nachos.Core) | In-process `INachosClient`, validation, configuration resolution, key issuing, token counting. |
-| [`Nachos.Hosting`](src/Nachos.Hosting) | `AddNachos(...)` and the provider builder. |
+| [`Nachos.Core`](src/Nachos.Core) | In-process `INachosClient`, validation, configuration resolution, key issuing, token counting, the LLM layer, the Deriver and the worker loops. |
+| [`Nachos.Hosting`](src/Nachos.Hosting) | `AddNachos(...)`, the provider builder, and the AI and worker builders (`UseAzureOpenAI`, `UseFakeAI`, `AddNachosWorker`). |
 | [`Nachos.DataLayer.InMemory`](src/DataLayer/Nachos.DataLayer.InMemory) | Non-durable provider for tests and development. |
 | [`Nachos.DataLayer.SqlServer`](src/DataLayer/Nachos.DataLayer.SqlServer) | SQL Server provider and the `SchemaDeployer`. |
 | [`Nachos.DataLayer.SqlServer.Database`](src/DataLayer/Nachos.DataLayer.SqlServer.Database) and [`.Sql2025`](src/DataLayer/Nachos.DataLayer.SqlServer.Database.Sql2025) | Database projects that own the DDL and produce the embedded dacpacs. |
 | [`Nachos.Api`](src/Nachos.Api) | ASP.NET Core minimal API for `/v3`, authentication and idempotency. |
 | [`Nachos.Client`](src/Nachos.Client) | HTTP implementation of `INachosClient`. |
 | [`Nachos.Cli`](src/Nachos.Cli) | The `nachos` bootstrap command line. |
-| [`Nachos.AppHost`](src/Nachos.AppHost) | Aspire local-development host (SQL Server 2025 plus the API). |
+| [`Nachos.Worker`](src/Nachos.Worker) | Background host for the queue consumer (Deriver) and the reconciler; SQL Server only. |
+| [`Nachos.AppHost`](src/Nachos.AppHost) | Aspire local-development host (SQL Server 2025, the API and the worker). |
 | [`Nachos.ServiceDefaults`](src/Nachos.ServiceDefaults) | OpenTelemetry, health checks, shared service defaults. |
 | [`infra/`](infra), [`azure.yaml`](azure.yaml) | Bicep and `azd` definitions for Azure Container Apps and Azure SQL. |
 

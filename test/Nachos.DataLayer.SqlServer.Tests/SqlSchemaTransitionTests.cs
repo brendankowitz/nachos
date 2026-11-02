@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -138,7 +139,7 @@ public sealed class SqlSchemaTransitionTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
         };
-        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
+        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
     }
 
     private static async Task<object?> ScalarAsync(string connectionString, string sql)

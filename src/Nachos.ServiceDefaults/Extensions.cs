@@ -19,6 +19,11 @@ public static class Extensions
 {
     private const string LiveTag = "live";
 
+    // ServiceDefaults is shared with hosts that do not reference Core, so these repeat NachosChatClients.TelemetrySourceName
+    // and WorkerMetrics.MeterName; an Architecture test pins them to the originals.
+    public const string LlmSourceName = "Nachos.Llm";
+    public const string WorkerMeterName = "Nachos.Worker";
+
     /// <summary>
     /// Adds OpenTelemetry (traces, metrics, logs), service discovery, standard HTTP resilience,
     /// and the default health checks.
@@ -57,9 +62,10 @@ public static class Extensions
             .WithMetrics(metrics => metrics
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation())
+                .AddRuntimeInstrumentation()
+                .AddMeter(LlmSourceName, WorkerMeterName))
             .WithTracing(tracing => tracing
-                .AddSource(builder.Environment.ApplicationName)
+                .AddSource(builder.Environment.ApplicationName, LlmSourceName)
                 .AddAspNetCoreInstrumentation(options =>
                     // Health probes would otherwise dominate trace volume.
                     options.Filter = context =>

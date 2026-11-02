@@ -53,6 +53,12 @@ public sealed class InMemoryFilterConformanceTests : FilterConformanceTests
                 message.CreatedAt,
                 message.Metadata);
         }
+
+        foreach (var conclusion in dataset.Conclusions)
+        {
+            Store.SeedConclusion(
+                scope, conclusion.Id, conclusion.Observer, conclusion.Observed, conclusion.Session, conclusion.Content, conclusion.CreatedAt);
+        }
     }
 
     protected override async Task<IReadOnlyList<string>> QueryAsync(ResourceKind kind, FilterNode? filter)
@@ -68,6 +74,9 @@ public sealed class InMemoryFilterConformanceTests : FilterConformanceTests
                     (page, ct) => Store.Peers.ListAsync(scope, PeerKind.All, filter, page, ct), p => p.Name);
             case ResourceKind.Session:
                 return await CollectAsync((page, ct) => Store.Sessions.ListAsync(scope, filter, page, ct), s => s.Name);
+            case ResourceKind.Conclusion:
+                return await CollectAsync(
+                    (page, ct) => Store.Conclusions.ListAsync(scope, filter, ConclusionOrder.CreatedAt, page, ct), c => c.PublicId);
             default:
                 var ids = new List<string>();
                 foreach (var session in dataset.Sessions)

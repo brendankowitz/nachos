@@ -62,7 +62,7 @@ public sealed class MessageEnvelopeLocationTests
             body.GetProperty("messages").Deserialize<MessageCreate[]>(OriginalDtoOptions));
         var store = Substitute.For<IMemoryStore>();
         var counter = new RecordingTokenCounter();
-        var service = new NachosService(store, counter,
+        var service = Memory.NachosServiceFactory.Create(store, counter,
             new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
 
         var actual = await Record.ExceptionAsync(() =>
@@ -129,7 +129,7 @@ public sealed class MessageEnvelopeLocationTests
         var envelope = InMemoryServiceFixture.Json("{\"messages\":" + body.GetRawText() + "}", 100);
         var store = Substitute.For<IMemoryStore>();
         var counter = new RecordingTokenCounter();
-        var service = new NachosService(store, counter,
+        var service = Memory.NachosServiceFactory.Create(store, counter,
             new RequestValidator(Options.Create(new NachosOptions()), counter), Substitute.For<IKeyIssuer>());
 
         var error = await Should.ThrowAsync<RequestValidationException>(() =>

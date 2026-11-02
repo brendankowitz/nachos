@@ -21,6 +21,10 @@ public sealed class StrictDataTests
     private const string MessageJson =
         """{"id":"m1","content":"hi","peer_id":"alice","session_id":"s1","created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":1}""";
 
+    private const string ConclusionJson =
+        """{"id":"c1","content":"c","observer_id":"alice","observed_id":"bob","session_id":null,"level":"explicit","times_derived":1,"source_ids":[],"created_at":"2026-10-08T12:00:00Z"}""";
+    private const string RepresentationJson = """{"representation":""}""";
+
     /// <summary>Each JSON-data ingress: the call, the response it needs, and where the value lands in the sent body.</summary>
     private static readonly Dictionary<string, (Func<INachosClient, JsonObject, Task> Call, string Response, Func<JsonNode, JsonNode?> Sent)> Sites = new()
     {
@@ -42,6 +46,12 @@ public sealed class StrictDataTests
         ["ListPeerSessions.filters"] = ((c, v) => c.ListPeerSessionsAsync("w1", "alice", v, new PageRequest()), Page(SessionJson), b => b["filters"]),
         ["ListSessions.filters"] = ((c, v) => c.ListSessionsAsync("w1", v, new PageRequest()), Page(SessionJson), b => b["filters"]),
         ["ListMessages.filters"] = ((c, v) => c.ListMessagesAsync("w1", "s1", v, new PageRequest()), Page(MessageJson), b => b["filters"]),
+        ["ListConclusions.filters"] = ((c, v) => c.ListConclusionsAsync("w1", v, new PageRequest()), Page(ConclusionJson), b => b["filters"]),
+        ["QueryConclusions.filters"] = ((c, v) => c.QueryConclusionsAsync("w1", new ConclusionQuery("q", Filters: v)), "[]", b => b["filters"]),
+        ["GetRepresentation.filters"] = (
+            (c, v) => c.GetRepresentationAsync("w1", "alice", new PeerRepresentationGet(Filters: v)), RepresentationJson, b => b["filters"]),
+        ["GetRepresentation.scope"] = (
+            (c, v) => c.GetRepresentationAsync("w1", "alice", new PeerRepresentationGet(Scope: v)), RepresentationJson, b => b["scope"]),
     };
 
     public static TheoryData<string> SiteNames() => [.. Sites.Keys];
@@ -67,6 +77,9 @@ public sealed class StrictDataTests
         var parameters = typeof(INachosClient).GetMethods()
             .SelectMany(m => m.GetParameters().Where(p => p.ParameterType == typeof(JsonObject)).Select(p => $"{m.Name[..^"Async".Length]}.{p.Name}"))
             .Append("CreateMessages.metadata")
+            .Append("QueryConclusions.filters")
+            .Append("GetRepresentation.filters")
+            .Append("GetRepresentation.scope")
             .ToHashSet(StringComparer.Ordinal);
 
         parameters.ShouldBe(Sites.Keys.ToHashSet(StringComparer.Ordinal), ignoreOrder: true);

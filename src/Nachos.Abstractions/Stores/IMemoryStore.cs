@@ -51,4 +51,20 @@ public interface IMemoryStore
 
     /// <summary>Read access to stored idempotency records.</summary>
     IIdempotencyStore Idempotency { get; }
+
+    /// <summary>Conclusion collections, including the fenced derivation commit.</summary>
+    IConclusionStore Conclusions { get; }
+
+    IPeerCardStore PeerCards { get; }
+
+    IWorkQueue WorkQueue { get; }
+
+    IEmbeddingStore Embeddings { get; }
+
+    /// <summary>
+    /// True when <paramref name="exception"/>, thrown by an operation of this store, is a failure that retrying later
+    /// can fix: a deadlock, a timeout, a dropped connection, or a database that is briefly unavailable or throttling.
+    /// The background workers retry such a failure without charging it to the work.
+    /// </summary>
+    bool IsTransientFailure(Exception exception);
 }

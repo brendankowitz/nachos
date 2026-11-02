@@ -10,7 +10,7 @@ public static class FilterColumns
     /// <summary>A workspace, peer or session name: the public, case-sensitive id.</summary>
     public const string Name = "Name";
 
-    /// <summary>A message's public id.</summary>
+    /// <summary>A message's or conclusion's public id.</summary>
     public const string PublicId = "PublicId";
 
     /// <summary>The row's creation timestamp.</summary>
@@ -29,8 +29,25 @@ public static class FilterColumns
     /// </summary>
     public const string PeerId = "PeerId";
 
-    /// <summary>On a message: the name of the session it belongs to.</summary>
+    /// <summary>
+    /// On a message: the name of the session it belongs to. On a conclusion: the name of the session it is attributed
+    /// to, which may be unset (<see cref="FilterOp.IsNull"/> and <see cref="FilterOp.Ne"/> match an unset value).
+    /// </summary>
     public const string SessionId = "SessionId";
+
+    /// <summary>On a conclusion: the observer peer's name.</summary>
+    public const string ObserverId = "ObserverId";
+
+    /// <summary>On a conclusion: the observed peer's name.</summary>
+    public const string ObservedId = "ObservedId";
+
+    /// <summary>
+    /// On a conclusion: its level, as text, the lowercase wire name (<see cref="Domain.ConclusionLevelNames.Of"/>:
+    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Always set. Core's visibility rules use
+    /// it; it is deliberately <b>not</b> a wire filter field (not in <see cref="ResourceFields"/>), so only hand-built
+    /// nodes name it.
+    /// </summary>
+    public const string Level = "Level";
 
     /// <summary>A message's text content.</summary>
     public const string Content = "Content";
@@ -106,6 +123,16 @@ public static class ResourceFields
             ["metadata"] = Metadata,
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
+    private static readonly IReadOnlyDictionary<string, FieldDefinition> Conclusion =
+        new Dictionary<string, FieldDefinition>(StringComparer.Ordinal)
+        {
+            ["id"] = new(FilterColumns.PublicId, FieldType.Text),
+            ["observer_id"] = new(FilterColumns.ObserverId, FieldType.Text),
+            ["observed_id"] = new(FilterColumns.ObservedId, FieldType.Text),
+            ["session_id"] = new(FilterColumns.SessionId, FieldType.Text),
+            ["created_at"] = CreatedAt,
+        }.ToFrozenDictionary(StringComparer.Ordinal);
+
     /// <summary>The fields a filter on <paramref name="kind"/> may name. Other top-level keys are ignored.</summary>
     public static IReadOnlyDictionary<string, FieldDefinition> For(ResourceKind kind) => kind switch
     {
@@ -113,6 +140,7 @@ public static class ResourceFields
         ResourceKind.Peer => Peer,
         ResourceKind.Session => Session,
         ResourceKind.Message => Message,
+        ResourceKind.Conclusion => Conclusion,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown resource kind."),
     };
 }

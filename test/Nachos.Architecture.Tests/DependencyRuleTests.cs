@@ -23,6 +23,13 @@ public sealed class DependencyRuleTests
     }
 
     [Fact]
+    public void ServiceDefaults_TelemetrySources_MatchTheNamesCoreEmits()
+    {
+        Nachos.ServiceDefaults.Extensions.LlmSourceName.ShouldBe(Nachos.Core.Llm.NachosChatClients.TelemetrySourceName);
+        Nachos.ServiceDefaults.Extensions.WorkerMeterName.ShouldBe(Nachos.Core.Worker.WorkerMetrics.MeterName);
+    }
+
+    [Fact]
     public void Abstractions_ReferencesOnlyBcl()
     {
         var references = ReferenceNames(typeof(Nachos.Abstractions.AssemblyMarker));

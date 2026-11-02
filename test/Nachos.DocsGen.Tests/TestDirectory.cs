@@ -34,7 +34,8 @@ internal sealed class TestDirectory : IDisposable
         foreach (var (assembly, project) in new (Assembly, string)[] {
             (typeof(NachosOptions).Assembly, "src/Nachos.Core"),
             (typeof(SqlServerOptions).Assembly, "src/DataLayer/Nachos.DataLayer.SqlServer"),
-            (typeof(ReasoningConfiguration).Assembly, "src/Nachos.Abstractions") })
+            (typeof(ReasoningConfiguration).Assembly, "src/Nachos.Abstractions"),
+            (typeof(Nachos.Hosting.AzureOpenAIOptions).Assembly, "src/Nachos.Hosting") })
         {
             var name = assembly.GetName().Name!;
             Write($"{project}/bin/{RealProducerTests.Configuration}/net10.0/{name}.dll", File.ReadAllBytes(assembly.Location));
@@ -43,6 +44,7 @@ internal sealed class TestDirectory : IDisposable
         }
         Write("src/Nachos.Api/Program.cs", File.ReadAllBytes(Path.Combine(RealProducerTests.Root, "src/Nachos.Api/Program.cs")));
         foreach (var path in new[] { "src/Nachos.Api/Providers/ProviderSelection.cs",
+            "src/DataLayer/Nachos.DataLayer.SqlServer/SqlServerConnectionSelection.cs",
             "src/Nachos.Api/Auth/AuthenticationRegistration.cs", "src/Nachos.Hosting/NachosSigningKeyConfigurationExtensions.cs" })
             Write(path, File.ReadAllBytes(Path.Combine(RealProducerTests.Root, path)));
     }

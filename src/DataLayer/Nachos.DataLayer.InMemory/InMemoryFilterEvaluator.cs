@@ -91,6 +91,22 @@ internal static class InMemoryFilterEvaluator
             _ => throw UnknownColumn(column, ResourceKind.Message),
         }));
 
+    /// <remarks>
+    /// A conclusion has no metadata, and its session is optional: an unset session is an empty <see cref="AnyOf"/>, so
+    /// only <see cref="FilterOp.IsNull"/> and <see cref="FilterOp.Ne"/> match it, as for unset metadata.
+    /// </remarks>
+    public static bool Matches(PreparedFilter? filter, ConclusionRecord conclusion) =>
+        filter is null || filter.Matches(new Row(new JsonObject(), column => column switch
+        {
+            FilterColumns.PublicId => conclusion.PublicId,
+            FilterColumns.ObserverId => conclusion.ObserverName,
+            FilterColumns.ObservedId => conclusion.ObservedName,
+            FilterColumns.SessionId => new AnyOf(conclusion.SessionName is { } session ? [session] : []),
+            FilterColumns.CreatedAt => conclusion.CreatedAt,
+            FilterColumns.Level => ConclusionLevelNames.Of(conclusion.Level),
+            _ => throw UnknownColumn(column, ResourceKind.Conclusion),
+        }));
+
     /// <summary>
     /// A row as the evaluator sees it. A column value is a <see cref="string"/>, <see cref="decimal"/>,
     /// <see cref="DateTimeOffset"/>, <see cref="bool"/>, or an <see cref="AnyOf"/> for an existential column.

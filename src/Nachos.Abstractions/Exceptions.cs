@@ -63,6 +63,25 @@ public sealed class AuthException : NachosException
 }
 
 /// <summary>
+/// A service the request depends on is missing or unavailable, such as the embedding model a semantic read needs (503).
+/// The message says what is missing.
+/// </summary>
+public sealed class ServiceUnavailableException : NachosException
+{
+    /// <param name="retryAfter">
+    /// When the service is expected back (sent as <c>Retry-After</c>); null when it is missing rather than briefly down,
+    /// so retrying soon will not help.
+    /// </param>
+    public ServiceUnavailableException(string message, Exception? innerException = null, TimeSpan? retryAfter = null)
+        : base(message, innerException)
+    {
+        RetryAfter = retryAfter;
+    }
+
+    public TimeSpan? RetryAfter { get; }
+}
+
+/// <summary>
 /// An Idempotency-Key was reused with a different request (422). Its problem <c>type</c> is
 /// <see cref="ProblemTypes.IdempotencyKeyReused"/>.
 /// </summary>
@@ -87,4 +106,19 @@ public sealed class IdempotencyDuplicateException : NachosException
     }
 
     public string Key { get; }
+}
+
+/// <summary>
+/// Thrown by a write made under a <see cref="Domain.WorkLease"/> that is no longer held: it was completed, failed or released, or
+/// another owner reclaimed the unit after it expired. Nothing was written. Never surfaced over HTTP.
+/// </summary>
+public sealed class LeaseLostException : NachosException
+{
+    public LeaseLostException(string workUnitKey, Exception? innerException = null)
+        : base($"The lease on work unit '{workUnitKey}' is no longer held; nothing was written.", innerException)
+    {
+        WorkUnitKey = workUnitKey;
+    }
+
+    public string WorkUnitKey { get; }
 }

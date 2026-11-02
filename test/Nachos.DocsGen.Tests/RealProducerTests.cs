@@ -35,7 +35,7 @@ public sealed class RealProducerTests
         File.Exists(Path.Combine(restoreMetadata, "project.assets.json")).ShouldBeTrue();
         foreach (var name in new[] { "DocsGen.csproj.nuget.g.props", "DocsGen.csproj.nuget.g.targets", "project.nuget.cache", "DocsGen.csproj.nuget.dgspec.json" })
             File.Exists(Path.Combine(restoreMetadata, name)).ShouldBeTrue();
-        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
+        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.Hosting", "Nachos.DataLayer.SqlServer" })
             File.Exists(Path.Combine(artifacts, "obj", "options-xml", Configuration, name + ".xml")).ShouldBeTrue();
         Directory.Exists(Path.Combine(Root, "eng", "DocsGen", "bin")).ShouldBeFalse();
         Directory.EnumerateFiles(Path.Combine(Root, "eng", "DocsGen"), "*", SearchOption.AllDirectories)
@@ -96,7 +96,7 @@ public sealed class RealProducerTests
         var cliPath = $"src/Nachos.Cli/bin/{Configuration}/net10.0/Nachos.Cli.dll";
         evidence[cliPath]!.GetValue<string>().ShouldBe(Convert.ToHexStringLower(
             SHA256.HashData(File.ReadAllBytes(Path.Combine(Root, cliPath)))));
-        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.DataLayer.SqlServer" })
+        foreach (var name in new[] { "Nachos.Core", "Nachos.Abstractions", "Nachos.Hosting", "Nachos.DataLayer.SqlServer" })
         {
             var xmlPath = $"artifacts/docsgen/obj/options-xml/{Configuration}/{name}.xml";
             evidence[xmlPath]!.GetValue<string>().ShouldBe(Convert.ToHexStringLower(
@@ -107,9 +107,9 @@ public sealed class RealProducerTests
             "/" + otherConfiguration + "/", StringComparison.Ordinal));
         var counts = compatibility["counts"]!;
         counts["actualOperations"]!.GetValue<int>().ShouldBe(56);
-        counts["declaredImplemented"]!.GetValue<int>().ShouldBe(21);
+        counts["declaredImplemented"]!.GetValue<int>().ShouldBe(31);
         counts["declaredPartial"]!.GetValue<int>().ShouldBe(1);
-        counts["staged501"]!.GetValue<int>().ShouldBe(34);
+        counts["staged501"]!.GetValue<int>().ShouldBe(24);
         counts["missing"]!.GetValue<int>().ShouldBe(1);
         counts["extensions"]!.GetValue<int>().ShouldBe(2);
         foreach (var path in new[] { "/v3/keys", "/v3/admin/grants" })
@@ -175,7 +175,7 @@ public sealed class RealProducerTests
         {
             var value = property.GetValue(options);
             var path = prefix + ":" + property.Name;
-            if (value is null or string or bool or int) yield return (path, value);
+            if (value is null or string or bool or int or double or float or TimeSpan) yield return (path, value);
             else foreach (var child in Defaults(value, path)) yield return child;
         }
     }

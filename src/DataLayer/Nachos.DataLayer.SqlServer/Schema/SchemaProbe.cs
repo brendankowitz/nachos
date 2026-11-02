@@ -55,6 +55,27 @@ internal static class SchemaProbe
         }
     }
 
+    /// <summary>
+    /// The first table the embedded model defines that the database lacks, or null. A stamp only says which version was
+    /// deployed; a database stamped current by an earlier build of the same version can still miss tables added since.
+    /// One <c>sys.tables</c> read compared with the model's table names, which are read once per process.
+    /// </summary>
+    public static async Task<string?> FindMissingTableAsync(string connectionString, DacpacTarget target, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(ct);
+
+        var present = new HashSet<string>(StringComparer.Ordinal);
+        await using var command = new SqlCommand("SELECT [name] FROM sys.tables WHERE [schema_id] = SCHEMA_ID(N'dbo')", connection);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            present.Add(reader.GetString(0));
+        }
+
+        return DacpacModel.TableNames(target).FirstOrDefault(table => !present.Contains(table));
+    }
+
     /// <exception cref="InvalidOperationException">The connection string reaches a system database.</exception>
     /// <exception cref="NotSupportedException">The server platform has no matching schema package.</exception>
     public static async Task<Observed> ReadAsync(string connectionString, CancellationToken ct)

@@ -10,6 +10,9 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// <see cref="Grants"/>. Each <see cref="WorkspaceEntry.Gate"/> guards that workspace's peers, sessions, memberships,
 /// messages and idempotency records. The two are never held together: an operation looks its workspace up under
 /// <see cref="Gate"/>, releases it, then takes the workspace's gate. That is safe because workspaces are never removed.
+/// <see cref="WorkQueueState.Gate"/> guards <see cref="Queue"/>. It may be taken while a workspace gate is held (an append
+/// enqueues, a derivation commit completes its lease, both atomically with their workspace writes), never the other way
+/// round, and never together with <see cref="Gate"/>.
 /// </para>
 /// <para>
 /// Critical sections are short and synchronous, and stored <c>JsonObject</c>s are only read or cloned inside them,
@@ -27,6 +30,9 @@ internal sealed class InMemoryState(TimeProvider clock)
     public Dictionary<string, WorkspaceEntry> Workspaces { get; } = new(StringComparer.Ordinal);
 
     public List<GrantRecord> Grants { get; } = [];
+
+    /// <summary>The work items and leases of every workspace.</summary>
+    public WorkQueueState Queue { get; } = new();
 
     /// <summary>Rejects calls made from inside this store's <see cref="IdempotencyWrite.SerializeResponse"/> callbacks.</summary>
     public SerializeResponseGuard SerializeResponseGuard { get; } = new();
@@ -52,6 +58,15 @@ internal sealed class InMemoryState(TimeProvider clock)
         lock (Gate)
         {
             return Workspaces.GetValueOrDefault(name);
+        }
+    }
+
+    /// <summary>Every workspace, for operations that span them. Takes <see cref="Gate"/>.</summary>
+    public IReadOnlyList<WorkspaceEntry> AllWorkspaces()
+    {
+        lock (Gate)
+        {
+            return [.. Workspaces.Values];
         }
     }
 

@@ -1,5 +1,7 @@
 using System.Data;
+using Microsoft.Data;
 using Microsoft.Data.SqlClient;
+using Microsoft.Data.SqlTypes;
 
 namespace Nachos.DataLayer.SqlServer.Storage;
 
@@ -34,4 +36,14 @@ internal static class SqlParameters
         new(name, SqlDbType.Decimal) { Precision = 38, Scale = 0, Value = value };
 
     public static SqlParameter Binary(string name, byte[] value) => new(name, SqlDbType.Binary, value.Length) { Value = value };
+
+    public static SqlParameter Byte(string name, byte value) => new(name, SqlDbType.TinyInt) { Value = value };
+
+    /// <summary>A <c>bigint</c> that may be <c>NULL</c>.</summary>
+    public static SqlParameter OptionalLong(string name, long? value) =>
+        new(name, SqlDbType.BigInt) { Value = value is { } set ? set : DBNull.Value };
+
+    /// <summary>A <c>vector</c>; the caller has checked its length (<see cref="Vectors.Require"/>).</summary>
+    public static SqlParameter Vector(string name, ReadOnlyMemory<float> value) =>
+        new(name, SqlDbTypeExtensions.Vector) { Value = new SqlVector<float>(value) };
 }

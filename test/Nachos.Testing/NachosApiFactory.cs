@@ -3,6 +3,8 @@ using Azure.Security.KeyVault.Secrets;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -12,6 +14,7 @@ using Microsoft.IdentityModel.LoggingExtensions;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Nachos.Core.Keys;
+using Nachos.Core.Worker;
 
 namespace Nachos.Testing;
 
@@ -23,6 +26,12 @@ public class NachosApiFactory : WebApplicationFactory<Program>
 
     static NachosApiFactory() =>
         LogHelper.Logger = new IdentityLoggerAdapter(FixtureLogging.CreateLogger("OfflineIdentityModel"));
+
+    /// <summary>
+    /// Whether the in-process queue consumer and reconciler run. They are off by default so that a test's own messages are not
+    /// derived behind its back; a test of the worker opts in.
+    /// </summary>
+    public bool RunWorkerLoops { get; init; }
 
     public WebApplicationFactory<Program> WithAuth(SigningKeyOptions signingKeys) => WithWebHostBuilder(builder =>
     {
@@ -44,6 +53,17 @@ public class NachosApiFactory : WebApplicationFactory<Program>
                 ["OTEL_EXPORTER_OTLP_ENDPOINT"] = null,
                 ["APPLICATIONINSIGHTS_CONNECTION_STRING"] = null,
             });
+        });
+        builder.ConfigureTestServices(services =>
+        {
+            if (!RunWorkerLoops)
+            {
+                foreach (var loop in services.Where(d => d.ServiceType == typeof(IHostedService)
+                    && d.ImplementationType is { } type && (type == typeof(QueueConsumerService) || type == typeof(ReconcilerService))).ToList())
+                {
+                    services.Remove(loop);
+                }
+            }
         });
         builder.ConfigureServices(services =>
         {

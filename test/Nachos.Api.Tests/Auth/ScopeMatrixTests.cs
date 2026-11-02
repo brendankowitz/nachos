@@ -13,6 +13,7 @@ public sealed partial class ScopeMatrixTests
     internal const string P = W + "/peers/{peer_id}";
     internal const string S = W + "/sessions/{session_id}";
     internal const string M = S + "/messages";
+    internal const string C = W + "/conclusions";
     internal sealed record Route(string Method, string Template, string? Body, string Level, int Status = 200);
     internal static readonly Route[] Implemented =
     [
@@ -38,6 +39,19 @@ public sealed partial class ScopeMatrixTests
         new("POST", M + "/list", "{}", "member"),
         new("GET", M + "/{message_id}", null, "member"),
         new("PUT", M + "/{message_id}", "{}", "session"),
+        // M2 memory routes (spec §9.2, Honcho public docs): the peer routes follow "a peer-scoped key acts on its own peer"
+        // and "a session-scoped key ... cannot reach peer routes"; conclusions and queue status are workspace routes
+        // (fallback: the docs are silent). The conclusion id is "missing", so an authorized read is a 404, not a 401.
+        new("POST", C, """{"conclusions":[{"content":"c","observer_id":"p1","observed_id":"p1"}]}""", "workspace", 201),
+        new("POST", C + "/list", "{}", "workspace"),
+        new("POST", C + "/query", """{"query":"q"}""", "workspace"),
+        new("GET", C + "/{conclusion_id}", null, "workspace", 404),
+        new("DELETE", C + "/{conclusion_id}", null, "workspace", 204),
+        new("GET", P + "/card", null, "peer"),
+        new("PUT", P + "/card", """{"peer_card":["likes tea"]}""", "peer"),
+        new("GET", P + "/context", null, "peer"),
+        new("POST", P + "/representation", "{}", "peer"),
+        new("GET", W + "/queue/status", null, "workspace"),
     ];
 
     internal static Route[] AllRoutes()
@@ -115,6 +129,39 @@ public sealed partial class ScopeMatrixTests
         await host.Store.Sessions.RemovePeersAsync("A", "s1", ["p1"], default);
         await host.Send("GET", Concrete(S + "/peers"), null, AuthHost.Key("peer"), 401);
         await host.Send("GET", "/v3/workspaces/A/sessions/missing/peers", null, AuthHost.Key("peer"), 401);
+    }
+
+    [Fact]
+    public async Task PeerKey_ReadsItsOwnViewOfAnotherTarget_ButNeverAnotherPeersView()
+    {
+        using var host = new AuthHost();
+        await host.Seed();
+        var peer = AuthHost.Key("peer");
+        await host.Send("GET", "/v3/workspaces/A/peers/p1/card?target=p2", null, peer, 200);
+        await host.Send("GET", "/v3/workspaces/A/peers/p1/context?target=p2", null, peer, 200);
+        await host.Send("POST", "/v3/workspaces/A/peers/p1/representation", """{"target":"p2"}""", peer, 200);
+        await host.Send("GET", "/v3/workspaces/A/peers/p2/card?target=p1", null, peer, 401);
+        await host.Send("POST", "/v3/workspaces/A/peers/p2/representation", """{"target":"p1"}""", peer, 401);
+        await host.Send("POST", "/v3/workspaces/A/conclusions/list", "{}", peer, 401);
+    }
+
+    [Fact]
+    public async Task ConclusionIdFromAnotherWorkspace_IsUnreachable()
+    {
+        using var host = new AuthHost();
+        await host.Seed();
+        var admin = AuthHost.Key("admin");
+        await host.Send("POST", "/v3/workspaces/B/peers", """{"id":"q1"}""", admin, 200);
+        var created = await host.Send("POST", "/v3/workspaces/B/conclusions",
+            """{"conclusions":[{"content":"belongs to B","observer_id":"q1","observed_id":"q1"}]}""", admin, 201);
+        var id = created[0].GetProperty("id").GetString()!;
+        var workspace = AuthHost.Key("workspace");
+
+        await host.Send("GET", "/v3/workspaces/A/conclusions/" + id, null, workspace, 404);
+        await host.Send("DELETE", "/v3/workspaces/A/conclusions/" + id, null, workspace, 204);
+        (await host.Send("POST", "/v3/workspaces/A/conclusions/list", "{}", workspace, 200)).GetProperty("total").GetInt32().ShouldBe(0);
+        (await host.Send("GET", "/v3/workspaces/B/conclusions/" + id, null, admin, 200))
+            .GetProperty("content").GetString().ShouldBe("belongs to B");
     }
 
     internal static string Concrete(string template, string message = "message") =>

@@ -50,5 +50,7 @@ authenticated server; do not embed credentials in code. Typed errors,
 cancellation and bounded retries are implemented in the transport. Preserve
 its default redaction pipeline when customizing HTTP handlers.
 
-This API performs CRUD, not reasoning or memory synthesis. A successful message
-write does not mean a worker derived a summary or conclusion.
+A successful message write does not mean a worker has derived conclusions yet:
+that happens later, in a worker. Add `AddNachosWorker()` and an AI backend
+(`UseAzureOpenAI` or the offline `UseFakeAI`) to run the loops in your own host;
+see [Run the worker](/nachos/guides/run-the-worker/).

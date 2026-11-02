@@ -27,11 +27,15 @@ public sealed class InMemoryBuilderExtensionsTests
         return services;
     }
 
+    /// <summary>Starts this provider's hosted services only; AddNachos adds its own (the missing-embedding warning).</summary>
     private static async Task StartHostedServicesAsync(IServiceProvider provider)
     {
-        foreach (var hosted in provider.GetServices<IHostedService>())
+        foreach (var hosted in InMemoryHostedServices(provider))
             await hosted.StartAsync(Ct);
     }
+
+    private static IEnumerable<IHostedService> InMemoryHostedServices(IServiceProvider provider) =>
+        provider.GetServices<IHostedService>().Where(h => h.GetType().Assembly == typeof(InMemoryMemoryStore).Assembly);
 
     [Fact]
     public async Task UseInMemory_OutsideDevelopment_LogsWarning()
@@ -121,9 +125,8 @@ public sealed class InMemoryBuilderExtensionsTests
         services.AddNachos(b => b.UseInMemory().UseInMemory());
 
         services.Count(d => d.ServiceType == typeof(IMemoryStore)).ShouldBe(1);
-        services.Count(d => d.ServiceType == typeof(IHostedService)).ShouldBe(1);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
-        provider.GetServices<IHostedService>().Count().ShouldBe(1);
+        InMemoryHostedServices(provider).Count().ShouldBe(1);
         provider.GetServices<IMemoryStore>().Count().ShouldBe(1);
     }
 

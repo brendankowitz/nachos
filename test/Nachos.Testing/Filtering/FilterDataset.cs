@@ -4,20 +4,21 @@ namespace Nachos.Testing.Filtering;
 
 /// <summary>
 /// The rows the shared filter cases run against, mirroring the <c>dataset</c> section of
-/// <c>filter-cases.json</c>. Every workspace is global; the peers, sessions and messages all live in
+/// <c>filter-cases.json</c>. Every workspace is global; the peers, sessions, messages and conclusions all live in
 /// <see cref="ScopeWorkspace"/>, which is one of <see cref="Workspaces"/>.
 /// </summary>
 /// <remarks>
 /// A provider must store the rows exactly as given, which goes beyond what the public store interfaces allow:
-/// it must set <c>CreatedAt</c> on workspaces, peers and sessions, a session's <c>is_active</c>, and message public
-/// ids. Providers do this through their own seeding path (for example the clock, or direct inserts).
+/// it must set <c>CreatedAt</c> on workspaces, peers, sessions and conclusions, a session's <c>is_active</c>, and message
+/// and conclusion public ids. Providers do this through their own seeding path (for example the clock, or direct inserts).
 /// </remarks>
 public sealed record FilterDataset(
     string ScopeWorkspace,
     IReadOnlyList<DatasetWorkspace> Workspaces,
     IReadOnlyList<DatasetPeer> Peers,
     IReadOnlyList<DatasetSession> Sessions,
-    IReadOnlyList<DatasetMessage> Messages);
+    IReadOnlyList<DatasetMessage> Messages,
+    IReadOnlyList<DatasetConclusion> Conclusions);
 
 /// <summary>A workspace; <paramref name="Name"/> is its id.</summary>
 public sealed record DatasetWorkspace(string Name, DateTimeOffset CreatedAt, JsonObject Metadata);
@@ -51,3 +52,15 @@ public sealed record DatasetMessage(
     int TokenCount,
     DateTimeOffset CreatedAt,
     JsonObject Metadata);
+
+/// <summary>
+/// An explicit conclusion <paramref name="Observer"/> holds about <paramref name="Observed"/>; <paramref name="Id"/> is its
+/// public id, and <paramref name="Session"/> is null when it is not session-attributed.
+/// </summary>
+public sealed record DatasetConclusion(
+    string Id,
+    string Observer,
+    string Observed,
+    string? Session,
+    string Content,
+    DateTimeOffset CreatedAt);
