@@ -6,7 +6,7 @@ namespace Nachos.Hosting;
 
 /// <summary>
 /// Warns at startup when no embedding generator is registered: conclusions created through the API then stay unembedded
-/// (the reconciler runs in the worker) and semantic queries fail.
+/// (the reconciler runs in the worker), semantic queries fail, and message search is lexical only.
 /// </summary>
 internal sealed partial class MissingEmbeddingGeneratorWarning(
     IEnumerable<IEmbeddingGenerator<string, Embedding<float>>> generators,
@@ -26,7 +26,8 @@ internal sealed partial class MissingEmbeddingGeneratorWarning(
 
     [LoggerMessage(
         Level = LogLevel.Warning,
-        Message = "No embedding generator is registered. Semantic queries (conclusion query, representation search) will fail and " +
-                  "API-created conclusions will not be embedded. Call UseAzureOpenAI, UseEmbeddingGenerator or UseFakeAI.")]
+        Message = "No embedding generator is registered. Semantic queries (conclusion query, representation search) will fail, " +
+                  "message search will be lexical only, and API-created conclusions will not be embedded. Call UseAzureOpenAI, " +
+                  "UseEmbeddingGenerator or UseFakeAI.")]
     private static partial void LogNoEmbeddingGenerator(ILogger logger);
 }

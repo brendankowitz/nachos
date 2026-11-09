@@ -626,13 +626,18 @@ Inputs: `max_conclusions`, `search_top_k`, `search_max_distance`, and session al
 
 ### 11.5 Search
 
-`HybridSearchService` runs vector and lexical candidate retrieval (each up to 4 × limit) and fuses the results with reciprocal rank fusion (k = 60). Scopes:
+`HybridSearchService` runs vector and lexical candidate retrieval concurrently (each up to 4 × limit) and fuses the results with reciprocal rank fusion (k = 60): a message scores `Σ 1 / (60 + rank)` over the lists it appears in, appears once, and ties go to the newest message (`CreatedAt`, then `Seq`, descending), then the lowest public id. The top `limit` (1–100, default 10) are returned. Scopes:
 
 - **workspace**: all sessions.
 - **session**: one session.
 - **peer perspective**: sessions the peer attended, constrained to the `JoinedAt`/`LeftAt` membership windows.
 
 Filters come from the filter compiler.
+
+- **Term sanitizer.** User text never reaches the lexical store. `LexicalQuery.Terms` keeps only Unicode word tokens (maximal runs of letters, digits and marks), lower-cased, deduplicated, at most 16. A token longer than the store's 1,000-character term limit is dropped. Quotes, wildcards, parentheses, `~` and the like separate words, so no full-text operator can be formed. A word such as `NEAR` or `AND` survives only as a plain term, which the store quotes. A query with no word token skips lexical retrieval; vector retrieval still runs.
+- **Blank query.** An empty or whitespace `query` returns `[]` and reads nothing (M3 Q5). A missing `query` is a 422.
+- **Lexical-only fallback.** The query is embedded on the request path. Without an embedding generator, search is lexical only and is not an error: the host logs the missing generator once at startup. A transient embedding failure is a 503 with `Retry-After`, as for the other semantic reads. Messages whose chunks are not embedded yet (including messages from before M3, until the reconciler chunks them) are still found lexically.
+- **`W/search` `scope`** is a 422 until M6, like every other scope.
 
 ### 11.6 Session context assembly (Δ hard budget)
 
@@ -689,7 +694,7 @@ Peer cards are cross-session aggregates, so they are **omitted** whenever an all
 **Delivery order:**
 
 - **M2** delivers the policy, the session-allowlist and card-omission rules, and negative tests for its first consumers: representation, card, peer context, and conclusions.
-- **M3** extends it to search, session context, and summaries.
+- **M3** extends it to search, session context, and summaries. Search is a consumer like any other read: the scope is an input to the request's policy, `RestrictMessages` narrows the store query to the allowlisted sessions (an empty allowlist matches nothing), and every fused result passes `Allows` again before it is returned. Session search allowlists its own session, so it can never return another session's message even if the store's scope were wrong. Peer-perspective windows are applied in the store, which owns the membership history.
 - **M4** (chat) and **M6** (scopes, workspace chat) consume it and add rules. They never introduce a parallel check.
 
 ### 11.9 Workspace chat

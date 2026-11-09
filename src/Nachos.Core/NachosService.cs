@@ -8,6 +8,7 @@ using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 
@@ -25,6 +26,7 @@ public sealed partial class NachosService(
     ConclusionService conclusionService,
     PeerContextService peerContext,
     IConfigurationResolver configurationResolver,
+    HybridSearchService search,
     MessageChunker? chunker = null) : INachosClient
 {
     public async Task<Workspace> GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null,
