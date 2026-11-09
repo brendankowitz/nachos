@@ -1,4 +1,5 @@
 using Microsoft.ML.Tokenizers;
+using Nachos.Core.Tokens;
 
 namespace Nachos.Core.Llm;
 
@@ -21,5 +22,5 @@ public sealed record EmbeddingChunking(Tokenizer Tokenizer, int MaxTokens)
 
     /// <summary>The <c>cl100k_base</c> encoding of OpenAI's text-embedding-3 and ada-002 models.</summary>
     public static EmbeddingChunking Cl100kBase(int maxTokens = DefaultMaxTokens) =>
-        new(TiktokenTokenizer.CreateForEncoding("cl100k_base"), maxTokens);
+        new(Cl100kBaseTokenizer.Instance, maxTokens);
 }

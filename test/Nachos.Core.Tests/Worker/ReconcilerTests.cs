@@ -93,6 +93,22 @@ public sealed class ReconcilerTests
     }
 
     [Fact]
+    public async Task FailingBackfill_DoesNotStopTheOtherSteps()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        await AppendUnchunkedAsync(fixture.Store, "one");
+        fixture.Store.FailBackfill = true;
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null, chunker: SmallChunker());
+        // The idempotency purge is the tick's last step, so each count is a tick whose steps all ran.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 2, Interval);
+
+        Gauge(fixture.Metrics, "nachos.queue.eligible_units").ShouldNotBeEmpty();
+        fixture.Logs.At(LogLevel.Error).ShouldContain(m => m.StartsWith("Chunking unchunked messages failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task BackfillIsBoundedPerTick_AndIdempotent()
     {
         await using var fixture = new WorkerFixture(handlerType: null);

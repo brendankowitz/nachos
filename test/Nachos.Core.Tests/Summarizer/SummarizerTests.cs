@@ -128,17 +128,35 @@ public sealed class SummarizerTests : IDisposable
     }
 
     [Fact]
-    public async Task NewestMessageIsAlwaysIncluded_EvenOverBudget()
+    public async Task OversizedNewestMessage_IsTruncatedToTheBudget_AndCoverageStillAdvances()
     {
-        await _fixture.SeedAsync();
-        await _fixture.SayAsync(4);
-        _fixture.Options.Summary.MaxInputTokens = 1;
-        _fixture.Chat.EnqueueText("ok");
+        using var fixture = new SummarizerFixture(counter: new CharacterCounter());
+        await fixture.SeedAsync();
+        await fixture.SayAsync(4);
+        fixture.Chat.EnqueueText("ok");
+        await fixture.HandleAsync(await fixture.AcquireAsync());
+        var probe = fixture.Chat.Requests.Single();
+        var system = probe.Messages.First(m => m.Role == ChatRole.System).Text.Length;
+        var user = probe.Messages.Last(m => m.Role == ChatRole.User).Text;
+        var entries = JsonNode.Parse(user)!["messages"]!.AsArray();
+        var baseline = user.Length - entries.Sum(e => e!.ToJsonString().Length) - (entries.Count - 1);
 
-        await _fixture.HandleAsync(await _fixture.AcquireAsync());
+        await fixture.SeedAsync("S2");
+        await fixture.SayAsync(4, content: number => number == 4 ? new string('z', 5000) : $"m{number}", session: "S2");
+        var budget = system + baseline + 300;
+        fixture.Options.Summary.MaxInputTokens = budget;
+        fixture.Chat.EnqueueText("ok");
+        await fixture.HandleAsync(await fixture.AcquireAsync());
 
-        var input = JsonNode.Parse(_fixture.Chat.Requests.Single().Messages.Last(m => m.Role == ChatRole.User).Text)!;
-        input["messages"]!.AsArray().Select(m => m!["content"]!.GetValue<string>()).ShouldBe(["m4"]);
+        var request = fixture.Chat.Requests[1];
+        var sent = request.Messages.First(m => m.Role == ChatRole.System).Text.Length + request.Messages.Last(m => m.Role == ChatRole.User).Text.Length;
+        sent.ShouldBeLessThanOrEqualTo(budget);
+        var messages = JsonNode.Parse(request.Messages.Last(m => m.Role == ChatRole.User).Text)!["messages"]!.AsArray();
+        var content = messages.ShouldHaveSingleItem()!["content"]!.GetValue<string>();
+        content.ShouldNotBeEmpty();
+        content.Length.ShouldBeLessThan(5000);
+        content.ShouldAllBe(c => c == 'z');
+        (await fixture.Store.Summaries.GetAsync(WorkspaceId, "S2", SummaryKind.Short, Ct)).ShouldNotBeNull().CoversThroughSeq.ShouldBe(4);
     }
 
     [Fact]

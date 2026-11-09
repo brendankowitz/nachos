@@ -2,6 +2,7 @@ using System.Text;
 using Microsoft.ML.Tokenizers;
 using Nachos.Core.Llm;
 using Nachos.Core.Memory;
+using Nachos.Core.Tokens;
 using Shouldly;
 
 namespace Nachos.Core.Tests.Memory;
@@ -57,6 +58,26 @@ public sealed class MessageChunkerTests
 
         chunks[0].ShouldBe(content[..chunks[0].Length]);
         content.ShouldEndWith(chunks[^1]);
+    }
+
+    [Fact]
+    public void SpecialTokenText_IsSizedAsOrdinaryText()
+    {
+        const string special = "<|endoftext|>";
+        Tokens(special).ShouldBeGreaterThan(1);
+        var content = string.Join(' ', Enumerable.Repeat(special, 30));
+
+        var chunks = new MessageChunker(Chunking, 20).Chunk(content);
+
+        chunks.Count.ShouldBeGreaterThan(1);
+        chunks.ShouldAllBe(chunk => Tokens(chunk) <= 20);
+    }
+
+    [Fact]
+    public void ChangedVocabularyBytes_FailClosed()
+    {
+        Should.Throw<InvalidOperationException>(() => Cl100kBaseTokenizer.Create(new MemoryStream([1, 2, 3])));
+        Should.Throw<InvalidOperationException>(() => Cl100kBaseTokenizer.Create(null));
     }
 
     [Fact]

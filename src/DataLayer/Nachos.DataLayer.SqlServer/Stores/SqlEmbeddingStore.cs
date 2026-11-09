@@ -42,6 +42,11 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
         return counts.Single();
     }
 
+    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) =>
+        kind == PendingEmbeddingKind.Conclusion
+            ? CountPendingAsync(ct)
+            : throw new NotSupportedException("Implemented in M3 Task 3");
+
     public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();

@@ -20,9 +20,9 @@ public interface IEmbeddingStore
 
     /// <summary>
     /// How many of the items <see cref="CountPendingAsync(CancellationToken)"/> counts are of <paramref name="kind"/>, for
-    /// the backlog gauges. A store that cannot count by kind keeps this default, which reports the total for every kind.
+    /// the backlog gauges.
     /// </summary>
-    Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) => CountPendingAsync(ct);
+    Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct);
 
     /// <summary>
     /// Stores the embedding of <paramref name="pending"/>'s content. For a conclusion it also records

@@ -219,11 +219,11 @@ public sealed partial class ReconcilerService : BackgroundService
     private async Task TickAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> policies, CancellationToken ct)
     {
         var embedding = _embeddings is null ? new EmbeddingOutcome(0, 0, 0) : await EmbedPendingAsync(_embeddings, ct).ConfigureAwait(false);
-        var backfilled = await BackfillChunksAsync(ct).ConfigureAwait(false);
         var tombstones = await _store.Conclusions.PurgeTombstonesAsync(_options.TombstoneRetention, ct).ConfigureAwait(false);
         var items = await _store.WorkQueue.PruneSucceededAsync(_options.CompletedRetention, ct).ConfigureAwait(false);
         await RefreshBacklogAsync(policies, ct).ConfigureAwait(false);
         var idempotency = await _store.Idempotency.PurgeExpiredAsync(ct).ConfigureAwait(false);
+        var backfilled = await TryBackfillChunksAsync(ct).ConfigureAwait(false);
         LogTick(embedding.Embedded, embedding.Failed, embedding.MarkedFailed, backfilled, tombstones, items, idempotency);
     }
 
@@ -232,6 +232,20 @@ public sealed partial class ReconcilerService : BackgroundService
     /// registered), oldest first, so their chunks join the embedding backlog.
     /// </summary>
     /// <returns>How many messages were chunked.</returns>
+    private async Task<int> TryBackfillChunksAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await BackfillChunksAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Last, and isolated, so one message the chunker or the store rejects cannot stop the purges and gauges.
+            LogBackfillFailed(ex);
+            return 0;
+        }
+    }
+
     private async Task<int> BackfillChunksAsync(CancellationToken ct)
     {
         if (_chunker is null)
@@ -509,6 +523,9 @@ public sealed partial class ReconcilerService : BackgroundService
 
     [LoggerMessage(Level = LogLevel.Error, Message = "{Kind} {SourceId} in workspace {WorkspaceName} failed to embed {Failures} times; marked failed, it is invisible to semantic reads until its content changes.")]
     private partial void LogMarkedFailed(PendingEmbeddingKind kind, string sourceId, string workspaceName, int failures);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Chunking unchunked messages failed; the other reconciler steps ran, and the backfill is retried next tick.")]
+    private partial void LogBackfillFailed(Exception exception);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Reconciler tick: embedded {Embedded}, {Failed} embedding failures ({MarkedFailed} marked failed), chunked {Backfilled} unchunked messages, purged {Tombstones} tombstones, pruned {Items} work items and {Idempotency} idempotency records.")]
     private partial void LogTick(int embedded, int failed, int markedFailed, int backfilled, int tombstones, int items, int idempotency);

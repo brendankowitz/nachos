@@ -230,9 +230,18 @@ public sealed partial class SummarizerService : IWorkHandler
             foreach (var message in window.Where(m => !string.IsNullOrWhiteSpace(m.Content)).OrderByDescending(m => m.Seq))
             {
                 var cost = _tokenCounter.Count(Entry(message).ToJsonString(InputJson));
-                if (kept.Count > 0 && cost > remaining)
+                if (cost > remaining)
                 {
-                    kept.Reverse();
+                    if (kept.Count > 0)
+                    {
+                        LogInputBounded(workspaceName, sessionName, kind, kept.Count, truncated: false);
+                        kept.Reverse();
+                        return kept;
+                    }
+
+                    // The newest message anchors the summary's coverage, so it stays, cut down to what is left of the budget.
+                    kept.Add(message with { Content = Truncate(message, Math.Max(0, remaining)) });
+                    LogInputBounded(workspaceName, sessionName, kind, 1, truncated: true);
                     return kept;
                 }
 
@@ -243,6 +252,27 @@ public sealed partial class SummarizerService : IWorkHandler
 
         kept.Reverse();
         return kept;
+    }
+
+    /// <summary>The longest prefix of the message's content whose entry costs at most <paramref name="budget"/> tokens.</summary>
+    private string Truncate(MessageRecord message, int budget)
+    {
+        var low = 0;
+        var high = message.Content.Length;
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            if (_tokenCounter.Count(Entry(message with { Content = message.Content[..middle] }).ToJsonString(InputJson)) <= budget)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return low > 0 && char.IsHighSurrogate(message.Content[low - 1]) ? message.Content[..(low - 1)] : message.Content[..low];
     }
 
     private static JsonObject Entry(MessageRecord message) => new()
@@ -291,6 +321,9 @@ public sealed partial class SummarizerService : IWorkHandler
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Summary unit {WorkUnitKey} committed {Summaries} summaries.")]
     private partial void LogCommitted(string workUnitKey, int summaries);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The {Kind} summary input of session {SessionName} in workspace {WorkspaceName} exceeds Summary:MaxInputTokens; keeping the newest {Kept} message(s) (newest truncated: {Truncated}) and leaving the older ones out.")]
+    private partial void LogInputBounded(string workspaceName, string sessionName, SummaryKind kind, int kept, bool truncated);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Summaries are disabled for session {SessionName} in workspace {WorkspaceName}; completing without a model call.")]
     private partial void LogDisabled(string workspaceName, string sessionName);
