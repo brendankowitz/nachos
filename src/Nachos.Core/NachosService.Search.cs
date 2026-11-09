@@ -20,26 +20,26 @@ public sealed partial class NachosService
     /// <summary>Searches every session of the workspace.</summary>
     /// <exception cref="RequestValidationException"><c>query</c> is missing or <c>limit</c> is out of bounds.</exception>
     /// <exception cref="NachosValidationException"><c>scope</c> is set; scopes are not supported in this version.</exception>
-    public Task<IReadOnlyList<Message>> SearchWorkspaceAsync(
+    public async Task<IReadOnlyList<Message>> SearchWorkspaceAsync(
         string workspaceId, WorkspaceMessageSearchOptions options, CancellationToken ct = default)
     {
         Validate(ct, (workspaceId, "workspace_id"));
         ArgumentNullException.ThrowIfNull(options);
         // Any scope is rejected by the policy, so which id it named does not matter.
         var policy = VisibilityPolicy.Create(null, options.Scope is null ? null : []);
-        return SearchAsync(workspaceId, new MessageSearchScope.Workspace(), options.Query, options.Limit, options.Filters,
-            policy, ct);
+        return await SearchAsync(workspaceId, new MessageSearchScope.Workspace(), options.Query, options.Limit, options.Filters,
+            policy, ct).ConfigureAwait(false);
     }
 
     /// <summary>Searches one session's messages.</summary>
     /// <exception cref="RequestValidationException"><c>query</c> is missing or <c>limit</c> is out of bounds.</exception>
-    public Task<IReadOnlyList<Message>> SearchSessionAsync(
+    public async Task<IReadOnlyList<Message>> SearchSessionAsync(
         string workspaceId, string sessionId, MessageSearchOptions options, CancellationToken ct = default)
     {
         Validate(ct, (workspaceId, "workspace_id"), (sessionId, "session_id"));
         ArgumentNullException.ThrowIfNull(options);
-        return SearchAsync(workspaceId, new MessageSearchScope.Session(sessionId), options.Query, options.Limit,
-            options.Filters, VisibilityPolicy.Create([sessionId], null), ct);
+        return await SearchAsync(workspaceId, new MessageSearchScope.Session(sessionId), options.Query, options.Limit,
+            options.Filters, VisibilityPolicy.Create([sessionId], null), ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -47,13 +47,13 @@ public sealed partial class NachosService
     /// (<see cref="MessageSearchScope.PeerPerspective"/>).
     /// </summary>
     /// <exception cref="RequestValidationException"><c>query</c> is missing or <c>limit</c> is out of bounds.</exception>
-    public Task<IReadOnlyList<Message>> SearchPeerAsync(
+    public async Task<IReadOnlyList<Message>> SearchPeerAsync(
         string workspaceId, string peerId, MessageSearchOptions options, CancellationToken ct = default)
     {
         Validate(ct, (workspaceId, "workspace_id"), (peerId, "peer_id"));
         ArgumentNullException.ThrowIfNull(options);
-        return SearchAsync(workspaceId, new MessageSearchScope.PeerPerspective(peerId), options.Query, options.Limit,
-            options.Filters, VisibilityPolicy.Unrestricted, ct);
+        return await SearchAsync(workspaceId, new MessageSearchScope.PeerPerspective(peerId), options.Query, options.Limit,
+            options.Filters, VisibilityPolicy.Unrestricted, ct).ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<Message>> SearchAsync(string workspaceId, MessageSearchScope scope, string? query,

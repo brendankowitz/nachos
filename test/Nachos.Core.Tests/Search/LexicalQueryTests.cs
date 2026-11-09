@@ -9,7 +9,8 @@ namespace Nachos.Core.Tests.Search;
 public sealed class LexicalQueryTests
 {
     [Theory]
-    [InlineData("\"lemon\" AND (tart* OR NEAR~pie)", new[] { "lemon", "and", "tart", "or", "near", "pie" })]
+    [InlineData("\"lemon\" AND (tart* OR NEAR~pie)", new[] { "lemon", "tart", "near", "pie" })]
+    [InlineData("AND OR NOT", new[] { "and", "or", "not" })]
     [InlineData("FORMSOF(INFLECTIONAL, run)", new[] { "formsof", "inflectional", "run" })]
     [InlineData("isabout(cake weight(0.5))", new[] { "isabout", "cake", "weight", "0", "5" })]
     [InlineData("50% off [sale] _under_ 'quotes' \\slash; --comment", new[] { "50", "off", "sale", "under", "quotes", "slash", "comment" })]
@@ -33,6 +34,25 @@ public sealed class LexicalQueryTests
     public void NoWordTokens_Empty(string query)
     {
         LexicalQuery.Terms(query).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void Stopwords_DroppedWhenOtherTermsRemain()
+    {
+        LexicalQuery.Terms("What did the user say about lemons?").ShouldBe(["user", "say", "lemons"]);
+
+        // The cap counts the words that remain, wherever the stopwords are.
+        var query = "the a an of " + string.Join(" and ", Enumerable.Range(1, 20).Select(i => $"w{i}"));
+        LexicalQuery.Terms(query).ShouldBe([.. Enumerable.Range(1, 16).Select(i => $"w{i}")]);
+    }
+
+    [Theory]
+    [InlineData("the", new[] { "the" })]
+    [InlineData("What is it?", new[] { "what", "is", "it" })]
+    [InlineData("THE the The", new[] { "the" })]
+    public void OnlyStopwords_Kept(string query, string[] expected)
+    {
+        LexicalQuery.Terms(query).ShouldBe(expected);
     }
 
     [Fact]

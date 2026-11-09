@@ -13,11 +13,14 @@ namespace Nachos.Core.Search;
 /// </summary>
 /// <remarks>
 /// The embedding generator is optional: without one, search is lexical only rather than unavailable, because the lexical
-/// half alone is useful. The host warns about the missing generator once, at startup.
+/// half alone is useful. The host warns about the missing generator once, at startup. The chunker, registered with the
+/// generator, caps what is embedded: only the query's first chunk, because the model rejects a longer input as a client
+/// error, which no retry can fix.
 /// </remarks>
 public sealed class HybridSearchService(
     IMemoryStore store,
-    IEmbeddingGenerator<string, Embedding<float>>? embeddings = null)
+    IEmbeddingGenerator<string, Embedding<float>>? embeddings = null,
+    MessageChunker? chunker = null)
 {
     /// <summary>How many candidates each method retrieves per requested result.</summary>
     public const int CandidatesPerResult = 4;
@@ -25,7 +28,8 @@ public sealed class HybridSearchService(
     /// <summary>
     /// The <paramref name="limit"/> best visible messages of <paramref name="request"/> for <paramref name="query"/>. A
     /// blank query finds nothing and calls nothing. A query with no word (<see cref="LexicalQuery.Terms"/>) skips lexical
-    /// retrieval.
+    /// retrieval. Lexical retrieval reads the whole query; vector retrieval embeds only its first chunk when there is a
+    /// chunker.
     /// </summary>
     /// <exception cref="NotFoundException">The workspace does not exist.</exception>
     /// <exception cref="ServiceUnavailableException">The embedding service failed transiently.</exception>
@@ -60,7 +64,8 @@ public sealed class HybridSearchService(
                 return [];
             }
 
-            var embedded = await QueryEmbedding.EmbedAsync(embeddings, query, ct).ConfigureAwait(false);
+            var text = chunker is null ? query : chunker.Chunk(query)[0];
+            var embedded = await QueryEmbedding.EmbedAsync(embeddings, text, ct).ConfigureAwait(false);
             return await store.Search.VectorAsync(visible, embedded, take, ct).ConfigureAwait(false);
         }
     }

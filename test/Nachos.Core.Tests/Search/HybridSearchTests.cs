@@ -1,10 +1,17 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
+using Nachos.Core.Llm;
 using Nachos.Core.Memory;
 using Nachos.Core.Tests.Deriver;
 using Nachos.Core.Tests.Memory;
+using Nachos.DataLayer.InMemory;
 using Shouldly;
 
 namespace Nachos.Core.Tests.Search;
@@ -147,6 +154,68 @@ public sealed class HybridSearchTests
 
         rejected.Detail.ShouldBe(VisibilityPolicy.ScopeNotSupported);
         f.Embeddings.Calls.ShouldBe(0);
+    }
+
+    [Fact]
+    public void InvalidRequests_FaultTheTask_RatherThanThrowing()
+    {
+        using var f = new MemoryFixture();
+
+        f.Service.SearchWorkspaceAsync(W, new WorkspaceMessageSearchOptions("tea", Scope: "s")).IsFaulted.ShouldBeTrue();
+        f.Service.SearchSessionAsync(W, "S1", new MessageSearchOptions("tea", 0)).IsFaulted.ShouldBeTrue();
+        f.Service.SearchPeerAsync(W, "bad id!", new MessageSearchOptions("tea")).IsFaulted.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task LongQuery_EmbedsOnlyItsFirstChunk()
+    {
+        var generator = new TokenLimitedEmbeddingGenerator(EmbeddingChunking.DefaultMaxTokens);
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+        services.AddNachos(builder => builder.UseInMemory()
+            .UseEmbeddingGenerator(_ => generator, _ => EmbeddingChunking.Cl100kBase()));
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+        using var scope = provider.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<NachosService>();
+        await service.GetOrCreateWorkspaceAsync(W);
+        await service.GetOrCreateSessionAsync(W, "S1");
+        await service.CreateMessagesAsync(W, "S1", [new MessageCreate("I like lemons", "alice")]);
+        var query = string.Join(' ', Enumerable.Repeat("citrus", 5000)) + " lemons";
+
+        var found = await service.SearchSessionAsync(W, "S1", new MessageSearchOptions(query));
+
+        found.Select(m => m.Content).ShouldBe(["I like lemons"]);
+        generator.Inputs.ShouldContain(input => input.StartsWith("citrus", StringComparison.Ordinal));
+    }
+
+    /// <summary>Rejects an input over its token limit as a model would, with an error that is not transient.</summary>
+    private sealed class TokenLimitedEmbeddingGenerator(int maxTokens) : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        private readonly DeterministicEmbeddingGenerator _inner = new();
+        private readonly EmbeddingChunking _chunking = EmbeddingChunking.Cl100kBase();
+
+        public List<string> Inputs { get; } = [];
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            var texts = values.ToList();
+            foreach (var text in texts)
+            {
+                Inputs.Add(text);
+                if (_chunking.Tokenizer.CountTokens(text) > maxTokens)
+                {
+                    throw new InvalidOperationException($"The input is over {maxTokens} tokens.");
+                }
+            }
+
+            return _inner.GenerateAsync(texts, options, cancellationToken);
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => _inner.GetService(serviceType, serviceKey);
+
+        public void Dispose() => _inner.Dispose();
     }
 
     [Fact]
