@@ -88,6 +88,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 | D6 | `GET W/jobs` (Δ extension) has no wire shape. | — | `GET W/jobs?page=&size=` returns the standard page envelope of `Job { id, type, target: { kind, id }, status, attempts, error?, created_at, completed_at? }`. M3 lists only `deletion` jobs. `id` is the work item id as a string. |
 | D7 | Session deletion tombstones "unsupported" derived conclusions and enqueues a `card_refresh` dream (§13). | M2 creates only explicit conclusions. Derived ones and dreams arrive in M5. | M3 hard-deletes the session's explicit conclusions. It tombstones any conclusion whose `ConclusionSources` all point at deleted conclusions (in M3 only API-created rows can have sources). It enqueues **no** dream: the `dream` handler is M5, and enqueuing an unclaimable item would only grow the queue. M5 adds the enqueue. |
 | D8 | Tokenization uses `o200k_base` for budgets (§11.1). Issue #10 (exact managed counter) is a release gate. | `TiktokenTokenCounter` (MVP, `Microsoft.ML.Tokenizers`). | M3 uses the existing `ITokenCounter`. **#10 is not in M3**: it needs a specific owner approval of the Unicode-data policy exception first (Q4). The budget guarantee holds for whatever counter is registered, because the final check (§11.6 step 4) uses the same counter. |
+| D9 | §11.5 hybrid search: the lexical side is a full-text ranking. | Not built before M3. | **Lexical search matches any term**, ranked by distinct terms matched, then newest, identically on SQL (full-text and `LIKE`) and in-memory; full-text `RANK` and occurrence counts are not used. Core drops a fixed English stopword set when another term remains. All-terms matching made question-style queries find nothing lexically, which broke lexical-only mode (no embedding generator). Ruled by the coordinator in Task 5 review; the owner may overrule. Task 10 measures the per-term `CONTAINS` cost. |
 
 ---
 
@@ -187,7 +188,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
   - `Purge_StaleFencingToken_Rejected`;
   - `Remove_FreesNameForReuse`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.DataLayer.InMemory.Tests`. Expected: FAIL.
-- [ ] **Step 3:** Implement the types and the in-memory provider. Lexical search uses case-insensitive ordinal term containment (every term must match), with rank = term-hit count, then recency. Vector search uses brute-force cosine over chunks.
+- [ ] **Step 3:** Implement the types and the in-memory provider. Lexical search uses case-insensitive ordinal term containment (any term matches, D9), ranked by distinct terms matched, then recency. Vector search uses brute-force cosine over chunks.
 - [ ] **Step 4:** Run it again. Expected: PASS. Run the architecture tests too (Abstractions stays BCL-only).
 - [ ] **Step 5:** Amend spec §7.1 (D2, D4). Commit `feat(abstractions): M3 recall and deletion contracts, in-memory provider`.
 
@@ -206,9 +207,9 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 **Notes:**
 - **Vector search:** `SELECT TOP (@take) … ORDER BY MIN(VECTOR_DISTANCE('cosine', e.Embedding, @q))`, grouped by message. The candidates are pre-filtered by `WorkspaceId`, then by `SessionId` or by the peer's membership windows (a join on `SessionPeers`), then by the message filter (existing `FilterWriter`). Only `Synced` chunks are searched. The search is exact (spec §7.4).
 - **Lexical search:**
-  - With an active, populated full-text index it uses `CONTAINSTABLE(Messages, Content, @expr)` ordered by `RANK`.
-  - `@expr` is built **only** from Core's sanitized terms, as `"t1" AND "t2" …`, with each term double-quote-escaped. It is always a parameter, never concatenated into SQL.
-  - Otherwise it uses `Content LIKE @p ESCAPE '\'` per term (`AND`), with `%`, `_`, `[` and `\` escaped, ordered by term-hit count and then `Seq` descending.
+  - With an active, populated full-text index it uses `CONTAINSTABLE(Messages, Content, @expr)` for candidates, ordered by distinct terms matched (one `CONTAINS` per term), then newest (D9; not `RANK`).
+  - `@expr` is built **only** from Core's sanitized terms, as `"t1*" OR "t2*" …`, with each term double-quote-escaped. It is always a parameter, never concatenated into SQL.
+  - Otherwise it uses `Content LIKE @p ESCAPE '\'` per term, summed per row (any term matches), with `%`, `_`, `[` and `\` escaped, ordered by distinct terms matched and then newest.
   - The mode comes from `FullTextIndexMaintenance.IsReady`.
 - **`FullTextIndexMaintenance`** runs after the schema gate passes. When `IsFullTextInstalled = 1` and the index is missing, it creates the catalog `NachosFts` and `CREATE FULLTEXT INDEX ON dbo.Messages(Content) KEY INDEX PK_Messages WITH CHANGE_TRACKING AUTO`. `IsReady` is set as described below.
   - The app identity needs `CREATE FULLTEXT CATALOG` (`db_ddladmin` already grants it, spec §18.2).
