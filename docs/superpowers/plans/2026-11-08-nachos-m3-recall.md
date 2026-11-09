@@ -498,7 +498,7 @@ Each entry pins the `model.onnx` and `vocab.txt` download URLs and their SHA-256
   - The in-memory provider holds the stamp for the process lifetime.
   - The fake AI's model id is `fake-hash-v1`.
 - **Dedup threshold per model:** the 0.05 default was chosen on OpenAI's distance scale. When the deployment doesn't set `Deriver:DedupMaxDistance`, the catalog entry's value applies. Step 3 calibrates it on a fixture of paraphrase and non-paraphrase pairs (committed as `test/fixtures/dedup-pairs.json`, written fresh for this task) and records the chosen value and the false-merge rate in `research/local-embeddings-calibration.md`.
-- **Chunking (Task 4 seam):** with local embeddings, `MessageChunker` uses the model's `BertTokenizer` and its max tokens less 2 (`[CLS]`/`[SEP]`). That is 510 for bge-small and 254 for MiniLM, with the same 20% overlap.
+- **Chunking (Task 4 seam):** with local embeddings, `MessageChunker` uses the model's `BertTokenizer` and its max tokens less 2 (`[CLS]`/`[SEP]`). That is 510 for bge-small and 254 for MiniLM, with the same 20% overlap. Chunks must be cut from the **original** message text, not the `BertTokenizer`'s normalized (lower-cased, accent-stripped) form: encode with `considerNormalization: false` or map token offsets back to the original, and ignore the zero-width `[CLS]`/`[SEP]` offsets. (Task 4 review M6.)
 - **Performance:** the session is created once and is thread-safe for `Run`. Inputs are batched (up to `Embeddings:Local:BatchSize`, default 32), and `CancellationToken` is checked between batches.
 
 - [ ] **Step 1:** Write the tests:
