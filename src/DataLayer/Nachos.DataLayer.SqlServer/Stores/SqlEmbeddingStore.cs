@@ -180,7 +180,14 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
             ArgumentOutOfRangeException.ThrowIfGreaterThan(chunk.ChunkIndex, MessageChunk.MaxChunkIndex);
         }
 
-        var unique = chunks.DistinctBy(chunk => (chunk.WorkspaceName, chunk.SessionName, chunk.MessageId, chunk.ChunkIndex)).ToList();
+        // One canonical order, so concurrent calls over overlapping chunks take the key-range locks in the same order.
+        var unique = chunks
+            .DistinctBy(chunk => (chunk.WorkspaceName, chunk.SessionName, chunk.MessageId, chunk.ChunkIndex))
+            .OrderBy(chunk => chunk.WorkspaceName, StringComparer.Ordinal)
+            .ThenBy(chunk => chunk.SessionName, StringComparer.Ordinal)
+            .ThenBy(chunk => chunk.MessageId, StringComparer.Ordinal)
+            .ThenBy(chunk => chunk.ChunkIndex)
+            .ToList();
         if (unique.Count == 0)
         {
             return;
