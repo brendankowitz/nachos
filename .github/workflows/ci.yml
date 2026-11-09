@@ -82,6 +82,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build Nachos.slnx -c Release --no-restore -warnaserror
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the Full-Text Search SQL image once
+        run: |
+          # The tests and the AppHost build the same recipe; with this build done first, theirs are layer-cache hits.
+          docker build --tag nachos-test-mssql-fts:local eng/docker/mssql-fts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run all three mixed projects without filters
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1

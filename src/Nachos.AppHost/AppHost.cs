@@ -7,11 +7,11 @@ var builder = DistributedApplication.CreateBuilder(args);
 // environment) must never reach a published manifest, so it is gated on run mode as well as on the environment.
 var developmentRun = builder.ExecutionContext.IsRunMode && builder.Environment.IsDevelopment();
 
-// The image tag is the same build the FTS image in eng/docker/mssql-fts/Dockerfile is based on; bump both together.
-// The data volume keeps the database across restarts, so the default (persisted) SA password parameter is kept
+// SQL Server runs the Full-Text Search image built from eng/docker/mssql-fts; the base tag (MSSQL_UPDATE) is pinned in that
+// Dockerfile. The data volume keeps the database across restarts, so the default (persisted) SA password parameter is kept
 // rather than regenerated.
 var sql = builder.AddSqlServer("sql")
-    .WithImageTag("2025-CU9-ubuntu-24.04")
+    .WithDockerfile("../../eng/docker/mssql-fts")
     .WithDataVolume();
 var nachosDb = sql.AddDatabase("nachos");
 
