@@ -13,5 +13,11 @@ public sealed class SummaryOptions
 
     public int MaxTokensLong { get; set; } = 4000;
 
+    /// <summary>
+    /// Token budget of one summary request: prompt, prior summary and messages; default 25,000. When the new messages
+    /// exceed it the oldest are left out of the request.
+    /// </summary>
+    public int MaxInputTokens { get; set; } = 25_000;
+
     public string? CustomInstructions { get; set; }
 }

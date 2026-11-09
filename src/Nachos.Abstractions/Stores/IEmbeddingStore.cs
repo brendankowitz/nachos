@@ -19,6 +19,12 @@ public interface IEmbeddingStore
     Task<long> CountPendingAsync(CancellationToken ct);
 
     /// <summary>
+    /// How many of the items <see cref="CountPendingAsync(CancellationToken)"/> counts are of <paramref name="kind"/>, for
+    /// the backlog gauges. A store that cannot count by kind keeps this default, which reports the total for every kind.
+    /// </summary>
+    Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) => CountPendingAsync(ct);
+
+    /// <summary>
     /// Stores the embedding of <paramref name="pending"/>'s content. For a conclusion it also records
     /// <paramref name="embeddingModel"/> as the conclusion's <see cref="ConclusionRecord.InternalMetadata"/>
     /// <see cref="VectorSpace.ModelMetadataKey"/>; a chunk has no metadata. A no-op when the item is no longer pending with

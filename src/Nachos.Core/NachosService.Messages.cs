@@ -6,6 +6,7 @@ using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Json;
 using Nachos.Core.Configuration;
 using Nachos.Core.Idempotency;
+using Nachos.Core.Memory;
 using Nachos.Core.Validation;
 
 namespace Nachos.Core;
@@ -71,9 +72,13 @@ public sealed partial class NachosService
             new Dictionary<string, string> { ["w"] = workspaceId, ["s"] = sessionId },
             CanonicalJson.Serialize(requestBody));
         var session = await RequireSession(workspaceId, sessionId, ct).ConfigureAwait(false);
-        var derive = await ResolveDeriveIntentsAsync(workspaceId, session, messages, ct).ConfigureAwait(false);
+        var workspace = await store.Workspaces.GetAsync(workspaceId, ct).ConfigureAwait(false);
+        var inherited = configurationResolver.Resolve(workspace?.Configuration, session.Configuration);
+        var derive = ResolveDeriveIntents(inherited, messages);
+        var summary = ResolveSummaryIntent(inherited);
 
         NewMessage[]? pending = null;
+        IReadOnlyList<IReadOnlyList<string>>? chunks = null;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
@@ -92,12 +97,14 @@ public sealed partial class NachosService
 
             pending ??= messages.Select(m => new NewMessage(m.PeerId, m.Content, tokenCounter.Count(m.Content),
                 m.Metadata, m.CreatedAt)).ToArray();
+            chunks ??= chunker is null ? null : messages.Select(m => chunker.Chunk(m.Content)).ToArray();
             string? captured = null;
             var write = idempotencyKey is null ? null : new IdempotencyWrite(idempotencyKey, hash!, 201,
                 rows => captured = SerializeMessages(rows), TimeSpan.FromHours(24));
             try
             {
-                var rows = await store.Messages.AppendAsync(workspaceId, sessionId, pending, write, derive, ct).ConfigureAwait(false);
+                var rows = await store.Messages.AppendAsync(
+                    workspaceId, sessionId, new MessageAppend(pending, write, derive, chunks, summary), ct).ConfigureAwait(false);
                 return new(201, write is null ? SerializeMessages(rows) :
                     captured ?? throw new InvalidOperationException("The store did not capture the response inside the append."));
             }
@@ -115,22 +122,20 @@ public sealed partial class NachosService
     /// Workspace and session configuration are read once, before the append; a concurrent configuration change may or may
     /// not apply to a request already past this point.
     /// </summary>
-    private async Task<DeriveIntent[]> ResolveDeriveIntentsAsync(
-        string workspaceId, SessionRecord session, IReadOnlyList<MessageCreate> messages, CancellationToken ct)
-    {
-        var workspace = await store.Workspaces.GetAsync(workspaceId, ct).ConfigureAwait(false);
-        bool? inherited = null;
-        return
-        [
-            .. messages.Select(message =>
-            {
-                var own = message.Configuration?.Reasoning;
-                var enabled = own?.Enabled
-                    ?? (inherited ??= configurationResolver.Resolve(workspace?.Configuration, session.Configuration).Reasoning.Enabled.Value ?? true);
-                return new DeriveIntent(enabled, own?.Enabled, own?.CustomInstructions);
-            }),
-        ];
-    }
+    private static DeriveIntent[] ResolveDeriveIntents(ResolvedConfiguration inherited, IReadOnlyList<MessageCreate> messages) =>
+    [
+        .. messages.Select(message =>
+        {
+            var own = message.Configuration?.Reasoning;
+            return new DeriveIntent(own?.Enabled ?? inherited.Reasoning.Enabled.Value ?? true, own?.Enabled, own?.CustomInstructions);
+        }),
+    ];
+
+    /// <summary>The session's resolved summary intervals, or null when summaries are disabled (unset means enabled).</summary>
+    private static SummaryIntent? ResolveSummaryIntent(ResolvedConfiguration resolved) =>
+        resolved.Summary.Enabled.Value == false
+            ? null
+            : new SummaryIntent(resolved.Summary.MessagesPerShortSummary.Value, resolved.Summary.MessagesPerLongSummary.Value);
 
     private static string SerializeMessages(IReadOnlyList<MessageRecord> rows) =>
         JsonSerializer.Serialize(rows.Select(Map).ToArray(), MessageJson);

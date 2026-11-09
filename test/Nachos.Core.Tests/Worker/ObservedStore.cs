@@ -159,6 +159,8 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public Task<long> CountPendingAsync(CancellationToken ct) => inner.Embeddings.CountPendingAsync(ct);
 
+    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) => inner.Embeddings.CountPendingAsync(kind, ct);
+
     public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct) =>
         DropEmbeddingSaves ? Task.CompletedTask : inner.Embeddings.SaveAsync(pending, embedding, embeddingModel, ct);
 

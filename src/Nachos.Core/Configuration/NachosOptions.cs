@@ -57,6 +57,11 @@ public sealed class NachosOptions
             {
                 errors.Add("Summary token budgets must be positive.");
             }
+
+            if (Summary.MaxInputTokens < 1)
+            {
+                errors.Add("Summary.MaxInputTokens must be positive.");
+            }
         }
 
         if (Deriver is null)

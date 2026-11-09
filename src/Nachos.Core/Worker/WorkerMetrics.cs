@@ -10,7 +10,7 @@ namespace Nachos.Core.Worker;
 /// </para>
 /// <para>
 /// The backlog gauges (<c>nachos.queue.eligible_units</c>, <c>nachos.queue.oldest_age</c>,
-/// <c>nachos.conclusions.embedding_pending</c>) are cluster-wide values that the reconciler refreshes once per tick.
+/// <c>nachos.conclusions.embedding_pending</c>, <c>nachos.messages.embedding_pending</c>) are cluster-wide values that the reconciler refreshes once per tick.
 /// Only the replica holding the reconciler lease reports them, so summing or taking the maximum across replicas gives
 /// the same answer; the others report nothing.
 /// </para>
@@ -47,9 +47,14 @@ public sealed class WorkerMetrics : IDisposable
             "Age of the oldest unfinished work item, across all workspaces, as of the last reconciler tick; 0 when there is none.");
         _meter.CreateObservableGauge(
             "nachos.conclusions.embedding_pending",
-            () => Observe(backlog => backlog.EmbeddingPending),
+            () => Observe(backlog => backlog.ConclusionsPending),
             "{conclusion}",
             "Live conclusions waiting for an embedding, across all workspaces, as of the last reconciler tick.");
+        _meter.CreateObservableGauge(
+            "nachos.messages.embedding_pending",
+            () => Observe(backlog => backlog.MessagesPending),
+            "{chunk}",
+            "Message chunks waiting for an embedding, across all workspaces, as of the last reconciler tick.");
     }
 
     public void RecordDeadLettered(int items)
@@ -73,8 +78,8 @@ public sealed class WorkerMetrics : IDisposable
     }
 
     /// <summary>Publishes the backlog gauges' values; called by the reconciler lease holder.</summary>
-    public void RecordBacklog(long eligibleUnits, TimeSpan oldestAge, long embeddingPending) =>
-        Volatile.Write(ref _backlog, new Backlog(eligibleUnits, oldestAge, embeddingPending));
+    public void RecordBacklog(long eligibleUnits, TimeSpan oldestAge, long conclusionsPending, long messagesPending) =>
+        Volatile.Write(ref _backlog, new Backlog(eligibleUnits, oldestAge, conclusionsPending, messagesPending));
 
     /// <summary>Stops reporting the backlog gauges, when this replica no longer holds the reconciler lease.</summary>
     public void ClearBacklog() => Volatile.Write(ref _backlog, null);
@@ -85,5 +90,5 @@ public sealed class WorkerMetrics : IDisposable
         where T : struct =>
         Volatile.Read(ref _backlog) is { } backlog ? [new Measurement<T>(value(backlog))] : [];
 
-    private sealed record Backlog(long EligibleUnits, TimeSpan OldestAge, long EmbeddingPending);
+    private sealed record Backlog(long EligibleUnits, TimeSpan OldestAge, long ConclusionsPending, long MessagesPending);
 }

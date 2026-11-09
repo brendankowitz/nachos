@@ -312,6 +312,44 @@ public sealed class NachosServiceTests
         ]);
     }
 
+    [Fact]
+    public async Task CreateMessages_PassesChunksAndSummaryIntent()
+    {
+        using var fixture = new InMemoryServiceFixture(withEmbeddings: true);
+        await fixture.Service.GetOrCreateWorkspaceAsync("W");
+        await fixture.Service.GetOrCreateSessionAsync("W", "On");
+        await fixture.Service.GetOrCreateSessionAsync("W", "Off", configuration: new(Summary: new(Enabled: false)));
+
+        // Twenty messages cross the default short-summary interval; the blank one has no chunks.
+        MessageCreate[] batch = [.. Enumerable.Range(1, 19).Select(i => new MessageCreate($"message {i}", "P")), new MessageCreate("   ", "P")];
+        await fixture.Service.CreateMessagesAsync("W", "On", batch);
+        await fixture.Service.CreateMessagesAsync("W", "Off", batch);
+
+        var chunks = await fixture.Store.Embeddings.ListPendingAsync(100, _ct);
+        chunks.Count.ShouldBe(38);
+        chunks.ShouldAllBe(chunk => chunk.Kind == PendingEmbeddingKind.MessageChunk && chunk.ChunkIndex == 0);
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(100, _ct)).ShouldBeEmpty();
+        var policy = new Dictionary<WorkTaskType, WorkBatchPolicy> { [WorkTaskType.Summary] = WorkBatchPolicy.Immediate };
+        var lease = (await fixture.Store.WorkQueue.TryAcquireAsync("w", policy, TimeSpan.FromMinutes(1), _ct)).ShouldNotBeNull();
+        var item = lease.Items.ShouldHaveSingleItem();
+        item.SessionName.ShouldBe("On");
+        item.Payload.ToJsonString().ShouldBe("""{"kind":"short","through_seq":20}""");
+        (await fixture.Store.WorkQueue.TryAcquireAsync("w", policy, TimeSpan.FromMinutes(1), _ct)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task CreateMessages_WithoutAnEmbeddingModel_StoresNoChunks()
+    {
+        using var fixture = new InMemoryServiceFixture();
+        await fixture.Service.GetOrCreateWorkspaceAsync("W");
+        await fixture.Service.GetOrCreateSessionAsync("W", "S");
+
+        await fixture.Service.CreateMessagesAsync("W", "S", [new MessageCreate("hello", "P")]);
+
+        (await fixture.Store.Embeddings.ListPendingAsync(10, _ct)).ShouldBeEmpty();
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, _ct)).ShouldHaveSingleItem().Content.ShouldBe("hello");
+    }
+
     private static void CheckPage<T>(Page<T> page, string id, Func<T, string> getId)
     {
         getId(page.Items.ShouldHaveSingleItem()).ShouldBe(id);

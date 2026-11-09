@@ -24,6 +24,9 @@ public sealed class ReconcilerOptions
     /// <summary>How many pending conclusions are embedded per generator call; default 64.</summary>
     public int EmbeddingBatchSize { get; set; } = 64;
 
+    /// <summary>How many messages without chunks are chunked per tick; default 500.</summary>
+    public int BackfillBatch { get; set; } = 500;
+
     /// <summary>
     /// Failed embedding attempts, one per tick, before a conclusion is marked failed and leaves the backlog; default 5.
     /// </summary>
