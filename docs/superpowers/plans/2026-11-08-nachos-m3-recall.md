@@ -450,6 +450,7 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
 **Depends on:** 3, 9.
 
 **Benchmark decision rule:**
+- Also measure one reconciler tick's `ListUnchunkedMessagesAsync` at 1M messages (Task 3 review I4). If it is slow, add a reconciler `afterId` cursor. Measure session-scoped vector search seeks on `IX_MessageEmbeddings_Workspace_Session` and `CONTAINSTABLE` cross-workspace candidate volume (Task 3 review M7).
 - If `W/search` p95 is at most 1 s on the dev host, keep exact search unchanged.
 - Otherwise, add `Search:MaxVectorCandidates` (newest-first chunk cap before `VECTOR_DISTANCE`, default chosen from the measurements). Document the recall trade-off, and record that ANN (M7) is the real fix.
 
