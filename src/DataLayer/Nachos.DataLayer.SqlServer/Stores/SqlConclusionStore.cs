@@ -282,7 +282,7 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
         await SqlWorkQueue.RequireHeldAsync(db, lease, ct);
         var targets = await ResolveTargetsAsync(db, workspaceId, changes.Corroborations, replacements, ct);
 
-        await SqlWorkQueue.CompleteItemsAsync(db, lease, now, ct);
+        await SqlWorkQueue.CompleteItemsAsync(db, lease, now, error: null, ct);
 
         var resolved = await ResolveReferencesAsync(db, workspaceId, changes.WorkspaceName, inserts, now, ct);
         var counters = new SortedDictionary<long, int>();

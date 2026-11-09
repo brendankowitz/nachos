@@ -10,6 +10,7 @@ using Nachos.Abstractions.Stores;
 using Nachos.Core.Validation;
 using Nachos.DataLayer.SqlServer;
 using Nachos.DataLayer.SqlServer.Schema;
+using Nachos.DataLayer.SqlServer.Search;
 
 namespace Nachos.Cli;
 
@@ -171,7 +172,10 @@ internal static class GrantCommands
         }
 
         var options = new SqlServerOptions { ConnectionString = parse.GetRequiredValue(connection) };
-        var store = new SqlMemoryStore(options, new SchemaGate(deployer, options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        var gate = new SchemaGate(deployer, options);
+        // Grants never search messages, so the full-text index maintenance is not started.
+        var fullTextIndex = new FullTextIndexMaintenance(options, gate, TimeProvider.System, NullLogger<FullTextIndexMaintenance>.Instance);
+        var store = new SqlMemoryStore(options, gate, fullTextIndex, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
         return await body(store.Grants);
     }
 
