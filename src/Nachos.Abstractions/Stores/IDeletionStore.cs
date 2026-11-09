@@ -53,9 +53,21 @@ public interface IDeletionStore
     /// Deletes at most <paramref name="batchSize"/> of the target's remaining rows, children first, and checkpoints the
     /// progress, so a job that loses its lease resumes where it stopped. A session's rows go in this order: message
     /// chunks, summaries, its explicit conclusions (then each conclusion citing one of those is tombstoned when none of
-    /// its sources is still live, present and not tombstoned), its work items other than its deletion, memberships, messages. A workspace's rows go: each session's
-    /// rows, then conclusions, collections, peer cards, idempotency records, its grants, peers.
+    /// its sources is still live, present and not tombstoned), its work items other than its deletion, memberships,
+    /// messages. A workspace's rows go: each session's rows, then conclusions, collections, peer cards, idempotency
+    /// records, its grants, peers.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The tombstoning must survive a lost lease between removing a conclusion and re-evaluating its dependents. A provider
+    /// may tombstone the dependents of each batch's removed conclusions in the same transaction, which needs no stored id
+    /// list, or keep a durable checkpoint of the removed ids; either meets the contract.
+    /// </para>
+    /// <para>
+    /// Tombstoning does not cascade: a conclusion citing one that this job only tombstoned (not removed) is not
+    /// re-evaluated.
+    /// </para>
+    /// </remarks>
     /// <returns>True while rows remain; false once only the target's own row is left.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="batchSize"/> is less than 1.</exception>
     /// <exception cref="LeaseLostException">The lease is no longer held, or is not the target's deletion lease.</exception>

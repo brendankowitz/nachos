@@ -292,4 +292,40 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         (await store.Conclusions.GetAsync(workspace, derived[2].PublicId, Ct)).ShouldBeNull();
         (await store.Conclusions.GetAsync(workspace, derived[3].PublicId, Ct)).ShouldNotBeNull();
     }
+
+    [Fact]
+    public async Task Purge_TombstonesUnsupportedConclusions_AcrossALeaseChange()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Sessions.AddPeersAsync(workspace, session, Members("alice", "bob"), Ct);
+        var stated = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", session)], Ct)).Single();
+        var derived = (await store.Conclusions.InsertAsync(
+            workspace, [Conclusion("bob enjoys hot drinks", level: ConclusionLevel.Deductive, sources: [stated.PublicId])], Ct)).Single();
+        var secondHand = (await store.Conclusions.InsertAsync(
+            workspace, [Conclusion("bob is a morning person", level: ConclusionLevel.Inductive, sources: [derived.PublicId])], Ct)).Single();
+        var target = DeletionTarget.Session(workspace, session);
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        var first = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        await store.Deletion.CancelOtherWorkAsync(first, target, Ct);
+
+        // One row per batch, stopping as soon as the session's conclusion is removed: its dependents are not yet re-evaluated
+        // by a provider that defers that step.
+        for (var batch = 0; await store.Conclusions.GetAsync(workspace, stated.PublicId, Ct) is not null; batch++)
+        {
+            batch.ShouldBeLessThan(10);
+            (await store.Deletion.PurgeBatchAsync(first, target, 1, Ct)).ShouldBeTrue();
+        }
+
+        // The first worker crashes; another resumes the job under a new lease.
+        clock.Advance(Lease + TimeSpan.FromSeconds(1));
+        var second = (await AcquireAsync(store, WorkTaskType.Deletion, "worker-2")).ShouldNotBeNull();
+        await Should.ThrowAsync<LeaseLostException>(() => store.Deletion.PurgeBatchAsync(first, target, 1, Ct));
+        (await store.Deletion.ListJobsAsync(workspace, new PageRequest(), Ct)).Items.Single().Attempts.ShouldBe(2);
+        await RunJobAsync(store, second, target, batchSize: 1);
+
+        (await store.Conclusions.GetAsync(workspace, derived.PublicId, Ct)).ShouldBeNull();
+        // Tombstoning does not cascade: this one cites a conclusion that was tombstoned, not removed.
+        (await store.Conclusions.GetAsync(workspace, secondHand.PublicId, Ct)).ShouldNotBeNull();
+    }
 }
