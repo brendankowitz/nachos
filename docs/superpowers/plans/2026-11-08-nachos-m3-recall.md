@@ -59,7 +59,7 @@ The tasks are agent-neutral. One rule still holds: **SQL/Testcontainers-heavy ta
                             └─> 7 Write barrier ─> 8 Deletion jobs + W/jobs ─> 9
 ```
 
-- Tasks 1 and 2 can start immediately and in parallel. Task 4 needs only 2 (it runs on the in-memory provider).
+- Tasks 1 and 2 can start immediately and in parallel. Task 4 is developed against 2 (it runs on the in-memory provider), but it **merges only after Task 3**: until then the SQL provider rejects appends that carry chunks or summary work, so every SQL append would fail.
 - Task 7 needs only 2 for its contract tests. Its SQL half touches every existing SQL write path, so it should not run at the same time as Task 3 on the same files. Coordinate in the PR's coordination table.
 - Task 9 can land route by route as its services do.
 - Task 11 (local embeddings) needs 3 and 4 and is independent of 5–10.
@@ -82,7 +82,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 |---|---|---|---|
 | D1 | `Messages` has a full-text index on `Content` (§7.2). FTS DDL lives in the dacpac (§7.3). | No FTS index. The stock SQL Server 2025 image has no FTS. A dacpac carrying `CREATE FULLTEXT INDEX` fails to deploy where FTS isn't installed, which breaks the spec's own `LIKE` fallback (R2). | **(Q1 default)** The full-text catalog and index are created **at runtime** by a readiness-gated maintenance step, mirroring the spec's ANN pattern (§7.4). It runs only when `IsFullTextInstalled = 1`. Until the index is populated, lexical search uses `LIKE`. The dacpac stays deployable everywhere. |
 | D2 | `IMessageStore.AppendAsync` gains parameters per milestone. | Two overloads already (M1, M2). A third positional overload would be unreadable. | Add `AppendAsync(string ws, string session, MessageAppend append, CancellationToken)`, where `MessageAppend` is `{ Messages, Idempotency?, Derive?, Summary? }`. Both existing overloads forward to it. |
-| D3 | A `summary` work item is enqueued "when the short or long threshold is crossed" (§10.2 step 5). | Seq numbers are allocated inside the store, so Core cannot know which batch crosses a threshold. | Core resolves the session's summary configuration and passes a `SummaryIntent(Enabled, ShortEvery, LongEvery)`. Inside the append transaction, the store enqueues one `summary` item per kind whose multiple of `Every` falls in `[firstSeq, lastSeq]`. The payload is `{ "kind": "short"|"long", "through_seq": n }`. |
+| D3 | A `summary` work item is enqueued "when the short or long threshold is crossed" (§10.2 step 5). | Seq numbers are allocated inside the store, so Core cannot know which batch crosses a threshold. | Core resolves the session's summary configuration and passes a `SummaryIntent(ShortEvery, LongEvery)`. Inside the append transaction, the store enqueues one `summary` item per kind whose multiple of `Every` falls in `[firstSeq, lastSeq]`. The payload is `{ "kind": "short"|"long", "through_seq": n }`. |
 | D4 | `IWorkQueue` has no standalone enqueue until the first non-append producer (§7.1). | — | M3's producer is deletion acceptance. Acceptance must insert its item **in the same transaction** as the lifecycle change, so it lives in `IDeletionStore.BeginDelete*Async`, not in a separate enqueue. **No standalone `EnqueueAsync` is added in M3.** Spec §7.1 is amended to say so. |
 | D5 | Session context budget: "the response must never exceed `tokens`" (§11.6). | — | The budget counts the **content tokens** (`ITokenCounter`) of: the representation text, each card entry, the summary content, and each message's content. The JSON envelope and field names are not counted. Documented in the context concept page. |
 | D6 | `GET W/jobs` (Δ extension) has no wire shape. | — | `GET W/jobs?page=&size=` returns the standard page envelope of `Job { id, type, target: { kind, id }, status, attempts, error?, created_at, completed_at? }`. M3 lists only `deletion` jobs. `id` is the work item id as a string. |
@@ -150,7 +150,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 - `ISummaryStore`:
   - `GetAsync(ws, session, SummaryKind, ct) → SummaryRecord?`;
   - `ListAsync(ws, session, ct) → IReadOnlyList<SummaryRecord>`;
-  - `SaveAsync(WorkLease lease, ws, session, SummaryRecord summary, ct)`. This is fenced like `CommitDerivationAsync`: it checks the lease, takes the §13.1 S locks, replaces the `(session, kind)` row **only if** the new `CoversThroughSeq` is greater, and completes the lease's items in the same transaction. It throws `LeaseLostException` when the lease is gone. For a `Deleting` resource it completes the items and writes nothing.
+  - `SaveAsync(WorkLease lease, ws, session, IReadOnlyList<NewSummary> summaries, ct)`, where `NewSummary(Kind, Content, CoversThroughMessageId, CoversThroughSeq, TokenCount)` has no time: the store stamps `CreatedAt` from its clock. It takes a list because one lease can hold both a short and a long item. It is fenced like `CommitDerivationAsync`: it checks the lease and its unit key, takes the §13.1 S locks, replaces each `(session, kind)` row **only if** the new `CoversThroughSeq` is greater, and completes the lease's items in the same transaction. It throws `LeaseLostException` when the lease is gone. For a `Deleting` or already-removed session it completes the items and writes nothing (`resource_deleted`).
 - `IMessageSearch`:
   - `VectorAsync(MessageSearchRequest req, ReadOnlyMemory<float> query, int take, ct) → IReadOnlyList<MessageHit>`;
   - `LexicalAsync(MessageSearchRequest req, IReadOnlyList<string> terms, int take, ct) → IReadOnlyList<MessageHit>`.
@@ -217,7 +217,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
   - Treat `IsFullTextInstalled` NULL as not installed. Readiness uses `OBJECTPROPERTYEX(OBJECT_ID('dbo.Messages'), 'TableFullTextPopulateStatus') = 0` (`PopulateStatus` is deprecated), polled slowly (every 30 s), and NULL means not ready.
 - Lock order stays M2's: workspace → session → messages → embeddings → work items → summaries.
 
-- [ ] **Step 1:** Write `SqlM3StoreContractTests : StoreContractTests` (inherits Task 2's cases) and:
+- [ ] **Step 1:** Write `SqlM3StoreContractTests : M3StoreContractTests` and `SqlSearchContractTests : SearchContractTests`, which inherit Task 2's cases. Task 2 put the M3 cases in separate abstract suites because xunit 2.9.3 cannot skip at runtime. Also write:
   - `SqlMessageSearchTests`:
     - `VectorRanking_MatchesInMemory` (same fixture vectors, same ranking);
     - `FullText_And_LikeFallback_ReturnSameSet` (FTS fixture vs. no-FTS fixture, same corpus);
@@ -257,7 +257,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
   1. For each kind present, take the highest `through_seq` among its items.
   2. Load the prior summary of that kind and the messages after its `CoversThroughSeq` up to `through_seq`. Bound the input to `Summary:MaxInputTokens` (default 25,000) by keeping the newest messages.
   3. Make one plain-text `GetResponseAsync` call. Its `MaxOutputTokens` is the resolved `MaxTokensShort`/`MaxTokensLong` (1000/4000). Short and long run concurrently when both are present (spec §11.3).
-  4. `SaveAsync` each result with the last message's id and seq and the counted tokens. Sessions with `summary.enabled = false` at handling time complete without an LLM call.
+  4. `SaveAsync` all results in one call, each with the last message's id and seq and the counted tokens. Sessions with `summary.enabled = false` at handling time complete without an LLM call. Core passes `SummaryIntent` only when summaries are enabled (null otherwise).
   5. Transient provider failures follow the M2 rule (release, no attempt consumed).
 - **Prompts (clean-room, spec §11.3 only):** short = concise factual coverage; long = themes, context, apparent preferences and personality. Both are cumulative: prior summary plus new messages. Custom summary instructions go in the system prompt; message text is data.
 - **Reconciler:** each tick, embed pending chunks (batched, like conclusions). Then backfill: `ListUnchunkedMessagesAsync(Reconciler:BackfillBatch = 500)`, chunk the messages, and `AddChunksAsync`. Metric: `nachos.messages.embedding_pending`.
@@ -356,7 +356,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 - **Worker commits** (`CommitDerivationAsync`, `SaveAsync`) take the same S locks after their fencing check. Under `Deleting`, they discard the result and complete the items as `Succeeded` with `Error = 'resource_deleted'`.
 - The lock order workspace → session → children is unchanged from M2. The existing `ParallelWorkers_NoDeadlock` test must stay green.
 
-- [ ] **Step 1:** Write `SqlDeletionContractTests : DeletionContractTests` and `SqlDeletionBarrierTests` (Review Focus 4; each test uses the pause hook):
+- [ ] **Step 1:** Write `SqlDeletionContractTests : DeletionContractTests` (acceptance and barrier only; the purge cases are Task 8's `DeletionPurgeContractTests`) and `SqlDeletionBarrierTests` (Review Focus 4; each test uses the pause hook):
   - `WorkspaceAcceptance_vs_SessionCreate_BothOrders`;
   - `SessionAcceptance_vs_Append`;
   - `SessionAcceptance_vs_Reactivation`;
@@ -390,6 +390,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves the resource `Deleting` and shows in `W/jobs` with its error.
 
 - [ ] **Step 1:** Write the tests:
+  - `SqlDeletionPurgeContractTests : DeletionPurgeContractTests` (inherits Task 2's purge cases);
   - `DeletionServiceTests` (in-memory): `SessionDelete_PurgesEverythingAttributed`, `UnsupportedConclusion_Tombstoned`, `WorkspaceDelete_SupersedesChildJobs`, `OwnLeaseSurvivesCancel`, `DeadLettered_LeavesDeleting`;
   - SQL (`SqlDeletionBarrierTests`): `CrashAfterPartialPurge_ResumesAndCompletes` (kill the lease mid-loop; writes stay rejected throughout), `OtherLeasesFenced_ByCancel`, `NameReusable_AfterRemove`;
   - `JobServiceTests`: `ListsDeletionJobsWithStatus`, `Paged`.
