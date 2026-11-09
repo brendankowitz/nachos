@@ -144,6 +144,11 @@ public abstract class SqlMessageSearchTests
         // search's alone).
         var ready = Unranked(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct));
         ready.ShouldBeSubsetOf(Unranked(expected));
+        if (terms.SequenceEqual(["the", "and"]))
+        {
+            expected.ShouldNotBeEmpty();
+        }
+
         if (terms.SequenceEqual(["the", "and"]) && HasFullText)
         {
             ready.Select(hit => hit.Split('|')[0]).ShouldBe(
