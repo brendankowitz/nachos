@@ -50,7 +50,7 @@ These carry over from M1/M2 and the roadmap:
 
 ## Ownership and sequencing
 
-The tasks are agent-neutral. One rule still holds: **SQL/Testcontainers-heavy tasks (1, 3, 7's SQL half, 8's SQL half, 10) need a Docker-capable host.**
+The tasks are agent-neutral. One rule still holds: **SQL/Testcontainers-heavy tasks (1, 3, 7's SQL half, 8's SQL half, 10, 11's schema half) need a Docker-capable host.**
 
 ```
 1 Schema + FTS image ──> 3 SQL recall stores ──┬─> 5 Hybrid search ──┐
@@ -62,6 +62,7 @@ The tasks are agent-neutral. One rule still holds: **SQL/Testcontainers-heavy ta
 - Tasks 1 and 2 can start immediately and in parallel. Task 4 needs only 2 (it runs on the in-memory provider).
 - Task 7 needs only 2 for its contract tests. Its SQL half touches every existing SQL write path, so it should not run at the same time as Task 3 on the same files. Coordinate in the PR's coordination table.
 - Task 9 can land route by route as its services do.
+- Task 11 (local embeddings) needs 3 and 4 and is independent of 5–10.
 
 ## Review Focus
 
@@ -249,7 +250,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 
 **Notes:**
 - **`MessageChunker.Chunk(string content) → IReadOnlyList<string>`**:
-  - chunks are at most `Embeddings:ChunkTokens` tokens (default 512), with a 20% overlap (spec §11.1), counted with the embedding model's encoding (`cl100k_base` for `text-embedding-3-small`, through `Microsoft.ML.Tokenizers`);
+  - chunks are at most `Embeddings:ChunkTokens` tokens (default 512), with a 20% overlap (spec §11.1), counted with the **active embedding model's** tokenizer. The tokenizer and its limit come from the embedding registration as `EmbeddingChunking(Tokenizer Tokenizer, int MaxTokens)`, not a hard-coded encoding. Azure OpenAI registers `cl100k_base` with 512; Task 11's local models register their own tokenizer and limit. The effective size is `min(ChunkTokens, MaxTokens)`;
   - content at or under the chunk size is one chunk;
   - blank content gives zero chunks.
 - **Summarizer handler** (one leased unit = one session; the lease can hold a short item, a long item, or both):
@@ -459,13 +460,64 @@ Either way the result is posted on the PR. It closes R1's M3 obligation.
 - [ ] **Step 4:** Run the AppHost suite (Docker) and the docs build. Expected: PASS, with zero broken links.
 - [ ] **Step 5:** Commit `docs(m3): search, context and deletion docs; R1 benchmark`.
 
+### Task 11: Local embeddings option
+
+Run Nachos with **no paid embedding service**: a small sentence-embedding model runs in-process on CPU through ONNX Runtime. This is an option alongside Azure OpenAI, not a replacement. Chat (the Deriver and Summarizer) still needs a chat model, or the fake AI; a local small chat model is a future follow-up (Q8), not M3.
+
+**Files:**
+- Create in `src/Nachos.Hosting/LocalEmbeddings/`:
+  - `LocalEmbeddingGenerator.cs`: `IEmbeddingGenerator<string, Embedding<float>>`, sealed, `IDisposable` (it owns the `InferenceSession`);
+  - `LocalEmbeddingModel.cs`: the catalog of supported models (below);
+  - `LocalEmbeddingOptions.cs` (`Embeddings:Local:Model`, `Embeddings:Local:ModelDirectory`);
+  - `EmbeddingVectors.cs`: pure `Pool`, `Normalize` and `PadTo(VectorSpace.Dimensions)` helpers.
+- Modify the `NachosBuilder` extensions in `src/Nachos.Hosting/`: add `UseLocalEmbeddings(Action<LocalEmbeddingOptions>? configure = null)`. Configuration also selects it with `Nachos:Ai:Embeddings=Local`.
+- Create `src/Nachos.Cli/ModelCommands.cs`: `nachos models fetch <model> [--dir <path>]` downloads the pinned files over HTTPS and verifies each SHA-256. It refuses to overwrite a file whose hash differs.
+- Schema: create `Tables/EmbeddingSpace.sql`, a single-row table `(Id tinyint PK CHECK (Id = 1), Model nvarchar(128), Dimensions int, StampedAt)`. It is additive and AutoSafe.
+- Create `src/Nachos.Core/Llm/EmbeddingSpaceCheck.cs`, an `IHostedService` that replaces M2's dimension-only probe; see "One model per database" below. Add `nachos embeddings reset --model <id>` to the CLI.
+- Add `Microsoft.ML.OnnxRuntime` (MIT) to `Directory.Packages.props`, and record the licence check in the PR.
+- Tests: `test/Nachos.Core.Tests/Llm/{EmbeddingVectorsTests,EmbeddingSpaceCheckTests}.cs`, `test/Nachos.Hosting.Tests/LocalEmbeddingGeneratorTests.cs` (real model; see Step 4), `test/Nachos.Cli.Tests/ModelCommandsTests.cs`.
+
+**Depends on:** 3 (schema and SQL stores), 4 (the chunker takes its tokenizer from the active embedding model).
+
+**Model catalog** (pinned; nothing is bundled in the repo or any package):
+
+| Id | Licence | Native dims | Max tokens | Pooling | Default |
+|---|---|---|---|---|---|
+| `bge-small-en-v1.5` | MIT | 384 | 512 | CLS, then L2-normalize | yes |
+| `all-minilm-l6-v2` | Apache-2.0 | 384 | 256 | mean over the attention mask, then L2-normalize | no |
+
+Each entry pins the `model.onnx` and `vocab.txt` download URLs and their SHA-256, plus a `DedupMaxDistance` default (see the calibration below). Tokenization uses `Microsoft.ML.Tokenizers` `BertTokenizer` over the pinned `vocab.txt`, with the model's max length.
+
+**Notes:**
+- **Dimensions:** native vectors are zero-padded to 1536 after normalization. Zero padding leaves every dot product and norm unchanged, so cosine distances are exactly the native ones. The `VECTOR(1536)` columns and every query stay as they are. The cost is about four times the storage per vector.
+- **One model per database (makes mixing impossible):** vectors from different models must never be compared, and the model name lives only in row JSON today. So the database records one embedding model in `EmbeddingSpace`.
+  - At start, `EmbeddingSpaceCheck` compares the configured generator's model id with the stamp. On a mismatch, startup fails with `Embedding model '<configured>' does not match the database's '<stamped>'. Run 'nachos embeddings reset --model <configured>' to re-embed, or configure '<stamped>'.`
+  - An unstamped database is stamped on first start when every stored vector's recorded model (row metadata) equals the configured one, or when there are no vectors. Otherwise startup fails with the same message.
+  - `embeddings reset` clears every conclusion and chunk vector to `Pending` in batches, then restamps. The reconciler re-embeds them. Until it has, those rows are missing from vector results; lexical search still finds messages.
+  - The in-memory provider holds the stamp for the process lifetime.
+  - The fake AI's model id is `fake-hash-v1`.
+- **Dedup threshold per model:** the 0.05 default was chosen on OpenAI's distance scale. When the deployment doesn't set `Deriver:DedupMaxDistance`, the catalog entry's value applies. Step 3 calibrates it on a fixture of paraphrase and non-paraphrase pairs (committed as `test/fixtures/dedup-pairs.json`, written fresh for this task) and records the chosen value and the false-merge rate in `research/local-embeddings-calibration.md`.
+- **Chunking (Task 4 seam):** with local embeddings, `MessageChunker` uses the model's `BertTokenizer` and its max tokens less 2 (`[CLS]`/`[SEP]`). That is 510 for bge-small and 254 for MiniLM, with the same 20% overlap.
+- **Performance:** the session is created once and is thread-safe for `Run`. Inputs are batched (up to `Embeddings:Local:BatchSize`, default 32), and `CancellationToken` is checked between batches.
+
+- [ ] **Step 1:** Write the tests:
+  - `EmbeddingVectorsTests`: `ZeroPadding_PreservesCosineDistance` (seeded theory), `ClsPooling_TakesFirstToken`, `MeanPooling_IgnoresMaskedTokens`, `Normalize_UnitLength`;
+  - `EmbeddingSpaceCheckTests`: `Mismatch_FailsWithResetCommand`, `Unstamped_NoVectors_Stamps`, `Unstamped_MatchingRecordedModel_Stamps`, `Unstamped_OtherRecordedModel_Fails`, `Reset_MarksAllPendingAndRestamps`;
+  - `LocalEmbeddingGeneratorTests` (real model): `Output1536_UnitNorm_PaddingZero`, `Paraphrase_CloserThanUnrelated`, `LongInput_TruncatedNotThrown`, `Deterministic_AcrossCalls`;
+  - `ModelCommandsTests`: `HashMismatch_FailsAndKeepsNothing`, `ExistingGoodFile_Skipped` (uses a local HTTP fixture, not the internet);
+  - `MessageChunkerTests.LocalModel_ChunksWithinModelMaxTokens`.
+- [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests --filter "EmbeddingVectors|EmbeddingSpace"` and `test/Nachos.Cli.Tests --filter ModelCommands`. Expected: FAIL.
+- [ ] **Step 3:** Implement. Run the dedup calibration and record it.
+- [ ] **Step 4:** Run them again. Expected: PASS. Run the real-model tests with `NACHOS_LOCAL_MODEL_DIR` set; they skip, with a reason, when it is unset. Add a CI job step that runs `nachos models fetch bge-small-en-v1.5` (cached by hash) and then those tests. It is a public download, not an Azure action.
+- [ ] **Step 5:** Docs: a guide "Run Nachos with local embeddings", covering fetching the model, `UseLocalEmbeddings()` or configuration, the one-model-per-database rule and `embeddings reset`, and the quality and storage trade-off. Also add an AppHost switch `Nachos__Ai__Embeddings=Local`. Commit `feat(hosting): local ONNX embeddings with a per-database embedding model`.
+
 ---
 
 ## M3 Done checklist
 
 The M3 PR merges when all of these hold:
 
-- [ ] Tasks 1–10 are committed with their tests.
+- [ ] Tasks 1–11 are committed with their tests.
 - [ ] CI is green at the final SHA: build-test (both OSes), SQL/CLI/AppHost (Docker, FTS image), schema (both dacpacs; the reviewed M2→M3 upgrade adds the tables), docs, and SDK smoke.
 - [ ] The §13.1 race tests have been looped 20× on SQL, with results posted against the SHA.
 - [ ] Budget property tests are green (spec §20 M3 exit).
@@ -494,4 +546,5 @@ Each row has a proposed default. The default applies unless the owner answers ot
 | Q4 | Issue #10 (exact managed tokenizer) is a release gate, but it needs a specific approval of the Unicode-data policy exception. Keep it out of M3? | **Yes, keep it separate.** M3's budget guarantee holds with the current counter (D8). | — |
 | Q5 | An empty or whitespace search `query`: `200 []` or `422`? | **`200 []`**. The manifest requires the field but sets no minimum length. | Task 5 |
 | Q7 | Honcho's live OpenAPI is 3.6.0; the pinned manifest is 3.3.0 (spec R4). `DELETE W` now documents `409`. Re-pin before Task 9's wire diff? | **Yes, as its own deliberate commit before Task 9**, regenerating `test/contracts/honcho-v3-wire.json` and reviewing the diff. Re-pinning is a deliberate owner-visible change (R4). | Task 9 |
+| Q8 | A local **chat** model so Nachos runs entirely free (Phi, Qwen or Gemma class, in-process via ONNX Runtime GenAI or through a local OpenAI-compatible server such as Ollama or Foundry Local)? | **Not in M3** (owner, 2026-11-09); a follow-up issue opened with the M3 PR. Notes for it: (1) the Deriver depends on schema-valid structured output (`GetResponseAsync<ExtractionResult>`), so the runtime must constrain decoding to the JSON schema, and the eval harness (M4) must show acceptable fact precision before it is recommended; (2) licences: Phi-4-mini is MIT and most Qwen2.5/Qwen3 sizes are Apache-2.0, both permissive; Gemma ships under Google's Gemma Terms of Use, which is not on the permissive allowlist (spec §3 rule 7), so Gemma could only be user-supplied, never fetched or recommended by Nachos; (3) the summarizer is plain text and is the easier first target. | — |
 | Q6 | Message deletion (`DELETE M/{id}`) isn't in Honcho v3's route list, so M3 doesn't add it. Agreed? | **Agreed.** No new route. | — |
