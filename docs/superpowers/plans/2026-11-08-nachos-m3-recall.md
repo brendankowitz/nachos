@@ -392,7 +392,7 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
 - [ ] **Step 1:** Write the tests:
   - `SqlDeletionPurgeContractTests : DeletionPurgeContractTests` (inherits Task 2's purge cases);
   - `DeletionServiceTests` (in-memory): `SessionDelete_PurgesEverythingAttributed`, `UnsupportedConclusion_Tombstoned`, `WorkspaceDelete_SupersedesChildJobs`, `OwnLeaseSurvivesCancel`, `DeadLettered_LeavesDeleting`;
-  - SQL (`SqlDeletionBarrierTests`): `CrashAfterPartialPurge_ResumesAndCompletes` (kill the lease mid-loop; writes stay rejected throughout), `OtherLeasesFenced_ByCancel`, `NameReusable_AfterRemove`;
+  - SQL (`SqlDeletionBarrierTests`): `CrashAfterPartialPurge_ResumesAndCompletes` (kill the lease mid-loop and resume through a **new `SqlMemoryStore` instance** over the same database, so no in-process state survives; a conclusion citing one the first run removed must end tombstoned; writes stay rejected throughout), `OtherLeasesFenced_ByCancel`, `NameReusable_AfterRemove`;
   - `JobServiceTests`: `ListsDeletionJobsWithStatus`, `Paged`.
 - [ ] **Step 2:** Run them. Expected: FAIL.
 - [ ] **Step 3:** Implement.
