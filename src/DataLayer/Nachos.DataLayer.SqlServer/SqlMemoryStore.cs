@@ -40,7 +40,7 @@ public sealed class SqlMemoryStore : IMemoryStore
     public SqlMemoryStore(
         SqlServerOptions options,
         SchemaGate schemaGate,
-        FullTextIndexMaintenance fullTextIndex,
+        FullTextIndexState fullTextIndex,
         TimeProvider clock,
         ILogger<SqlMemoryStore> logger)
     {

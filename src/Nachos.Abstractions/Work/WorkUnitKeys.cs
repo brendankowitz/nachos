@@ -22,6 +22,12 @@ public static class WorkUnitKeys
     /// <summary>The singleton reconciler's unit, leased with <see cref="Stores.IWorkQueue.TryLeaseAsync"/>.</summary>
     public const string Reconciler = "reconciler:main";
 
+    /// <summary>
+    /// The unit leased with <see cref="Stores.IWorkQueue.TryLeaseAsync"/> by the replica that creates or repairs a
+    /// provider's full-text index of message search.
+    /// </summary>
+    public const string FullTextMaintenance = "reconciler:fts";
+
     /// <summary><c>representation:{workspace}:{session}:{observed}</c>, the unit of one sender's derivations in one session.</summary>
     public static string Representation(string workspaceName, string sessionName, string observedName)
     {

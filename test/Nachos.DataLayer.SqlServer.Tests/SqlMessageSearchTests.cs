@@ -56,19 +56,59 @@ public abstract class SqlMessageSearchTests
     }
 
     [Fact]
-    public async Task FullText_And_LikeFallback_ReturnSameSet()
+    public async Task FullText_IsSubsetOfLike_AndEqualOnWordsAndPrefixes()
     {
         var corpus = await CorpusAsync(SeedWordsAsync);
         corpus.IsFullTextReady.ShouldBe(HasFullText);
+        var request = new MessageSearchRequest(Workspace, new MessageSearchScope.Workspace(), null);
 
-        foreach (var terms in new[] { ["apple"], ["lemon", "lime"], ["LIME"], ["orange", "lemon"], ["kiwi"], new[] { "melon" } })
+        // Terms that occur only at the start of words: both modes find the same messages.
+        foreach (var terms in new[] { ["apple"], ["lemon", "lime"], ["LIME"], ["orange", "lemon"], ["kiwi"], ["melon"], new[] { "lemon" } })
         {
-            var request = new MessageSearchRequest(Workspace, new MessageSearchScope.Workspace(), null);
             var expected = Describe(await corpus.Reference.Search.LexicalAsync(request, terms, 100, Ct));
 
             // The fallback ranks exactly as the reference does; full-text ranks by RANK, so only its set must agree.
             Describe(await corpus.Like.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
             Unranked(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(Unranked(expected), ignoreOrder: true);
+        }
+
+        // A prefix finds the longer word in both modes.
+        foreach (var store in new[] { corpus.Like, corpus.Ready })
+        {
+            (await store.Search.LexicalAsync(request, ["lemon"], 100, Ct)).Select(hit => hit.Message.Content).ShouldContain("lemonade stand");
+        }
+
+        // Inside a word ("ade" in "lemonade") only the substring fallback matches.
+        var inside = Unranked(await corpus.Like.Search.LexicalAsync(request, ["ade"], 100, Ct));
+        inside.ShouldNotBeEmpty();
+        Unranked(await corpus.Ready.Search.LexicalAsync(request, ["ade"], 100, Ct)).ShouldBeSubsetOf(inside);
+    }
+
+    [Fact]
+    public async Task LongTerms_DoNotFail()
+    {
+        var corpus = await CorpusAsync(SeedWordsAsync);
+        var request = new MessageSearchRequest(Workspace, new MessageSearchScope.Workspace(), null);
+        var longest = IMessageSearch.MaxTermLength;
+
+        // One longest word fits a full-text condition; five do not (over 4,000 characters) and fall back to LIKE, as does a
+        // longest term of escaped wildcards (a 2,002-character pattern).
+        foreach (var terms in new[]
+        {
+            [new string('a', longest)],
+            [.. "abcde".Select(c => new string(c, longest))],
+            new[] { new string('%', longest) },
+        })
+        {
+            var expected = Describe(await corpus.Reference.Search.LexicalAsync(request, terms, 100, Ct));
+            Describe(await corpus.Like.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
+            Describe(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
+        }
+
+        foreach (var store in new[] { corpus.Like, corpus.Ready })
+        {
+            await Should.ThrowAsync<ArgumentException>(
+                () => store.Search.LexicalAsync(request, [new string('a', 4001)], 100, Ct));
         }
     }
 
@@ -94,9 +134,18 @@ public abstract class SqlMessageSearchTests
 
         Describe(await corpus.Like.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
 
-        // Full-text search matches whole words outside its stoplist only, so it can find fewer messages, never others.
+        // Full-text search matches words and word prefixes, so it can find fewer messages, never others. The index has no
+        // stoplist, so a query of stopwords finds what the substring search finds.
         var ready = Unranked(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct));
-        ready.ShouldBeSubsetOf(Unranked(expected));
+        if (terms.SequenceEqual(["the", "and"]))
+        {
+            expected.ShouldNotBeEmpty();
+            ready.ShouldBe(Unranked(expected), ignoreOrder: true);
+        }
+        else
+        {
+            ready.ShouldBeSubsetOf(Unranked(expected));
+        }
     }
 
     [Fact]
@@ -184,12 +233,13 @@ public abstract class SqlMessageSearchTests
         var sqlClock = new FakeTimeProvider(Start);
         await seed(database.CreateStore(sqlClock), sqlClock);
 
-        var maintenance = database.CreateFullTextIndexMaintenance(TimeProvider.System);
+        var state = new FullTextIndexState();
+        var maintenance = database.CreateFullTextIndexMaintenance(state, TimeProvider.System);
         await maintenance.CheckAsync(Ct);
         if (HasFullText)
         {
             var deadline = DateTimeOffset.UtcNow + ReadyTimeout;
-            while (!maintenance.IsReady)
+            while (!state.IsReady)
             {
                 DateTimeOffset.UtcNow.ShouldBeLessThan(deadline, "the full-text index did not become ready");
                 await Task.Delay(TimeSpan.FromMilliseconds(250));
@@ -197,7 +247,7 @@ public abstract class SqlMessageSearchTests
             }
         }
 
-        return new Corpus(reference, database.CreateStore(sqlClock), database.CreateStore(sqlClock, maintenance), maintenance.IsReady);
+        return new Corpus(reference, database.CreateStore(sqlClock), database.CreateStore(sqlClock, state), state.IsReady);
     }
 
     private static async Task SeedWordsAsync(IMemoryStore store, FakeTimeProvider clock)
@@ -209,6 +259,7 @@ public abstract class SqlMessageSearchTests
             "Lemon and LIME", "lemon lemon lime", "only lemon here", "lime then lemon", "orange lemon lime lemon",
             "kiwi alone", "the apple is red", "near and far", "東京 is big", "東京タワーに行きました",
             "100% sure", "100 percent", "a_b literal", "axb literal", "[x] marks", "x marks", "c:\\dir path", "lemonade stand",
+            "the cat and the hat",
         ];
         await store.Messages.AppendAsync(
             Workspace,

@@ -112,8 +112,9 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
     }
 
     /// <remarks>
-    /// An anti-join of <c>dbo.Messages</c> against <c>dbo.MessageEmbeddings</c> (seeking its unique
-    /// <c>(MessageId, ChunkIndex)</c> key); it reads every message of the live sessions on each call.
+    /// Walks <c>dbo.Messages</c> in clustered-key order (insertion order), seeking each message in the unique
+    /// <c>(MessageId, ChunkIndex)</c> key of <c>dbo.MessageEmbeddings</c>, and stops at <paramref name="limit"/>; when no
+    /// message is unchunked, it still reads them all.
     /// </remarks>
     public async Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct)
     {
@@ -132,7 +133,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
                 WHERE w.LifecycleState <> 2 AND s.LifecycleState <> 2
                   AND NOT EXISTS (SELECT 1 FROM dbo.MessageEmbeddings AS e WHERE e.MessageId = m.Id)
                   AND m.Content COLLATE Latin1_General_100_BIN2 LIKE @notBlank
-                ORDER BY m.CreatedAt, m.WorkspaceId, m.SessionId, m.Seq
+                ORDER BY m.Id
                 """,
                 SqlParameters.Int("@limit", limit),
                 SqlParameters.Text("@notBlank", NotBlankPattern))

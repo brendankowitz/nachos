@@ -36,8 +36,9 @@ public interface IEmbeddingStore
     Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct);
 
     /// <summary>
-    /// Up to <paramref name="limit"/> messages that have no chunk, oldest (<c>CreatedAt</c>) first, in every workspace: the
-    /// messages appended before chunking existed, for the reconciler to backfill. Messages whose content is blank
+    /// Up to <paramref name="limit"/> messages that have no chunk, in the order they were stored (not by <c>CreatedAt</c>,
+    /// which a caller may backdate), in every workspace: the messages appended before chunking existed, for the reconciler
+    /// to backfill. Messages whose content is blank
     /// (<see cref="string.IsNullOrWhiteSpace"/>) have no chunks by definition and are never listed, nor are messages of a
     /// workspace or session that is being deleted.
     /// </summary>

@@ -37,9 +37,10 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
                 ArgumentNullException.ThrowIfNull(request);
                 ArgumentNullException.ThrowIfNull(terms);
                 ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
-                if (terms.Any(string.IsNullOrEmpty))
+                if (terms.Any(term => string.IsNullOrEmpty(term) || term.Length > IMessageSearch.MaxTermLength))
                 {
-                    throw new ArgumentException("A search term must be a non-empty word.", nameof(terms));
+                    throw new ArgumentException(
+                        $"A search term must be a non-empty word of at most {IMessageSearch.MaxTermLength} characters.", nameof(terms));
                 }
 
                 return Search(request, take, _ => message => -Hits(message.Content, terms));

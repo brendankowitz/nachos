@@ -172,10 +172,9 @@ internal static class GrantCommands
         }
 
         var options = new SqlServerOptions { ConnectionString = parse.GetRequiredValue(connection) };
-        var gate = new SchemaGate(deployer, options);
-        // Grants never search messages, so the full-text index maintenance is not started.
-        var fullTextIndex = new FullTextIndexMaintenance(options, gate, TimeProvider.System, NullLogger<FullTextIndexMaintenance>.Instance);
-        var store = new SqlMemoryStore(options, gate, fullTextIndex, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        // Grants never search messages: a full-text index state that is never ready.
+        var store = new SqlMemoryStore(
+            options, new SchemaGate(deployer, options), new FullTextIndexState(), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
         return await body(store.Grants);
     }
 

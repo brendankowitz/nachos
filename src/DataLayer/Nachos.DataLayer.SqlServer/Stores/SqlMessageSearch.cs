@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Nachos.Abstractions;
@@ -21,15 +22,15 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// message ranked by its nearest chunk.
 /// </para>
 /// <para>
-/// <b>Lexical</b> search uses <c>CONTAINSTABLE</c> while <see cref="FullTextIndexMaintenance.IsReady"/> and every term is a
-/// plain word (<see cref="LexicalQuery.ToFullTextCondition"/>), ranked by full-text <c>RANK</c>. Otherwise it is the
-/// contract's own definition: every term is a substring, compared <c>UPPER</c>-folded under a binary collation (as
-/// <c>icontains</c> is), ranked by the terms' non-overlapping occurrences. Full-text matching is by word, so a term inside a
-/// longer word, a noise word, or a term in unspaced (for example CJK) text matches only on the fallback.
+/// <b>Lexical</b> search uses <c>CONTAINSTABLE</c> while <see cref="FullTextIndexState.IsReady"/> and
+/// <see cref="FullTextCondition.For"/> gives a condition (every term a plain word), matching words and word prefixes, ranked
+/// by full-text <c>RANK</c>. Otherwise it is the contract's own definition: every term is a substring, compared
+/// <c>UPPER</c>-folded under a binary collation (as <c>icontains</c> is), ranked by the terms' non-overlapping occurrences;
+/// so a term inside a word, or in unspaced (for example CJK) text, matches only on this fallback.
 /// </para>
 /// <para>Ties go to the newest message: <c>CreatedAt</c>, then <c>Seq</c>, descending, then public id.</para>
 /// </remarks>
-internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexMaintenance fullTextIndex) : IMessageSearch
+internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexState fullTextIndex) : IMessageSearch
 {
     private const string Bin2 = "Latin1_General_100_BIN2";
 
@@ -86,12 +87,13 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexMai
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(terms);
         ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
-        if (terms.Any(string.IsNullOrEmpty))
+        if (terms.Any(term => string.IsNullOrEmpty(term) || term.Length > IMessageSearch.MaxTermLength))
         {
-            throw new ArgumentException("A search term must be a non-empty word.", nameof(terms));
+            throw new ArgumentException(
+                $"A search term must be a non-empty word of at most {IMessageSearch.MaxTermLength} characters.", nameof(terms));
         }
 
-        var fullText = fullTextIndex.IsReady ? LexicalQuery.ToFullTextCondition(terms) : null;
+        var fullText = fullTextIndex.IsReady ? FullTextCondition.For(terms) : null;
         return await SearchAsync(
             request,
             take,
@@ -112,7 +114,8 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexMai
                 HitsFrom,
                 "WHERE " + candidates,
                 "ORDER BY ft.[RANK] DESC, " + NewestFirst),
-            [SqlParameters.Text("@condition", condition)]
+            // Sized, never nvarchar(max), which CONTAINSTABLE refuses; FullTextCondition keeps the condition within it.
+            [new SqlParameter("@condition", SqlDbType.NVarChar, FullTextCondition.MaxLength) { Value = condition }]
         );
 
     private static (string Sql, SqlParameter[] Parameters) LikeQuery(string candidates, IReadOnlyList<string> terms)
@@ -122,9 +125,9 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexMai
         var parameters = new List<SqlParameter>(terms.Count * 2);
         for (var i = 0; i < terms.Count; i++)
         {
-            matches.Add($"{Folded} LIKE UPPER(@pattern{i} COLLATE {Bin2}) ESCAPE N'{LexicalQuery.LikeEscape}'");
+            matches.Add($"{Folded} LIKE UPPER(@pattern{i} COLLATE {Bin2}) ESCAPE N'{LikePattern.Escape}'");
             hits.Add($"(DATALENGTH({Folded}) - DATALENGTH(REPLACE({Folded}, UPPER(@term{i} COLLATE {Bin2}), N''))) / DATALENGTH(@term{i})");
-            parameters.Add(SqlParameters.Text($"@pattern{i}", LexicalQuery.ToLikePattern(terms[i])));
+            parameters.Add(SqlParameters.Text($"@pattern{i}", LikePattern.For(terms[i])));
             parameters.Add(SqlParameters.Text($"@term{i}", terms[i]));
         }
 

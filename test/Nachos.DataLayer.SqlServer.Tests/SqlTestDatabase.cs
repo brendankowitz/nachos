@@ -1,9 +1,12 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Nachos.DataLayer.SqlServer.Schema;
 using Nachos.DataLayer.SqlServer.Search;
+using Nachos.DataLayer.SqlServer.Storage;
+using Nachos.DataLayer.SqlServer.Stores;
 
 namespace Nachos.DataLayer.SqlServer.Tests;
 
@@ -44,18 +47,23 @@ internal sealed class SqlTestDatabase
 
     /// <summary>
     /// A store over this database; every store shares the one verified gate. Unless <paramref name="fullTextIndex"/> is
-    /// given, its lexical search uses <c>LIKE</c>: the index maintenance it gets is never started, so never ready.
+    /// given, its lexical search uses <c>LIKE</c>: its full-text index state is never ready.
     /// </summary>
-    public SqlMemoryStore CreateStore(TimeProvider clock, FullTextIndexMaintenance? fullTextIndex = null) =>
-        new(Options, Gate, fullTextIndex ?? CreateFullTextIndexMaintenance(clock), clock, NullLogger<SqlMemoryStore>.Instance);
+    public SqlMemoryStore CreateStore(TimeProvider clock, FullTextIndexState? fullTextIndex = null) =>
+        new(Options, Gate, fullTextIndex ?? new FullTextIndexState(), clock, NullLogger<SqlMemoryStore>.Instance);
 
-    /// <summary>A store over any database and gate, whose lexical search uses <c>LIKE</c> (see <see cref="CreateStore(TimeProvider, FullTextIndexMaintenance?)"/>).</summary>
+    /// <summary>A store over any database and gate, whose lexical search uses <c>LIKE</c>.</summary>
     public static SqlMemoryStore CreateStore(SqlServerOptions options, SchemaGate gate, TimeProvider clock) =>
-        new(options, gate, new FullTextIndexMaintenance(options, gate, clock, NullLogger<FullTextIndexMaintenance>.Instance), clock, NullLogger<SqlMemoryStore>.Instance);
+        new(options, gate, new FullTextIndexState(), clock, NullLogger<SqlMemoryStore>.Instance);
 
-    /// <summary>A full-text index maintenance over this database, not started.</summary>
-    public FullTextIndexMaintenance CreateFullTextIndexMaintenance(TimeProvider clock) =>
-        new(Options, Gate, clock, NullLogger<FullTextIndexMaintenance>.Instance);
+    /// <summary>A full-text index maintenance over this database, not started, that reports into <paramref name="state"/>.</summary>
+    public FullTextIndexMaintenance CreateFullTextIndexMaintenance(
+        FullTextIndexState state, TimeProvider clock, ILogger<FullTextIndexMaintenance>? logger = null)
+    {
+        logger ??= NullLogger<FullTextIndexMaintenance>.Instance;
+        return new FullTextIndexMaintenance(
+            Options, Gate, state, new SqlWorkQueue(new SqlStoreRuntime(Options, Gate, clock, logger)), clock, logger);
+    }
 
     /// <summary>
     /// Empties the work queue (items and leases). The queue spans workspaces, so the M2 contract suites, which claim

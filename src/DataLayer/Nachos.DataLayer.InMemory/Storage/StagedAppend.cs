@@ -28,6 +28,7 @@ internal sealed class StagedAppend
     private readonly Dictionary<string, PeerEntry> _newPeers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Membership> _memberships = new(StringComparer.Ordinal);
     private readonly List<MessageRecord> _messages;
+    private readonly List<long> _orders;
 
     /// <summary>Stages an append. The caller holds the workspace gate.</summary>
     public StagedAppend(
@@ -76,6 +77,9 @@ internal sealed class StagedAppend
             message.TokenCount,
             ownedMetadata[i],
             message.CreatedAt ?? now))];
+
+        // Allocated while staging, because the commit must not be able to fail; an abandoned append leaves gaps, which order ignores.
+        _orders = [.. _messages.Select(_ => nextOrder())];
     }
 
     /// <summary>The staged messages. Store-owned: clone before handing them out.</summary>
@@ -130,9 +134,9 @@ internal sealed class StagedAppend
             _session.Members[name] = membership;
         }
 
-        foreach (var message in _messages)
+        foreach (var (message, order) in _messages.Zip(_orders))
         {
-            _session.AppendMessage(message);
+            _session.AppendMessage(message, order);
         }
 
         if (idempotency is not null)
