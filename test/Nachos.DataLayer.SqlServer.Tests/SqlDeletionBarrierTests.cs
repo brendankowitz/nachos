@@ -103,8 +103,10 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
 
     /// <summary>
     /// A session update is one statement that takes the row's exclusive lock itself, so it has no point to pause between
-    /// its check and its write. Instead an uncommitted update lock on the row queues the update ahead of the acceptance:
-    /// the update lands, and the acceptance, granted next, marks the session.
+    /// its check and its write. This test pins the queue ordering only: an uncommitted update lock on the row queues the
+    /// update ahead of the acceptance, the update lands, and the acceptance, granted next, marks the session. The barrier
+    /// predicate itself (<c>LifecycleState &lt;&gt; 2</c>) is pinned by the acceptance-first case of
+    /// <see cref="SessionAcceptance_vs_Reactivation"/>.
     /// </summary>
     [Fact]
     public async Task SessionUpdate_BeforeAcceptance_HoldsItOff()
@@ -117,7 +119,8 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
         await ExecuteAsync(
             blocker,
             blocking,
-            "SELECT Id FROM dbo.Sessions WITH (UPDLOCK, ROWLOCK) WHERE Name = @session",
+            "SELECT Id FROM dbo.Sessions WITH (UPDLOCK, ROWLOCK) WHERE WorkspaceId = (SELECT Id FROM dbo.Workspaces WHERE Name = @workspace) AND Name = @session",
+            ("@workspace", workspace),
             ("@session", session));
         var update = store.Sessions.UpdateAsync(workspace, session, new JsonObject { ["first"] = true }, null, Ct);
         await WaitForLockWaitersAsync(1);

@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Storage;
@@ -19,8 +20,11 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// computed for replaced content is never stored.
 /// </para>
 /// </remarks>
-internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingStore
+internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingStore
 {
+    /// <summary>How many times one chunk batch runs before a deadlock is left to the caller.</summary>
+    private const int ChunkBatchAttempts = 3;
+
     /// <summary>
     /// A <c>LIKE</c> pattern (under a binary collation) that matches text with a character <see cref="char.IsWhiteSpace(char)"/>
     /// rejects: built from .NET's own whitespace set, so "blank" means exactly <see cref="string.IsNullOrWhiteSpace"/>.
@@ -164,6 +168,12 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
     /// messages by name and public id and inserted, unless their workspace or session is being deleted or the
     /// <c>(MessageId, ChunkIndex)</c> key exists, read under <c>UPDLOCK, HOLDLOCK</c> so a concurrent call with the same
     /// chunk waits instead of failing on the unique key. A chunk repeated in the call is inserted once, with its first content.
+    /// <para>
+    /// The chunks are sorted into one canonical order, but that cannot fix the lock order: the probes run in plan order, and
+    /// their range locks fall on the next physical key, so two calls over overlapping but different chunks can still
+    /// deadlock. A batch chosen as the victim is rolled back and run again (it is idempotent), up to
+    /// <see cref="ChunkBatchAttempts"/> times in all with a short jittered delay; after that the deadlock propagates.
+    /// </para>
     /// </remarks>
     public async Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct)
     {
@@ -180,7 +190,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
             ArgumentOutOfRangeException.ThrowIfGreaterThan(chunk.ChunkIndex, MessageChunk.MaxChunkIndex);
         }
 
-        // One canonical order, so concurrent calls over overlapping chunks take the key-range locks in the same order.
+        // One canonical order, so identical concurrent calls lock alike; other overlaps rely on the deadlock retry below.
         var unique = chunks
             .DistinctBy(chunk => (chunk.WorkspaceName, chunk.SessionName, chunk.MessageId, chunk.ChunkIndex))
             .OrderBy(chunk => chunk.WorkspaceName, StringComparer.Ordinal)
@@ -193,51 +203,72 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
             return;
         }
 
-        await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
         for (var start = 0; start < unique.Count; start += InsertChunk)
         {
-            var count = Math.Min(InsertChunk, unique.Count - start);
-            var rows = new List<string>(count);
-            var parameters = new List<SqlParameter> { SqlParameters.Time("@now", now) };
-            for (var i = start; i < start + count; i++)
+            var batch = unique.GetRange(start, Math.Min(InsertChunk, unique.Count - start));
+            for (var attempt = 1; ; attempt++)
             {
-                var chunk = unique[i];
-                rows.Add($"(@w{i}, @s{i}, @m{i}, @i{i}, @c{i}, {i})");
-                parameters.Add(SqlParameters.Text($"@w{i}", chunk.WorkspaceName));
-                parameters.Add(SqlParameters.Text($"@s{i}", chunk.SessionName));
-                parameters.Add(SqlParameters.Text($"@m{i}", chunk.MessageId));
-                parameters.Add(SqlParameters.Int($"@i{i}", chunk.ChunkIndex));
-                parameters.Add(SqlParameters.LongText($"@c{i}", chunk.Content));
+                try
+                {
+                    await InsertChunkBatchAsync(batch, now, ct);
+                    break;
+                }
+                catch (Exception ex) when (attempt < ChunkBatchAttempts && SqlErrors.IsDeadlockVictim(ex))
+                {
+                    // The batch rolled back and is idempotent (NOT EXISTS), so it is simply run again.
+                    LogChunkBatchDeadlock(runtime.Logger, attempt, ex);
+                    await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(10, 50) * attempt), ct);
+                }
             }
-
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            await WriteAdmission.LockParentsAsync(
-                db, unique.Skip(start).Take(count).Select(chunk => (chunk.WorkspaceName, chunk.SessionName)), ct);
-            await db.Database.ExecuteSqlRawAsync(
-                string.Concat(
-                    """
-                    INSERT dbo.MessageEmbeddings (WorkspaceId, MessageId, SessionId, ChunkIndex, Content, SyncState, CreatedAt)
-                    SELECT m.WorkspaceId, m.Id, m.SessionId, j.ChunkIndex, j.Content, 0, @now
-                    FROM (VALUES
-                    """,
-                    string.Join(", ", rows),
-                    """
-                    ) AS j (Workspace, Session, MessageId, ChunkIndex, Content, Ordinal)
-                    JOIN dbo.Workspaces AS w ON w.Name = j.Workspace AND DATALENGTH(w.Name) = DATALENGTH(j.Workspace)
-                    JOIN dbo.Sessions AS s ON s.WorkspaceId = w.Id AND s.Name = j.Session AND DATALENGTH(s.Name) = DATALENGTH(j.Session)
-                    JOIN dbo.Messages AS m ON m.SessionId = s.Id AND m.PublicId = j.MessageId AND DATALENGTH(m.PublicId) = DATALENGTH(j.MessageId)
-                    WHERE w.LifecycleState <> 2 AND s.LifecycleState <> 2
-                      AND NOT EXISTS (
-                          SELECT 1 FROM dbo.MessageEmbeddings AS e WITH (UPDLOCK, HOLDLOCK)
-                          WHERE e.MessageId = m.Id AND e.ChunkIndex = j.ChunkIndex)
-                    ORDER BY j.Ordinal
-                    """),
-                parameters,
-                ct);
-            await transaction.CommitAsync(ct);
         }
     }
+
+    /// <summary>One batch of <see cref="AddChunksAsync"/> in its own transaction, on its own connection.</summary>
+    private async Task InsertChunkBatchAsync(List<MessageChunk> batch, DateTimeOffset now, CancellationToken ct)
+    {
+        var rows = new List<string>(batch.Count);
+        var parameters = new List<SqlParameter> { SqlParameters.Time("@now", now) };
+        for (var i = 0; i < batch.Count; i++)
+        {
+            var chunk = batch[i];
+            rows.Add($"(@w{i}, @s{i}, @m{i}, @i{i}, @c{i}, {i})");
+            parameters.Add(SqlParameters.Text($"@w{i}", chunk.WorkspaceName));
+            parameters.Add(SqlParameters.Text($"@s{i}", chunk.SessionName));
+            parameters.Add(SqlParameters.Text($"@m{i}", chunk.MessageId));
+            parameters.Add(SqlParameters.Int($"@i{i}", chunk.ChunkIndex));
+            parameters.Add(SqlParameters.LongText($"@c{i}", chunk.Content));
+        }
+
+        await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await WriteAdmission.LockParentsAsync(db, batch.Select(chunk => (chunk.WorkspaceName, chunk.SessionName)), ct);
+        await db.Database.ExecuteSqlRawAsync(
+            string.Concat(
+                """
+                INSERT dbo.MessageEmbeddings (WorkspaceId, MessageId, SessionId, ChunkIndex, Content, SyncState, CreatedAt)
+                SELECT m.WorkspaceId, m.Id, m.SessionId, j.ChunkIndex, j.Content, 0, @now
+                FROM (VALUES
+                """,
+                string.Join(", ", rows),
+                """
+                ) AS j (Workspace, Session, MessageId, ChunkIndex, Content, Ordinal)
+                JOIN dbo.Workspaces AS w ON w.Name = j.Workspace AND DATALENGTH(w.Name) = DATALENGTH(j.Workspace)
+                JOIN dbo.Sessions AS s ON s.WorkspaceId = w.Id AND s.Name = j.Session AND DATALENGTH(s.Name) = DATALENGTH(j.Session)
+                JOIN dbo.Messages AS m ON m.SessionId = s.Id AND m.PublicId = j.MessageId AND DATALENGTH(m.PublicId) = DATALENGTH(j.MessageId)
+                WHERE w.LifecycleState <> 2 AND s.LifecycleState <> 2
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dbo.MessageEmbeddings AS e WITH (UPDLOCK, HOLDLOCK)
+                      WHERE e.MessageId = m.Id AND e.ChunkIndex = j.ChunkIndex)
+                ORDER BY j.Ordinal
+                """),
+            parameters,
+            ct);
+        await transaction.CommitAsync(ct);
+    }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "A chunk backfill batch was chosen as a deadlock victim on attempt {Attempt} and rolled back; it is retried.")]
+    private static partial void LogChunkBatchDeadlock(ILogger logger, int attempt, Exception exception);
 
     /// <summary>Applies <c>assignments</c> (fixed SQL chosen by the caller, never user input) while the conclusion is still pending.</summary>
     private async Task UpdatePendingConclusionAsync(PendingEmbedding pending, string assignments, SqlParameter[] values, CancellationToken ct)
