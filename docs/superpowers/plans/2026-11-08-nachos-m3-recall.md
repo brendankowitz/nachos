@@ -409,6 +409,8 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
   - `NotImplementedEndpoints.cs`: remove exactly the M3 pairs: `DELETE W`, `DELETE S`, `POST W/search`, `POST S/search`, `POST P/search`, `GET S/context`, `GET S/summaries`, `GET W/jobs`;
   - `Auth/RouteRequirements.cs`;
   - `Json/NachosJsonContext.cs`.
+- Move the M3 service methods onto `INachosClient` (Tasks 5 and 6 left them on `NachosService` only, because the Client tests count interface methods): `SearchWorkspaceAsync`, `SearchSessionAsync`, `SearchPeerAsync`, `GetSessionContextAsync`, `GetSessionSummariesAsync`. Update `RequestShapeTests`' method count.
+- **Carried from Task 6 review:** the `S/context` route must enforce, with a test, that a peer-scoped key is an active member of this session **and of every session named in `sessions`**. Until M6 this is the only gate for peer-scoped keys, because `NachosService` passes an unrestricted access policy. Pin the status code (Nachos's remark says 401) against Honcho's public docs in Step 0. Bind an absent repeated `sessions` to null; an empty list is treated as not provided either way.
 - Modify `src/Nachos.Client/NachosHttpClient.cs`: new methods. The search routes and `GET` routes retry, and so does `DELETE` (it is idempotent: a repeat returns the same job).
 - Tests: `test/Nachos.Api.Tests/{SearchEndpointTests,SessionContextEndpointTests,DeletionEndpointTests,JobEndpointTests}.cs`, `WireCoverageTests`, `ScopeMatrixTests` rows, `test/Nachos.Client.Tests` round-trips. Add conformance scenarios for context, search and session deletion to the SDK smoke.
 
