@@ -8,11 +8,14 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// <para>
 /// Locking: <see cref="Gate"/> guards <see cref="Workspaces"/>, every <see cref="WorkspaceEntry.Record"/> and
 /// <see cref="Grants"/>. Each <see cref="WorkspaceEntry.Gate"/> guards that workspace's peers, sessions, memberships,
-/// messages and idempotency records. The two are never held together: an operation looks its workspace up under
-/// <see cref="Gate"/>, releases it, then takes the workspace's gate. That is safe because workspaces are never removed.
-/// <see cref="WorkQueueState.Gate"/> guards <see cref="Queue"/>. It may be taken while a workspace gate is held (an append
-/// enqueues, a derivation commit completes its lease, both atomically with their workspace writes), never the other way
-/// round, and never together with <see cref="Gate"/>.
+/// messages, chunks, summaries and idempotency records. <see cref="WorkQueueState.Gate"/> guards <see cref="Queue"/>.
+/// </para>
+/// <para>
+/// Lock order: a workspace gate, then the queue gate, then <see cref="Gate"/>; any of them may be skipped, none taken out
+/// of order. An append enqueues and a worker commit completes its lease under its workspace gate; a deletion transition
+/// or removal also changes the workspace row or the grants. An operation looks its workspace up under <see cref="Gate"/>
+/// and releases it before taking the workspace's gate. A workspace removed in between is
+/// <see cref="WorkspaceEntry.IsDeleting"/> forever, so a write that reaches the detached entry is rejected.
 /// </para>
 /// <para>
 /// Critical sections are short and synchronous, and stored <c>JsonObject</c>s are only read or cloned inside them,

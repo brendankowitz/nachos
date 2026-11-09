@@ -6,7 +6,9 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// <summary>A stored workspace and everything scoped to it.</summary>
 /// <remarks>
 /// <see cref="Record"/> is guarded by <see cref="InMemoryState.Gate"/>; every other mutable member is guarded by
-/// <see cref="Gate"/>.
+/// <see cref="Gate"/>. The deletion transition (<see cref="MarkDeleting"/>) holds both, so the workspace's own writes,
+/// under <see cref="Gate"/>, read <see cref="IsDeleting"/>, and the workspace-row writes, under
+/// <see cref="InMemoryState.Gate"/>, read <c>Record.State</c>.
 /// </remarks>
 internal sealed class WorkspaceEntry(WorkspaceRecord record, long order)
 {
@@ -17,6 +19,42 @@ internal sealed class WorkspaceEntry(WorkspaceRecord record, long order)
     public WorkspaceRecord Record { get; set; } = record;
 
     public Lock Gate { get; } = new();
+
+    /// <summary>The work item id of the workspace's deletion; set exactly while it is being deleted.</summary>
+    public long? DeletionJobId { get; private set; }
+
+    /// <summary>
+    /// True from deletion acceptance on. A removed workspace stays deleting, so an operation that found it just before
+    /// its removal and writes afterwards is rejected instead of writing into a detached entry.
+    /// </summary>
+    public bool IsDeleting => DeletionJobId is not null;
+
+    /// <summary>The caller holds <see cref="Gate"/> and <see cref="InMemoryState.Gate"/>.</summary>
+    public void MarkDeleting(long deletionJobId)
+    {
+        DeletionJobId = deletionJobId;
+        Record = Record with { State = LifecycleState.Deleting };
+    }
+
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
+    public void RequireNotDeleting()
+    {
+        if (IsDeleting)
+        {
+            throw new ConflictException("workspace is being deleted");
+        }
+    }
+
+    /// <summary>The session, for a write under it.</summary>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
+    /// <exception cref="NotFoundException">The session does not exist.</exception>
+    public SessionEntry RequireWritableSession(string name)
+    {
+        RequireNotDeleting();
+        var session = RequireSession(name);
+        session.RequireNotDeleting();
+        return session;
+    }
 
     public Dictionary<string, PeerEntry> Peers { get; } = new(StringComparer.Ordinal);
 
@@ -41,6 +79,10 @@ internal sealed class WorkspaceEntry(WorkspaceRecord record, long order)
     public SessionEntry RequireSession(string name) =>
         Sessions.GetValueOrDefault(name)
         ?? throw new NotFoundException($"Session '{name}' not found in workspace '{Name}'.");
+
+    /// <summary>The session holding the message, or null. Linear in the sessions: message ids are unique per session here.</summary>
+    public SessionEntry? FindSessionOfMessage(string messageId) =>
+        Sessions.Values.FirstOrDefault(session => session.ContainsMessage(messageId));
 
     /// <exception cref="NotFoundException">The session does not exist.</exception>
     public void RequireSessionExists(string? name)

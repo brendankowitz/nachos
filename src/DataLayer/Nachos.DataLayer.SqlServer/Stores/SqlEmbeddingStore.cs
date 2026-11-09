@@ -29,7 +29,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
                 """,
                 SqlParameters.Int("@limit", limit))
             .ToListAsync(ct);
-        return [.. rows.Select(row => new PendingEmbedding(row.WorkspaceName, row.PublicId, row.Content))];
+        return [.. rows.Select(row => PendingEmbedding.ForConclusion(row.WorkspaceName, row.PublicId, row.Content))];
     }
 
     public async Task<long> CountPendingAsync(CancellationToken ct)
@@ -62,9 +62,23 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
         return UpdatePendingAsync(pending, "EmbeddingState = 2", [], ct);
     }
 
+    /// <exception cref="NotSupportedException">Message chunks arrive in M3 Task 3.</exception>
+    public Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct) =>
+        throw new NotSupportedException(UnimplementedRecallStores.Message);
+
+    /// <exception cref="NotSupportedException">Message chunks arrive in M3 Task 3.</exception>
+    public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) =>
+        throw new NotSupportedException(UnimplementedRecallStores.Message);
+
     /// <summary>Applies <c>assignments</c> (fixed SQL chosen by the caller, never user input) while the row is still pending.</summary>
+    /// <exception cref="NotSupportedException"><paramref name="pending"/> is a message chunk, which arrives in M3 Task 3.</exception>
     private async Task UpdatePendingAsync(PendingEmbedding pending, string assignments, SqlParameter[] values, CancellationToken ct)
     {
+        if (pending.Kind != PendingEmbeddingKind.Conclusion)
+        {
+            throw new NotSupportedException(UnimplementedRecallStores.Message);
+        }
+
         await using var db = await runtime.OpenAsync(ct);
         var sql = string.Concat(
             "UPDATE c SET ",
@@ -83,7 +97,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
             [
                 .. values,
                 SqlParameters.Text("@workspace", pending.WorkspaceName),
-                SqlParameters.Text("@publicId", pending.ConclusionId),
+                SqlParameters.Text("@publicId", pending.SourceId),
                 SqlParameters.Binary("@hash", ContentHash.Of(pending.Content)),
                 SqlParameters.LongText("@content", pending.Content),
             ],

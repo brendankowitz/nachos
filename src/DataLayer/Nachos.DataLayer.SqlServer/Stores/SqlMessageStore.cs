@@ -31,6 +31,16 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         CancellationToken ct) =>
         AppendAsync(workspaceName, sessionName, messages, idempotency, derive: null, ct);
 
+    /// <exception cref="NotSupportedException">The append has chunks or summary work, which arrive in M3 Task 3.</exception>
+    public Task<IReadOnlyList<MessageRecord>> AppendAsync(
+        string workspaceName, string sessionName, MessageAppend append, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(append);
+        return append.Chunks is null && append.Summary is null
+            ? AppendAsync(workspaceName, sessionName, append.Messages, append.Idempotency, append.Derive, ct)
+            : throw new NotSupportedException(UnimplementedRecallStores.Message);
+    }
+
     public async Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
         string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct)
     {

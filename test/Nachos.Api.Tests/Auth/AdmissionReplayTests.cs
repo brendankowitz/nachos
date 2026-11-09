@@ -264,6 +264,9 @@ public sealed class AdmissionReplayTests
         public IPeerCardStore PeerCards => inner.PeerCards;
         public IWorkQueue WorkQueue => inner.WorkQueue;
         public IEmbeddingStore Embeddings => inner.Embeddings;
+        public ISummaryStore Summaries => inner.Summaries;
+        public IMessageSearch Search => inner.Search;
+        public IDeletionStore Deletion => inner.Deletion;
         public bool IsTransientFailure(Exception exception) => inner.IsTransientFailure(exception);
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
@@ -285,6 +288,13 @@ public sealed class AdmissionReplayTests
         {
             Appends++;
             return inner.Messages.AppendAsync(workspaceName, sessionName, messages, idempotency, derive, ct);
+        }
+
+        public Task<IReadOnlyList<MessageRecord>> AppendAsync(string workspaceName, string sessionName,
+            MessageAppend append, CancellationToken ct)
+        {
+            Appends++;
+            return inner.Messages.AppendAsync(workspaceName, sessionName, append, ct);
         }
 
         public Task<MessageRecord?> GetAsync(string workspaceName, string sessionName, string publicId, CancellationToken ct) =>

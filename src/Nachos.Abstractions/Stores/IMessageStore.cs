@@ -16,7 +16,8 @@ public interface IMessageStore
     /// (<c>JoinedAt = now</c> when not already active; a sender who previously left is reactivated in place with its
     /// previous membership configuration kept, unlike <see cref="ISessionStore.AddPeersAsync"/> which sets config), allocates contiguous per-session <c>Seq</c> values,
     /// inserts the messages (null metadata becomes <c>{}</c>; a null <see cref="NewMessage.CreatedAt"/> becomes now),
-    /// and, when <paramref name="idempotency"/> is given, inserts its record.
+    /// and, when <see cref="MessageAppend.Idempotency"/> is given, inserts its record; then stores the chunks and
+    /// enqueues the work described below.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -37,41 +38,61 @@ public interface IMessageStore
     /// those records, and it must not call back into any store. A provider must fail fast and deterministically, by
     /// throwing <see cref="InvalidOperationException"/>, if the store is re-entered from within it.
     /// </para>
+    /// <para>
+    /// <b>Derivation work</b> (<see cref="MessageAppend.Derive"/>): for each message whose intent has
+    /// <see cref="DeriveIntent.ShouldDerive"/>, the store resolves the observers with
+    /// <see cref="Observation.ObserverRule"/> at the message's <c>CreatedAt</c>, over the memberships as the append
+    /// leaves them, and, when there is at least one, enqueues one <see cref="WorkTaskType.Representation"/> item:
+    /// key <see cref="Work.WorkUnitKeys.Representation"/> (workspace, session, sender), payload
+    /// <see cref="Work.RepresentationPayload"/> (the observers, plus the intent's <see cref="DeriveIntent.ReasoningEnabled"/>
+    /// and <see cref="DeriveIntent.CustomInstructions"/>), the message's <c>TokenCount</c> and public id, enqueued now.
+    /// </para>
+    /// <para>
+    /// <b>Chunks</b> (<see cref="MessageAppend.Chunks"/>): each message's chunks are stored, in order from chunk index 0,
+    /// as pending embeddings (<see cref="PendingEmbeddingKind.MessageChunk"/>) for <see cref="IEmbeddingStore"/>.
+    /// </para>
+    /// <para>
+    /// <b>Summary work</b> (<see cref="MessageAppend.Summary"/>): for each <see cref="SummaryKind"/> whose
+    /// <see cref="SummaryIntent.DueThrough"/> the batch's <c>Seq</c> range crosses, one <see cref="WorkTaskType.Summary"/>
+    /// item: key <see cref="Work.WorkUnitKeys.Summary"/>, payload <see cref="Work.SummaryPayload"/>, token count 0, the
+    /// public id of the message at <c>through_seq</c>, enqueued now, after the derivation items.
+    /// </para>
+    /// <para>Whenever the append stores nothing (a serializer throw, an idempotency duplicate), it stores no chunks and enqueues nothing.</para>
     /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <see cref="MessageAppend.Derive"/> or <see cref="MessageAppend.Chunks"/> does not have one entry per message, or a
+    /// message has more than <see cref="MessageChunk.MaxChunkIndex"/> + 1 chunks.
+    /// </exception>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     /// <exception cref="IdempotencyDuplicateException">The key already has an unexpired record.</exception>
-    /// <remarks>Enqueues no work; the same as the overload with a null <c>derive</c>.</remarks>
+    Task<IReadOnlyList<MessageRecord>> AppendAsync(
+        string workspaceName, string sessionName, MessageAppend append, CancellationToken ct);
+
+    /// <summary>
+    /// <see cref="AppendAsync(string, string, MessageAppend, CancellationToken)"/> with no derivation, chunks or summary
+    /// work.
+    /// </summary>
     Task<IReadOnlyList<MessageRecord>> AppendAsync(
         string workspaceName,
         string sessionName,
         IReadOnlyList<NewMessage> messages,
         IdempotencyWrite? idempotency,
-        CancellationToken ct);
+        CancellationToken ct) =>
+        AppendAsync(workspaceName, sessionName, new MessageAppend(messages, idempotency), ct);
 
     /// <summary>
-    /// Appends the messages exactly as the overload without <paramref name="derive"/> does and, in the same transaction,
-    /// enqueues their derivation work.
+    /// <see cref="AppendAsync(string, string, MessageAppend, CancellationToken)"/> with derivation work only.
     /// </summary>
-    /// <remarks>
-    /// For each message whose intent has <see cref="DeriveIntent.ShouldDerive"/>, the store resolves the observers with
-    /// <see cref="Observation.ObserverRule"/> at the message's <c>CreatedAt</c>, over the memberships as the append
-    /// leaves them, and, when there is at least one, enqueues one <see cref="WorkTaskType.Representation"/> item:
-    /// key <see cref="Work.WorkUnitKeys.Representation"/> (workspace, session, sender), payload
-    /// <see cref="Work.RepresentationPayload"/> (the observers, plus the intent's <see cref="DeriveIntent.ReasoningEnabled"/>
-    /// and <see cref="DeriveIntent.CustomInstructions"/>), the message's <c>TokenCount</c> and public id, enqueued now. Whenever
-    /// the append stores nothing (a serializer throw, an idempotency duplicate), it enqueues nothing.
-    /// </remarks>
     /// <param name="derive">One intent per message, in order; null enqueues nothing.</param>
-    /// <exception cref="ArgumentException"><paramref name="derive"/> does not have one intent per message.</exception>
-    /// <exception cref="NotFoundException">The session does not exist.</exception>
-    /// <exception cref="IdempotencyDuplicateException">The key already has an unexpired record.</exception>
     Task<IReadOnlyList<MessageRecord>> AppendAsync(
         string workspaceName,
         string sessionName,
         IReadOnlyList<NewMessage> messages,
         IdempotencyWrite? idempotency,
         IReadOnlyList<DeriveIntent>? derive,
-        CancellationToken ct);
+        CancellationToken ct) =>
+        AppendAsync(workspaceName, sessionName, new MessageAppend(messages, idempotency, derive), ct);
 
     /// <summary>
     /// Looks the message up by its case-sensitive public id. Returns null only when the <i>message</i> is missing

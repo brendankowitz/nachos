@@ -58,7 +58,7 @@ public sealed partial class ReconcilerService : BackgroundService
     private readonly ILogger<ReconcilerService> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
     private readonly string _embeddingModel;
-    private readonly Dictionary<(string Workspace, string Conclusion), int> _embeddingFailures = [];
+    private readonly Dictionary<(PendingEmbeddingKind Kind, string Workspace, string Source, int Chunk), int> _embeddingFailures = [];
     private int _failedEmbeddingTicks;
     private readonly string _owner = $"{Environment.MachineName}:{Environment.ProcessId}:reconciler:{Guid.NewGuid():N}";
 
@@ -244,7 +244,7 @@ public sealed partial class ReconcilerService : BackgroundService
         {
             var pending = await _store.Embeddings.ListPendingAsync(_options.EmbeddingBatchSize, ct).ConfigureAwait(false);
             // A save that did not take (the store kept the conclusion pending) would otherwise repeat one batch for the rest of the tick.
-            if (pending.Count == 0 || pending.Select(p => p.ConclusionId).SequenceEqual(previous.Select(p => p.ConclusionId)))
+            if (pending.Count == 0 || pending.Select(FailureKey).SequenceEqual(previous.Select(FailureKey)))
             {
                 break;
             }
@@ -324,7 +324,7 @@ public sealed partial class ReconcilerService : BackgroundService
         {
             if (pending.Count == 1)
             {
-                LogEmbeddingFailed(ex, pending[0].ConclusionId);
+                LogEmbeddingFailed(ex, pending[0].SourceId);
                 failures.Add((pending[0], ex));
                 return 0;
             }
@@ -364,7 +364,7 @@ public sealed partial class ReconcilerService : BackgroundService
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                LogEmbeddingFailed(ex, item.ConclusionId);
+                LogEmbeddingFailed(ex, item.SourceId);
                 failures.Add((item, ex));
                 continue;
             }
@@ -414,13 +414,16 @@ public sealed partial class ReconcilerService : BackgroundService
     private async Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> vector, CancellationToken ct)
     {
         await _store.Embeddings.SaveAsync(pending, vector, _embeddingModel, ct).ConfigureAwait(false);
-        _embeddingFailures.Remove((pending.WorkspaceName, pending.ConclusionId));
+        _embeddingFailures.Remove(FailureKey(pending));
     }
+
+    private static (PendingEmbeddingKind Kind, string Workspace, string Source, int Chunk) FailureKey(PendingEmbedding pending) =>
+        (pending.Kind, pending.WorkspaceName, pending.SourceId, pending.ChunkIndex);
 
     /// <returns>True when this failure was the last allowed and the conclusion was marked failed.</returns>
     private async Task<bool> RecordFailureAsync(PendingEmbedding pending, CancellationToken ct)
     {
-        var key = (pending.WorkspaceName, pending.ConclusionId);
+        var key = FailureKey(pending);
         var failures = _embeddingFailures.GetValueOrDefault(key) + 1;
         if (failures < _options.EmbeddingMaxAttempts)
         {
@@ -430,7 +433,7 @@ public sealed partial class ReconcilerService : BackgroundService
 
         await _store.Embeddings.MarkFailedAsync(pending, ct).ConfigureAwait(false);
         _embeddingFailures.Remove(key);
-        LogMarkedFailed(pending.ConclusionId, pending.WorkspaceName, failures);
+        LogMarkedFailed(pending.SourceId, pending.WorkspaceName, failures);
         return true;
     }
 

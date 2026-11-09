@@ -1,12 +1,15 @@
+using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 
 namespace Nachos.DataLayer.InMemory.Storage;
 
-/// <summary>A stored session with its memberships and messages. Guarded by its workspace's gate.</summary>
+/// <summary>A stored session with its memberships, messages, chunks and summaries. Guarded by its workspace's gate.</summary>
 /// <remarks>
 /// Invariants: a message's <c>Seq</c> is its 1-based position in <see cref="Messages"/> (so Seq values are contiguous
-/// from 1), and every membership names a peer that exists in the workspace.
+/// from 1; the deletion purge removes messages from the end to keep it so), every membership names a peer that exists in
+/// the workspace, every chunk names a message of the session, and <see cref="DeletionJobId"/> is set exactly while the
+/// session is <see cref="LifecycleState.Deleting"/>.
 /// </remarks>
 internal sealed class SessionEntry(SessionRecord record, long order)
 {
@@ -17,7 +20,33 @@ internal sealed class SessionEntry(SessionRecord record, long order)
 
     public SessionRecord Record { get; set; } = record;
 
+    /// <summary>The work item id of the session's deletion; set exactly while it is being deleted.</summary>
+    public long? DeletionJobId { get; private set; }
+
+    public bool IsDeleting => DeletionJobId is not null;
+
     public Dictionary<string, Membership> Members { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The messages' embedding chunks by (message public id, chunk index).</summary>
+    public Dictionary<(string MessageId, int ChunkIndex), StoredChunk> Chunks { get; } = [];
+
+    /// <summary>The current summary of each kind.</summary>
+    public Dictionary<SummaryKind, SummaryRecord> Summaries { get; } = [];
+
+    /// <exception cref="ConflictException">The session is being deleted.</exception>
+    public void RequireNotDeleting()
+    {
+        if (IsDeleting)
+        {
+            throw new ConflictException("session is being deleted");
+        }
+    }
+
+    public void MarkDeleting(long deletionJobId)
+    {
+        DeletionJobId = deletionJobId;
+        Record = Record with { State = LifecycleState.Deleting };
+    }
 
     /// <summary>The messages in <c>Seq</c> order.</summary>
     public IReadOnlyList<MessageRecord> Messages => _messages;
@@ -68,4 +97,11 @@ internal sealed class SessionEntry(SessionRecord record, long order)
 
     /// <summary>Replaces the stored message that has the same public id.</summary>
     public void ReplaceMessage(MessageRecord message) => _messages[_positionByPublicId[message.PublicId]] = message;
+
+    /// <summary>Removes the newest message, so the remaining <c>Seq</c> values stay positions.</summary>
+    public void RemoveLastMessage()
+    {
+        _positionByPublicId.Remove(_messages[^1].PublicId);
+        _messages.RemoveAt(_messages.Count - 1);
+    }
 }

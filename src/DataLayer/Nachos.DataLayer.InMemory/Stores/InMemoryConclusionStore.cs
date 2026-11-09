@@ -16,6 +16,9 @@ namespace Nachos.DataLayer.InMemory.Stores;
 /// </remarks>
 internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusionStore
 {
+    /// <summary>The completion reason of a worker commit discarded under a resource being deleted (spec §13.1).</summary>
+    public const string ResourceDeleted = "resource_deleted";
+
     public Task<CollectionRecord?> GetCollectionAsync(
         string workspaceName, string observerName, string observedName, CancellationToken ct) =>
         state.Run(
@@ -163,9 +166,15 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                     lock (state.Queue.Gate)
                     {
                         state.Queue.RequireHeld(lease);
+                        var now = state.Clock.GetUtcNow();
+                        if (IsUnderDeletion(workspace, lease, inserts))
+                        {
+                            state.Queue.Complete(lease, now, ResourceDeleted);
+                            return;
+                        }
+
                         RequireReferences(workspace, inserts);
 
-                        var now = state.Clock.GetUtcNow();
                         var inserted = Insert(workspace, inserts, now);
                         var touched = inserted.Select(c => (c.ObserverName, c.ObservedName)).ToHashSet();
 
@@ -210,7 +219,13 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
+                    workspace.RequireNotDeleting();
                     RequireReferences(workspace, owned);
+                    foreach (var session in owned.Select(c => c.Source.SessionName).OfType<string>())
+                    {
+                        workspace.RequireWritableSession(session);
+                    }
+
                     return [.. Insert(workspace, owned, state.Clock.GetUtcNow()).Select(JsonCopy.Out)];
                 }
             },
@@ -249,6 +264,17 @@ internal sealed class InMemoryConclusionStore(InMemoryState state) : IConclusion
                 return purged;
             },
             ct);
+
+    /// <summary>
+    /// True when the derivation writes under a resource being deleted: the workspace, a session of the lease's items (one
+    /// already removed counts), or a session an insert names. Its result is then discarded (spec §13.1).
+    /// </summary>
+    private static bool IsUnderDeletion(WorkspaceEntry workspace, WorkLease lease, List<OwnedConclusion> inserts) =>
+        workspace.IsDeleting
+        || lease.Items.Select(item => item.SessionName).OfType<string>()
+            .Any(name => workspace.Sessions.GetValueOrDefault(name) is not { IsDeleting: false })
+        || inserts.Select(c => c.Source.SessionName).OfType<string>()
+            .Any(name => workspace.Sessions.GetValueOrDefault(name) is { IsDeleting: true });
 
     /// <summary>Nearest first, ties oldest first, leaving out those farther than <paramref name="maxDistance"/>.</summary>
     private static IEnumerable<ConclusionMatch> Nearest(

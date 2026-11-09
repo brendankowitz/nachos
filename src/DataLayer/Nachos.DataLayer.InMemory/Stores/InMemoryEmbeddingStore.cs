@@ -12,23 +12,22 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             () =>
             {
                 ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-                var pending = new List<StoredConclusion>();
+                var pending = new List<(DateTimeOffset CreatedAt, long Order, PendingEmbedding Item)>();
                 foreach (var workspace in state.AllWorkspaces())
                 {
                     lock (workspace.Gate)
                     {
-                        pending.AddRange(workspace.Conclusions.Values.Where(c => c.IsLive && c.State == EmbeddingState.Pending));
+                        pending.AddRange(workspace.Conclusions.Values
+                            .Where(c => c.IsLive && c.State == EmbeddingState.Pending)
+                            .Select(c => (c.Record.CreatedAt, c.Order, PendingEmbedding.ForConclusion(workspace.Name, c.Record.PublicId, c.Record.Content))));
+                        pending.AddRange(workspace.Sessions.Values
+                            .SelectMany(session => session.Chunks.Values)
+                            .Where(chunk => chunk.State == EmbeddingState.Pending)
+                            .Select(chunk => (chunk.CreatedAt, chunk.Order, PendingEmbedding.ForChunk(workspace.Name, chunk.MessageId, chunk.ChunkIndex, chunk.Content))));
                     }
                 }
 
-                return
-                [
-                    .. pending
-                        .OrderBy(c => c.Record.CreatedAt)
-                        .ThenBy(c => c.Order)
-                        .Take(limit)
-                        .Select(c => new PendingEmbedding(c.Record.WorkspaceName, c.Record.PublicId, c.Record.Content)),
-                ];
+                return [.. pending.OrderBy(p => p.CreatedAt).ThenBy(p => p.Order).Take(limit).Select(p => p.Item)];
             },
             ct);
 
@@ -42,6 +41,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                     lock (workspace.Gate)
                     {
                         count += workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending);
+                        count += workspace.Sessions.Values.Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
                     }
                 }
 
@@ -56,12 +56,15 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 ArgumentNullException.ThrowIfNull(pending);
                 ArgumentNullException.ThrowIfNull(embeddingModel);
                 var owned = VectorMath.Own(embedding, nameof(embedding));
-                Update(pending, stored => stored with
-                {
-                    Record = stored.Record with { InternalMetadata = WithModel(stored.Record.InternalMetadata, embeddingModel) },
-                    Embedding = owned,
-                    State = EmbeddingState.Synced,
-                });
+                Update(
+                    pending,
+                    stored => stored with
+                    {
+                        Record = stored.Record with { InternalMetadata = WithModel(stored.Record.InternalMetadata, embeddingModel) },
+                        Embedding = owned,
+                        State = EmbeddingState.Synced,
+                    },
+                    chunk => chunk with { Embedding = owned, State = EmbeddingState.Synced });
             },
             ct);
 
@@ -70,7 +73,84 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             () =>
             {
                 ArgumentNullException.ThrowIfNull(pending);
-                Update(pending, stored => stored with { State = EmbeddingState.Failed });
+                Update(pending, stored => stored with { State = EmbeddingState.Failed }, chunk => chunk with { State = EmbeddingState.Failed });
+            },
+            ct);
+
+    public Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct) =>
+        state.Run<IReadOnlyList<MessageRecord>>(
+            () =>
+            {
+                ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+                var unchunked = new List<(MessageRecord Message, long WorkspaceOrder, long SessionOrder)>();
+                foreach (var workspace in state.AllWorkspaces())
+                {
+                    lock (workspace.Gate)
+                    {
+                        if (workspace.IsDeleting)
+                        {
+                            continue;
+                        }
+
+                        foreach (var session in workspace.Sessions.Values.Where(session => !session.IsDeleting))
+                        {
+                            var chunked = session.Chunks.Keys.Select(key => key.MessageId).ToHashSet(StringComparer.Ordinal);
+                            unchunked.AddRange(session.Messages
+                                .Where(message => !string.IsNullOrWhiteSpace(message.Content) && !chunked.Contains(message.PublicId))
+                                .Select(message => (JsonCopy.Out(message), workspace.Order, session.Order)));
+                        }
+                    }
+                }
+
+                return
+                [
+                    .. unchunked
+                        .OrderBy(m => m.Message.CreatedAt)
+                        .ThenBy(m => m.WorkspaceOrder)
+                        .ThenBy(m => m.SessionOrder)
+                        .ThenBy(m => m.Message.Seq)
+                        .Take(limit)
+                        .Select(m => m.Message),
+                ];
+            },
+            ct);
+
+    public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                ArgumentNullException.ThrowIfNull(chunks);
+                foreach (var chunk in chunks)
+                {
+                    ArgumentNullException.ThrowIfNull(chunk);
+                    ArgumentNullException.ThrowIfNull(chunk.Content);
+                    ArgumentOutOfRangeException.ThrowIfNegative(chunk.ChunkIndex);
+                    ArgumentOutOfRangeException.ThrowIfGreaterThan(chunk.ChunkIndex, MessageChunk.MaxChunkIndex);
+                }
+
+                var now = state.Clock.GetUtcNow();
+                foreach (var group in chunks.GroupBy(chunk => chunk.WorkspaceName, StringComparer.Ordinal))
+                {
+                    if (state.FindWorkspace(group.Key) is not { } workspace)
+                    {
+                        continue;
+                    }
+
+                    lock (workspace.Gate)
+                    {
+                        foreach (var chunk in group)
+                        {
+                            if (!workspace.IsDeleting
+                                && workspace.Sessions.GetValueOrDefault(chunk.SessionName) is { IsDeleting: false } session
+                                && session.ContainsMessage(chunk.MessageId))
+                            {
+                                session.Chunks.TryAdd(
+                                    (chunk.MessageId, chunk.ChunkIndex),
+                                    StoredChunk.Pending(chunk.MessageId, chunk.ChunkIndex, chunk.Content, now, state.NextOrder()));
+                            }
+                        }
+                    }
+                }
             },
             ct);
 
@@ -82,8 +162,11 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
         return copy;
     }
 
-    /// <summary>Applies <paramref name="change"/> only while the conclusion is still pending with the claimed content.</summary>
-    private void Update(PendingEmbedding pending, Func<StoredConclusion, StoredConclusion> change)
+    /// <summary>Applies the change only while the conclusion or chunk is still pending with the claimed content.</summary>
+    private void Update(
+        PendingEmbedding pending,
+        Func<StoredConclusion, StoredConclusion> changeConclusion,
+        Func<StoredChunk, StoredChunk> changeChunk)
     {
         if (state.FindWorkspace(pending.WorkspaceName) is not { } workspace)
         {
@@ -92,9 +175,19 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
 
         lock (workspace.Gate)
         {
-            if (workspace.Conclusions.TryGetValue(pending.ConclusionId, out var stored) && stored.IsPendingWith(pending.Content))
+            if (pending.Kind == PendingEmbeddingKind.MessageChunk)
             {
-                workspace.Conclusions[pending.ConclusionId] = change(stored);
+                var key = (pending.SourceId, pending.ChunkIndex);
+                if (workspace.FindSessionOfMessage(pending.SourceId) is { } session
+                    && session.Chunks.TryGetValue(key, out var chunk)
+                    && chunk.IsPendingWith(pending.Content))
+                {
+                    session.Chunks[key] = changeChunk(chunk);
+                }
+            }
+            else if (workspace.Conclusions.TryGetValue(pending.SourceId, out var stored) && stored.IsPendingWith(pending.Content))
+            {
+                workspace.Conclusions[pending.SourceId] = changeConclusion(stored);
             }
         }
     }

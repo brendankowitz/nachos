@@ -59,7 +59,16 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
         PeerCards = new InMemoryPeerCardStore(_state);
         WorkQueue = new InMemoryWorkQueue(_state);
         Embeddings = new InMemoryEmbeddingStore(_state);
+        Summaries = new InMemorySummaryStore(_state);
+        Search = new InMemoryMessageSearch(_state);
+        Deletion = new InMemoryDeletionStore(_state);
     }
+
+    public ISummaryStore Summaries { get; }
+
+    public IMessageSearch Search { get; }
+
+    public IDeletionStore Deletion { get; }
 
     public IWorkspaceStore Workspaces { get; }
 

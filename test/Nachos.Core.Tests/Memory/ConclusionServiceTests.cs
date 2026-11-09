@@ -101,7 +101,7 @@ public sealed class ConclusionServiceTests
         var created = (await f.Service.CreateConclusionsAsync(W, [Create("alice likes tea")])).Single();
 
         (await f.Service.GetConclusionAsync(W, created.Id)).Content.ShouldBe("alice likes tea");
-        (await f.Store.Embeddings.ListPendingAsync(10, default)).Single().ConclusionId.ShouldBe(created.Id);
+        (await f.Store.Embeddings.ListPendingAsync(10, default)).Single().SourceId.ShouldBe(created.Id);
         (await f.Service.QueryConclusionsAsync(W, new("alice likes tea"))).ShouldBeEmpty();
     }
 

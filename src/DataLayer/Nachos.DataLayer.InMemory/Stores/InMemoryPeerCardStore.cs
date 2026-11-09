@@ -33,6 +33,7 @@ internal sealed class InMemoryPeerCardStore(InMemoryState state) : IPeerCardStor
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
+                    workspace.RequireNotDeleting();
                     workspace.RequirePeer(observerName);
                     workspace.RequirePeer(observedName);
                     var card = new PeerCardRecord(

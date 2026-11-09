@@ -61,6 +61,15 @@ public interface IMemoryStore
 
     IEmbeddingStore Embeddings { get; }
 
+    /// <summary>Session summaries, saved under a fenced lease.</summary>
+    ISummaryStore Summaries { get; }
+
+    /// <summary>Vector and lexical candidate retrieval over messages.</summary>
+    IMessageSearch Search { get; }
+
+    /// <summary>Deletion acceptance, the write barrier's lifecycle, and the deletion job's purge.</summary>
+    IDeletionStore Deletion { get; }
+
     /// <summary>
     /// True when <paramref name="exception"/>, thrown by an operation of this store, is a failure that retrying later
     /// can fix: a deadlock, a timeout, a dropped connection, or a database that is briefly unavailable or throttling.
