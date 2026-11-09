@@ -31,7 +31,11 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             },
             ct);
 
-    public Task<long> CountPendingAsync(CancellationToken ct) =>
+    public async Task<long> CountPendingAsync(CancellationToken ct) =>
+        await CountPendingAsync(PendingEmbeddingKind.Conclusion, ct).ConfigureAwait(false)
+        + await CountPendingAsync(PendingEmbeddingKind.MessageChunk, ct).ConfigureAwait(false);
+
+    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) =>
         state.Run(
             () =>
             {
@@ -40,8 +44,9 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 {
                     lock (workspace.Gate)
                     {
-                        count += workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending);
-                        count += PendingChunkSessions(workspace).Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
+                        count += kind == PendingEmbeddingKind.Conclusion
+                            ? workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending)
+                            : PendingChunkSessions(workspace).Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
                     }
                 }
 

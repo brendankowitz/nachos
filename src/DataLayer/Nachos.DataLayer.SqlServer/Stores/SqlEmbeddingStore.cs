@@ -73,17 +73,22 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
         return [.. rows.Select(row => new PendingEmbedding((PendingEmbeddingKind)row.Kind, row.WorkspaceName, row.SourceId, row.ChunkIndex, row.Content))];
     }
 
-    public async Task<long> CountPendingAsync(CancellationToken ct)
+    public async Task<long> CountPendingAsync(CancellationToken ct) =>
+        await CountPendingAsync(PendingEmbeddingKind.Conclusion, ct) + await CountPendingAsync(PendingEmbeddingKind.MessageChunk, ct);
+
+    public async Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        var sql = kind switch
+        {
+            PendingEmbeddingKind.Conclusion =>
+                "SELECT COUNT_BIG(*) AS [Value] FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL",
+            PendingEmbeddingKind.MessageChunk =>
+                $"SELECT COUNT_BIG(*) AS [Value] {PendingChunksFrom} {PendingChunksWhere}",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown pending embedding kind."),
+        };
         await using var db = await runtime.OpenAsync(ct);
-        var counts = await db.Database
-            .SqlQueryRaw<long>(
-                $"""
-                SELECT (SELECT COUNT_BIG(*) FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL)
-                     + (SELECT COUNT_BIG(*) {PendingChunksFrom} {PendingChunksWhere}) AS [Value]
-                """)
-            .ToListAsync(ct);
+        var counts = await db.Database.SqlQueryRaw<long>(sql).ToListAsync(ct);
         return counts.Single();
     }
 

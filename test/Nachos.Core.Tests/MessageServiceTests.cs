@@ -156,8 +156,7 @@ public sealed class MessageServiceTests
     {
         var f = new Fixture();
         using var cts = new CancellationTokenSource();
-        f.Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<NewMessage>>(),
-            Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), cts.Token).Returns(_ =>
+        f.Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<MessageAppend>(), cts.Token).Returns(_ =>
         {
             cts.Cancel();
             return Task.FromException<IReadOnlyList<MessageRecord>>(new IdempotencyDuplicateException("key"));
@@ -354,7 +353,7 @@ public sealed class MessageServiceTests
     public async Task MisbehavingStoreWithoutResponseCallback_IsNotReportedAsSuccessfulCapture()
     {
         var f = new Fixture();
-        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), default)
+        f.Store.Messages.AppendAsync("W", "S", Arg.Any<MessageAppend>(), default)
             .Returns(Task.FromResult<IReadOnlyList<MessageRecord>>([]));
 
         await Should.ThrowAsync<InvalidOperationException>(() =>
@@ -369,7 +368,7 @@ public sealed class MessageServiceTests
         await Should.ThrowAsync<NotFoundException>(() => f.Service.CreateMessagesResponseAsync("W", "missing", Json(Body), "key", default));
         f.Attempts.ShouldBe(0);
         var failure = new InvalidOperationException("provider unavailable");
-        f.Store.Messages.AppendAsync("W", "S", Arg.Any<IReadOnlyList<NewMessage>>(), Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), default)
+        f.Store.Messages.AppendAsync("W", "S", Arg.Any<MessageAppend>(), default)
             .Returns(Task.FromException<IReadOnlyList<MessageRecord>>(failure));
         (await Should.ThrowAsync<InvalidOperationException>(() => f.Service.CreateMessagesResponseAsync("W", "S", Json(Body), null, default)))
             .ShouldBeSameAs(failure);
@@ -398,20 +397,20 @@ public sealed class MessageServiceTests
                 .Returns(info => new SessionRecord(info.ArgAt<string>(0), info.ArgAt<string>(1), LifecycleState.Active, new(), new(), Clock.GetUtcNow()));
             Store.Idempotency.TryGetAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
                 .Returns(_ => Saved is { } record && record.ExpiresAt > Clock.GetUtcNow() ? record : null);
-            Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<NewMessage>>(),
-                Arg.Any<IdempotencyWrite?>(), Arg.Any<IReadOnlyList<DeriveIntent>?>(), Arg.Any<CancellationToken>()).Returns(info =>
+            Store.Messages.AppendAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<MessageAppend>(), Arg.Any<CancellationToken>()).Returns(info =>
             {
                 lock (_gate)
                 {
                     info.Arg<CancellationToken>().ThrowIfCancellationRequested();
                     Attempts++;
-                    var write = info.Arg<IdempotencyWrite?>();
+                    var append = info.Arg<MessageAppend>();
+                    var write = append.Idempotency;
                     if (write is not null && ((DuplicateOnce && Attempts == 1) || Saved is { } record && record.ExpiresAt > Clock.GetUtcNow()))
                     {
                         throw new IdempotencyDuplicateException(write.Key);
                     }
                     Write = write;
-                    Inputs = info.Arg<IReadOnlyList<NewMessage>>();
+                    Inputs = append.Messages;
                     Rows = Inputs.Select((m, i) => new MessageRecord($"Public-{i + 1}", info.ArgAt<string>(0),
                         info.ArgAt<string>(1), m.PeerName, i + 1, m.Content, m.TokenCount,
                         m.Metadata?.DeepClone().AsObject() ?? new(), m.CreatedAt ?? Clock.GetUtcNow())).ToArray();

@@ -159,12 +159,17 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public Task<long> CountPendingAsync(CancellationToken ct) => inner.Embeddings.CountPendingAsync(ct);
 
+    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) => inner.Embeddings.CountPendingAsync(kind, ct);
+
     public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct) =>
         DropEmbeddingSaves ? Task.CompletedTask : inner.Embeddings.SaveAsync(pending, embedding, embeddingModel, ct);
 
     public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct) => inner.Embeddings.MarkFailedAsync(pending, ct);
 
+    public bool FailBackfill { get; set; }
+
     public Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct) =>
+        FailBackfill ? throw new InvalidOperationException("backfill failed") :
         inner.Embeddings.ListUnchunkedMessagesAsync(limit, ct);
 
     public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) => inner.Embeddings.AddChunksAsync(chunks, ct);

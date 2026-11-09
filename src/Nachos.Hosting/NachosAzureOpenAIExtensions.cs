@@ -2,6 +2,7 @@ using System.ClientModel.Primitives;
 using Azure.Core;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using Nachos.Core.Llm;
 using Nachos.Hosting;
 using OpenAI;
 
@@ -41,7 +42,8 @@ public static class NachosAzureOpenAIExtensions
                     ?? throw new InvalidOperationException(
                         "No Azure OpenAI embedding deployment is configured. Set AzureOpenAI:EmbeddingDeployment.");
                 return provider.GetRequiredService<OpenAIClient>().GetEmbeddingClient(deployment).AsIEmbeddingGenerator();
-            });
+            },
+            _ => EmbeddingChunking.Cl100kBase());
     }
 
     private static OpenAIClient CreateClient(TokenCredential credential, AzureOpenAIOptions options)

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Core.Deriver;
+using Nachos.Core.Summarizer;
 using Nachos.Core.Worker;
 using Shouldly;
 
@@ -22,7 +23,7 @@ public sealed class WorkerHostingTests
     }
 
     [Fact]
-    public void AddNachosWorker_RegistersTheLoopsAndTheDeriverOnce()
+    public void AddNachosWorker_RegistersTheLoopsAndTheDeriverAndSummarizerOnce()
     {
         using var provider = Build(new() { ["Worker:MaxConcurrency"] = "7", ["Reconciler:TombstoneRetention"] = "01:00:00" });
 
@@ -30,7 +31,10 @@ public sealed class WorkerHostingTests
         hosted.OfType<QueueConsumerService>().ShouldHaveSingleItem();
         hosted.OfType<ReconcilerService>().ShouldHaveSingleItem();
         using var scope = provider.CreateScope();
-        scope.ServiceProvider.GetServices<IWorkHandler>().ShouldHaveSingleItem().ShouldBeOfType<DeriverService>();
+        var handlers = scope.ServiceProvider.GetServices<IWorkHandler>().ToList();
+        handlers.OfType<DeriverService>().ShouldHaveSingleItem();
+        handlers.OfType<SummarizerService>().ShouldHaveSingleItem();
+        handlers.Count.ShouldBe(2);
         provider.GetRequiredService<IOptions<WorkerOptions>>().Value.MaxConcurrency.ShouldBe(7);
         provider.GetRequiredService<IOptions<ReconcilerOptions>>().Value.TombstoneRetention.ShouldBe(TimeSpan.FromHours(1));
     }

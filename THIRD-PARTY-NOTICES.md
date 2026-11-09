@@ -137,3 +137,20 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## cl100k_base chunking
+
+`Cl100kBaseTokenizer` sizes message chunks for OpenAI embedding models with the
+MIT-licensed `Microsoft.ML.Tokenizers.Data.Cl100kBase` 2.0.0 package (alongside
+`Microsoft.ML.Tokenizers`). The vocabulary remains in Microsoft's package, not a
+new vendored data file; its ordinary-text pretokenization pattern comes from
+OpenAI tiktoken, under the same MIT terms and copyright (c) 2022 OpenAI,
+Shantanu Jain reproduced in the o200k_base section above. Special-token
+recognition is disabled.
+
+The non-public resource name `cl100k_base.tiktoken.deflate` is an explicit
+compatibility dependency. Initialization fails closed unless its compressed
+SHA-256 is `05dd7477a7feeda8b71eb826b7e4c702e5df6f44c35d6ce4d1ef3f7bfc8a0f36`.
+Dependency or resource changes require renewed identity verification. The
+package's complete license and third-party notices must still accompany
+redistribution.
