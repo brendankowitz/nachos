@@ -281,6 +281,10 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         // none of the deleted session's conclusions is not re-evaluated by its deletion.
         await store.Conclusions.TombstoneAsync(workspace, retracted.PublicId, Ct);
         await store.Conclusions.TombstoneAsync(workspace, unrelated.PublicId, Ct);
+
+        // The reconciler purges both tombstones before the job runs, so "a source is missing" is no proof that this
+        // deletion removed it: derived[3] lost its source long ago and must not be re-evaluated.
+        await store.Conclusions.PurgeTombstonesAsync(TimeSpan.Zero, Ct);
         await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
 
         await RunJobAsync(store, (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull(), DeletionTarget.Session(workspace, session), batchSize: 1);
