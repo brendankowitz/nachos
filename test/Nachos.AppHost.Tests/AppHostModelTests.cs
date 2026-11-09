@@ -101,12 +101,13 @@ public sealed class AppHostModelTests
 
     [Theory]
     [MemberData(nameof(AllModes))]
-    public async Task SqlServer_RunsThePinnedImage(string environment, bool publish)
+    public async Task SqlServer_BuildsTheFullTextSearchImage(string environment, bool publish)
     {
         var model = await BuildModelAsync(environment, publish);
 
-        var image = Resource(model, "sql").Annotations.OfType<ContainerImageAnnotation>().Single();
-        image.Tag.ShouldBe("2025-CU9-ubuntu-24.04", "keep in step with eng/docker/mssql-fts/Dockerfile");
+        var build = Resource(model, "sql").Annotations.OfType<DockerfileBuildAnnotation>().Single();
+        Path.GetFullPath(build.ContextPath).TrimEnd(Path.DirectorySeparatorChar).ShouldEndWith(Path.Combine("eng", "docker", "mssql-fts"));
+        File.Exists(Path.Combine(build.ContextPath, "Dockerfile")).ShouldBeTrue();
     }
 
     [Theory]

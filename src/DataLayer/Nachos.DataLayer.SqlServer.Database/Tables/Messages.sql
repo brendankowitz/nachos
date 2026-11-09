@@ -27,3 +27,11 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_Messages_Workspace_Peer]
     ON [dbo].[Messages] ([WorkspaceId], [PeerId]);
+GO
+
+-- Alternate key: lets child tables reference a message with its own workspace and session, so a denormalized SessionId
+-- cannot disagree with the message's. A unique index rather than a UNIQUE
+-- constraint, because the deploy classifier treats a constraint added to an existing table as unsafe, and this one is
+-- added to Messages by the M3 upgrade.
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Messages_Workspace_Session_Id]
+    ON [dbo].[Messages] ([WorkspaceId], [SessionId], [Id]);
