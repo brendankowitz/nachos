@@ -39,7 +39,7 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
         FROM [dbo].[Workspaces] w
         JOIN [dbo].[Messages] m ON m.[WorkspaceId] = w.[Id] AND m.[Seq] = {messageSeq}
         JOIN [dbo].[Workspaces] sw ON sw.[Name] = N'{sessionWorkspace ?? workspace}'
-        JOIN [dbo].[Sessions] s ON s.[WorkspaceId] = sw.[Id]
+        JOIN [dbo].[Sessions] s ON s.[WorkspaceId] = sw.[Id] AND s.[Name] = N's'
         WHERE w.[Name] = N'{workspace}'
         """;
 
@@ -89,7 +89,7 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
             """
             DROP TABLE [dbo].[SessionSummaries];
             DROP TABLE [dbo].[MessageEmbeddings];
-            DROP INDEX [UX_Messages_Workspace_Id] ON [dbo].[Messages];
+            DROP INDEX [UX_Messages_Workspace_Session_Id] ON [dbo].[Messages];
             """);
         var deployer = Deployer(connectionString);
 
@@ -183,8 +183,48 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
         await ExecuteAsync(connectionString, InsertEmbedding("w1", 1, 1, 0));
         await RejectsAsync(connectionString, InsertEmbedding("w1", 1, 0, 0), "UQ_MessageEmbeddings_Message_Chunk");
         await RejectsAsync(connectionString, InsertEmbedding("w1", 2, 0, 3), "CK_MessageEmbeddings_SyncState");
-        await RejectsAsync(connectionString, InsertEmbedding("w1", 2, 0, 0, sessionWorkspace: "w2"), "FK_MessageEmbeddings_Sessions");
+        await RejectsAsync(connectionString, InsertEmbedding("w1", 2, 0, 0, sessionWorkspace: "w2"), "FK_MessageEmbeddings_Messages");
         (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM [dbo].[MessageEmbeddings] WHERE [Attempts] = 0 AND [Embedding] IS NULL")).ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task MessageEmbeddings_RejectASessionOtherThanTheMessagesOwn()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+        await ExecuteAsync(
+            connectionString,
+            "INSERT [dbo].[Sessions] ([WorkspaceId], [Name], [LifecycleState], [CreatedAt]) SELECT [Id], N'other', 0, SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] WHERE [Name] = N'w1'");
+
+        await RejectsAsync(
+            connectionString,
+            """
+            INSERT [dbo].[MessageEmbeddings] ([WorkspaceId], [MessageId], [SessionId], [ChunkIndex], [Content], [SyncState], [CreatedAt])
+            SELECT m.[WorkspaceId], m.[Id], o.[Id], 0, N'c', 0, SYSDATETIMEOFFSET()
+            FROM [dbo].[Messages] m JOIN [dbo].[Sessions] o ON o.[WorkspaceId] = m.[WorkspaceId] AND o.[Name] = N'other'
+            WHERE m.[Seq] = 1
+            """,
+            "FK_MessageEmbeddings_Messages");
+    }
+
+    [Fact]
+    public async Task SessionSummaries_RejectACoveredMessageFromAnotherSession()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        await ExecuteAsync(connectionString, SeedSql);
+        await ExecuteAsync(
+            connectionString,
+            "INSERT [dbo].[Sessions] ([WorkspaceId], [Name], [LifecycleState], [CreatedAt]) SELECT [Id], N'other', 0, SYSDATETIMEOFFSET() FROM [dbo].[Workspaces] WHERE [Name] = N'w1'");
+
+        await RejectsAsync(
+            connectionString,
+            """
+            INSERT [dbo].[SessionSummaries] ([WorkspaceId], [SessionId], [Kind], [Content], [CoversThroughMessageId], [CoversThroughSeq], [TokenCount], [CreatedAt])
+            SELECT m.[WorkspaceId], o.[Id], 1, N's', m.[Id], m.[Seq], 1, SYSDATETIMEOFFSET()
+            FROM [dbo].[Messages] m JOIN [dbo].[Sessions] o ON o.[WorkspaceId] = m.[WorkspaceId] AND o.[Name] = N'other'
+            WHERE m.[Seq] = 1
+            """,
+            "FK_SessionSummaries_Messages");
     }
 
     [Fact]

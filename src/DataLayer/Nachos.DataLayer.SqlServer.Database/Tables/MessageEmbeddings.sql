@@ -16,14 +16,13 @@ CREATE TABLE [dbo].[MessageEmbeddings]
     CONSTRAINT [PK_MessageEmbeddings] PRIMARY KEY CLUSTERED ([Id]),
     -- An IN list is stored as a reversed OR chain.
     CONSTRAINT [CK_MessageEmbeddings_SyncState] CHECK (([SyncState]=(2) OR [SyncState]=(1) OR [SyncState]=(0))),
-    -- Composite FKs include WorkspaceId: a chunk cannot reference another workspace's message or session.
-    CONSTRAINT [FK_MessageEmbeddings_Messages] FOREIGN KEY ([WorkspaceId], [MessageId]) REFERENCES [dbo].[Messages] ([WorkspaceId], [Id]),
-    CONSTRAINT [FK_MessageEmbeddings_Sessions] FOREIGN KEY ([WorkspaceId], [SessionId]) REFERENCES [dbo].[Sessions] ([WorkspaceId], [Id]),
+    -- The FK carries WorkspaceId and SessionId, so a chunk's denormalized session is always its message's own session.
+    CONSTRAINT [FK_MessageEmbeddings_Messages] FOREIGN KEY ([WorkspaceId], [SessionId], [MessageId]) REFERENCES [dbo].[Messages] ([WorkspaceId], [SessionId], [Id]),
     CONSTRAINT [UQ_MessageEmbeddings_Message_Chunk] UNIQUE NONCLUSTERED ([MessageId], [ChunkIndex])
 );
 GO
 
--- Serves session filters and the composite (WorkspaceId, SessionId) FK.
+-- Serves session filters.
 CREATE NONCLUSTERED INDEX [IX_MessageEmbeddings_Workspace_Session]
     ON [dbo].[MessageEmbeddings] ([WorkspaceId], [SessionId]);
 GO

@@ -14,12 +14,13 @@ CREATE TABLE [dbo].[SessionSummaries]
     CONSTRAINT [PK_SessionSummaries] PRIMARY KEY CLUSTERED ([Id]),
     CONSTRAINT [CK_SessionSummaries_Kind] CHECK (([Kind]=(2) OR [Kind]=(1))),
     CONSTRAINT [FK_SessionSummaries_Sessions] FOREIGN KEY ([WorkspaceId], [SessionId]) REFERENCES [dbo].[Sessions] ([WorkspaceId], [Id]),
-    CONSTRAINT [FK_SessionSummaries_Messages] FOREIGN KEY ([WorkspaceId], [CoversThroughMessageId]) REFERENCES [dbo].[Messages] ([WorkspaceId], [Id]),
+    -- Carries SessionId too: a summary can only cover a message of its own session.
+    CONSTRAINT [FK_SessionSummaries_Messages] FOREIGN KEY ([WorkspaceId], [SessionId], [CoversThroughMessageId]) REFERENCES [dbo].[Messages] ([WorkspaceId], [SessionId], [Id]),
     -- One current summary per kind; a new summary replaces it in place.
     CONSTRAINT [UQ_SessionSummaries_Session_Kind] UNIQUE NONCLUSTERED ([SessionId], [Kind])
 );
 GO
 
--- Serves the composite (WorkspaceId, CoversThroughMessageId) FK.
+-- Serves the composite (WorkspaceId, SessionId, CoversThroughMessageId) FK.
 CREATE NONCLUSTERED INDEX [IX_SessionSummaries_Workspace_Message]
-    ON [dbo].[SessionSummaries] ([WorkspaceId], [CoversThroughMessageId]);
+    ON [dbo].[SessionSummaries] ([WorkspaceId], [SessionId], [CoversThroughMessageId]);
