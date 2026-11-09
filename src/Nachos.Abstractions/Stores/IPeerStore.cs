@@ -14,6 +14,7 @@ public interface IPeerStore
     /// </summary>
     /// <param name="isInternal">Marks a new peer as internal (a scope peer). Ignored when the peer already exists.</param>
     /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
     Task<PeerRecord> GetOrCreateAsync(
         string workspaceName,
         string name,
@@ -30,6 +31,7 @@ public interface IPeerStore
     /// that field unchanged.
     /// </summary>
     /// <exception cref="NotFoundException">The peer does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
     Task<PeerRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct);
 

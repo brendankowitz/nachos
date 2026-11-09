@@ -54,6 +54,10 @@ public sealed class SqlMemoryStore : IMemoryStore
         PeerCards = new SqlPeerCardStore(runtime);
         WorkQueue = new SqlWorkQueue(runtime);
         Embeddings = new SqlEmbeddingStore(runtime);
+        var unimplemented = new UnimplementedRecallStores();
+        Summaries = unimplemented;
+        Search = unimplemented;
+        Deletion = unimplemented;
     }
 
     public IWorkspaceStore Workspaces { get; }
@@ -75,6 +79,12 @@ public sealed class SqlMemoryStore : IMemoryStore
     public IWorkQueue WorkQueue { get; }
 
     public IEmbeddingStore Embeddings { get; }
+
+    public ISummaryStore Summaries { get; }
+
+    public IMessageSearch Search { get; }
+
+    public IDeletionStore Deletion { get; }
 
     public bool IsTransientFailure(Exception exception)
     {

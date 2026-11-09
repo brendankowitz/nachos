@@ -25,6 +25,9 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public IPeerCardStore PeerCards => inner.PeerCards;
     public IWorkQueue WorkQueue => this;
     public IEmbeddingStore Embeddings => this;
+    public ISummaryStore Summaries => inner.Summaries;
+    public IMessageSearch Search => inner.Search;
+    public IDeletionStore Deletion => inner.Deletion;
 
     /// <summary>A <see cref="TransientStoreException"/> is transient, as a store would report a deadlock.</summary>
     public bool IsTransientFailure(Exception exception) =>
@@ -160,6 +163,11 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
         DropEmbeddingSaves ? Task.CompletedTask : inner.Embeddings.SaveAsync(pending, embedding, embeddingModel, ct);
 
     public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct) => inner.Embeddings.MarkFailedAsync(pending, ct);
+
+    public Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct) =>
+        inner.Embeddings.ListUnchunkedMessagesAsync(limit, ct);
+
+    public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) => inner.Embeddings.AddChunksAsync(chunks, ct);
 }
 
 /// <summary>A store failure that <see cref="ObservedStore.IsTransientFailure"/> reports as transient.</summary>

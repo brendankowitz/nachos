@@ -27,6 +27,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
                         state.Workspaces.Add(name, entry);
                     }
 
+                    RequireNotDeleting(entry.Record);
                     return JsonCopy.Out(entry.Record);
                 }
             },
@@ -54,6 +55,7 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
                 {
                     var entry = state.Workspaces.GetValueOrDefault(name)
                         ?? throw new NotFoundException($"Workspace '{name}' not found.");
+                    RequireNotDeleting(entry.Record);
                     entry.Record = entry.Record with
                     {
                         Metadata = newMetadata ?? entry.Record.Metadata,
@@ -63,6 +65,16 @@ internal sealed class InMemoryWorkspaceStore(InMemoryState state) : IWorkspaceSt
                 }
             },
             ct);
+
+    /// <summary>The row-level check, under <see cref="InMemoryState.Gate"/>, of <see cref="WorkspaceEntry.RequireNotDeleting"/>.</summary>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
+    private static void RequireNotDeleting(WorkspaceRecord record)
+    {
+        if (record.State == LifecycleState.Deleting)
+        {
+            throw new ConflictException("workspace is being deleted");
+        }
+    }
 
     public Task<Page<WorkspaceRecord>> ListAsync(FilterNode? filter, PageRequest page, CancellationToken ct) =>
         state.Run(

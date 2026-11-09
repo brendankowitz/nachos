@@ -388,6 +388,7 @@ public sealed class InMemoryMemoryStoreTests
         var subStores = new[]
         {
             "Workspaces", "Peers", "Sessions", "Messages", "Grants", "Idempotency", "Conclusions", "PeerCards", "WorkQueue", "Embeddings",
+            "Summaries", "Search", "Deletion",
         };
 
         typeof(IMemoryStore).GetInterfaces().ShouldBeEmpty();

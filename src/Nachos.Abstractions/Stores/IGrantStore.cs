@@ -10,6 +10,7 @@ public interface IGrantStore
     /// <see cref="GrantRecord.WorkspaceName"/> means "all workspaces" for the role.
     /// </summary>
     /// <exception cref="NotFoundException">The grant names a workspace that does not exist.</exception>
+    /// <exception cref="ConflictException">The grant names a workspace that is being deleted.</exception>
     Task AddAsync(GrantRecord grant, CancellationToken ct);
 
     /// <summary>Removes the grant. Removing a grant that does not exist is a no-op.</summary>

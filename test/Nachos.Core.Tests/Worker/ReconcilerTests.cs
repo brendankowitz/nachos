@@ -191,7 +191,7 @@ public sealed class ReconcilerTests
             fixture, fixture.Store, generator: null, options => options.TombstoneRetention = TimeSpan.Zero);
         await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, TimeSpan.Zero);
 
-        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().ConclusionId.ShouldBe(created[0].PublicId);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().SourceId.ShouldBe(created[0].PublicId);
         (await fixture.Inner.Conclusions.PurgeTombstonesAsync(TimeSpan.Zero, Ct)).ShouldBe(0);
     }
 

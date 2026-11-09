@@ -25,6 +25,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
+                    workspace.RequireNotDeleting();
                     var now = state.Clock.GetUtcNow();
                     if (!workspace.Sessions.TryGetValue(name, out var session))
                     {
@@ -33,6 +34,8 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
                         session = new SessionEntry(record, state.NextOrder());
                         workspace.Sessions.Add(name, session);
                     }
+
+                    session.RequireNotDeleting();
 
                     if (peers is not null)
                     {
@@ -70,7 +73,7 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
-                    var session = workspace.RequireSession(name);
+                    var session = workspace.RequireWritableSession(name);
                     session.Record = session.Record with
                     {
                         Metadata = newMetadata ?? session.Record.Metadata,
@@ -190,14 +193,14 @@ internal sealed class InMemorySessionStore(InMemoryState state) : ISessionStore
             },
             ct);
 
-    /// <summary>Runs a mutation on an existing session under its workspace's gate.</summary>
+    /// <summary>Runs a mutation on an existing session, admitted by the write barrier, under its workspace's gate.</summary>
     private void WithSession(
         string workspaceName, string sessionName, Action<WorkspaceEntry, SessionEntry, DateTimeOffset> mutate)
     {
         var workspace = state.RequireWorkspace(workspaceName);
         lock (workspace.Gate)
         {
-            mutate(workspace, workspace.RequireSession(sessionName), state.Clock.GetUtcNow());
+            mutate(workspace, workspace.RequireWritableSession(sessionName), state.Clock.GetUtcNow());
         }
     }
 

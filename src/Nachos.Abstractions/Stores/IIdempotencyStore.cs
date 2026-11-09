@@ -3,7 +3,7 @@ using Nachos.Abstractions.Domain;
 namespace Nachos.Abstractions.Stores;
 
 /// <summary>
-/// Read side and expiry cleanup of idempotency. Records are written by <see cref="IMessageStore.AppendAsync"/>,
+/// Read side and expiry cleanup of idempotency. Records are written by <see cref="IMessageStore.AppendAsync(string, string, Domain.MessageAppend, CancellationToken)"/>,
 /// atomically with the messages they describe.
 /// </summary>
 public interface IIdempotencyStore

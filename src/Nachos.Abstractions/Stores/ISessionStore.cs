@@ -20,6 +20,7 @@ public interface ISessionStore
     /// with its config set from <paramref name="peers"/>. Concurrent calls yield exactly one row.
     /// </summary>
     /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted, or this existing session is.</exception>
     Task<SessionRecord> GetOrCreateAsync(
         string workspaceName,
         string name,
@@ -36,6 +37,7 @@ public interface ISessionStore
     /// that field unchanged.
     /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task<SessionRecord> UpdateAsync(
         string workspaceName, string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct);
 
@@ -50,6 +52,7 @@ public interface ISessionStore
     /// the argument; a duplicate membership row is never created.
     /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task AddPeersAsync(
         string workspaceName,
         string sessionName,
@@ -61,6 +64,7 @@ public interface ISessionStore
     /// <see cref="AddPeersAsync"/>, and active members not listed get <c>LeftAt = now</c>.
     /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task SetPeersAsync(
         string workspaceName,
         string sessionName,
@@ -72,6 +76,7 @@ public interface ISessionStore
     /// idempotent no-op.
     /// </summary>
     /// <exception cref="NotFoundException">The session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task RemovePeersAsync(
         string workspaceName, string sessionName, IReadOnlyList<string> peerNames, CancellationToken ct);
 
@@ -87,6 +92,7 @@ public interface ISessionStore
 
     /// <summary>Replaces the member's config.</summary>
     /// <exception cref="NotFoundException">The session does not exist, or the peer is not an active member.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task SetPeerConfigAsync(
         string workspaceName, string sessionName, string peerName, SessionPeerConfig config, CancellationToken ct);
 

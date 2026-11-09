@@ -14,9 +14,14 @@ internal sealed class InMemoryGrantStore(InMemoryState state) : IGrantStore
             {
                 lock (state.Gate)
                 {
-                    if (grant.WorkspaceName is { } workspace && !state.Workspaces.ContainsKey(workspace))
+                    if (grant.WorkspaceName is { } workspace)
                     {
-                        throw new NotFoundException($"Workspace '{workspace}' not found.");
+                        var entry = state.Workspaces.GetValueOrDefault(workspace)
+                            ?? throw new NotFoundException($"Workspace '{workspace}' not found.");
+                        if (entry.Record.State == LifecycleState.Deleting)
+                        {
+                            throw new ConflictException("workspace is being deleted");
+                        }
                     }
 
                     // Record equality compares the strings ordinally, so this is the idempotent-add check.
