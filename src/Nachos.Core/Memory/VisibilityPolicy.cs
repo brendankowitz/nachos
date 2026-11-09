@@ -98,7 +98,16 @@ public sealed class VisibilityPolicy
     public bool Allows(MessageRecord message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return _sessions is null || _sessions.Contains(message.SessionName);
+        return AllowsSession(message.SessionName);
+    }
+
+    /// <summary>
+    /// Whether what is attributed to <paramref name="sessionName"/> as a whole, its messages and summaries, is visible.
+    /// </summary>
+    public bool AllowsSession(string sessionName)
+    {
+        ArgumentNullException.ThrowIfNull(sessionName);
+        return _sessions is null || _sessions.Contains(sessionName);
     }
 
     /// <summary>Whether <paramref name="conclusion"/> is visible under this policy.</summary>

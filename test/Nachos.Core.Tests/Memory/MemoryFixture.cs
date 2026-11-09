@@ -1,14 +1,16 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Context;
 using Nachos.Core.Memory;
 using Nachos.Core.Search;
 using Nachos.Core.Tests.Deriver;
+using Nachos.Core.Tests.Worker;
+using Nachos.Core.Tokens;
 using Nachos.DataLayer.InMemory;
 using Shouldly;
 
@@ -25,10 +27,17 @@ internal sealed class MemoryFixture : IDisposable
     private readonly ServiceProvider _provider;
     private readonly IServiceScope _scope;
 
-    public MemoryFixture()
+    /// <param name="tokenCounter">Replaces the default token counter, for tests that need exact counts.</param>
+    public MemoryFixture(ITokenCounter? tokenCounter = null)
     {
         var services = new ServiceCollection();
-        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Logs);
+        services.AddSingleton(typeof(ILogger<>), typeof(RecordingLogger<>));
+        if (tokenCounter is not null)
+        {
+            services.AddSingleton(tokenCounter);
+        }
+
         services.AddSingleton<TimeProvider>(Clock);
         services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(Embeddings);
         services.AddNachos(builder => builder.UseInMemory());
@@ -42,6 +51,8 @@ internal sealed class MemoryFixture : IDisposable
 
     public FlakyEmbeddingGenerator Embeddings { get; } = new();
 
+    public RecordingLogs Logs { get; } = new();
+
     public IMemoryStore Store { get; }
 
     public NachosService Service => Get<NachosService>();
@@ -53,6 +64,8 @@ internal sealed class MemoryFixture : IDisposable
     public PeerContextService PeerContext => Get<PeerContextService>();
 
     public HybridSearchService Search => Get<HybridSearchService>();
+
+    public SessionContextService SessionContext => Get<SessionContextService>();
 
     private static CancellationToken Ct => CancellationToken.None;
 

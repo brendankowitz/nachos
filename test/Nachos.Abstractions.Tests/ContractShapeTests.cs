@@ -21,6 +21,7 @@ public sealed class ContractShapeTests
     private static readonly Peer SamplePeer = new("p", "w", Now, Obj(), Obj());
     private static readonly Session SampleSession = new("s", true, "w", Obj(), Obj(), Now);
     private static readonly Message SampleMessage = new("m", "hi", "p", "s", Obj(), Now, "w", 1);
+    private static readonly Contracts.Summary SampleSummary = new("sum", "m", "short", Now, 1);
 
     /// <summary>(manifest schema, sample, whether the DTO must carry exactly the manifest's property set).</summary>
     public static TheoryData<string, object, bool> Samples => new()
@@ -43,6 +44,9 @@ public sealed class ContractShapeTests
         { "SummaryConfiguration", Summary, true },
         { "DreamConfiguration", Dream, true },
         { "DialecticConfiguration", Dialectic, true },
+        { "Summary", SampleSummary, true },
+        { "SessionSummaries", new SessionSummaries("s", SampleSummary, null), true },
+        { "SessionContext", new SessionContext("s", [SampleMessage], SampleSummary, "r", ["c"]), true },
         // Nachos emits only loc/msg/type; the manifest's optional ctx/input are never produced.
         { "ValidationError", new ValidationError(["body", 0, "id"], "bad", "value_error"), false },
         // Nachos adds the RFC 9457 type/title/status members next to the manifest's detail.

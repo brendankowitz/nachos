@@ -1,6 +1,8 @@
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
+using Nachos.Core.Context;
 using Nachos.Core.Memory;
+using Nachos.Core.Tests.Context;
 using Shouldly;
 
 namespace Nachos.Core.Tests.Memory;
@@ -176,5 +178,65 @@ public sealed class VisibilityNegativeTests
         VisibilityPolicy.Create(null, null).ShouldBeSameAs(VisibilityPolicy.Unrestricted);
         OnlyS1.IncludesPeerCard.ShouldBeFalse();
         VisibilityPolicy.Unrestricted.IncludesPeerCard.ShouldBeTrue();
+    }
+
+    /// <summary>Session S1 with a summarized message and a newer one, and bob's S1 and S2 memory of alice.</summary>
+    private static async Task<MemoryFixture> SessionContextSeededAsync()
+    {
+        var f = await SeededAsync();
+        await ContextKit.SummarizedSessionAsync(f, "S1", ["covered"], ["after"], "short summary", "long summary");
+        return f;
+    }
+
+    private static SessionContextRequest EverythingInContext => new(100_000, true, new("bob", "alice", Everything));
+
+    [Fact]
+    public async Task Summaries_AllowlistWithoutSession_Hidden()
+    {
+        using var f = await SessionContextSeededAsync();
+
+        (await f.SessionContext.GetSummariesAsync(W, "S1", VisibilityPolicy.Unrestricted, default)).Count.ShouldBe(2);
+        (await f.SessionContext.GetSummariesAsync(W, "S1", OnlyS1, default)).Count.ShouldBe(2);
+        (await f.SessionContext.GetSummariesAsync(W, "S1", VisibilityPolicy.Create(["S2"], null), default)).ShouldBeEmpty();
+        (await f.SessionContext.GetSummariesAsync(W, "S1", Nothing, default)).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Context_EmptyAllowlist_FailsClosed()
+    {
+        using var f = await SessionContextSeededAsync();
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", EverythingInContext, Nothing, default);
+
+        context.Messages.ShouldBeEmpty();
+        context.Summary.ShouldBeNull();
+        context.Representation.ShouldBe("");
+        context.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Context_AllowlistWithoutThisSession_HidesItsMessagesAndSummary()
+    {
+        using var f = await SessionContextSeededAsync();
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", EverythingInContext, VisibilityPolicy.Create(["S2"], null), default);
+
+        context.Messages.ShouldBeEmpty();
+        context.Summary.ShouldBeNull();
+        context.Representation.ShouldBe("## Explicit\n\n- alice likes tea in S2\n");
+        context.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Context_AllowlistedSession_ShowsItsMessagesAndSummary_AndOnlyItsConclusions()
+    {
+        using var f = await SessionContextSeededAsync();
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", EverythingInContext, OnlyS1, default);
+
+        context.Messages.Select(m => m.Content).ShouldBe(["after"]);
+        context.Summary.ShouldNotBeNull().Content.ShouldBe("long summary");
+        context.Representation.ShouldBe("## Explicit\n\n- alice likes tea\n");
+        context.PeerCard.ShouldBeNull();
     }
 }
