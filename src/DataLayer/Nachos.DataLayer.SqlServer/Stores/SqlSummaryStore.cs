@@ -10,7 +10,8 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 
 /// <remarks>
 /// One <c>dbo.SessionSummaries</c> row per (session, kind), replaced in place. <see cref="SaveAsync"/> is one transaction in
-/// the lock order of <see cref="SqlWorkQueue"/>: the fence (the lease row, update-locked to commit), the lease's work items
+/// the lock order of <see cref="SqlWorkQueue"/>: the fence (the lease row, update-locked to commit), the workspace and
+/// session rows (S, <see cref="WriteAdmission.AdmitWorkerAsync"/>), the lease's work items
 /// (succeeded), the summary rows, then the lease release.
 /// </remarks>
 internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
@@ -48,8 +49,9 @@ internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
     }
 
     /// <remarks>
-    /// The workspace and session states are read from the transaction's snapshot after the fence; the S locks that keep a
-    /// concurrent deletion acceptance out until commit (spec §13.1) arrive with the deletion write barrier (M3 Task 7).
+    /// After the fence, the deletion barrier's S locks on the workspace and the session (spec §13.1) keep a concurrent
+    /// deletion acceptance out until commit; under a resource being deleted or gone, nothing is written and the items
+    /// complete as <see cref="SqlWorkQueue.ResourceDeleted"/>.
     /// </remarks>
     public async Task SaveAsync(
         WorkLease lease, string workspaceName, string sessionName, IReadOnlyList<NewSummary> summaries, CancellationToken ct)
@@ -81,21 +83,7 @@ internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         await SqlWorkQueue.RequireHeldAsync(db, lease, ct);
-
-        var session = (await db.Database
-                .SqlQueryRaw<SessionState>(
-                    """
-                    SELECT s.Id AS SessionId, CAST(CASE WHEN w.LifecycleState = 2 OR s.LifecycleState = 2 THEN 1 ELSE 0 END AS bit) AS IsDeleting
-                    FROM dbo.Sessions AS s
-                    JOIN dbo.Workspaces AS w ON w.Id = s.WorkspaceId
-                    WHERE w.Name = @workspaceName AND DATALENGTH(w.Name) = DATALENGTH(@workspaceName)
-                      AND s.Name = @sessionName AND DATALENGTH(s.Name) = DATALENGTH(@sessionName)
-                    """,
-                    SqlParameters.Text("@workspaceName", workspaceName),
-                    SqlParameters.Text("@sessionName", sessionName))
-                .ToListAsync(ct))
-            .SingleOrDefault();
-        if (session is not { IsDeleting: false })
+        if (!await WriteAdmission.AdmitWorkerAsync(db, workspaceName, [sessionName], [], ct))
         {
             await SqlWorkQueue.CompleteItemsAsync(db, lease, now, SqlWorkQueue.ResourceDeleted, ct);
             await SqlWorkQueue.FreeLeaseAsync(db, lease, ct);
@@ -103,6 +91,7 @@ internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
             return;
         }
 
+        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
         var throughIds = new List<long>(summaries.Count);
         foreach (var summary in summaries)
         {
@@ -159,8 +148,6 @@ internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
                 SqlParameters.Time("@now", now),
             ],
             ct);
-
-    private sealed record SessionState(long SessionId, bool IsDeleting);
 
     private sealed record SummaryRow(
         byte Kind, string Content, string CoversThroughMessageId, long CoversThroughSeq, int TokenCount, DateTimeOffset CreatedAt)

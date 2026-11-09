@@ -26,10 +26,12 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var peer = await Upserts.EnsurePeerAsync(
             db, workspaceId, name, storedMetadata, storedConfiguration, isInternal, runtime.Clock.GetUtcNow(), ct);
+        await transaction.CommitAsync(ct);
         return peer.ToRecord(workspaceName);
     }
 
@@ -53,8 +55,9 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
         var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var updated = await JsonUpdate.ApplyAsync(
             db.Peers,
             "dbo.Peers",
@@ -63,8 +66,10 @@ internal sealed class SqlPeerStore(SqlStoreRuntime runtime) : IPeerStore
             storedConfiguration,
             [SqlParameters.Long("@workspace", workspaceId), SqlParameters.Text("@name", name)],
             ct);
-        return (updated ?? await db.Peers.AsNoTracking().Named(workspaceId, name).FirstOrDefaultAsync(ct)
-            ?? throw Lookups.PeerNotFound(workspaceName, name)).ToRecord(workspaceName);
+        var peer = updated ?? await db.Peers.AsNoTracking().Named(workspaceId, name).FirstOrDefaultAsync(ct)
+            ?? throw Lookups.PeerNotFound(workspaceName, name);
+        await transaction.CommitAsync(ct);
+        return peer.ToRecord(workspaceName);
     }
 
     public async Task<Page<PeerRecord>> ListAsync(

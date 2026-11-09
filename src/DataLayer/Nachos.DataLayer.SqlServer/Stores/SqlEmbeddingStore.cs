@@ -159,7 +159,9 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
     }
 
     /// <remarks>
-    /// Each batch is one statement: the chunks are matched to their messages by name and public id and inserted unless the
+    /// Each batch is one transaction: the deletion barrier's S locks on the batch's workspaces and sessions
+    /// (<see cref="WriteAdmission.LockParentsAsync"/>, spec §13.1), then one statement: the chunks are matched to their
+    /// messages by name and public id and inserted, unless their workspace or session is being deleted or the
     /// <c>(MessageId, ChunkIndex)</c> key exists, read under <c>UPDLOCK, HOLDLOCK</c> so a concurrent call with the same
     /// chunk waits instead of failing on the unique key. A chunk repeated in the call is inserted once, with its first content.
     /// </remarks>
@@ -202,6 +204,9 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
                 parameters.Add(SqlParameters.LongText($"@c{i}", chunk.Content));
             }
 
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await WriteAdmission.LockParentsAsync(
+                db, unique.Skip(start).Take(count).Select(chunk => (chunk.WorkspaceName, chunk.SessionName)), ct);
             await db.Database.ExecuteSqlRawAsync(
                 string.Concat(
                     """
@@ -223,6 +228,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
                     """),
                 parameters,
                 ct);
+            await transaction.CommitAsync(ct);
         }
     }
 

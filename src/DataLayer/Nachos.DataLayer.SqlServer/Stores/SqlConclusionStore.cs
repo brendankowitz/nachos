@@ -253,8 +253,10 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
 
     /// <remarks>
     /// One transaction in the lock order of <see cref="SqlWorkQueue"/>: the fence (the lease row, update-locked to commit),
-    /// the lease's work items (succeeded), the collections (created for inserts; then the dream counters, in <c>Id</c>
-    /// order), the conclusions (inserts; then one update per corroborated or replaced row, in <c>Id</c> order), and last the
+    /// the deletion barrier's S locks (<see cref="WriteAdmission.AdmitWorkerAsync"/>: under a workspace or session being
+    /// deleted, or a lease session that is gone, the result is discarded and the items complete as
+    /// <see cref="SqlWorkQueue.ResourceDeleted"/>), the lease's work items (succeeded), the collections (created for
+    /// inserts; then the dream counters, in <c>Id</c> order), the conclusions (inserts; then one update per corroborated or replaced row, in <c>Id</c> order), and last the
     /// lease release. Corroboration and replacement targets are read first, from the snapshot: a target tombstoned after
     /// that read still has its collection's <c>LastActivityAt</c> bumped, but its row is not changed.
     /// </remarks>
@@ -280,6 +282,19 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, changes.WorkspaceName, ct);
         await SqlWorkQueue.RequireHeldAsync(db, lease, ct);
+        if (!await WriteAdmission.AdmitWorkerAsync(
+                db,
+                changes.WorkspaceName,
+                [.. lease.Items.Select(item => item.SessionName).OfType<string>()],
+                inserts.Select(c => c.Source.SessionName).OfType<string>(),
+                ct))
+        {
+            await SqlWorkQueue.CompleteItemsAsync(db, lease, now, SqlWorkQueue.ResourceDeleted, ct);
+            await SqlWorkQueue.FreeLeaseAsync(db, lease, ct);
+            await transaction.CommitAsync(ct);
+            return;
+        }
+
         var targets = await ResolveTargetsAsync(db, workspaceId, changes.Corroborations, replacements, ct);
 
         await SqlWorkQueue.CompleteItemsAsync(db, lease, now, error: null, ct);
@@ -312,7 +327,9 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
+        await WriteAdmission.AdmitSessionsAsync(
+            db, workspaceName, workspaceId, owned.Select(c => c.Source.SessionName).OfType<string>(), ct);
         var resolved = await ResolveReferencesAsync(db, workspaceId, workspaceName, owned, now, ct);
         var inserted = await InsertRowsAsync(db, workspaceId, owned, resolved, now, ct);
         await transaction.CommitAsync(ct);

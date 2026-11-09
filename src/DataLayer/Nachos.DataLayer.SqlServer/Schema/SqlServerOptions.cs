@@ -17,4 +17,10 @@ public sealed class SqlServerOptions
 
     /// <summary>How often <c>Search.FullTextIndexMaintenance</c> checks the full-text index of message search.</summary>
     public TimeSpan FullTextIndexPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// A test seam of the spec §13.1 race tests: awaited by deletion acceptance after its predicate check and before the
+    /// lifecycle transition, with the acceptance's locks held. Internal, so configuration binding never sets it.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeLifecycleTransition { get; set; }
 }
