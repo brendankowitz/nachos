@@ -32,20 +32,24 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
         return [.. rows.Select(row => PendingEmbedding.ForConclusion(row.WorkspaceName, row.PublicId, row.Content))];
     }
 
-    public async Task<long> CountPendingAsync(CancellationToken ct)
+    public async Task<long> CountPendingAsync(CancellationToken ct) =>
+        await CountPendingAsync(PendingEmbeddingKind.Conclusion, ct) + await CountPendingAsync(PendingEmbeddingKind.MessageChunk, ct);
+
+    public async Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
+        var sql = kind switch
+        {
+            PendingEmbeddingKind.Conclusion =>
+                "SELECT COUNT_BIG(*) AS [Value] FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL",
+            PendingEmbeddingKind.MessageChunk =>
+                "SELECT COUNT_BIG(*) AS [Value] FROM dbo.MessageEmbeddings WHERE SyncState = 0",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown pending embedding kind."),
+        };
         await using var db = await runtime.OpenAsync(ct);
-        var counts = await db.Database
-            .SqlQueryRaw<long>("SELECT COUNT_BIG(*) AS [Value] FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL")
-            .ToListAsync(ct);
+        var counts = await db.Database.SqlQueryRaw<long>(sql).ToListAsync(ct);
         return counts.Single();
     }
-
-    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) =>
-        kind == PendingEmbeddingKind.Conclusion
-            ? CountPendingAsync(ct)
-            : throw new NotSupportedException("Implemented in M3 Task 3");
 
     public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct)
     {

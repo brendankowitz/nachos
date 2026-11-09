@@ -82,7 +82,7 @@ public sealed class ReconcilerTests
 
         // No generator: the chunks stay pending, where they can be inspected.
         await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null, chunker: chunker);
-        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count == 0, Interval);
 
         (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).ShouldBeEmpty();
         var pending = await fixture.Store.Embeddings.ListPendingAsync(100, Ct);
@@ -117,7 +117,7 @@ public sealed class ReconcilerTests
 
         await using var reconciler = await StartAsync(
             fixture, fixture.Store, generator: null, options => options.BackfillBatch = 2, SmallChunker());
-        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count < 3, Interval / 10);
         (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count.ShouldBe(1);
 
         await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 4, Interval);

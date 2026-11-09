@@ -81,6 +81,27 @@ public abstract class M3StoreContractTests : M3ContractTestBase
     }
 
     [Fact]
+    public async Task PendingCounts_SplitByKind_AndSumToTotal()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Sessions.AddPeersAsync(workspace, session, Members("alice", "bob"), Ct);
+        var conclusionsBefore = await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, Ct);
+        var chunksBefore = await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, Ct);
+        var totalBefore = await store.Embeddings.CountPendingAsync(Ct);
+        totalBefore.ShouldBe(conclusionsBefore + chunksBefore);
+
+        await store.Conclusions.InsertAsync(
+            workspace, [new NewConclusion("alice", "bob", session, ConclusionLevel.Explicit, "bob likes tea", null, [], null)], Ct);
+        await store.Messages.AppendAsync(
+            workspace, session, new MessageAppend([Msg("bob", "one message")], Chunks: [["part 0", "part 1"]]), Ct);
+
+        (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, Ct)).ShouldBe(conclusionsBefore + 1);
+        (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, Ct)).ShouldBe(chunksBefore + 2);
+        (await store.Embeddings.CountPendingAsync(Ct)).ShouldBe(totalBefore + 3);
+    }
+
+    [Fact]
     public async Task ChunkEmbedding_SaveAndMarkFailed_LeaveTheBacklog()
     {
         var (store, _) = await NewStoreAsync();
