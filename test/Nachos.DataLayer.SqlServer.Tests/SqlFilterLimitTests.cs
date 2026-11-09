@@ -70,7 +70,7 @@ public sealed class SqlFilterLimitTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { CommandTimeout = 120 }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        var store = SqlTestDatabase.CreateStore(options, database.Gate, TimeProvider.System);
         var filter = FilterParser.Parse(
             "{\"OR\":[" + string.Join(",", Enumerable.Range(0, 1750).Select(i => "{\"metadata\":{\"k" + I(i) + "\":1,\"c" + I(i) + "\":{\"contains\":\"secret\"}}}")) + "]}",
             ResourceKind.Peer);

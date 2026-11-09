@@ -48,6 +48,9 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
 
     private const int MaxErrorLength = 4000;
 
+    /// <summary>The error of items completed without effect because their workspace or session is being deleted or is gone.</summary>
+    internal const string ResourceDeleted = "resource_deleted";
+
     public async Task<WorkLease?> TryAcquireAsync(
         string owner,
         IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> taskTypes,
@@ -134,7 +137,7 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         await using var db = await runtime.OpenAsync(ct);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         await RequireHeldAsync(db, lease, ct);
-        await CompleteItemsAsync(db, lease, runtime.Clock.GetUtcNow(), ct);
+        await CompleteItemsAsync(db, lease, runtime.Clock.GetUtcNow(), error: null, ct);
         await FreeLeaseAsync(db, lease, ct);
         await transaction.CommitAsync(ct);
     }
@@ -334,18 +337,26 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
         }
     }
 
-    /// <summary>Marks the lease's items succeeded. The caller holds the lease (<see cref="RequireHeldAsync"/>).</summary>
-    internal static Task CompleteItemsAsync(NachosDbContext db, WorkLease lease, DateTimeOffset now, CancellationToken ct) =>
+    /// <summary>
+    /// Marks the lease's items succeeded, with <c>error</c> as the reason they had no effect (<see cref="ResourceDeleted"/>),
+    /// or, when it is null, keeping each item's error. The caller holds the lease (<see cref="RequireHeldAsync"/>).
+    /// </summary>
+    internal static Task CompleteItemsAsync(NachosDbContext db, WorkLease lease, DateTimeOffset now, string? error, CancellationToken ct) =>
         lease.Items.Count == 0
             ? Task.CompletedTask
             : db.Database.ExecuteSqlRawAsync(
                 """
-                UPDATE i SET Status = 2, CompletedAt = @now
+                UPDATE i SET Status = 2, CompletedAt = @now, Error = COALESCE(@error, i.Error)
                 FROM dbo.WorkItems AS i WITH (FORCESEEK)
                 JOIN OPENJSON(@ids) WITH (Id bigint '$') AS j ON i.Id = j.Id
                 WHERE i.WorkUnitKey = @key AND i.Status IN (0, 1)
                 """,
-                [SqlParameters.Time("@now", now), SqlParameters.LongText("@ids", ItemIds(lease)), SqlParameters.Text("@key", lease.WorkUnitKey)],
+                [
+                    SqlParameters.Time("@now", now),
+                    new SqlParameter("@error", SqlDbType.NVarChar, MaxErrorLength) { Value = (object?)error ?? DBNull.Value },
+                    SqlParameters.LongText("@ids", ItemIds(lease)),
+                    SqlParameters.Text("@key", lease.WorkUnitKey),
+                ],
                 ct);
 
     /// <summary>Releases a held lease: its token no longer matches and the unit is free. The row stays, so tokens keep growing.</summary>

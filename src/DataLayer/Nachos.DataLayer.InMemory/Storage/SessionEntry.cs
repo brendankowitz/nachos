@@ -14,6 +14,7 @@ namespace Nachos.DataLayer.InMemory.Storage;
 internal sealed class SessionEntry(SessionRecord record, long order)
 {
     private readonly List<MessageRecord> _messages = [];
+    private readonly List<long> _messageOrders = [];
     private readonly Dictionary<string, int> _positionByPublicId = new(StringComparer.Ordinal);
 
     public long Order { get; } = order;
@@ -86,8 +87,12 @@ internal sealed class SessionEntry(SessionRecord record, long order)
     public MessageRecord? FindMessage(string publicId) =>
         _positionByPublicId.TryGetValue(publicId, out var position) ? _messages[position] : null;
 
+    /// <summary>The messages in <c>Seq</c> order, each with its store-wide insertion number.</summary>
+    public IEnumerable<(MessageRecord Message, long Order)> MessagesWithOrder => _messages.Zip(_messageOrders);
+
     /// <summary>Appends a message whose <c>Seq</c> is <see cref="LastSeq"/> + 1 and whose public id is unused.</summary>
-    public void AppendMessage(MessageRecord message)
+    /// <param name="order">The message's store-wide insertion number (<see cref="InMemoryState.NextOrder"/>).</param>
+    public void AppendMessage(MessageRecord message, long order)
     {
         if (message.Seq != LastSeq + 1)
         {
@@ -96,6 +101,7 @@ internal sealed class SessionEntry(SessionRecord record, long order)
 
         _positionByPublicId.Add(message.PublicId, _messages.Count);
         _messages.Add(message);
+        _messageOrders.Add(order);
     }
 
     /// <summary>Replaces the stored message that has the same public id.</summary>
@@ -106,5 +112,6 @@ internal sealed class SessionEntry(SessionRecord record, long order)
     {
         _positionByPublicId.Remove(_messages[^1].PublicId);
         _messages.RemoveAt(_messages.Count - 1);
+        _messageOrders.RemoveAt(_messageOrders.Count - 1);
     }
 }

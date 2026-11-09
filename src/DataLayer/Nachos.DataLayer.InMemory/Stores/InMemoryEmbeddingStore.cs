@@ -82,7 +82,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             () =>
             {
                 ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-                var unchunked = new List<(MessageRecord Message, long WorkspaceOrder, long SessionOrder)>();
+                var unchunked = new List<(MessageRecord Message, long Order)>();
                 foreach (var workspace in state.AllWorkspaces())
                 {
                     lock (workspace.Gate)
@@ -95,9 +95,9 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                         foreach (var session in workspace.Sessions.Values.Where(session => !session.IsDeleting))
                         {
                             var chunked = session.Chunks.Keys.Select(key => key.MessageId).ToHashSet(StringComparer.Ordinal);
-                            unchunked.AddRange(session.Messages
-                                .Where(message => !string.IsNullOrWhiteSpace(message.Content) && !chunked.Contains(message.PublicId))
-                                .Select(message => (JsonCopy.Out(message), workspace.Order, session.Order)));
+                            unchunked.AddRange(session.MessagesWithOrder
+                                .Where(stored => !string.IsNullOrWhiteSpace(stored.Message.Content) && !chunked.Contains(stored.Message.PublicId))
+                                .Select(stored => (JsonCopy.Out(stored.Message), stored.Order)));
                         }
                     }
                 }
@@ -105,10 +105,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 return
                 [
                     .. unchunked
-                        .OrderBy(m => m.Message.CreatedAt)
-                        .ThenBy(m => m.WorkspaceOrder)
-                        .ThenBy(m => m.SessionOrder)
-                        .ThenBy(m => m.Message.Seq)
+                        .OrderBy(m => m.Order)
                         .Take(limit)
                         .Select(m => m.Message),
                 ];

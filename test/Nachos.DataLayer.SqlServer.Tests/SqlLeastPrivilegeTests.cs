@@ -104,7 +104,7 @@ public sealed class SqlLeastPrivilegeTests(SqlServerFixture fixture)
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
             AutomaticSchemaDeploymentEnabled = false,
         };
-        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        return SqlTestDatabase.CreateStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
     }
 
     private static async Task ExecuteAsync(string connectionString, string sql)

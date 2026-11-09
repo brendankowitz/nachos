@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Schema;
+using Nachos.DataLayer.SqlServer.Search;
 using Nachos.DataLayer.SqlServer.Storage;
 using Nachos.DataLayer.SqlServer.Stores;
 
@@ -36,10 +37,16 @@ namespace Nachos.DataLayer.SqlServer;
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore
 {
-    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock, ILogger<SqlMemoryStore> logger)
+    public SqlMemoryStore(
+        SqlServerOptions options,
+        SchemaGate schemaGate,
+        FullTextIndexState fullTextIndex,
+        TimeProvider clock,
+        ILogger<SqlMemoryStore> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(schemaGate);
+        ArgumentNullException.ThrowIfNull(fullTextIndex);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -54,10 +61,9 @@ public sealed class SqlMemoryStore : IMemoryStore
         PeerCards = new SqlPeerCardStore(runtime);
         WorkQueue = new SqlWorkQueue(runtime);
         Embeddings = new SqlEmbeddingStore(runtime);
-        var unimplemented = new UnimplementedRecallStores();
-        Summaries = unimplemented;
-        Search = unimplemented;
-        Deletion = unimplemented;
+        Summaries = new SqlSummaryStore(runtime);
+        Search = new SqlMessageSearch(runtime, fullTextIndex);
+        Deletion = new UnimplementedDeletionStore();
     }
 
     public IWorkspaceStore Workspaces { get; }

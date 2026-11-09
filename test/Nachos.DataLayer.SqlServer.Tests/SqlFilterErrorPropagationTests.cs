@@ -63,7 +63,7 @@ public sealed class SqlFilterErrorPropagationTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { CommandTimeout = 1 }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, database.Gate, TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        var store = SqlTestDatabase.CreateStore(options, database.Gate, TimeProvider.System);
 
         var thrown = await CatchAsync(() => ListAsync(store, SlowFilter, Ct));
 
@@ -89,7 +89,7 @@ public sealed class SqlFilterErrorPropagationTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
         };
-        var store = new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        var store = SqlTestDatabase.CreateStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
 
         var thrown = await CatchAsync(() => ListAsync(store, NumericFilter, Ct));
 

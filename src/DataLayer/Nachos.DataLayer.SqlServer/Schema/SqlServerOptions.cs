@@ -14,4 +14,7 @@ public sealed class SqlServerOptions
     /// Everything else always needs <c>nachos schema upgrade</c>.
     /// </summary>
     public bool AutomaticSchemaDeploymentEnabled { get; set; }
+
+    /// <summary>How often <c>Search.FullTextIndexMaintenance</c> checks the full-text index of message search.</summary>
+    public TimeSpan FullTextIndexPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 }

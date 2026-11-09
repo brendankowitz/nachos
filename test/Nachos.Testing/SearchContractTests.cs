@@ -135,6 +135,10 @@ public abstract class SearchContractTests : M3ContractTestBase
         (await store.Search.LexicalAsync(Request(workspace), ["lemon", "lime"], 2, Ct)).Count.ShouldBe(2);
         (await LexicalAsync(store, Request(workspace))).ShouldBeEmpty();
         (await LexicalAsync(store, Request(workspace), "%")).ShouldBe(["100% [lemon_lime]"]);
+        (await LexicalAsync(store, Request(workspace), new string('%', IMessageSearch.MaxTermLength))).ShouldBeEmpty();
+        await Should.ThrowAsync<ArgumentException>(
+            () => store.Search.LexicalAsync(Request(workspace), [new string('a', IMessageSearch.MaxTermLength + 1)], 10, Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.Search.LexicalAsync(Request(workspace), [""], 10, Ct));
     }
 
     [Fact]
@@ -165,5 +169,27 @@ public abstract class SearchContractTests : M3ContractTestBase
         await Should.ThrowAsync<ArgumentException>(() => store.Search.VectorAsync(Request(workspace), new float[2], 10, Ct));
         await Should.ThrowAsync<ArgumentOutOfRangeException>(() => store.Search.VectorAsync(Request(workspace), Vector(0), 0, Ct));
         await Should.ThrowAsync<NotFoundException>(() => store.Search.LexicalAsync(Request(Unique("ws")), ["x"], 10, Ct));
+    }
+
+    [Fact]
+    public async Task Vector_PendingAndFailedChunks_BesideSyncedChunk_UseSyncedOnly()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            new MessageAppend(
+                [Msg("bob", "mixed", Start.AddMinutes(1)), Msg("bob", "synced only", Start.AddMinutes(2)), Msg("bob", "never synced", Start.AddMinutes(3))],
+                Chunks: [["mixed far", "mixed pending", "mixed failed"], ["synced near"], ["never pending", "never failed"]]),
+            Ct);
+        var pending = (await store.Embeddings.ListPendingAsync(100_000, Ct)).Where(p => p.WorkspaceName == workspace).ToList();
+        await store.Embeddings.SaveAsync(pending.Single(p => p.Content == "mixed far"), Vector(1), "test-model", Ct);
+        await store.Embeddings.SaveAsync(pending.Single(p => p.Content == "synced near"), Vector(0, 1, 0.5f), "test-model", Ct);
+        await store.Embeddings.MarkFailedAsync(pending.Single(p => p.Content == "mixed failed"), Ct);
+        await store.Embeddings.MarkFailedAsync(pending.Single(p => p.Content == "never failed"), Ct);
+
+        // "mixed" ranks by its one synced chunk (far), not by a pending or failed one; "never synced" is no candidate.
+        (await VectorAsync(store, Request(workspace), Vector(0))).ShouldBe(["synced only", "mixed"]);
     }
 }
