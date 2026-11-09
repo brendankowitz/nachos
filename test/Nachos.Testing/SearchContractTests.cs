@@ -109,7 +109,7 @@ public abstract class SearchContractTests : M3ContractTestBase
     }
 
     [Fact]
-    public async Task Lexical_EveryTermCaseInsensitive_RankedByHitsThenRecency()
+    public async Task Lexical_AnyTermCaseInsensitive_RankedByTermsMatchedThenRecency()
     {
         var (store, _) = await NewStoreAsync();
         var (workspace, session) = await NewSessionAsync(store);
@@ -123,22 +123,56 @@ public abstract class SearchContractTests : M3ContractTestBase
                 Msg("bob", "only lemon here", Start.AddMinutes(3)),
                 Msg("bob", "lime, then lemon", Start.AddMinutes(4)),
                 Msg("bob", "100% [lemon_lime]", Start.AddMinutes(5)),
+                Msg("bob", "no citrus at all", Start.AddMinutes(6)),
             ]),
             Ct);
 
         var hits = await store.Search.LexicalAsync(Request(workspace), ["lemon", "lime"], 100, Ct);
 
+        // Occurrences do not count: "lemon lemon lime" matches two terms, like the newer messages ahead of it.
         hits.Select(hit => hit.Message.Content).ShouldBe(
-            ["lemon lemon lime", "100% [lemon_lime]", "lime, then lemon", "Lemon and LIME"]);
-        hits.Select(hit => hit.Rank).ShouldBe([1, 2, 3, 4]);
-        (await LexicalAsync(store, Request(workspace), "lemon", "lime")).Take(2).ShouldBe(["lemon lemon lime", "100% [lemon_lime]"]);
-        (await store.Search.LexicalAsync(Request(workspace), ["lemon", "lime"], 2, Ct)).Count.ShouldBe(2);
+            ["100% [lemon_lime]", "lime, then lemon", "lemon lemon lime", "Lemon and LIME", "only lemon here"]);
+        hits.Select(hit => hit.Rank).ShouldBe([1, 2, 3, 4, 5]);
+        (await store.Search.LexicalAsync(Request(workspace), ["lemon", "lime"], 2, Ct)).Select(hit => hit.Message.Content)
+            .ShouldBe(["100% [lemon_lime]", "lime, then lemon"]);
+
+        // Terms equal but for case count once, so "only" does not outweigh "lime".
+        (await LexicalAsync(store, Request(workspace), "only", "ONLY", "Only", "lime")).ShouldBe(
+            ["100% [lemon_lime]", "lime, then lemon", "only lemon here", "lemon lemon lime", "Lemon and LIME"]);
+
         (await LexicalAsync(store, Request(workspace))).ShouldBeEmpty();
         (await LexicalAsync(store, Request(workspace), "%")).ShouldBe(["100% [lemon_lime]"]);
         (await LexicalAsync(store, Request(workspace), new string('%', IMessageSearch.MaxTermLength))).ShouldBeEmpty();
         await Should.ThrowAsync<ArgumentException>(
             () => store.Search.LexicalAsync(Request(workspace), [new string('a', IMessageSearch.MaxTermLength + 1)], 10, Ct));
         await Should.ThrowAsync<ArgumentException>(() => store.Search.LexicalAsync(Request(workspace), [""], 10, Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.Search.LexicalAsync(Request(workspace), ["lemon", ""], 10, Ct));
+    }
+
+    [Fact]
+    public async Task Lexical_AnyTerm_FindsAMessageWithOnlyOneOfTheTerms()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Messages.AppendAsync(workspace, session, new MessageAppend([Msg("bob", "I like lemons", Start)]), Ct);
+
+        (await LexicalAsync(store, Request(workspace), "what", "user", "say", "lemons")).ShouldBe(["I like lemons"]);
+        (await LexicalAsync(store, Request(workspace), "what", "user")).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Lexical_MoreTermsMatched_OutranksANewerMessage()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            new MessageAppend([Msg("bob", "a red apple", Start.AddMinutes(1)), Msg("bob", "a red car", Start.AddMinutes(2))]),
+            Ct);
+
+        (await LexicalAsync(store, Request(workspace), "red", "apple")).ShouldBe(["a red apple", "a red car"]);
+        (await LexicalAsync(store, Request(workspace), "red")).ShouldBe(["a red car", "a red apple"]);
     }
 
     [Fact]

@@ -12,9 +12,9 @@ namespace Nachos.Core.Memory;
 /// </summary>
 /// <remarks>
 /// <para>
-/// With a session allowlist, only explicit conclusions stated in an allowlisted session are visible, and peer cards are
-/// not: a card aggregates every session, so it cannot be attributed to the allowed ones. An empty allowlist fails
-/// closed and shows nothing.
+/// With a session allowlist, only explicit conclusions stated in an allowlisted session and messages of an allowlisted
+/// session are visible, and peer cards are not: a card aggregates every session, so it cannot be attributed to the
+/// allowed ones. An empty allowlist fails closed and shows nothing.
 /// </para>
 /// <para>Scopes arrive in M6. Until then a request naming one is rejected rather than read without its restriction.</para>
 /// </remarks>
@@ -55,7 +55,7 @@ public sealed class VisibilityPolicy
 
     /// <summary>
     /// <paramref name="filter"/> narrowed in the store to what this policy shows, so totals and page sizes count only
-    /// visible conclusions. Callers still pass every returned conclusion through <see cref="Allows"/> as a second check.
+    /// visible conclusions. Callers still pass every returned conclusion through <see cref="Allows(ConclusionRecord)"/> as a second check.
     /// </summary>
     public FilterNode? Restrict(FilterNode? filter)
     {
@@ -69,10 +69,36 @@ public sealed class VisibilityPolicy
             return new FilterNode.MatchNone();
         }
 
-        var sessions = new JsonArray([.. _sessions.Order(StringComparer.Ordinal).Select(s => JsonValue.Create(s))]);
-        FilterNode allowlisted = new FilterNode.Field(FilterColumns.SessionId, FilterOp.In, sessions);
+        var allowlisted = InAllowlistedSession(_sessions);
         FilterNode explicitOnly = new FilterNode.Field(FilterColumns.Level, FilterOp.Eq, JsonValue.Create(ConclusionLevelNames.Explicit));
         return new FilterNode.And(filter is null ? [allowlisted, explicitOnly] : [filter, allowlisted, explicitOnly]);
+    }
+
+    /// <summary>
+    /// A message filter, <paramref name="filter"/> narrowed in the store to the messages this policy shows. Callers still
+    /// pass every returned message through <see cref="Allows(MessageRecord)"/> as a second check.
+    /// </summary>
+    public FilterNode? RestrictMessages(FilterNode? filter)
+    {
+        if (_sessions is null)
+        {
+            return filter;
+        }
+
+        if (_sessions.Count == 0)
+        {
+            return new FilterNode.MatchNone();
+        }
+
+        var allowlisted = InAllowlistedSession(_sessions);
+        return filter is null ? allowlisted : new FilterNode.And([filter, allowlisted]);
+    }
+
+    /// <summary>Whether <paramref name="message"/> is visible under this policy.</summary>
+    public bool Allows(MessageRecord message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return _sessions is null || _sessions.Contains(message.SessionName);
     }
 
     /// <summary>Whether <paramref name="conclusion"/> is visible under this policy.</summary>
@@ -84,4 +110,8 @@ public sealed class VisibilityPolicy
                 && conclusion.SessionName is not null
                 && _sessions.Contains(conclusion.SessionName));
     }
+
+    private static FilterNode.Field InAllowlistedSession(FrozenSet<string> sessions) =>
+        new(FilterColumns.SessionId, FilterOp.In,
+            new JsonArray([.. sessions.Order(StringComparer.Ordinal).Select(s => JsonValue.Create(s))]));
 }

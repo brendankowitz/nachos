@@ -12,9 +12,10 @@ namespace Nachos.Abstractions.Stores;
 /// a scope naming a session or peer that does not exist matches nothing.
 /// <para>
 /// <see cref="LexicalAsync"/> may be served by a full-text index. While one is active, a term matches words and word
-/// prefixes ("lemon" matches "lemonade" but not "sublemon"), ranked by the index's relevance; the substring definition below
-/// applies otherwise, and may return a superset. A term inside a word, and text in a script written without spaces (such as
-/// CJK), is found only by the substring definition.
+/// prefixes ("lemon" matches "lemonade" but not "sublemon"); the substring definition below applies otherwise, and may
+/// match a superset. A term inside a word, and text in a script written without spaces (such as CJK), is found only by
+/// the substring definition. Either way the ranking is the same function of which terms matched, so two providers that
+/// match the same terms in the same messages return the same list.
 /// </para>
 /// </remarks>
 public interface IMessageSearch
@@ -36,8 +37,9 @@ public interface IMessageSearch
         MessageSearchRequest request, ReadOnlyMemory<float> query, int take, CancellationToken ct);
 
     /// <summary>
-    /// The <paramref name="take"/> best messages whose content contains every term, compared case-insensitively. Ranked
-    /// by how many times the terms occur, then newest first as in <see cref="VectorAsync"/>. No terms match nothing.
+    /// The <paramref name="take"/> best messages whose content contains at least one term, compared case-insensitively.
+    /// Ranked by how many distinct terms the content contains (terms equal but for case count once), most first, then
+    /// newest first as in <see cref="VectorAsync"/>; how often a term occurs does not matter. No terms match nothing.
     /// </summary>
     /// <param name="terms">Plain words already sanitized by the caller; the store never parses user text.</param>
     /// <exception cref="ArgumentException">A term is empty or longer than <see cref="MaxTermLength"/>.</exception>

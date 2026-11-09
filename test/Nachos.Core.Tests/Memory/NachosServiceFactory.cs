@@ -4,6 +4,7 @@ using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 
@@ -17,6 +18,7 @@ internal static class NachosServiceFactory
         return new(store, counter, validator, issuer,
             new ConclusionService(store, NullLogger<ConclusionService>.Instance),
             new PeerContextService(store, new RepresentationBuilder(store)),
-            new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
+            new ConfigurationResolver(Options.Create(new NachosOptions()), counter),
+            new HybridSearchService(store));
     }
 }

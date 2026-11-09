@@ -43,7 +43,7 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
                         $"A search term must be a non-empty word of at most {IMessageSearch.MaxTermLength} characters.", nameof(terms));
                 }
 
-                return Search(request, take, _ => message => -Hits(message.Content, terms));
+                return Search(request, take, _ => message => Coverage(message.Content, terms));
             },
             ct);
 
@@ -110,33 +110,14 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
     };
 
     /// <summary>
-    /// How many times the terms occur in <paramref name="content"/>, case-insensitively and without overlaps; null when a
-    /// term does not occur at all.
+    /// How many of the distinct (case-insensitively) terms occur in <paramref name="content"/>, case-insensitively, negated
+    /// because a lower score ranks first; null when none occurs.
     /// </summary>
-    private static double? Hits(string content, IReadOnlyList<string> terms)
+    private static double? Coverage(string content, IReadOnlyList<string> terms)
     {
-        if (terms.Count == 0)
-        {
-            return null;
-        }
-
-        var total = 0;
-        foreach (var term in terms)
-        {
-            var count = 0;
-            for (var at = content.IndexOf(term, StringComparison.OrdinalIgnoreCase); at >= 0; at = content.IndexOf(term, at + term.Length, StringComparison.OrdinalIgnoreCase))
-            {
-                count++;
-            }
-
-            if (count == 0)
-            {
-                return null;
-            }
-
-            total += count;
-        }
-
-        return total;
+        var matched = terms
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count(term => content.Contains(term, StringComparison.OrdinalIgnoreCase));
+        return matched == 0 ? null : -matched;
     }
 }
