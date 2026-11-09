@@ -18,7 +18,8 @@ namespace Nachos.DataLayer.SqlServer;
 /// <b>Rules.</b> Times come from the <see cref="TimeProvider"/>, never the database clock. Names and public ids
 /// compare ordinally and case-sensitively, including trailing spaces. Lists are in creation order with the identity
 /// column as the tiebreak (messages in <c>Seq</c> order). Writes that race (get-or-create, membership, <c>Seq</c>,
-/// idempotency keys) follow the lock order documented on <c>Storage.Upserts</c>; RCSI makes plain reads lock-free.
+/// idempotency keys) follow the lock order documented on <c>Storage.Upserts</c>; RCSI makes plain reads lock-free. Every
+/// write under a workspace or session first passes the deletion write barrier of <c>Storage.WriteAdmission</c> (spec §13.1).
 /// </para>
 /// <para>
 /// <b>JSON</b> is stored losslessly as text in <c>nvarchar(max)</c> columns that a CHECK constraint requires to hold a
@@ -63,7 +64,7 @@ public sealed class SqlMemoryStore : IMemoryStore
         Embeddings = new SqlEmbeddingStore(runtime);
         Summaries = new SqlSummaryStore(runtime);
         Search = new SqlMessageSearch(runtime, fullTextIndex);
-        Deletion = new UnimplementedDeletionStore();
+        Deletion = new SqlDeletionStore(runtime);
     }
 
     public IWorkspaceStore Workspaces { get; }

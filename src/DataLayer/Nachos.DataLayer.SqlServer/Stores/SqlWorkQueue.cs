@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
@@ -34,9 +35,12 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// nothing rolls back, leaving no trace.
 /// </para>
 /// <para>
-/// <b>Lock order</b> of every write under a lease (complete, fail, <see cref="SqlConclusionStore.CommitDerivationAsync"/>):
-/// the lease row first (the fence <c>EXISTS … WITH (UPDLOCK)</c>, held to commit, so no reclaim can interleave), then
-/// work items, then collections, then conclusions. A claim takes an item before the lease row but never waits for the
+/// <b>Lock order</b> of every write under a lease (complete, fail, <see cref="SqlConclusionStore.CommitDerivationAsync"/>,
+/// <see cref="SqlSummaryStore.SaveAsync"/>): the lease row first (the fence <c>EXISTS … WITH (UPDLOCK)</c>, held to
+/// commit, so no reclaim can interleave); then, for a commit that writes results, the deletion barrier's S locks
+/// (<see cref="WriteAdmission.AdmitWorkerAsync"/>: the workspace row, then session rows in <c>Id</c> order); then work
+/// items, then collections or summaries, then conclusions. Deletion acceptance takes parent rows but never a lease row, so
+/// it cannot close a cycle with a commit. A claim takes an item before the lease row but never waits for the
 /// lease row, so the two orders cannot form a cycle. Every item read and update seeks (<c>FORCESEEK</c>): a scan would
 /// lock other units' rows and deadlock with their claimers. A deadlock victim of anything else is skipped like a lost race.
 /// </para>
@@ -358,6 +362,19 @@ internal sealed partial class SqlWorkQueue(SqlStoreRuntime runtime) : IWorkQueue
                     SqlParameters.Text("@key", lease.WorkUnitKey),
                 ],
                 ct);
+
+    /// <summary>
+    /// Ends a worker commit whose result is discarded because its workspace or session is being deleted or is gone (spec
+    /// §13.1): completes the lease's items as <see cref="ResourceDeleted"/>, frees the lease and commits. The caller holds
+    /// the lease (<see cref="RequireHeldAsync"/>) in <paramref name="transaction"/>.
+    /// </summary>
+    internal static async Task DiscardAsResourceDeletedAsync(
+        NachosDbContext db, IDbContextTransaction transaction, WorkLease lease, DateTimeOffset now, CancellationToken ct)
+    {
+        await CompleteItemsAsync(db, lease, now, ResourceDeleted, ct);
+        await FreeLeaseAsync(db, lease, ct);
+        await transaction.CommitAsync(ct);
+    }
 
     /// <summary>Releases a held lease: its token no longer matches and the unit is free. The row stays, so tokens keep growing.</summary>
     internal static Task FreeLeaseAsync(NachosDbContext db, WorkLease lease, CancellationToken ct) =>

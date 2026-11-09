@@ -45,9 +45,11 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
 
     /// <remarks>
     /// <para>
-    /// One transaction, in the lock order documented on <see cref="Upserts"/>: (1) the <c>Seq</c> allocation
+    /// One transaction, in the lock order documented on <see cref="Upserts"/>: (0) the workspace's S lock
+    /// (<see cref="WriteAdmission"/>); (1) the <c>Seq</c> allocation
     /// <c>UPDATE Sessions SET NextMessageSeq += n OUTPUT deleted.NextMessageSeq</c>, whose exclusive row lock serializes
-    /// appends to the session and makes the allocated range contiguous; (2) the idempotency key: an expired record is
+    /// appends to the session and makes the allocated range contiguous, and is the session's barrier lock: a session being
+    /// deleted is refused under it; (2) the idempotency key: an expired record is
     /// deleted, and the key's range is then read under <c>UPDLOCK, HOLDLOCK</c>, so of concurrent appends with one key
     /// (in any session of the workspace) exactly one proceeds and the rest throw
     /// <see cref="IdempotencyDuplicateException"/>; (3) sender peers and memberships; (4) the messages; (5) their chunks,
@@ -95,30 +97,26 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var allocation = (await db.Database
             .SqlQueryRaw<SeqAllocation>(
                 """
-                UPDATE s SET NextMessageSeq = s.NextMessageSeq + @count
-                OUTPUT deleted.WorkspaceId, deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq
-                FROM dbo.Sessions AS s
-                JOIN dbo.Workspaces AS w ON w.Id = s.WorkspaceId
-                WHERE w.Name = @workspaceName AND DATALENGTH(w.Name) = DATALENGTH(@workspaceName)
-                  AND s.Name = @sessionName AND DATALENGTH(s.Name) = DATALENGTH(@sessionName)
+                UPDATE dbo.Sessions SET NextMessageSeq = NextMessageSeq + @count
+                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState
+                WHERE WorkspaceId = @workspace AND Name = @sessionName AND DATALENGTH(Name) = DATALENGTH(@sessionName)
                 """,
                 SqlParameters.Long("@count", messages.Count),
-                SqlParameters.Text("@workspaceName", workspaceName),
+                SqlParameters.Long("@workspace", workspaceId),
                 SqlParameters.Text("@sessionName", sessionName))
             .ToListAsync(ct))
-            .SingleOrDefault();
-        if (allocation is null)
+            .SingleOrDefault() ?? throw Lookups.SessionNotFound(workspaceName, sessionName);
+        if (allocation.LifecycleState == WriteAdmission.Deleting)
         {
-            // Name the missing parent as the other stores (and the in-memory provider) do.
-            throw await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is null
-                ? Lookups.WorkspaceNotFound(workspaceName)
-                : Lookups.SessionNotFound(workspaceName, sessionName);
+            // Rolled back with the transaction, like the allocation.
+            throw WriteAdmission.SessionDeleting();
         }
 
-        var session = new SessionKey(allocation.WorkspaceId, allocation.SessionId);
+        var session = new SessionKey(workspaceId, allocation.SessionId);
 
         byte[]? keyHash = null;
         if (idempotency is not null)
@@ -185,8 +183,9 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
+        var session = await WriteAdmission.AdmitSessionAsync(db, workspaceName, sessionName, ct);
         var updated = await JsonUpdate.ApplyAsync(
             db.Messages,
             "dbo.Messages",
@@ -196,6 +195,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             [SqlParameters.Long("@session", session.SessionId), SqlParameters.Text("@publicId", publicId)],
             ct) ?? throw new NotFoundException($"Message '{publicId}' not found in session '{sessionName}'.");
         var peerName = await db.Peers.Where(peer => peer.Id == updated.PeerId).Select(peer => peer.Name).SingleAsync(ct);
+        await transaction.CommitAsync(ct);
         return updated.ToRecord(workspaceName, sessionName, peerName);
     }
 
@@ -527,8 +527,8 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         }
     }
 
-    /// <summary>The row the <c>Seq</c> allocation outputs: the session's keys and the first allocated value.</summary>
-    private sealed record SeqAllocation(long WorkspaceId, long SessionId, long FirstSeq);
+    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value and its state.</summary>
+    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState);
 
     /// <summary>A work item to insert for the message row <paramref name="MessageId"/>.</summary>
     private sealed record PendingWork(WorkTaskType TaskType, string WorkUnitKey, string Payload, int TokenCount, long MessageId);

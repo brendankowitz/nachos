@@ -42,7 +42,10 @@ internal sealed class SqlPeerCardStore(SqlStoreRuntime runtime) : IPeerCardStore
                 (PeerCardAuthor)row.UpdatedBy);
     }
 
-    /// <remarks>Concurrent first sets race on the unique key; the loser of the insert then updates the winner's row.</remarks>
+    /// <remarks>
+    /// One transaction behind the workspace's S lock (spec §13.1). Concurrent first sets race on the unique key; the loser
+    /// of the insert then updates the winner's row.
+    /// </remarks>
     public async Task<PeerCardRecord> SetAsync(
         string workspaceName,
         string observerName,
@@ -57,7 +60,8 @@ internal sealed class SqlPeerCardStore(SqlStoreRuntime runtime) : IPeerCardStore
         var stored = JsonSerializer.Serialize(owned);
         await using var db = await runtime.OpenAsync(ct);
         var now = runtime.Clock.GetUtcNow();
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var observer = await RequirePeerIdAsync(db, workspaceId, workspaceName, observerName, ct);
         var observed = await RequirePeerIdAsync(db, workspaceId, workspaceName, observedName, ct);
 
@@ -92,6 +96,7 @@ internal sealed class SqlPeerCardStore(SqlStoreRuntime runtime) : IPeerCardStore
             }
         }
 
+        await transaction.CommitAsync(ct);
         return new PeerCardRecord(workspaceName, observerName, observedName, [.. owned], now, updatedBy);
     }
 

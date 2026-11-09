@@ -9,8 +9,10 @@ using Shouldly;
 namespace Nachos.DataLayer.SqlServer.Tests;
 
 /// <summary>
-/// The M3 SQL paths that leave out a workspace or session being deleted (<c>LifecycleState = 2</c>). Until the deletion
-/// store lands (M3 Tasks 7 and 8) the state is set directly in the database.
+/// The M3 SQL paths that leave out a workspace or session being deleted (<c>LifecycleState = 2</c>). The state is set
+/// directly in the database on purpose: it isolates the read paths from deletion acceptance (covered by
+/// <see cref="SqlDeletionContractTests"/> and <see cref="SqlDeletionBarrierTests"/>), and it can mark a workspace whose
+/// sessions are still active, which acceptance would refuse.
 /// </summary>
 [Collection(M2StoreContracts.Name)]
 public sealed class SqlM3DeletingStateTests(SqlServerFixture fixture) : IAsyncLifetime

@@ -11,7 +11,10 @@ using Nachos.DataLayer.SqlServer.Storage;
 
 namespace Nachos.DataLayer.SqlServer.Stores;
 
-/// <remarks>Membership changes follow the lock order documented on <see cref="Upserts"/>.</remarks>
+/// <remarks>
+/// Every write is admitted by <see cref="WriteAdmission"/> (spec §13.1) in its own transaction; membership changes then
+/// follow the lock order documented on <see cref="Upserts"/>.
+/// </remarks>
 internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
 {
     public async Task<SessionRecord> GetOrCreateAsync(
@@ -29,14 +32,19 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         var storedConfiguration = SqlJson.ToStorage(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
 
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
 
         var session = await EnsureSessionAsync(db, workspaceId, name, storedMetadata, storedConfiguration, now, ct);
+        if (session.LifecycleState == WriteAdmission.Deleting)
+        {
+            throw WriteAdmission.SessionDeleting();
+        }
+
         if (peers is { Count: > 0 })
         {
-            await Upserts.LockSessionAsync(db, session.Id, ct);
+            await WriteAdmission.LockSessionAsync(db, workspaceName, name, session.Id, ct);
             await Upserts.ActivateMembersAsync(db, new SessionKey(workspaceId, session.Id), peers, now, ct);
         }
 
@@ -64,18 +72,31 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         var storedMetadata = SqlJson.ToStorageOptional(metadata, JsonField.Metadata);
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var workspaceId = await Lookups.RequireWorkspaceIdAsync(db, workspaceName, ct);
+        // The update takes the session row's exclusive lock itself, after the workspace's S (spec §13.1).
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var updated = await JsonUpdate.ApplyAsync(
             db.Sessions,
             "dbo.Sessions",
-            "WorkspaceId = @workspace AND Name = @name AND DATALENGTH(Name) = DATALENGTH(@name)",
+            "WorkspaceId = @workspace AND Name = @name AND DATALENGTH(Name) = DATALENGTH(@name) AND LifecycleState <> 2",
             storedMetadata,
             storedConfiguration,
             [SqlParameters.Long("@workspace", workspaceId), SqlParameters.Text("@name", name)],
             ct);
-        return (updated ?? await db.Sessions.AsNoTracking().Named(workspaceId, name).FirstOrDefaultAsync(ct)
-            ?? throw Lookups.SessionNotFound(workspaceName, name)).ToRecord(workspaceName);
+        if (updated is null)
+        {
+            // Nothing to change, or no row matched: a missing session, or one being deleted.
+            updated = await db.Sessions.AsNoTracking().Named(workspaceId, name).FirstOrDefaultAsync(ct)
+                ?? throw Lookups.SessionNotFound(workspaceName, name);
+            if (updated.LifecycleState == WriteAdmission.Deleting)
+            {
+                throw WriteAdmission.SessionDeleting();
+            }
+        }
+
+        await transaction.CommitAsync(ct);
+        return updated.ToRecord(workspaceName);
     }
 
     public async Task<Page<SessionRecord>> ListAsync(
@@ -104,9 +125,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         ColumnLimits.RequireNames(peers.Keys);
         await using var db = await runtime.OpenAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        await Upserts.LockSessionAsync(db, session.SessionId, ct);
+        var session = await WriteAdmission.AdmitSessionForMembershipAsync(db, workspaceName, sessionName, ct);
         await Upserts.ActivateMembersAsync(db, session, peers, runtime.Clock.GetUtcNow(), ct);
         await transaction.CommitAsync(ct);
     }
@@ -121,10 +141,9 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         ColumnLimits.RequireNames(peers.Keys);
         await using var db = await runtime.OpenAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        await Upserts.LockSessionAsync(db, session.SessionId, ct);
+        var session = await WriteAdmission.AdmitSessionForMembershipAsync(db, workspaceName, sessionName, ct);
         await Upserts.ActivateMembersAsync(db, session, peers, now, ct);
 
         // Every listed peer is now an active member, so "not listed" is "not among the given names".
@@ -154,9 +173,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        await Upserts.LockSessionAsync(db, session.SessionId, ct);
+        var session = await WriteAdmission.AdmitSessionForMembershipAsync(db, workspaceName, sessionName, ct);
         await db.Database.ExecuteSqlRawAsync(
             """
             UPDATE m SET LeftAt = @now
@@ -210,9 +228,8 @@ internal sealed class SqlSessionStore(SqlStoreRuntime runtime) : ISessionStore
         ReentryGuard.ThrowIfReentered();
         await using var db = await runtime.OpenAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        await Upserts.LockSessionAsync(db, session.SessionId, ct);
+        var session = await WriteAdmission.AdmitSessionForMembershipAsync(db, workspaceName, sessionName, ct);
         var updated = await db.Database.ExecuteSqlRawAsync(
             """
             UPDATE m SET Configuration = @config
