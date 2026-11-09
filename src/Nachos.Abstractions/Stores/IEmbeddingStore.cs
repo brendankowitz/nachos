@@ -9,10 +9,13 @@ namespace Nachos.Abstractions.Stores;
 /// </summary>
 public interface IEmbeddingStore
 {
-    /// <summary>Up to <paramref name="limit"/> pending live conclusions and message chunks, oldest first.</summary>
+    /// <summary>
+    /// Up to <paramref name="limit"/> pending live conclusions and message chunks, oldest first. Chunks of a workspace or
+    /// session being deleted are left out, so data about to be deleted is never embedded.
+    /// </summary>
     Task<IReadOnlyList<PendingEmbedding>> ListPendingAsync(int limit, CancellationToken ct);
 
-    /// <summary>How many live conclusions and message chunks are pending, in every workspace.</summary>
+    /// <summary>How many of the items <see cref="ListPendingAsync"/> lists are pending, in every workspace.</summary>
     Task<long> CountPendingAsync(CancellationToken ct);
 
     /// <summary>

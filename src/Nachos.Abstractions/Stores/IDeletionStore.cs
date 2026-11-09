@@ -52,8 +52,8 @@ public interface IDeletionStore
     /// <summary>
     /// Deletes at most <paramref name="batchSize"/> of the target's remaining rows, children first, and checkpoints the
     /// progress, so a job that loses its lease resumes where it stopped. A session's rows go in this order: message
-    /// chunks, summaries, its explicit conclusions (and then derived conclusions all of whose sources are deleted are
-    /// tombstoned), its work items other than its deletion, memberships, messages. A workspace's rows go: each session's
+    /// chunks, summaries, its explicit conclusions (then each conclusion citing one of those is tombstoned when none of
+    /// its sources is still live, present and not tombstoned), its work items other than its deletion, memberships, messages. A workspace's rows go: each session's
     /// rows, then conclusions, collections, peer cards, idempotency records, its grants, peers.
     /// </summary>
     /// <returns>True while rows remain; false once only the target's own row is left.</returns>

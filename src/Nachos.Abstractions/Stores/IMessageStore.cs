@@ -105,6 +105,7 @@ public interface IMessageStore
     /// <b>Replaces</b> the message's metadata. Content, <c>Seq</c>, and <c>CreatedAt</c> are untouched.
     /// </summary>
     /// <exception cref="NotFoundException">The session or the message does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace or the session is being deleted.</exception>
     Task<MessageRecord> UpdateMetadataAsync(
         string workspaceName, string sessionName, string publicId, JsonObject metadata, CancellationToken ct);
 

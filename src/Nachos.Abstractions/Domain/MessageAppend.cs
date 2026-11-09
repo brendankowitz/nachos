@@ -10,7 +10,7 @@ namespace Nachos.Abstractions.Domain;
 /// <param name="Chunks">
 /// One entry per message, in order: the message's embedding chunks, possibly none. Null stores no chunks.
 /// </param>
-/// <param name="Summary">The session's summary configuration; null enqueues no summary work.</param>
+/// <param name="Summary">The session's summary intervals; null (summaries disabled) enqueues no summary work.</param>
 public sealed record MessageAppend(
     IReadOnlyList<NewMessage> Messages,
     IdempotencyWrite? Idempotency = null,

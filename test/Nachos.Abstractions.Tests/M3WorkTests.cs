@@ -31,18 +31,18 @@ public sealed class M3WorkTests
     [InlineData(5, 5, 1, 5, 5L, 5L)]
     public void DueThrough_IsTheHighestMultipleInTheBatch(long first, long last, int shortEvery, int longEvery, long? expectedShort, long? expectedLong)
     {
-        var intent = new SummaryIntent(true, shortEvery, longEvery);
+        var intent = new SummaryIntent(shortEvery, longEvery);
 
         intent.DueThrough(SummaryKind.Short, first, last).ShouldBe(expectedShort);
         intent.DueThrough(SummaryKind.Long, first, last).ShouldBe(expectedLong);
-        (intent with { Enabled = false }).DueThrough(SummaryKind.Short, first, last).ShouldBeNull();
     }
 
     [Fact]
     public void SummaryIntent_RejectsIntervalsBelowOne()
     {
-        Should.Throw<ArgumentOutOfRangeException>(() => new SummaryIntent(true, 0, 60));
-        Should.Throw<ArgumentOutOfRangeException>(() => new SummaryIntent(true, 20, 60) with { LongEvery = -1 });
+        Should.Throw<ArgumentOutOfRangeException>(() => new SummaryIntent(0, 60));
+        Should.Throw<ArgumentOutOfRangeException>(() => new SummaryIntent(20, 0));
+        Should.Throw<ArgumentOutOfRangeException>(() => new SummaryIntent(20, 60) with { LongEvery = -1 });
     }
 
     [Fact]
@@ -63,9 +63,17 @@ public sealed class M3WorkTests
         WorkItemRecord Item(JsonObject payload, string? session, WorkTaskType type = WorkTaskType.Deletion) =>
             new(1, "ws", type, "key", payload, 1, 0, session, null, DateTimeOffset.UnixEpoch);
 
-        DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTargetKind.Session), "s")).ShouldBe(DeletionTarget.Session("ws", "s"));
-        DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTargetKind.Workspace), null)).ShouldBe(DeletionTarget.Workspace("ws"));
-        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTargetKind.Workspace), "s")));
-        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTargetKind.Session), "s", WorkTaskType.Summary)));
+        var session = DeletionPayload.Create(DeletionTarget.Session("ws", "s"));
+        session.ToJsonString().ShouldBe("""{"kind":"session","session":"s"}""");
+        DeletionPayload.Create(DeletionTarget.Workspace("ws")).ToJsonString().ShouldBe("""{"kind":"workspace"}""");
+
+        DeletionPayload.Read(Item(session, "s")).ShouldBe(DeletionTarget.Session("ws", "s"));
+        // The session row is gone, so a provider reading the name through it has none: the payload's name stands.
+        DeletionPayload.Read(Item(session, null)).ShouldBe(DeletionTarget.Session("ws", "s"));
+        DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTarget.Workspace("ws")), null)).ShouldBe(DeletionTarget.Workspace("ws"));
+        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(session, "other")));
+        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(DeletionPayload.Create(DeletionTarget.Workspace("ws")), "s")));
+        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(new JsonObject { ["kind"] = "session" }, "s")));
+        Should.Throw<FormatException>(() => DeletionPayload.Read(Item(session, "s", WorkTaskType.Summary)));
     }
 }

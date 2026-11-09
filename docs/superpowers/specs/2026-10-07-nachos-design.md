@@ -788,7 +788,8 @@ Rejection is `409 {"detail": "<resource> is being deleted"}`. Writes that change
 - membership changes;
 - conclusion create;
 - get-or-create of a session or peer under a `Deleting` workspace;
-- get-or-create of the deleting session's own name.
+- get-or-create of the deleting session's own name;
+- Δ (M3) every other write under a deleting resource as well: workspace update and get-or-create of the deleting workspace's own name, peer update, message metadata update, peer-card set, and grant creation for the workspace.
 
 **Ordinary worker commits** (derivation, summary, dream, backfill, webhook fan-out) take the same S locks in the same order alongside their fencing-token check. A result for a `Deleting` resource is discarded, and the item completes as `Succeeded` with reason `resource_deleted`.
 

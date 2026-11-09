@@ -1,6 +1,7 @@
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Abstractions.Work;
 using Nachos.DataLayer.InMemory.Storage;
 
 namespace Nachos.DataLayer.InMemory.Stores;
@@ -36,7 +37,7 @@ internal sealed class InMemorySummaryStore(InMemoryState state) : ISummaryStore
             ct);
 
     public Task SaveAsync(
-        WorkLease lease, string workspaceName, string sessionName, IReadOnlyList<SummaryRecord> summaries, CancellationToken ct) =>
+        WorkLease lease, string workspaceName, string sessionName, IReadOnlyList<NewSummary> summaries, CancellationToken ct) =>
         state.Run(
             () =>
             {
@@ -54,15 +55,29 @@ internal sealed class InMemorySummaryStore(InMemoryState state) : ISummaryStore
                     throw new ArgumentException("At most one summary of each kind can be saved under one lease.", nameof(summaries));
                 }
 
-                var workspace = state.RequireWorkspace(workspaceName);
+                if (!string.Equals(lease.WorkUnitKey, WorkUnitKeys.Summary(workspaceName, sessionName), StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        $"The lease on '{lease.WorkUnitKey}' is not on the summary unit of session '{sessionName}'.", nameof(lease));
+                }
+
+                if (state.FindWorkspace(workspaceName) is not { } workspace)
+                {
+                    lock (state.Queue.Gate)
+                    {
+                        state.Queue.RequireHeld(lease);
+                        state.Queue.Complete(lease, state.Clock.GetUtcNow(), InMemoryConclusionStore.ResourceDeleted);
+                        return;
+                    }
+                }
+
                 lock (workspace.Gate)
                 {
                     lock (state.Queue.Gate)
                     {
                         state.Queue.RequireHeld(lease);
-                        var session = workspace.RequireSession(sessionName);
                         var now = state.Clock.GetUtcNow();
-                        if (workspace.IsDeleting || session.IsDeleting)
+                        if (workspace.IsDeleting || workspace.Sessions.GetValueOrDefault(sessionName) is not { IsDeleting: false } session)
                         {
                             state.Queue.Complete(lease, now, InMemoryConclusionStore.ResourceDeleted);
                             return;
@@ -79,7 +94,8 @@ internal sealed class InMemorySummaryStore(InMemoryState state) : ISummaryStore
                         foreach (var summary in summaries.Where(summary =>
                             session.Summaries.GetValueOrDefault(summary.Kind) is not { } stored || summary.CoversThroughSeq > stored.CoversThroughSeq))
                         {
-                            session.Summaries[summary.Kind] = summary;
+                            session.Summaries[summary.Kind] = new SummaryRecord(
+                                summary.Kind, summary.Content, summary.CoversThroughMessageId, summary.CoversThroughSeq, summary.TokenCount, now);
                         }
 
                         state.Queue.Complete(lease, now);

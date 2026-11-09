@@ -8,7 +8,7 @@ namespace Nachos.Abstractions.Stores;
 /// </summary>
 /// <remarks>
 /// The candidate set is <see cref="MessageSearchRequest.Scope"/> narrowed by <see cref="MessageSearchRequest.Filter"/>,
-/// both applied inside the store. Both methods throw <see cref="NotFoundException"/> when the workspace does not exist;
+/// both applied inside the store. Messages of a workspace or session being deleted are never candidates. Both methods throw <see cref="NotFoundException"/> when the workspace does not exist;
 /// a scope naming a session or peer that does not exist matches nothing.
 /// </remarks>
 public interface IMessageSearch

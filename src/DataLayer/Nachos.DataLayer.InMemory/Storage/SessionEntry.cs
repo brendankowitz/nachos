@@ -30,6 +30,9 @@ internal sealed class SessionEntry(SessionRecord record, long order)
     /// <summary>The messages' embedding chunks by (message public id, chunk index).</summary>
     public Dictionary<(string MessageId, int ChunkIndex), StoredChunk> Chunks { get; } = [];
 
+    /// <summary>The public ids of the session's conclusions its deletion job has deleted: the job's checkpoint for D7.</summary>
+    public HashSet<string> PurgedConclusionIds { get; } = new(StringComparer.Ordinal);
+
     /// <summary>The current summary of each kind.</summary>
     public Dictionary<SummaryKind, SummaryRecord> Summaries { get; } = [];
 

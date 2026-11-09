@@ -11,6 +11,7 @@ public interface IPeerCardStore
 
     /// <summary><b>Replaces</b> the card's entries (creating the card if missing), stamping <c>UpdatedAt = now</c>.</summary>
     /// <exception cref="NotFoundException">The workspace or either peer does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
     Task<PeerCardRecord> SetAsync(
         string workspaceName,
         string observerName,

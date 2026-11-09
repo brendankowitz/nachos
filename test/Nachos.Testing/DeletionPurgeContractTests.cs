@@ -29,11 +29,11 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
             new MessageAppend(
                 [.. Enumerable.Range(0, messages).Select(i => Msg("bob", $"message {i}"))],
                 Chunks: [.. Enumerable.Range(0, messages).Select(i => (IReadOnlyList<string>)[$"m{i} part 0", $"m{i} part 1"])],
-                Summary: new SummaryIntent(true, messages, 1000)),
+                Summary: new SummaryIntent(messages, 1000)),
             Ct);
         var summaryLease = (await AcquireAsync(store, WorkTaskType.Summary)).ShouldNotBeNull();
         await store.Summaries.SaveAsync(
-            summaryLease, workspace, session, [new SummaryRecord(SummaryKind.Short, "summary", appended[^1].PublicId, messages, 1, Start)], Ct);
+            summaryLease, workspace, session, [new NewSummary(SummaryKind.Short, "summary", appended[^1].PublicId, messages, 1)], Ct);
         await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", session)], Ct);
         return (workspace, session);
     }
@@ -49,6 +49,9 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         await store.Deletion.RemoveAsync(lease, target, Ct);
     }
 
+    private static async Task<long> MessageCountAsync(IMemoryStore store, string workspace, string session) =>
+        (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Total;
+
     private static async Task<long> PendingEmbeddingsAsync(IMemoryStore store, string workspace) =>
         (await store.Embeddings.ListPendingAsync(100_000, Ct)).Count(p => p.WorkspaceName == workspace);
 
@@ -62,9 +65,15 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         var first = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
         await store.Deletion.CancelOtherWorkAsync(first, target, Ct);
 
-        (await store.Deletion.PurgeBatchAsync(first, target, 3, Ct)).ShouldBeTrue();
-        (await store.Deletion.PurgeBatchAsync(first, target, 3, Ct)).ShouldBeTrue();
-        (await PendingEmbeddingsAsync(store, workspace)).ShouldBe(15);
+        // Messages go last, so once one is gone every earlier step has been purged.
+        for (var batch = 0; await MessageCountAsync(store, workspace, session) == 10; batch++)
+        {
+            batch.ShouldBeLessThan(20);
+            (await store.Deletion.PurgeBatchAsync(first, target, 3, Ct)).ShouldBeTrue();
+        }
+
+        (await MessageCountAsync(store, workspace, session)).ShouldBeGreaterThan(0);
+        (await store.Summaries.ListAsync(workspace, session, Ct)).ShouldBeEmpty();
         await ShouldConflictAsync(
             () => store.Messages.AppendAsync(workspace, session, new MessageAppend([Msg("bob", "late")]), Ct), "session is being deleted");
 
@@ -118,7 +127,7 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
             () => store.Deletion.PurgeBatchAsync(current, DeletionTarget.Workspace(workspace), 500, Ct));
 
         (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Total.ShouldBe(10);
-        (await PendingEmbeddingsAsync(store, workspace)).ShouldBe(21);
+        (await store.Summaries.ListAsync(workspace, session, Ct)).Count.ShouldBe(1);
         await Should.ThrowAsync<ArgumentOutOfRangeException>(() => store.Deletion.PurgeBatchAsync(current, target, 0, Ct));
         await RunJobAsync(store, current, target);
     }
@@ -128,6 +137,8 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
     {
         var (store, _) = await NewStoreAsync();
         var (workspace, session) = await PopulatedSessionAsync(store);
+        var grantee = Unique("object");
+        await store.Grants.AddAsync(new GrantRecord(grantee, workspace, GrantRoles.Workspace), Ct);
         await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
         await RunJobAsync(store, (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull(), DeletionTarget.Session(workspace, session));
 
@@ -153,6 +164,50 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.CreatedAt, new PageRequest(), Ct)).Total.ShouldBe(0);
         (await store.Deletion.ListJobsAsync(workspace, new PageRequest(), Ct)).Items.ShouldBeEmpty();
         (await PendingEmbeddingsAsync(store, workspace)).ShouldBe(0);
+        (await store.Grants.ListAsync(grantee, Ct)).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task SessionJob_StaysListed_AfterTheSessionIsRemoved()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        var acceptance = await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        await RunJobAsync(store, (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull(), DeletionTarget.Session(workspace, session));
+
+        var job = (await store.Deletion.ListJobsAsync(workspace, new PageRequest(), Ct)).Items.Single();
+
+        job.Id.ShouldBe(acceptance.JobId);
+        job.Target.ShouldBe(DeletionTarget.Session(workspace, session));
+        job.Status.ShouldBe(JobStatus.Completed);
+    }
+
+    [Fact]
+    public async Task SaveSummary_AfterTheSessionIsRemoved_CompletesWithoutWriting()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        var messages = await store.Messages.AppendAsync(
+            workspace,
+            session,
+            new MessageAppend([.. Enumerable.Range(0, 20).Select(i => Msg("bob", $"m{i}"))], Summary: new SummaryIntent(20, 60)),
+            Ct);
+        var summaryLease = (await AcquireAsync(store, WorkTaskType.Summary)).ShouldNotBeNull();
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        var job = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        var target = DeletionTarget.Session(workspace, session);
+
+        // Without CancelOtherWorkAsync the summary lease is not fenced, so the save meets a removed session.
+        while (await store.Deletion.PurgeBatchAsync(job, target, 500, Ct))
+        {
+        }
+
+        await store.Deletion.RemoveAsync(job, target, Ct);
+        await store.Summaries.SaveAsync(
+            summaryLease, workspace, session, [new NewSummary(SummaryKind.Short, "late", messages[19].PublicId, 20, 1)], Ct);
+
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.RenewAsync(summaryLease, Lease, Ct));
+        (await store.Sessions.GetAsync(workspace, session, Ct)).ShouldBeNull();
     }
 
     [Fact]
@@ -210,13 +265,22 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         await store.Sessions.AddPeersAsync(workspace, session, Members("alice", "bob"), Ct);
         var stated = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", session)], Ct)).Single();
         var elsewhere = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes jazz")], Ct)).Single();
+        var retracted = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes rock")], Ct)).Single();
+        var unrelated = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes blues")], Ct)).Single();
         var derived = await store.Conclusions.InsertAsync(
             workspace,
             [
                 Conclusion("bob enjoys hot drinks", level: ConclusionLevel.Deductive, sources: [stated.PublicId]),
                 Conclusion("bob has calm tastes", level: ConclusionLevel.Inductive, sources: [stated.PublicId, elsewhere.PublicId]),
+                Conclusion("bob likes music", level: ConclusionLevel.Inductive, sources: [stated.PublicId, retracted.PublicId]),
+                Conclusion("bob likes the blues scene", level: ConclusionLevel.Deductive, sources: [unrelated.PublicId]),
             ],
             Ct);
+
+        // A tombstoned source is no support, whether or not the reconciler has purged it yet; a conclusion that cites
+        // none of the deleted session's conclusions is not re-evaluated by its deletion.
+        await store.Conclusions.TombstoneAsync(workspace, retracted.PublicId, Ct);
+        await store.Conclusions.TombstoneAsync(workspace, unrelated.PublicId, Ct);
         await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
 
         await RunJobAsync(store, (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull(), DeletionTarget.Session(workspace, session), batchSize: 1);
@@ -225,5 +289,7 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         (await store.Conclusions.GetAsync(workspace, derived[0].PublicId, Ct)).ShouldBeNull();
         (await store.Conclusions.GetAsync(workspace, derived[1].PublicId, Ct)).ShouldNotBeNull().SourceIds.ShouldBe([elsewhere.PublicId]);
         (await store.Conclusions.GetAsync(workspace, elsewhere.PublicId, Ct)).ShouldNotBeNull();
+        (await store.Conclusions.GetAsync(workspace, derived[2].PublicId, Ct)).ShouldBeNull();
+        (await store.Conclusions.GetAsync(workspace, derived[3].PublicId, Ct)).ShouldNotBeNull();
     }
 }

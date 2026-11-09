@@ -20,7 +20,7 @@ internal sealed class UnimplementedRecallStores : ISummaryStore, IMessageSearch,
         throw new NotSupportedException(Message);
 
     public Task SaveAsync(
-        WorkLease lease, string workspaceName, string sessionName, IReadOnlyList<SummaryRecord> summaries, CancellationToken ct) =>
+        WorkLease lease, string workspaceName, string sessionName, IReadOnlyList<NewSummary> summaries, CancellationToken ct) =>
         throw new NotSupportedException(Message);
 
     public Task<IReadOnlyList<MessageHit>> VectorAsync(

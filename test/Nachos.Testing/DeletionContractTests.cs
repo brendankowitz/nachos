@@ -101,6 +101,7 @@ public abstract class DeletionContractTests : M3ContractTestBase
     [InlineData("workspace update")]
     [InlineData("conclusion create")]
     [InlineData("peer card set")]
+    [InlineData("grant add")]
     public async Task WritesUnderDeletingWorkspace_Throw(string write)
     {
         var (store, _) = await NewStoreAsync();
@@ -134,8 +135,49 @@ public abstract class DeletionContractTests : M3ContractTestBase
         "workspace get-or-create" => () => store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct),
         "workspace update" => () => store.Workspaces.UpdateAsync(workspace, new JsonObject { ["k"] = 1 }, null, Ct),
         "peer card set" => () => store.PeerCards.SetAsync(workspace, "alice", "bob", ["likes tea"], PeerCardAuthor.Api, Ct),
+        "grant add" => () => store.Grants.AddAsync(new GrantRecord(Unique("object"), workspace, GrantRoles.Workspace), Ct),
         _ => throw new ArgumentOutOfRangeException(nameof(write), write, "Unknown write."),
     };
+
+    [Fact]
+    public async Task SearchAndEmbeddingBacklog_ExcludeResourcesBeingDeleted()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, deleting) = await NewSessionAsync(store);
+        var kept = Unique("sess");
+        await store.Sessions.GetOrCreateAsync(workspace, kept, null, null, null, Ct);
+        var embedded = new Dictionary<(string, int), float[]>();
+        foreach (var session in new[] { deleting, kept })
+        {
+            var message = (await store.Messages.AppendAsync(
+                workspace, session, new MessageAppend([Msg("bob", $"apple in {session}")], Chunks: [["apple", "pending"]]), Ct)).Single();
+            embedded[(message.PublicId, 0)] = Vector(0);
+        }
+
+        await EmbedChunksAsync(store, embedded);
+        var request = new MessageSearchRequest(workspace, new MessageSearchScope.Workspace(), null);
+        var perspective = request with { Scope = new MessageSearchScope.PeerPerspective("bob") };
+        var countBefore = await store.Embeddings.CountPendingAsync(Ct);
+
+        await store.Deletion.BeginDeleteSessionAsync(workspace, deleting, Ct);
+
+        foreach (var scoped in new[] { request, perspective, request with { Scope = new MessageSearchScope.Session(deleting) } })
+        {
+            var lexical = await store.Search.LexicalAsync(scoped, ["apple"], 10, Ct);
+            var vector = await store.Search.VectorAsync(scoped, Vector(0), 10, Ct);
+            lexical.Concat(vector).ShouldAllBe(hit => hit.Message.SessionName == kept);
+        }
+
+        var pending = (await store.Embeddings.ListPendingAsync(100_000, Ct)).Where(p => p.WorkspaceName == workspace).ToList();
+        pending.Count.ShouldBe(1);
+        (await store.Embeddings.CountPendingAsync(Ct)).ShouldBe(countBefore - 1);
+
+        await store.Deletion.BeginDeleteSessionAsync(workspace, kept, Ct);
+        await store.Deletion.BeginDeleteWorkspaceAsync(workspace, Ct);
+        (await store.Search.LexicalAsync(request, ["apple"], 10, Ct)).ShouldBeEmpty();
+        (await store.Search.VectorAsync(request, Vector(0), 10, Ct)).ShouldBeEmpty();
+        (await store.Embeddings.ListPendingAsync(100_000, Ct)).ShouldNotContain(p => p.WorkspaceName == workspace);
+    }
 
     [Fact]
     public async Task WorkerCommitsUnderDeleting_AreDiscardedAndCompleted()
@@ -150,14 +192,14 @@ public abstract class DeletionContractTests : M3ContractTestBase
             new MessageAppend(
                 [.. Enumerable.Range(0, 20).Select(i => Msg("bob", $"m{i}"))],
                 Derive: [.. Enumerable.Repeat(DeriveIntent.Derive, 20)],
-                Summary: new SummaryIntent(true, 20, 60)),
+                Summary: new SummaryIntent(20, 60)),
             Ct);
         var summaryLease = (await AcquireAsync(store, WorkTaskType.Summary)).ShouldNotBeNull();
         var derivationLease = (await AcquireAsync(store, WorkTaskType.Representation)).ShouldNotBeNull();
 
         await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
         await store.Summaries.SaveAsync(
-            summaryLease, workspace, session, [new SummaryRecord(SummaryKind.Short, "late", messages[19].PublicId, 20, 1, Start)], Ct);
+            summaryLease, workspace, session, [new NewSummary(SummaryKind.Short, "late", messages[19].PublicId, 20, 1)], Ct);
         await store.Conclusions.CommitDerivationAsync(
             derivationLease, new DerivationChanges(workspace, [Conclusion(session)], [], []), Ct);
 

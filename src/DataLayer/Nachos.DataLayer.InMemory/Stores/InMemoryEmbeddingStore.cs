@@ -20,7 +20,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                         pending.AddRange(workspace.Conclusions.Values
                             .Where(c => c.IsLive && c.State == EmbeddingState.Pending)
                             .Select(c => (c.Record.CreatedAt, c.Order, PendingEmbedding.ForConclusion(workspace.Name, c.Record.PublicId, c.Record.Content))));
-                        pending.AddRange(workspace.Sessions.Values
+                        pending.AddRange(PendingChunkSessions(workspace)
                             .SelectMany(session => session.Chunks.Values)
                             .Where(chunk => chunk.State == EmbeddingState.Pending)
                             .Select(chunk => (chunk.CreatedAt, chunk.Order, PendingEmbedding.ForChunk(workspace.Name, chunk.MessageId, chunk.ChunkIndex, chunk.Content))));
@@ -41,7 +41,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                     lock (workspace.Gate)
                     {
                         count += workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending);
-                        count += workspace.Sessions.Values.Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
+                        count += PendingChunkSessions(workspace).Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
                     }
                 }
 
@@ -153,6 +153,10 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 }
             },
             ct);
+
+    /// <summary>The sessions whose chunks are in the backlog: none of a workspace or session being deleted, whose data is never embedded.</summary>
+    private static IEnumerable<SessionEntry> PendingChunkSessions(WorkspaceEntry workspace) =>
+        workspace.IsDeleting ? [] : workspace.Sessions.Values.Where(session => !session.IsDeleting);
 
     /// <summary>A store-owned copy of <paramref name="metadata"/> with the embedding model set; the original is not changed.</summary>
     private static JsonObject WithModel(JsonObject metadata, string embeddingModel)

@@ -100,10 +100,12 @@ internal sealed class InMemoryDeletionStore(InMemoryState state) : IDeletionStor
                     return;
                 }
 
-                // The workspace's own job leaves with it, so a new workspace of the same name lists no jobs.
+                // The workspace's own job leaves with it, so a new workspace of the same name lists no jobs. Grants go in
+                // the same critical section as the row, so none can outlive it and pass to a new workspace of the name.
                 state.Queue.Remove(state.Queue.ItemsOf(workspace.Name).ToHashSet());
                 lock (state.Gate)
                 {
+                    state.Grants.RemoveAll(grant => IsOf(grant, workspace));
                     state.Workspaces.Remove(workspace.Name);
                 }
             }),
@@ -143,7 +145,7 @@ internal sealed class InMemoryDeletionStore(InMemoryState state) : IDeletionStor
                 target.WorkspaceName,
                 WorkTaskType.Deletion,
                 target.WorkUnitKey,
-                DeletionPayload.Create(target.Kind),
+                DeletionPayload.Create(target),
                 tokenCount: 0,
                 target.SessionName,
                 messageId: null,
@@ -230,15 +232,16 @@ internal sealed class InMemoryDeletionStore(InMemoryState state) : IDeletionStor
         {
             lock (state.Gate)
             {
-                return Each(
-                    state.Grants.Where(grant => string.Equals(grant.WorkspaceName, workspace.Name, StringComparison.Ordinal)),
-                    grant => RemoveGrant(grant));
+                return Each(state.Grants.Where(grant => IsOf(grant, workspace)), RemoveGrant);
             }
         });
         steps.Add(() => WorkItems(workspace.Name, sessionName: null, ownWorkUnitKey));
         steps.Add(() => Each(workspace.Peers.Keys, name => workspace.Peers.Remove(name)));
         return steps;
     }
+
+    private static bool IsOf(GrantRecord grant, WorkspaceEntry workspace) =>
+        string.Equals(grant.WorkspaceName, workspace.Name, StringComparison.Ordinal);
 
     private void RemoveGrant(GrantRecord grant)
     {
@@ -249,6 +252,11 @@ internal sealed class InMemoryDeletionStore(InMemoryState state) : IDeletionStor
     }
 
     /// <summary>A session's purge steps: chunks, summaries, its conclusions, unsupported tombstones, work items, members, messages.</summary>
+    /// <remarks>
+    /// The ids of the conclusions deleted are kept on the session (the job's checkpoint), so a resumed job still knows
+    /// which derived conclusions to re-evaluate: only those citing a deleted one, tombstoned when none of their sources is
+    /// still live (present and not tombstoned).
+    /// </remarks>
     private List<Func<IReadOnlyList<Action>>> SessionSteps(WorkspaceEntry workspace, SessionEntry session, string ownWorkUnitKey)
     {
         var name = session.Record.Name;
@@ -258,10 +266,16 @@ internal sealed class InMemoryDeletionStore(InMemoryState state) : IDeletionStor
             () => Each(session.Summaries.Keys, kind => session.Summaries.Remove(kind)),
             () => Each(
                 workspace.Conclusions.Values.Where(c => string.Equals(c.Record.SessionName, name, StringComparison.Ordinal)).Select(c => c.Record.PublicId),
-                id => workspace.Conclusions.Remove(id)),
+                id =>
+                {
+                    session.PurgedConclusionIds.Add(id);
+                    workspace.Conclusions.Remove(id);
+                }),
             () => Each(
                 workspace.Conclusions.Values
-                    .Where(c => c.IsLive && c.Record.SourceIds.Count > 0 && !c.Record.SourceIds.Any(workspace.Conclusions.ContainsKey))
+                    .Where(c => c.IsLive
+                        && c.Record.SourceIds.Any(session.PurgedConclusionIds.Contains)
+                        && !c.Record.SourceIds.Any(source => workspace.Conclusions.GetValueOrDefault(source) is { IsLive: true }))
                     .Select(c => c.Record.PublicId),
                 id => workspace.Conclusions[id] = workspace.Conclusions[id] with { DeletedAt = state.Clock.GetUtcNow() }),
             () => WorkItems(workspace.Name, name, ownWorkUnitKey),

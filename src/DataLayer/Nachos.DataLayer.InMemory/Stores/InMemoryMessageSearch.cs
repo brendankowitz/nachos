@@ -85,7 +85,12 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
     }
 
     /// <summary>The sessions in scope, each with the test of which of its messages are in scope.</summary>
+    /// <remarks>A workspace or session being deleted has no candidates.</remarks>
     private static IEnumerable<(SessionEntry Session, Func<MessageRecord, bool> Visible)> Candidates(
+        WorkspaceEntry workspace, MessageSearchScope scope) =>
+        workspace.IsDeleting ? [] : InScope(workspace, scope).Where(candidate => !candidate.Session.IsDeleting);
+
+    private static IEnumerable<(SessionEntry Session, Func<MessageRecord, bool> Visible)> InScope(
         WorkspaceEntry workspace, MessageSearchScope scope) => scope switch
     {
         MessageSearchScope.Workspace => workspace.Sessions.Values.Select(session => (session, (Func<MessageRecord, bool>)(_ => true))),
