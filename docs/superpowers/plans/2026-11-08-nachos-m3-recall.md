@@ -209,9 +209,11 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
   - `@expr` is built **only** from Core's sanitized terms, as `"t1" AND "t2" …`, with each term double-quote-escaped. It is always a parameter, never concatenated into SQL.
   - Otherwise it uses `Content LIKE @p ESCAPE '\'` per term (`AND`), with `%`, `_`, `[` and `\` escaped, ordered by term-hit count and then `Seq` descending.
   - The mode comes from `FullTextIndexMaintenance.IsReady`.
-- **`FullTextIndexMaintenance`** runs after the schema gate passes. When `IsFullTextInstalled = 1` and the index is missing, it creates the catalog `NachosFts` and `CREATE FULLTEXT INDEX ON dbo.Messages(Content) KEY INDEX PK_Messages WITH CHANGE_TRACKING AUTO`. It sets `IsReady` when `FULLTEXTCATALOGPROPERTY(…,'PopulateStatus') = 0`.
+- **`FullTextIndexMaintenance`** runs after the schema gate passes. When `IsFullTextInstalled = 1` and the index is missing, it creates the catalog `NachosFts` and `CREATE FULLTEXT INDEX ON dbo.Messages(Content) KEY INDEX PK_Messages WITH CHANGE_TRACKING AUTO`. `IsReady` is set as described below.
   - The app identity needs `CREATE FULLTEXT CATALOG` (`db_ddladmin` already grants it, spec §18.2).
   - It runs on the worker host and on the in-process API host when SQL is used. Creation is idempotent and guarded by the `reconciler:fts` lease, so only one replica issues the DDL.
+  - `CREATE FULLTEXT INDEX` cannot run inside a user transaction: issue it autocommit, never under an EF or ambient transaction.
+  - Treat `IsFullTextInstalled` NULL as not installed. Readiness uses `OBJECTPROPERTYEX(OBJECT_ID('dbo.Messages'), 'TableFullTextPopulateStatus') = 0` (`PopulateStatus` is deprecated), polled slowly (every 30 s), and NULL means not ready.
 - Lock order stays M2's: workspace → session → messages → embeddings → work items → summaries.
 
 - [ ] **Step 1:** Write `SqlM3StoreContractTests : StoreContractTests` (inherits Task 2's cases) and:
@@ -309,8 +311,9 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 **Notes:**
 - **Query parameters** (spec §11.6, all from the manifest): `tokens`, `summary` (default true), `search_query`, `peer_target`, `peer_perspective` (requires `peer_target`), `scope` (requires `peer_target`; excludes `peer_perspective`; `422 scope is not supported in this Nachos version` until M6), repeated `sessions`, `limit_to_session`, `search_top_k`, `search_max_distance`, `include_most_frequent`, `max_conclusions`.
   - Invalid combinations are `422` with the query `loc`.
-  - `tokens` must be at least 1, and is capped at `SessionContext:MaxTokens` (default 100,000; values above the cap are clamped, not rejected).
-  - With no `tokens`, `SessionContext:DefaultTokens` applies (Q2).
+  - `tokens` is 1–100,000. Above 100,000 is `422`, matching Honcho's OpenAPI (`maximum: 100000`). The minimum of 1 is a Nachos rule; Honcho publishes none.
+  - With no `tokens`, the budget is 100,000, i.e. "exhaustive within 100,000 tokens", as Honcho's OpenAPI describes (Q2).
+  - Under a peer-scoped key, every session named in `sessions` must be one the peer is an active member of, else `401` (Honcho OpenAPI: "A peer-scoped key must be an active member of every session named").
 - **Perspective:** representation and card are included only when `peer_target` is set. The observer is `peer_perspective ?? peer_target`; the observed peer is `peer_target`. `limit_to_session = true` makes this session the `VisibilityPolicy` allowlist, so there is no card. `sessions` adds to the allowlist.
 - **Algorithm (`ContextBudget`, content tokens per D5):**
   1. When requested, build the representation (`max_conclusions`, `search_*`, `include_most_frequent`) and the card. If together they exceed 50% of `tokens`, drop the lowest-ranked representation items until they fit in 50%. If the card alone exceeds 50%, drop the card.
@@ -322,12 +325,12 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
 - [ ] **Step 1:** Write the tests:
   - `SessionContextBudgetTests` (Review Focus 1): `NeverExceedsBudget` (seeded theory over 500 cases: random message sizes, summary sizes, representation sizes, `tokens` from 1 to 20,000), `SingleMessageLargerThanBudget_ReturnsNoMessages`, `RepresentationOver50Percent_Truncated`, `SummaryOver40Percent_Skipped`, `MessagesChronological`, `FinalGuardNeverTrips`;
   - `SessionContextServiceTests`: `NoPeerTarget_NoRepresentationOrCard`, `PeerPerspective_IsObserver`, `LimitToSession_OmitsCard`, `MessagesStartAfterSummaryCoverage`;
-  - `SessionContextValidationTests`: `PerspectiveWithoutTarget_422`, `ScopeWithPerspective_422`, `Scope_422NotSupported`, `TokensZero_422`;
+  - `SessionContextValidationTests`: `PerspectiveWithoutTarget_422`, `ScopeWithPerspective_422`, `Scope_422NotSupported`, `TokensZero_422`, `TokensOver100000_422`, `NoTokens_Uses100000`;
   - `VisibilityNegativeTests`: `Summaries_AllowlistWithoutSession_Hidden`, `Context_EmptyAllowlist_FailsClosed`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Core.Tests --filter Context`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run it again. Expected: PASS.
-- [ ] **Step 5:** Amend spec §11.6 (D5, the long-before-short preference, the clamp) and §9.4 item 4. Commit `feat(core): token-budgeted session context and summaries`.
+- [ ] **Step 5:** Amend spec §11.6 (D5, the long-before-short preference, the 1–100,000 bound) and §9.4 item 4. Commit `feat(core): token-budgeted session context and summaries`.
 
 ### Task 7: Deletion write barrier (SQL)
 
@@ -410,10 +413,11 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
 
 **Auth (mirror Honcho, as in M2 Q7).**
 - **Step 0** records, per route, the public-doc evidence and the resulting `RouteAccess` in the PR.
+- **Documented** (Honcho platform reference): a peer-scoped key gets read-only access to sessions its peer is an active member of, covering context, summaries and search. So `S/context`, `S/summaries` and `S/search` join the member-read allowlist on evidence, not as a fallback. A session-scoped key never reaches peer routes. `scope` on `S/context` requires a workspace or admin key.
 - Where the evidence is silent, fall back to:
   - `W/search`, `W/jobs`, `DELETE W`, `DELETE S` → workspace;
   - `P/search` → peer with `p == peer_id`;
-  - `S/search`, `S/context`, `S/summaries` → session, and added to the **member-read** allowlist (reads only; the allowlist test keeps it free of mutating routes).
+  - `S/search`, `S/context`, `S/summaries` → session, plus member-read (documented, above; the allowlist test keeps it free of mutating routes).
 - `S/context` with `peer_target` under a peer-scoped key additionally requires `peer_perspective ?? peer_target == p`, so a member cannot read another peer's representation through context.
 
 - [ ] **Step 0:** Collect the evidence and write the `ScopeMatrixTests` rows from it.
@@ -423,7 +427,7 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
   - the 401 matrix rows;
   - the 501 list shrinking by exactly the M3 pairs;
   - the OpenAPI wire diff;
-  - `Context_PeerKey_OtherPerspective_401`.
+  - `Context_PeerKey_OtherPerspective_401`, `Context_PeerKey_NonMemberSessionsParam_401`.
 - [ ] **Step 2:** Run `dotnet test test/Nachos.Api.Tests test/Nachos.Client.Tests`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run them, then the SDK smoke (`eng/ci/Invoke-SdkSmoke.ps1`). Expected: PASS.
@@ -485,8 +489,9 @@ Each row has a proposed default. The default applies unless the owner answers ot
 | # | Question | Proposed default | Blocks |
 |---|---|---|---|
 | Q1 | The full-text index can't live in the dacpac without breaking deployment to servers that lack FTS (and the spec's own `LIKE` fallback). Create it at runtime instead (D1)? | **Yes:** runtime creation behind readiness, like the spec's ANN pattern. The dacpac stays FTS-free. | Tasks 1, 3 |
-| Q2 | What should `S/context` use when `tokens` is absent? The public docs don't state a server default. | `SessionContext:DefaultTokens` = **8,000**, configurable, recorded as a provisional parity default to confirm from black-box SDK evidence. | Task 6 |
-| Q3 | Route access for search, context and summaries: mirror Honcho's documented behaviour, with the Task 9 fallback (session reads join member-read) where the docs are silent? | **Yes**, the same approach as M2 Q7. | Task 9 |
+| Q2 | What should `S/context` use when `tokens` is absent? | **Changed after research (2026-11-08):** 100,000, with `422` above it. Honcho's public OpenAPI (3.6.0) says `maximum: 100000` and "If not provided, the context will be exhaustive (within 100000 tokens)". The earlier 8,000 proposal had no evidence behind it. | Task 6 |
+| Q3 | Route access for search, context and summaries? | **Yes, mirror Honcho.** Research found the member-read access for context, summaries and search is documented in the platform reference. Workspace fallback remains only for `W/search`, `W/jobs` and both deletes. | Task 9 |
 | Q4 | Issue #10 (exact managed tokenizer) is a release gate, but it needs a specific approval of the Unicode-data policy exception. Keep it out of M3? | **Yes, keep it separate.** M3's budget guarantee holds with the current counter (D8). | — |
 | Q5 | An empty or whitespace search `query`: `200 []` or `422`? | **`200 []`**. The manifest requires the field but sets no minimum length. | Task 5 |
+| Q7 | Honcho's live OpenAPI is 3.6.0; the pinned manifest is 3.3.0 (spec R4). `DELETE W` now documents `409`. Re-pin before Task 9's wire diff? | **Yes, as its own deliberate commit before Task 9**, regenerating `test/contracts/honcho-v3-wire.json` and reviewing the diff. Re-pinning is a deliberate owner-visible change (R4). | Task 9 |
 | Q6 | Message deletion (`DELETE M/{id}`) isn't in Honcho v3's route list, so M3 doesn't add it. Agreed? | **Agreed.** No new route. | — |
