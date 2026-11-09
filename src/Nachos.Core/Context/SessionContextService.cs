@@ -10,7 +10,7 @@ namespace Nachos.Core.Context;
 
 /// <summary>
 /// Session context within a hard token budget (spec §11.6), and the session's summaries. Every read takes the
-/// request's <see cref="VisibilityPolicy"/>; inputs are trusted (the caller validated them).
+/// caller's <see cref="VisibilityPolicy"/> (its access); inputs are trusted (the caller validated them).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,13 +26,16 @@ namespace Nachos.Core.Context;
 /// content is dropped (oldest messages first) until the context fits.</item>
 /// </list>
 /// <para>
-/// Messages and summaries belong to one session, so they are visible only when the policy shows that session as a
-/// whole: an allowlist that does not name it hides them.
+/// Two inputs decide visibility. The caller's access (the policy) applies to everything: the session's messages and
+/// summary are visible only when it shows that session, so an access allowlist that does not name it hides them. The
+/// request's own narrowing (<see cref="ContextRepresentation.Sessions"/>) further restricts only the representation and
+/// card; the session's own messages and summary are not narrowed by it.
 /// </para>
 /// </remarks>
 public sealed partial class SessionContextService(
     IMemoryStore store,
     PeerContextService peerContext,
+    RepresentationBuilder representations,
     ITokenCounter tokenCounter,
     ILogger<SessionContextService>? logger = null,
     MessageChunker? chunker = null)
@@ -57,7 +60,8 @@ public sealed partial class SessionContextService(
         IReadOnlyList<string>? card = null;
         if (request.Representation is { } peers)
         {
-            (representation, card) = await ReservePeersAsync(workspaceName, peers, policy, budget, ct).ConfigureAwait(false);
+            (representation, card) = await ReservePeersAsync(workspaceName, peers, policy.Narrow(peers.Sessions), budget, ct)
+                .ConfigureAwait(false);
         }
 
         var summary = request.IncludeSummary
@@ -97,16 +101,22 @@ public sealed partial class SessionContextService(
     }
 
     /// <summary>
-    /// The representation with as many of its best-ranked conclusions as fit in <paramref name="limit"/> tokens.
-    /// <see cref="RepresentationBuilder"/> keeps the best-ranked conclusions up to <see cref="RepresentationQuery.MaxConclusions"/>,
-    /// so building with a smaller maximum drops the lowest-ranked ones; the largest maximum that fits is found by
-    /// bisection, rebuilding at most about log2(MaxConclusions) times, and only when the whole one does not fit.
+    /// The representation with as many of its best-ranked conclusions as fit in <paramref name="limit"/> tokens. The
+    /// conclusions are read and ranked once (one embedding of the search query at most); fewer of them are rendered in
+    /// memory, the largest number that fits found by bisection. A limit of zero or less reads nothing.
     /// </summary>
     private async Task<(string Text, int Tokens)> FitRepresentationAsync(
         string workspaceName, ContextRepresentation peers, VisibilityPolicy policy, int limit, CancellationToken ct)
     {
+        if (limit <= 0)
+        {
+            return ("", 0);
+        }
+
         var query = peers.Query with { SearchQuery = EmbeddableText(peers.Query.SearchQuery) };
-        var whole = await BuildAsync(query.MaxConclusions).ConfigureAwait(false);
+        var ranked = await representations.RankAsync(workspaceName, peers.ObserverName, peers.ObservedName, policy, query, ct)
+            .ConfigureAwait(false);
+        var whole = Render(ranked.Count);
         if (whole.Tokens <= limit)
         {
             return whole;
@@ -114,11 +124,11 @@ public sealed partial class SessionContextService(
 
         (string Text, int Tokens) best = ("", 0);
         var fits = 0;
-        var fails = query.MaxConclusions;
+        var fails = ranked.Count;
         while (fails - fits > 1)
         {
             var size = fits + (fails - fits) / 2;
-            var candidate = await BuildAsync(size).ConfigureAwait(false);
+            var candidate = Render(size);
             if (candidate.Tokens <= limit)
             {
                 (fits, best) = (size, candidate);
@@ -131,10 +141,9 @@ public sealed partial class SessionContextService(
 
         return best;
 
-        async Task<(string Text, int Tokens)> BuildAsync(int maxConclusions)
+        (string Text, int Tokens) Render(int count)
         {
-            var text = await peerContext.GetRepresentationAsync(workspaceName, peers.ObserverName, peers.ObservedName, policy,
-                query with { MaxConclusions = maxConclusions }, ct).ConfigureAwait(false);
+            var text = ranked.Format(count);
             return (text, tokenCounter.Count(text));
         }
     }

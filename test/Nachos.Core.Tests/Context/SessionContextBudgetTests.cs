@@ -38,6 +38,25 @@ public sealed class SessionContextBudgetTests
         f.ShouldNotHaveTrippedTheGuard();
     }
 
+    /// <summary>The same cases, fewer of them, with the token counter Nachos registers instead of the word counter.</summary>
+    [Theory]
+    [InlineData(100)]
+    [InlineData(101)]
+    [InlineData(102)]
+    public async Task NeverExceedsBudget_RegisteredCounter(int seed)
+    {
+        using var f = new MemoryFixture();
+        f.TokenCounter.ShouldBeOfType<TiktokenTokenCounter>();
+        await f.Store.Workspaces.GetOrCreateAsync(W, null, null, default);
+        var random = new Random(seed);
+        for (var i = 0; i < CasesPerSeed; i++)
+        {
+            await RunCaseAsync(f, random, $"c{seed}x{i}");
+        }
+
+        f.ShouldNotHaveTrippedTheGuard();
+    }
+
     private static async Task RunCaseAsync(MemoryFixture f, Random random, string name)
     {
         var tokens = random.Next(4) switch
@@ -84,7 +103,7 @@ public sealed class SessionContextBudgetTests
 
         var context = await f.SessionContext.GetContextAsync(W, session, request, VisibilityPolicy.Unrestricted, default);
 
-        ContentTokens(context).ShouldBeLessThanOrEqualTo(tokens, $"case {name}, budget {tokens}");
+        ContentTokens(context, f.TokenCounter).ShouldBeLessThanOrEqualTo(tokens, $"case {name}, budget {tokens}");
         var eligible = messages.Where(m => m.Seq > (context.Summary?.CoversThroughSeq ?? 0)).ToArray();
         context.Messages.Select(m => m.Seq).ShouldBe(eligible.TakeLast(context.Messages.Count).Select(m => m.Seq),
             $"case {name}: the newest eligible messages, oldest first");
@@ -155,6 +174,42 @@ public sealed class SessionContextBudgetTests
 
         context.Representation.ShouldBe(await f.Representations.BuildAsync(W, "bob", "alice", VisibilityPolicy.Unrestricted,
             new RepresentationQuery(), default));
+    }
+
+    [Fact]
+    public async Task Trimming_RanksOnce_AndEmbedsTheSearchQueryAtMostOnce()
+    {
+        using var f = await new MemoryFixture(new WordCounter()).SeedAsync();
+        for (var i = 0; i < 10; i++)
+        {
+            await f.AddAsync(Words(5, $"fact{i}"));
+        }
+
+        var embeddings = new CountingEmbeddingGenerator(f.Embeddings);
+        var service = new SessionContextService(
+            f.Store, f.PeerContext, new RepresentationBuilder(f.Store, embeddings), new WordCounter());
+        var request = Request(40, representation: Peers(query: new RepresentationQuery(SearchQuery: "fact9")));
+
+        var context = await service.GetContextAsync(W, "S1", request, VisibilityPolicy.Unrestricted, default);
+
+        new WordCounter().Count(context.Representation!).ShouldBe(20);
+        embeddings.Calls.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task NoRoomForTheRepresentation_ReadsAndEmbedsNothing()
+    {
+        using var f = await new MemoryFixture(new WordCounter()).SeedAsync();
+        await f.AddAsync(Words(5, "fact"));
+        var embeddings = new CountingEmbeddingGenerator(f.Embeddings);
+        var service = new SessionContextService(
+            f.Store, f.PeerContext, new RepresentationBuilder(f.Store, embeddings), new WordCounter());
+
+        var context = await service.GetContextAsync(W, "S1",
+            Request(1, representation: Peers(query: new RepresentationQuery(SearchQuery: "fact"))), VisibilityPolicy.Unrestricted, default);
+
+        context.Representation.ShouldBe("");
+        embeddings.Calls.ShouldBe(0);
     }
 
     [Fact]
@@ -300,7 +355,7 @@ public sealed class SessionContextBudgetTests
         await AppendAsync(f, "S1", [Words(3, "older"), Words(3, "newer")]);
         var logs = new RecordingLogs();
         var drifting = new DriftingCounter();
-        var service = new SessionContextService(f.Store, f.PeerContext, drifting, new RecordingLogger<SessionContextService>(logs));
+        var service = new SessionContextService(f.Store, f.PeerContext, f.Representations, drifting, new RecordingLogger<SessionContextService>(logs));
 
         var context = await service.GetContextAsync(W, "S1", Request(7), VisibilityPolicy.Unrestricted, default);
 

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
@@ -87,12 +88,18 @@ internal static class ContextKit
         return messages;
     }
 
-    /// <summary>The content tokens of <paramref name="context"/> (D5), counted here independently of the service.</summary>
-    public static int ContentTokens(AssembledContext context) =>
-        Counter.Count(context.Representation ?? "")
-        + (context.PeerCard?.Sum(Counter.Count) ?? 0)
-        + Counter.Count(context.Summary?.Content ?? "")
-        + context.Messages.Sum(m => Counter.Count(m.Content));
+    /// <summary>
+    /// The content tokens of <paramref name="context"/> (D5) by <paramref name="counter"/> (words by default), counted
+    /// here independently of the service.
+    /// </summary>
+    public static int ContentTokens(AssembledContext context, ITokenCounter? counter = null)
+    {
+        counter ??= Counter;
+        return counter.Count(context.Representation ?? "")
+            + (context.PeerCard?.Sum(counter.Count) ?? 0)
+            + counter.Count(context.Summary?.Content ?? "")
+            + context.Messages.Sum(m => counter.Count(m.Content));
+    }
 
     /// <summary>The same count over the wire shape.</summary>
     public static int ContentTokens(SessionContext context) =>
@@ -100,6 +107,26 @@ internal static class ContextKit
         + (context.PeerCard?.Sum(Counter.Count) ?? 0)
         + Counter.Count(context.Summary?.Content ?? "")
         + context.Messages.Sum(m => Counter.Count(m.Content));
+
+    /// <summary>Counts the embedding calls made through it.</summary>
+    public sealed class CountingEmbeddingGenerator(IEmbeddingGenerator<string, Embedding<float>> inner)
+        : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public int Calls { get; private set; }
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return inner.GenerateAsync(values, options, cancellationToken);
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => inner.GetService(serviceType, serviceKey);
+
+        public void Dispose()
+        {
+        }
+    }
 
     public static void ShouldNotHaveTrippedTheGuard(this MemoryFixture f) => f.Logs.At(LogLevel.Error).ShouldBeEmpty();
 }

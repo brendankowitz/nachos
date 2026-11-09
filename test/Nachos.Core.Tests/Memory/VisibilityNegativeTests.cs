@@ -201,6 +201,7 @@ public sealed class VisibilityNegativeTests
         (await f.SessionContext.GetSummariesAsync(W, "S1", Nothing, default)).ShouldBeEmpty();
     }
 
+    /// <summary>An empty access allowlist (as a key could carry from M6) shows nothing, not even this session.</summary>
     [Fact]
     public async Task Context_EmptyAllowlist_FailsClosed()
     {
@@ -215,7 +216,7 @@ public sealed class VisibilityNegativeTests
     }
 
     [Fact]
-    public async Task Context_AllowlistWithoutThisSession_HidesItsMessagesAndSummary()
+    public async Task Context_AccessWithoutThisSession_HidesItsMessagesAndSummary()
     {
         using var f = await SessionContextSeededAsync();
 
@@ -225,6 +226,47 @@ public sealed class VisibilityNegativeTests
         context.Summary.ShouldBeNull();
         context.Representation.ShouldBe("## Explicit\n\n- alice likes tea in S2\n");
         context.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Context_RequestNarrowing_KeepsThisSessionsMessagesAndSummary()
+    {
+        using var f = await SessionContextSeededAsync();
+        var narrowed = EverythingInContext with { Representation = new("bob", "alice", Everything, ["S2"]) };
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", narrowed, VisibilityPolicy.Unrestricted, default);
+
+        context.Messages.Select(m => m.Content).ShouldBe(["after"]);
+        context.Summary.ShouldNotBeNull().Content.ShouldBe("long summary");
+        context.Representation.ShouldBe("## Explicit\n\n- alice likes tea in S2\n");
+        context.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Context_EmptyRequestNarrowing_HidesRepresentationAndCard_NotMessages()
+    {
+        using var f = await SessionContextSeededAsync();
+        var narrowed = EverythingInContext with { Representation = new("bob", "alice", Everything, []) };
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", narrowed, VisibilityPolicy.Unrestricted, default);
+
+        context.Representation.ShouldBe("");
+        context.PeerCard.ShouldBeNull();
+        context.Messages.Select(m => m.Content).ShouldBe(["after"]);
+    }
+
+    [Fact]
+    public async Task Context_RequestNarrowing_NeverWidensAccess()
+    {
+        using var f = await SessionContextSeededAsync();
+        var narrowed = EverythingInContext with { Representation = new("bob", "alice", Everything, ["S1", "S2"]) };
+
+        var context = await f.SessionContext.GetContextAsync(W, "S1", narrowed, OnlyS1, default);
+
+        context.Representation.ShouldBe("## Explicit\n\n- alice likes tea\n");
+        OnlyS1.Narrow(["S2"]).AllowsSession("S2").ShouldBeFalse();
+        OnlyS1.Narrow(null).ShouldBeSameAs(OnlyS1);
+        VisibilityPolicy.Unrestricted.Narrow(["S2"]).IncludesPeerCard.ShouldBeFalse();
     }
 
     [Fact]

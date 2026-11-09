@@ -16,12 +16,13 @@ internal static class NachosServiceFactory
 {
     public static NachosService Create(IMemoryStore store, ITokenCounter counter, RequestValidator validator, IKeyIssuer issuer)
     {
-        var peerContext = new PeerContextService(store, new RepresentationBuilder(store));
+        var representations = new RepresentationBuilder(store);
+        var peerContext = new PeerContextService(store, representations);
         return new(store, counter, validator, issuer,
             new ConclusionService(store, NullLogger<ConclusionService>.Instance),
             peerContext,
             new ConfigurationResolver(Options.Create(new NachosOptions()), counter),
             new HybridSearchService(store),
-            new SessionContextService(store, peerContext, counter));
+            new SessionContextService(store, peerContext, representations, counter));
     }
 }

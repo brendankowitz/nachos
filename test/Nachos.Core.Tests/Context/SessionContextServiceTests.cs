@@ -83,16 +83,32 @@ public sealed class SessionContextServiceTests
     }
 
     [Fact]
-    public async Task Sessions_AddToTheAllowlist()
+    public async Task Sessions_NarrowTheRepresentationAndCard_NotTheMessages()
+    {
+        using var f = await SeededAsync();
+        await f.Store.Sessions.GetOrCreateAsync(W, "S3", null, null, null, default);
+        await f.AddAsync("bob thinks alice likes S3 tea", session: "S3");
+
+        var context = await f.Service.GetSessionContextAsync(W, "S1",
+            new SessionContextQuery(PeerTarget: "alice", PeerPerspective: "bob", Sessions: ["S1", "S2"]));
+
+        context.PeerRepresentation.ShouldNotBeNull().ShouldContain("likes tea");
+        context.PeerRepresentation.ShouldContain("likes S2 tea");
+        context.PeerRepresentation.ShouldNotContain("S3");
+        context.PeerCard.ShouldBeNull();
+        context.Messages.Select(m => m.Content).ShouldBe(["hello", "there"]);
+    }
+
+    [Fact]
+    public async Task EmptySessions_IsNotProvided()
     {
         using var f = await SeededAsync();
 
         var context = await f.Service.GetSessionContextAsync(W, "S1",
-            new SessionContextQuery(PeerTarget: "alice", PeerPerspective: "bob", LimitToSession: true, Sessions: ["S2"]));
+            new SessionContextQuery(PeerTarget: "alice", PeerPerspective: "bob", Sessions: []));
 
-        context.PeerRepresentation.ShouldNotBeNull().ShouldContain("likes tea");
-        context.PeerRepresentation.ShouldContain("likes S2 tea");
-        context.PeerCard.ShouldBeNull();
+        context.PeerRepresentation.ShouldNotBeNull().ShouldContain("likes S2 tea");
+        context.PeerCard.ShouldBe(["IDENTITY: alice"]);
         context.Messages.Count.ShouldBe(2);
     }
 

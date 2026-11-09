@@ -67,6 +67,8 @@ internal sealed class MemoryFixture : IDisposable
 
     public SessionContextService SessionContext => Get<SessionContextService>();
 
+    public ITokenCounter TokenCounter => Get<ITokenCounter>();
+
     private static CancellationToken Ct => CancellationToken.None;
 
     public async Task<MemoryFixture> SeedAsync()

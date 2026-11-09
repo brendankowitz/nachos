@@ -33,6 +33,30 @@ public sealed class SessionContextValidationTests
         (await InvalidAsync(new SessionContextQuery(Scope: "s"))).Loc.ShouldBe(["query", "scope"]);
 
     [Fact]
+    public async Task SessionsWithLimitToSession_422() =>
+        (await InvalidAsync(new SessionContextQuery(PeerTarget: "alice", Sessions: ["S1"], LimitToSession: true)))
+            .ShouldSatisfyAllConditions(e => e.Loc.ShouldBe(["query", "sessions"]), e => e.Type.ShouldBe("value_error"));
+
+    [Fact]
+    public async Task SessionsWithScope_422() =>
+        (await InvalidAsync(new SessionContextQuery(PeerTarget: "alice", Scope: "s", Sessions: ["S1"])))
+            .ShouldSatisfyAllConditions(e => e.Loc.ShouldBe(["query", "sessions"]), e => e.Type.ShouldBe("value_error"));
+
+    [Fact]
+    public async Task SessionsWithoutThisSession_422() =>
+        (await InvalidAsync(new SessionContextQuery(PeerTarget: "alice", Sessions: ["S2"])))
+            .ShouldSatisfyAllConditions(e => e.Loc.ShouldBe(["query", "sessions"]), e => e.Type.ShouldBe("value_error"));
+
+    [Fact]
+    public async Task EmptySessions_WithLimitToSession_Accepted()
+    {
+        using var f = await new MemoryFixture().SeedAsync();
+
+        (await f.Service.GetSessionContextAsync(W, "S1", new SessionContextQuery(Sessions: [], LimitToSession: true))).Id
+            .ShouldBe("S1");
+    }
+
+    [Fact]
     public async Task Scope_422NotSupported()
     {
         using var f = await new MemoryFixture().SeedAsync();
