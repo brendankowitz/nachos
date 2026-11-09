@@ -138,7 +138,7 @@ These are the high-risk behaviors. Each is pinned by a named test in its owning 
   - `Stores/IMemoryStore.cs` (`Summaries`, `Search`, `Deletion`);
   - `Domain/PendingEmbedding.cs` (a `Kind`: conclusion or message chunk).
 - Create in `src/DataLayer/Nachos.DataLayer.InMemory/Stores/`: the in-memory implementations.
-- Extend `test/Nachos.Testing/StoreContractTests.cs`. Add `SearchContractTests.cs` and `DeletionContractTests.cs`.
+- Add the abstract suites `M3StoreContractTests`, `SearchContractTests`, `DeletionContractTests` and `DeletionPurgeContractTests` (on `M3ContractTestBase`) in `test/Nachos.Testing/`. They are separate from `StoreContractTests` because xunit 2.9.3 cannot skip at runtime; the SQL provider derives from them in Tasks 3, 7 and 8.
 
 **Depends on:** none.
 
