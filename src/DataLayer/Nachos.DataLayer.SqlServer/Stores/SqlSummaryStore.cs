@@ -85,9 +85,7 @@ internal sealed class SqlSummaryStore(SqlStoreRuntime runtime) : ISummaryStore
         await SqlWorkQueue.RequireHeldAsync(db, lease, ct);
         if (!await WriteAdmission.AdmitWorkerAsync(db, workspaceName, [sessionName], [], ct))
         {
-            await SqlWorkQueue.CompleteItemsAsync(db, lease, now, SqlWorkQueue.ResourceDeleted, ct);
-            await SqlWorkQueue.FreeLeaseAsync(db, lease, ct);
-            await transaction.CommitAsync(ct);
+            await SqlWorkQueue.DiscardAsResourceDeletedAsync(db, transaction, lease, now, ct);
             return;
         }
 

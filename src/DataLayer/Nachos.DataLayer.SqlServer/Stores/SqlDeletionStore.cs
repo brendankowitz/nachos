@@ -105,6 +105,12 @@ internal sealed class SqlDeletionStore(SqlStoreRuntime runtime) : IDeletionStore
         return new DeletionAcceptance(jobId, AlreadyDeleting: false);
     }
 
+    /// <remarks>
+    /// For M3 Task 8: this step, and any other that touches lease rows, must take every lease row before any workspace or
+    /// session lock, and <see cref="RemoveAsync"/> must take its own unit's lease first and only then X on the parent row.
+    /// Otherwise a cycle forms: a worker commit holds its lease (U) and waits for the workspace's S, which is queued
+    /// behind an acceptance's X; the acceptance waits on this handler; and the handler waits for the worker's lease.
+    /// </remarks>
     public Task CancelOtherWorkAsync(WorkLease lease, DeletionTarget target, CancellationToken ct) =>
         throw new NotSupportedException(NotYet);
 
@@ -181,12 +187,20 @@ internal sealed class SqlDeletionStore(SqlStoreRuntime runtime) : IDeletionStore
     private sealed record LifecycleRow(long Id, byte LifecycleState, long? DeletionJobId)
     {
         /// <summary>The existing job when the target is already being deleted; null otherwise.</summary>
-        public DeletionAcceptance? AlreadyAccepted() =>
-            LifecycleState == WriteAdmission.Deleting
-                ? new DeletionAcceptance(
-                    DeletionJobId ?? throw new InvalidOperationException($"Row {Id} is being deleted but records no deletion job."),
-                    AlreadyDeleting: true)
-                : null;
+        public DeletionAcceptance? AlreadyAccepted()
+        {
+            if (LifecycleState != WriteAdmission.Deleting)
+            {
+                return null;
+            }
+
+            if (DeletionJobId is not { } jobId)
+            {
+                throw new InvalidOperationException($"Row {Id} is being deleted but records no deletion job.");
+            }
+
+            return new DeletionAcceptance(jobId, AlreadyDeleting: true);
+        }
     }
 
     private sealed record JobRow(

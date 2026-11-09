@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
@@ -8,6 +9,7 @@ using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
 using Nachos.DataLayer.SqlServer.Schema;
+using Nachos.DataLayer.SqlServer.Storage;
 using Nachos.Testing;
 using Shouldly;
 
@@ -45,6 +47,89 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
     {
         typeof(SqlServerOptions).GetProperty(nameof(SqlServerOptions.BeforeLifecycleTransition), BindingFlags.Public | BindingFlags.Instance)
             .ShouldBeNull();
+    }
+
+    /// <summary>Under autocommit the barrier's S locks would end with their statements, so it refuses to run without a transaction.</summary>
+    [Fact]
+    public async Task Admission_WithoutTransaction_Throws()
+    {
+        var store = Database.CreateStore(new FakeTimeProvider(Start));
+        var (workspace, session) = await NewSessionAsync(store);
+        await using var db = new NachosDbContext(new DbContextOptionsBuilder<NachosDbContext>().UseSqlServer(Database.ConnectionString).Options);
+        const string Message = "The deletion write barrier must run inside the write's transaction.";
+
+        (await Should.ThrowAsync<InvalidOperationException>(() => WriteAdmission.AdmitWorkspaceAsync(db, workspace, Ct))).Message.ShouldBe(Message);
+        (await Should.ThrowAsync<InvalidOperationException>(() => WriteAdmission.AdmitSessionForMembershipAsync(db, workspace, session, Ct)))
+            .Message.ShouldBe(Message);
+        (await Should.ThrowAsync<InvalidOperationException>(() => WriteAdmission.AdmitWorkerAsync(db, workspace, [session], [], Ct)))
+            .Message.ShouldBe(Message);
+        (await Should.ThrowAsync<InvalidOperationException>(() => WriteAdmission.LockParentsAsync(db, [(workspace, session)], Ct)))
+            .Message.ShouldBe(Message);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(Ct);
+        (await WriteAdmission.AdmitSessionAsync(db, workspace, session, Ct)).SessionId.ShouldBeGreaterThan(0);
+    }
+
+    /// <summary>
+    /// Membership writers use the session row's update lock as their barrier: one past it holds acceptance off until it
+    /// commits. The writer is paused on an uncommitted peer of the name it adds.
+    /// </summary>
+    [Fact]
+    public async Task Membership_BeforeAcceptance_HoldsItOff()
+    {
+        var store = Database.CreateStore(new FakeTimeProvider(Start));
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Sessions.AddPeersAsync(workspace, session, Members("alice"), Ct);
+
+        await using var blocker = await OpenAsync();
+        await using var blocking = (SqlTransaction)await blocker.BeginTransactionAsync();
+        await ExecuteAsync(
+            blocker,
+            blocking,
+            "INSERT dbo.Peers (WorkspaceId, Name, IsInternal, Metadata, Configuration, CreatedAt) SELECT Id, N'carol', 0, N'{}', N'{}', SYSDATETIMEOFFSET() FROM dbo.Workspaces WHERE Name = @workspace",
+            ("@workspace", workspace));
+        var adding = store.Sessions.AddPeersAsync(workspace, session, Members("carol"), Ct);
+        await WaitForLockWaitersAsync(1);
+        var acceptance = store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        await WaitForLockWaitersAsync(2);
+        await blocking.RollbackAsync();
+
+        await adding;
+        (await acceptance).AlreadyDeleting.ShouldBeFalse();
+        (await store.Sessions.ListPeersAsync(workspace, session, new PageRequest(), Ct)).Items.Select(peer => peer.Name)
+            .ShouldBe(["alice", "carol"], ignoreOrder: true);
+        (await store.Sessions.GetAsync(workspace, session, Ct)).ShouldNotBeNull().State.ShouldBe(LifecycleState.Deleting);
+    }
+
+    /// <summary>
+    /// A session update is one statement that takes the row's exclusive lock itself, so it has no point to pause between
+    /// its check and its write. Instead an uncommitted update lock on the row queues the update ahead of the acceptance:
+    /// the update lands, and the acceptance, granted next, marks the session.
+    /// </summary>
+    [Fact]
+    public async Task SessionUpdate_BeforeAcceptance_HoldsItOff()
+    {
+        var store = Database.CreateStore(new FakeTimeProvider(Start));
+        var (workspace, session) = await NewSessionAsync(store);
+
+        await using var blocker = await OpenAsync();
+        await using var blocking = (SqlTransaction)await blocker.BeginTransactionAsync();
+        await ExecuteAsync(
+            blocker,
+            blocking,
+            "SELECT Id FROM dbo.Sessions WITH (UPDLOCK, ROWLOCK) WHERE Name = @session",
+            ("@session", session));
+        var update = store.Sessions.UpdateAsync(workspace, session, new JsonObject { ["first"] = true }, null, Ct);
+        await WaitForLockWaitersAsync(1);
+        var acceptance = store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        await WaitForLockWaitersAsync(2);
+        await blocking.RollbackAsync();
+
+        (await update).Metadata["first"]!.GetValue<bool>().ShouldBeTrue();
+        (await acceptance).AlreadyDeleting.ShouldBeFalse();
+        var stored = (await store.Sessions.GetAsync(workspace, session, Ct)).ShouldNotBeNull();
+        stored.State.ShouldBe(LifecycleState.Deleting);
+        stored.Metadata["first"]!.GetValue<bool>().ShouldBeTrue();
     }
 
     [Theory]

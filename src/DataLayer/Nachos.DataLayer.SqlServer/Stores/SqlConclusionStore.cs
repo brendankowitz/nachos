@@ -289,9 +289,7 @@ internal sealed class SqlConclusionStore(SqlStoreRuntime runtime) : IConclusionS
                 inserts.Select(c => c.Source.SessionName).OfType<string>(),
                 ct))
         {
-            await SqlWorkQueue.CompleteItemsAsync(db, lease, now, SqlWorkQueue.ResourceDeleted, ct);
-            await SqlWorkQueue.FreeLeaseAsync(db, lease, ct);
-            await transaction.CommitAsync(ct);
+            await SqlWorkQueue.DiscardAsResourceDeletedAsync(db, transaction, lease, now, ct);
             return;
         }
 
