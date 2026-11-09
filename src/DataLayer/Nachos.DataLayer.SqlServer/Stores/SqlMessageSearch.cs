@@ -23,10 +23,11 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// </para>
 /// <para>
 /// <b>Lexical</b> search uses <c>CONTAINSTABLE</c> while <see cref="FullTextIndexState.IsReady"/> and
-/// <see cref="FullTextCondition.For"/> gives a condition (every term a plain word), matching words and word prefixes, ranked
-/// by full-text <c>RANK</c>. Otherwise it is the contract's own definition: every term is a substring, compared
-/// <c>UPPER</c>-folded under a binary collation (as <c>icontains</c> is), ranked by the terms' non-overlapping occurrences;
-/// so a term inside a word, or in unspaced (for example CJK) text, matches only on this fallback.
+/// <see cref="FullTextCondition.For"/> gives a condition (every term a plain word): any term as a word or word prefix finds
+/// a candidate, and one <c>CONTAINS</c> per term counts the terms it matched. Otherwise it is the contract's own
+/// definition: a term matches as a substring, compared <c>UPPER</c>-folded under a binary collation (as <c>icontains</c>
+/// is), so a term inside a word, or in unspaced (for example CJK) text, matches only on this fallback. Both rank by the
+/// number of terms matched, never by full-text <c>RANK</c>, so they order alike and as the in-memory provider does.
 /// </para>
 /// <para>Ties go to the newest message: <c>CreatedAt</c>, then <c>Seq</c>, descending, then public id.</para>
 /// </remarks>
@@ -93,18 +94,30 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                 $"A search term must be a non-empty word of at most {IMessageSearch.MaxTermLength} characters.", nameof(terms));
         }
 
-        var fullText = fullTextIndex.IsReady ? FullTextCondition.For(terms) : null;
+        // Terms equal but for case are one term, so each counts once towards the coverage.
+        string[] distinct = [.. terms.Distinct(StringComparer.OrdinalIgnoreCase)];
+        var fullText = fullTextIndex.IsReady ? FullTextCondition.For(distinct) : null;
         return await SearchAsync(
             request,
             take,
-            candidates => terms.Count == 0 ? null
-                : fullText is not null ? FullTextQuery(candidates, fullText)
-                : LikeQuery(candidates, terms),
+            candidates => distinct.Length == 0 ? null
+                : fullText is not null ? FullTextQuery(candidates, fullText, distinct)
+                : LikeQuery(candidates, distinct),
             ct);
     }
 
-    private static (string Sql, SqlParameter[] Parameters) FullTextQuery(string candidates, string condition) =>
-        (
+    private static (string Sql, SqlParameter[] Parameters) FullTextQuery(string candidates, string condition, string[] terms)
+    {
+        // Sized, never nvarchar(max), which CONTAINSTABLE and CONTAINS refuse; FullTextCondition keeps each within it.
+        var parameters = new List<SqlParameter>(terms.Length + 1) { FullTextParameter("@condition", condition) };
+        var matched = new List<string>(terms.Length);
+        for (var i = 0; i < terms.Length; i++)
+        {
+            matched.Add($"CASE WHEN CONTAINS(m.Content, @term{i}) THEN 1 ELSE 0 END");
+            parameters.Add(FullTextParameter($"@term{i}", FullTextCondition.Term(terms[i])));
+        }
+
+        return (
             Lines(
                 SelectHits,
                 """
@@ -113,22 +126,21 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                 """,
                 HitsFrom,
                 "WHERE " + candidates,
-                "ORDER BY ft.[RANK] DESC, " + NewestFirst),
-            // Sized, never nvarchar(max), which CONTAINSTABLE refuses; FullTextCondition keeps the condition within it.
-            [new SqlParameter("@condition", SqlDbType.NVarChar, FullTextCondition.MaxLength) { Value = condition }]
-        );
+                $"ORDER BY {string.Join(" + ", matched)} DESC, {NewestFirst}"),
+            [.. parameters]);
+    }
 
-    private static (string Sql, SqlParameter[] Parameters) LikeQuery(string candidates, IReadOnlyList<string> terms)
+    private static SqlParameter FullTextParameter(string name, string condition) =>
+        new(name, SqlDbType.NVarChar, FullTextCondition.MaxLength) { Value = condition };
+
+    private static (string Sql, SqlParameter[] Parameters) LikeQuery(string candidates, string[] terms)
     {
-        var matches = new List<string>(terms.Count);
-        var hits = new List<string>(terms.Count);
-        var parameters = new List<SqlParameter>(terms.Count * 2);
-        for (var i = 0; i < terms.Count; i++)
+        var matched = new List<string>(terms.Length);
+        var parameters = new List<SqlParameter>(terms.Length);
+        for (var i = 0; i < terms.Length; i++)
         {
-            matches.Add($"{Folded} LIKE UPPER(@pattern{i} COLLATE {Bin2}) ESCAPE N'{LikePattern.Escape}'");
-            hits.Add($"(DATALENGTH({Folded}) - DATALENGTH(REPLACE({Folded}, UPPER(@term{i} COLLATE {Bin2}), N''))) / DATALENGTH(@term{i})");
+            matched.Add($"CASE WHEN {Folded} LIKE UPPER(@pattern{i} COLLATE {Bin2}) ESCAPE N'{LikePattern.Escape}' THEN 1 ELSE 0 END");
             parameters.Add(SqlParameters.Text($"@pattern{i}", LikePattern.For(terms[i])));
-            parameters.Add(SqlParameters.Text($"@term{i}", terms[i]));
         }
 
         return (
@@ -136,10 +148,10 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                 SelectHits,
                 "FROM dbo.Messages AS m",
                 HitsFrom,
-                "CROSS APPLY (SELECT " + string.Join(" + ", hits.Select(hit => $"CAST({hit} AS bigint)")) + " AS Hits) AS h",
+                "CROSS APPLY (SELECT " + string.Join(" + ", matched) + " AS Matched) AS c",
                 "WHERE " + candidates,
-                "AND " + string.Join(" AND ", matches),
-                "ORDER BY h.Hits DESC, " + NewestFirst),
+                "AND c.Matched > 0",
+                "ORDER BY c.Matched DESC, " + NewestFirst),
             [.. parameters]);
     }
 

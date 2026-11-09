@@ -62,14 +62,19 @@ public abstract class SqlMessageSearchTests
         corpus.IsFullTextReady.ShouldBe(HasFullText);
         var request = new MessageSearchRequest(Workspace, new MessageSearchScope.Workspace(), null);
 
-        // Terms that occur only at the start of words: both modes find the same messages.
-        foreach (var terms in new[] { ["apple"], ["lemon", "lime"], ["LIME"], ["orange", "lemon"], ["kiwi"], ["melon"], new[] { "lemon" } })
+        // Terms that occur only at the start of words: both modes match the same terms in the same messages, so both rank
+        // exactly as the reference does (by terms matched, then newest).
+        foreach (var terms in new[]
+        {
+            ["apple"], ["lemon", "lime"], ["LIME"], ["orange", "lemon"], ["kiwi"], ["melon"], ["lemon"], ["orange", "lime", "kiwi"],
+            new[] { "what", "about", "kiwi", "apple" },
+        })
         {
             var expected = Describe(await corpus.Reference.Search.LexicalAsync(request, terms, 100, Ct));
 
-            // The fallback ranks exactly as the reference does; full-text ranks by RANK, so only its set must agree.
             Describe(await corpus.Like.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
-            Unranked(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(Unranked(expected), ignoreOrder: true);
+            Describe(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
+            Describe(await corpus.Ready.Search.LexicalAsync(request, terms, 2, Ct)).ShouldBe(expected.Take(2));
         }
 
         // A prefix finds the longer word in both modes.
@@ -135,16 +140,14 @@ public abstract class SqlMessageSearchTests
         Describe(await corpus.Like.Search.LexicalAsync(request, terms, 100, Ct)).ShouldBe(expected);
 
         // Full-text search matches words and word prefixes, so it can find fewer messages, never others. The index has no
-        // stoplist, so a query of stopwords finds what the substring search finds.
+        // stoplist, so stopwords still find the messages where they begin a word ("and" inside "stand" is the substring
+        // search's alone).
         var ready = Unranked(await corpus.Ready.Search.LexicalAsync(request, terms, 100, Ct));
-        if (terms.SequenceEqual(["the", "and"]))
+        ready.ShouldBeSubsetOf(Unranked(expected));
+        if (terms.SequenceEqual(["the", "and"]) && HasFullText)
         {
-            expected.ShouldNotBeEmpty();
-            ready.ShouldBe(Unranked(expected), ignoreOrder: true);
-        }
-        else
-        {
-            ready.ShouldBeSubsetOf(Unranked(expected));
+            ready.Select(hit => hit.Split('|')[0]).ShouldBe(
+                ["lime then lemon", "the cat and the hat", "near and far", "the apple is red", "Lemon and LIME"], ignoreOrder: true);
         }
     }
 
@@ -180,7 +183,7 @@ public abstract class SqlMessageSearchTests
             var request = new MessageSearchRequest(Workspace, new MessageSearchScope.PeerPerspective(peer), null);
             var lexical = Describe(await corpus.Reference.Search.LexicalAsync(request, ["zebra"], 100, Ct));
             Describe(await corpus.Like.Search.LexicalAsync(request, ["zebra"], 100, Ct)).ShouldBe(lexical);
-            Unranked(await corpus.Ready.Search.LexicalAsync(request, ["zebra"], 100, Ct)).ShouldBe(Unranked(lexical), ignoreOrder: true);
+            Describe(await corpus.Ready.Search.LexicalAsync(request, ["zebra"], 100, Ct)).ShouldBe(lexical);
 
             var vector = Describe(await corpus.Reference.Search.VectorAsync(request, Vector(0), 100, Ct));
             Describe(await corpus.Ready.Search.VectorAsync(request, Vector(0), 100, Ct)).ShouldBe(vector);
@@ -197,7 +200,7 @@ public abstract class SqlMessageSearchTests
 
     private static string Content(string described) => described.Split('|')[1];
 
-    /// <summary>The hits without their ranks, for comparing full-text results, which rank by <c>RANK</c>, as a set.</summary>
+    /// <summary>The hits without their ranks, for comparing a full-text result with a substring result as sets.</summary>
     private static List<string> Unranked(IReadOnlyList<MessageHit> hits) => Unranked(Describe(hits));
 
     private static List<string> Unranked(List<string> described) => [.. described.Select(hit => hit[(hit.IndexOf('|', StringComparison.Ordinal) + 1)..])];

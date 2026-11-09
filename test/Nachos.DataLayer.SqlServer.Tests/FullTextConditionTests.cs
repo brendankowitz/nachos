@@ -24,11 +24,12 @@ public sealed class FullTextConditionTests
     }
 
     [Fact]
-    public void PlainWords_BecomeQuotedPrefixTermsJoinedByAnd()
+    public void PlainWords_BecomeQuotedPrefixTermsJoinedByOr()
     {
         // Operator words are only words inside quotes.
         FullTextCondition.For(["lemon", "NEAR", "AND", "東京", "café", "42"])
-            .ShouldBe("\"lemon*\" AND \"NEAR*\" AND \"AND*\" AND \"東京*\" AND \"café*\" AND \"42*\"");
+            .ShouldBe("\"lemon*\" OR \"NEAR*\" OR \"AND*\" OR \"東京*\" OR \"café*\" OR \"42*\"");
+        FullTextCondition.Term("NEAR").ShouldBe("\"NEAR*\"");
         FullTextCondition.For([]).ShouldBeNull();
     }
 

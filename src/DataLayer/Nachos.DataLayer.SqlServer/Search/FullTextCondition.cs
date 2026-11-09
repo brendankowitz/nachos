@@ -12,9 +12,9 @@ internal static class FullTextCondition
     public const int MaxLength = 4000;
 
     /// <summary>
-    /// The condition <c>"t1*" AND "t2*" …</c>: every term as a word prefix, quoted with its <c>"</c> doubled. Null when a
-    /// term is not a plain word, or the condition would be longer than <see cref="MaxLength"/>; the search then uses
-    /// <c>LIKE</c>.
+    /// The condition <c>"t1*" OR "t2*" …</c> that finds the candidates: each term as a word prefix (<see cref="Term"/>).
+    /// Null when a term is not a plain word, or the condition would be longer than <see cref="MaxLength"/>; the search then
+    /// uses <c>LIKE</c>.
     /// </summary>
     /// <remarks>
     /// A quoted term is never parsed as an operator (<c>NEAR</c>, <c>AND</c>, <c>(</c>, <c>~</c> are just words there), but
@@ -29,9 +29,15 @@ internal static class FullTextCondition
             return null;
         }
 
-        var condition = string.Join(" AND ", terms.Select(term => string.Concat("\"", term.Replace("\"", "\"\"", StringComparison.Ordinal), "*\"")));
+        var condition = string.Join(" OR ", terms.Select(Term));
         return condition.Length <= MaxLength ? condition : null;
     }
+
+    /// <summary>
+    /// The condition that one term of a non-null <see cref="For"/> condition matches: the term as a word prefix, quoted with
+    /// its <c>"</c> doubled. Used to count which terms a candidate matched.
+    /// </summary>
+    public static string Term(string term) => string.Concat("\"", term.Replace("\"", "\"\"", StringComparison.Ordinal), "*\"");
 
     private static bool IsPlainWord(string term) => term.Length > 0 && term.All(IsWordCharacter);
 
