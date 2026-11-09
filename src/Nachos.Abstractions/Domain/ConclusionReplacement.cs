@@ -8,6 +8,6 @@ namespace Nachos.Abstractions.Domain;
 /// <param name="Embedding">
 /// The new content's embedding; null makes the conclusion pending again. The conclusion's
 /// <see cref="ConclusionRecord.InternalMetadata"/>, including its <see cref="VectorSpace.ModelMetadataKey"/>, is kept
-/// unchanged; a database uses one embedding model (switching models needs a new database), so it still names the model.
+/// unchanged; a database uses one embedding model (<see cref="EmbeddingSpace"/>), so it still names the model.
 /// </param>
 public sealed record ConclusionReplacement(string ConclusionId, string Content, ReadOnlyMemory<float>? Embedding);

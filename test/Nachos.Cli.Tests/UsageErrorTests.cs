@@ -12,6 +12,9 @@ public sealed class UsageErrorTests
         UsageErrors.Messages.ShouldBe(
         [
             "--allow-data-loss is only valid together with --approve-reviewed.",
+            "--batch-size must be at least 1.",
+            "--model must be 1-128 characters, without leading or trailing whitespace.",
+            "The model must be one of: bge-small-en-v1.5, all-minilm-l6-v2.",
             "--object-id must not be empty.",
             "--object-id must not start or end with whitespace.",
             "--object-id must be at most 64 characters.",

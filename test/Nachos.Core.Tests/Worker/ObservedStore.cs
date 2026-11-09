@@ -173,6 +173,15 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
         inner.Embeddings.ListUnchunkedMessagesAsync(limit, ct);
 
     public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) => inner.Embeddings.AddChunksAsync(chunks, ct);
+
+    public Task<EmbeddingSpace?> GetSpaceAsync(CancellationToken ct) => inner.Embeddings.GetSpaceAsync(ct);
+
+    public Task<IReadOnlyList<string?>> ListVectorModelsAsync(CancellationToken ct) => inner.Embeddings.ListVectorModelsAsync(ct);
+
+    public Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct) => inner.Embeddings.StampSpaceAsync(space, ct);
+
+    public Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct) =>
+        inner.Embeddings.ResetSpaceAsync(space, batchSize, ct);
 }
 
 /// <summary>A store failure that <see cref="ObservedStore.IsTransientFailure"/> reports as transient.</summary>

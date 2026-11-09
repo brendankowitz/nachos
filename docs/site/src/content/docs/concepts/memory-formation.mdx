@@ -74,10 +74,16 @@ the host refuses to start.
 Real memory needs a model. Set `AzureOpenAI:Endpoint` (and the two deployment names) to use
 your own Azure OpenAI resource; see [Run the worker](/nachos/guides/run-the-worker/). The
 embedding deployment must produce 1536 dimensions, because the database stores
-`VECTOR(1536)`; a host with another size fails at startup. Vectors from different models
-are not comparable, so moving a database from the fake AI to a real model (or between
-embedding models) means starting a new database; each conclusion's internal metadata names
-the model that embedded it (`embedding_model`).
+`VECTOR(1536)`; a host with another size fails at startup. For embeddings without a paid
+service, a small model can run in-process instead; see
+[Run Nachos with local embeddings](/nachos/guides/local-embeddings/).
+
+Vectors from different models are not comparable, so a database holds one embedding model's
+vectors and records which (its embedding stamp). Every host checks its configured model
+against the stamp at startup and refuses to start on a mismatch. Moving a database to another
+model (for example from the fake AI to a real one) takes `nachos embeddings reset --model <id>`,
+which sends every vector back to the worker to be embedded again. Each conclusion's internal
+metadata also names the model that embedded it (`embedding_model`).
 
 A semantic read (`conclusions/query`, or a representation or context with `search_query`)
 answers `503` when the host has no embedding generator or the embedding service is

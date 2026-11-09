@@ -12,7 +12,7 @@ namespace Nachos.Core.Llm;
 public sealed class DeterministicEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
 {
     /// <summary>The model id this generator reports, and so the <c>embedding_model</c> of the conclusions it embeds.</summary>
-    public const string ModelId = "fake";
+    public const string ModelId = "fake-hash-v1";
 
     private const int FloatsPerHash = SHA256.HashSizeInBytes / sizeof(uint);
 

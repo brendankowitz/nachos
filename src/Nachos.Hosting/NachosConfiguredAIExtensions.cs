@@ -13,6 +13,8 @@ public static class NachosConfiguredAIExtensions
     /// (<see cref="NachosAzureOpenAIExtensions.UseAzureOpenAI"/>, <c>DefaultAzureCredential</c>, never a key) is used only when
     /// <c>AzureOpenAI:Endpoint</c> is set and <c>Nachos:Ai:Mode</c> is not <c>Fake</c>; otherwise the offline fake AI is used
     /// (<see cref="NachosDeriverBuilderExtensions.UseFakeAI"/>), which is not a memory-quality mode.
+    /// <c>Nachos:Ai:Embeddings=Local</c> then replaces either one's embeddings with the in-process model
+    /// (<see cref="NachosLocalEmbeddingsBuilderExtensions.UseLocalEmbeddings"/>); chat stays as chosen.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -30,10 +32,17 @@ public static class NachosConfiguredAIExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configuration);
+        var localEmbeddings = configuration["Nachos:Ai:Embeddings"] switch
+        {
+            null or "" => false,
+            var value when string.Equals(value, "Local", StringComparison.OrdinalIgnoreCase) => true,
+            _ => throw new InvalidOperationException("Nachos:Ai:Embeddings must be 'Local' or unset."),
+        };
         var forcedFake = string.Equals(configuration["Nachos:Ai:Mode"], "Fake", StringComparison.OrdinalIgnoreCase);
         if (!forcedFake && !string.IsNullOrWhiteSpace(configuration["AzureOpenAI:Endpoint"]))
         {
-            return builder.UseAzureOpenAI(new DefaultAzureCredential(), _ => { });
+            builder.UseAzureOpenAI(new DefaultAzureCredential(), _ => { });
+            return localEmbeddings ? builder.UseLocalEmbeddings() : builder;
         }
 
         builder.Services.Configure<NachosOptions>(options =>
@@ -45,6 +54,7 @@ public static class NachosConfiguredAIExtensions
         // Registered before UseFakeAI's own hosted services, so a refused fallback fails the host before anything embeds.
         builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, FakeAiStartupCheck>(
             provider => ActivatorUtilities.CreateInstance<FakeAiStartupCheck>(provider, selection)));
-        return builder.UseFakeAI();
+        builder.UseFakeAI();
+        return localEmbeddings ? builder.UseLocalEmbeddings() : builder;
     }
 }

@@ -58,4 +58,29 @@ public interface IEmbeddingStore
     /// A chunk index is negative or greater than <see cref="MessageChunk.MaxChunkIndex"/>.
     /// </exception>
     Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct);
+
+    /// <summary>The database's embedding model stamp, or null when it has none yet.</summary>
+    Task<EmbeddingSpace?> GetSpaceAsync(CancellationToken ct);
+
+    /// <summary>
+    /// The distinct models recorded for the vectors stored now, conclusions and chunks, for deciding whether an unstamped
+    /// database may be stamped. Null stands for vectors that record no model: every message chunk vector, and any
+    /// conclusion vector without <see cref="VectorSpace.ModelMetadataKey"/>. Empty when no vector is stored.
+    /// </summary>
+    Task<IReadOnlyList<string?>> ListVectorModelsAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Stamps the database with <paramref name="space"/> unless it already has a stamp, and returns the stamp in force
+    /// afterwards: <paramref name="space"/>, or the one another caller stored first.
+    /// </summary>
+    Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct);
+
+    /// <summary>
+    /// Switches the database to <paramref name="space"/>: clears every conclusion and chunk vector back to pending (failed
+    /// ones too, and tombstoned conclusions' vectors), at most <paramref name="batchSize"/> rows per statement, then
+    /// replaces the stamp. The reconciler re-embeds the pending rows; until then they are missing from vector reads.
+    /// Repeating it after a failure part-way is safe.
+    /// </summary>
+    /// <returns>How many conclusion and chunk rows were reset.</returns>
+    Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct);
 }

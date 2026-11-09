@@ -35,7 +35,8 @@ public static class NachosLlmBuilderExtensions
 
     /// <summary>
     /// Registers the embedding generator, wrapped with OpenTelemetry (source <see cref="NachosChatClients.TelemetrySourceName"/>),
-    /// and a startup check that it produces <see cref="VectorSpace.Dimensions"/> dimensions. <paramref name="createChunking"/>
+    /// and a startup check (<see cref="EmbeddingSpaceCheck"/>) that it produces <see cref="VectorSpace.Dimensions"/> dimensions
+    /// and that its model is the one the database is stamped with. <paramref name="createChunking"/>
     /// supplies the model's tokenizer and input limit, which size the chunks of every message (<see cref="MessageChunker"/>).
     /// <see cref="EmbeddingOptions.RequestDimensions"/> is applied to every request when set.
     /// </summary>
@@ -66,7 +67,7 @@ public static class NachosLlmBuilderExtensions
 
             return pipeline.UseOpenTelemetry(sourceName: NachosChatClients.TelemetrySourceName).Build(provider);
         }));
-        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, EmbeddingDimensionCheck>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, EmbeddingSpaceCheck>());
         return builder;
     }
 }

@@ -172,7 +172,7 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
         services.AddSingleton<ILoggerProvider>(_warnings);
         services.RemoveAll<IEmbeddingGenerator<string, Embedding<float>>>();
         services.RemoveAll<IWorkHandler>();
-        foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingDimensionCheck)).ToList())
+        foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingSpaceCheck)).ToList())
         {
             services.Remove(probe);
         }

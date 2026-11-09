@@ -7,7 +7,7 @@ using static Nachos.DataLayer.SqlServer.Tests.SchemaTestSql;
 namespace Nachos.DataLayer.SqlServer.Tests;
 
 /// <summary>
-/// The M3 recall tables (MessageEmbeddings, SessionSummaries) deploy additively at schema version 1 on the Full-Text Search image,
+/// The M3 recall tables (MessageEmbeddings, SessionSummaries, EmbeddingSpace) deploy additively at schema version 1 on the Full-Text Search image,
 /// and a database stamped current without them is refused with the fix command.
 /// </summary>
 [Collection(SqlServerDockerGroup.Name)]
@@ -89,6 +89,7 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
             """
             DROP TABLE [dbo].[SessionSummaries];
             DROP TABLE [dbo].[MessageEmbeddings];
+            DROP TABLE [dbo].[EmbeddingSpace];
             DROP INDEX [UX_Messages_Workspace_Session_Id] ON [dbo].[Messages];
             """);
         var deployer = Deployer(connectionString);
@@ -225,6 +226,17 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
             WHERE m.[Seq] = 1
             """,
             "FK_SessionSummaries_Messages");
+    }
+
+    [Fact]
+    public async Task EmbeddingSpace_HoldsOneRow()
+    {
+        var connectionString = await DeployedDatabaseAsync();
+        const string Insert = "INSERT [dbo].[EmbeddingSpace] ([Id], [Model], [Dimensions], [StampedAt]) VALUES ({0}, N'bge-small-en-v1.5', 384, SYSDATETIMEOFFSET())";
+
+        await ExecuteAsync(connectionString, string.Format(System.Globalization.CultureInfo.InvariantCulture, Insert, 1));
+        await RejectsAsync(connectionString, string.Format(System.Globalization.CultureInfo.InvariantCulture, Insert, 1), "PK_EmbeddingSpace");
+        await RejectsAsync(connectionString, string.Format(System.Globalization.CultureInfo.InvariantCulture, Insert, 2), "CK_EmbeddingSpace_SingleRow");
     }
 
     [Fact]

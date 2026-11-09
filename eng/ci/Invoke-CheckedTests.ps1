@@ -38,7 +38,7 @@ switch ($Slice) {
         $filters['Nachos.DataLayer.SqlServer.Tests'] = ($sqlPortable | ForEach-Object {
             "FullyQualifiedName~Nachos.DataLayer.SqlServer.Tests.$_."
         }) -join '|'
-        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.'
+        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.&FullyQualifiedName!~.EmbeddingCommandTests.'
         $filters['Nachos.AppHost.Tests'] = 'FullyQualifiedName!~.AppHostSmokeTests.'
     }
     Sql { $projects = @('Nachos.DataLayer.SqlServer.Tests', 'Nachos.Cli.Tests', 'Nachos.AppHost.Tests') }
