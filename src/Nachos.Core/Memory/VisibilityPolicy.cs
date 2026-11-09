@@ -54,6 +54,21 @@ public sealed class VisibilityPolicy
     }
 
     /// <summary>
+    /// This policy further restricted to <paramref name="sessions"/>: what both show. Null leaves it unchanged. A
+    /// request's own narrowing is applied this way, so it can never widen what the caller's access allows.
+    /// </summary>
+    public VisibilityPolicy Narrow(IReadOnlyCollection<string>? sessions)
+    {
+        if (sessions is null)
+        {
+            return this;
+        }
+
+        var allowed = _sessions is null ? sessions : sessions.Where(_sessions.Contains);
+        return new(allowed.ToFrozenSet(StringComparer.Ordinal));
+    }
+
+    /// <summary>
     /// <paramref name="filter"/> narrowed in the store to what this policy shows, so totals and page sizes count only
     /// visible conclusions. Callers still pass every returned conclusion through <see cref="Allows(ConclusionRecord)"/> as a second check.
     /// </summary>
@@ -98,7 +113,16 @@ public sealed class VisibilityPolicy
     public bool Allows(MessageRecord message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return _sessions is null || _sessions.Contains(message.SessionName);
+        return AllowsSession(message.SessionName);
+    }
+
+    /// <summary>
+    /// Whether what is attributed to <paramref name="sessionName"/> as a whole, its messages and summaries, is visible.
+    /// </summary>
+    public bool AllowsSession(string sessionName)
+    {
+        ArgumentNullException.ThrowIfNull(sessionName);
+        return _sessions is null || _sessions.Contains(sessionName);
     }
 
     /// <summary>Whether <paramref name="conclusion"/> is visible under this policy.</summary>

@@ -491,7 +491,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
 2. Extension routes: `W/jobs` and `/v3/admin/grants`.
 3. `X-Nachos-Signature` and `X-Nachos-Delivery-Id` headers, sent in addition to `X-Honcho-Signature`.
-4. Hard token budget in session context (§11.6). It can return less content than Honcho in overflow edge cases.
+4. Hard token budget in session context (§11.6). It can return less content than Honcho in overflow edge cases: the budget counts content tokens only (not the JSON envelope), the representation and card share at most half of it, a summary at most 40% of the rest, and a message that does not fit whole is left out with every older one. `tokens` must be 1–100,000.
 5. `times_derived` does not inflate on worker retries.
 6. Webhooks are retried with backoff (upstream sends once).
 7. Health endpoints are split into `/health/live` and `/health/ready`. `/health` is kept.
@@ -642,14 +642,28 @@ Filters come from the filter compiler.
 
 ### 11.6 Session context assembly (Δ hard budget)
 
-Given `tokens` (or a default):
+Given `tokens` (1–100,000; 100,000 when absent, "exhaustive within 100,000 tokens"):
 
 1. Reserve representation and card tokens when requested. If they exceed 50% of the budget, truncate the representation to its highest-ranked items.
 2. Allocate up to 40% of the remainder to the newest summary that fits.
 3. Fill with messages after the summary's coverage point, newest first, then restore chronological order.
 4. Run a final check. **The response must never exceed `tokens`.**
 
-All Honcho query parameters are supported, with the same validation rules: `summary`, `search_query`, `peer_target`, `peer_perspective` (requires `peer_target`), `scope` (requires `peer_target`, excludes `peer_perspective`, workspace/admin only), repeated `sessions`, `limit_to_session`, `search_top_k`, `search_max_distance`, `include_most_frequent`, `max_conclusions`.
+Δ (M3) As built:
+
+- **What counts (D5).** The budget counts **content tokens** with the registered `ITokenCounter`: the representation text, each card entry, the summary content and each message's content. The JSON envelope and field names do not count. The final check uses the same counter, so the guarantee holds for whichever counter is registered.
+- **Bounds.** `tokens` above 100,000 is a 422, as in Honcho's OpenAPI (`maximum: 100000`). The minimum of 1 is a Nachos rule; Honcho publishes none.
+- **Step 1.** Half of the budget, rounded down, is shared by the card and the representation. A card larger than that half is dropped whole. The representation is then cut to the most best-ranked conclusions that fit the rest of the half: its conclusions are read and ranked once (the search query is embedded at most once), and fewer of them are rendered in memory, the largest number that fits found by bisection. When nothing is left for it, nothing is read. The representation and card are included only when `peer_target` is set; the observer is `peer_perspective`, else `peer_target`. `max_conclusions` and `include_most_frequent` apply whether or not `search_query` is given; this is a deliberate Nachos choice, matching `P/context`.
+- **Step 2.** 40% of what remains after step 1, rounded down. The **long** summary is used when it fits, else the short one, else none: the long one covers more of the session for its tokens. `summary=false` skips this step.
+- **Step 3.** Each message is included whole or not at all, and filling stops at the first message that does not fit, so the context is always an unbroken stretch ending at the newest message. A single message larger than what is left gives no messages. With no summary, messages are taken from the start of the session.
+- **Step 4.** A guard: correct steps 1–3 never trip it, and a test asserts they don't. If it trips, it logs an error and drops the oldest messages, then the summary, the card and the representation, until the context fits.
+- **Visibility.** Two inputs, kept apart:
+  - **Request narrowing.** `limit_to_session=true` narrows the representation to this session; `sessions` narrows it to the sessions it names. Either one hides the card. They narrow **only** the representation and card: this session's own messages and summary are always returned, because the caller already has access to the session. Narrowing is intersected with the caller's access, so it can never widen it. An empty `sessions` list is the same as none.
+  - **Caller access** (the `VisibilityPolicy` from auth; key-derived allowlists arrive in M6). It applies to everything: when it does not show this session, the session's messages and summary are hidden too, and an empty access allowlist fails closed. `GET S/summaries` reads through the same access rule.
+  - As Honcho documents, `sessions` is mutually exclusive with `limit_to_session` and with `scope`, and must include the current session; each violation is a 422 at `["query","sessions"]`. The route (M3 Task 9) enforces that a peer-scoped key is an active member of this session and of every session named.
+- **Representation query.** `search_query` is embedded only up to its first chunk (§11.1), like search (§11.5), so a long query is never rejected by the model.
+
+All Honcho query parameters are supported, with the same validation rules: `summary`, `search_query`, `peer_target`, `peer_perspective` (requires `peer_target`), `scope` (requires `peer_target`, excludes `peer_perspective`, workspace/admin only), repeated `sessions`, `limit_to_session`, `search_top_k`, `search_max_distance`, `include_most_frequent`, `max_conclusions`. Invalid combinations are 422s located at the query parameter. `scope` is a 422 (`scope is not supported in this Nachos version`) until M6.
 
 ### 11.7 Dialectic (peer chat)
 
