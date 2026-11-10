@@ -13,6 +13,8 @@ namespace Nachos.Core;
 /// and both providers produce the same value. A resource deleted and created again under the same name gets a new
 /// creation instant and therefore a new uid. Names are restricted to <c>[A-Za-z0-9_-]</c>, so the NUL separator
 /// cannot be forged by a name.
+/// <para>Name, workspace and CreatedAt are frozen inputs; changing any of them requires a stored uid. The golden
+/// vectors in <c>ResourceUidTests</c> pin the algorithm, and the store contract pins CreatedAt's tick precision.</para>
 /// </remarks>
 public static class ResourceUid
 {
