@@ -50,6 +50,29 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         await store.Deletion.RemoveAsync(lease, target, Ct);
     }
 
+    [Fact]
+    public async Task IdempotentAppend_BoundToADeletedIncarnation_IsNotFound_AndWritesNothing()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        var deleted = (await store.Sessions.GetAsync(workspace, session, Ct)).ShouldNotBeNull().CreatedAt;
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        var job = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        await RunJobAsync(store, job, DeletionTarget.Session(workspace, session));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var recreated = (await store.Sessions.GetOrCreateAsync(workspace, session, null, null, null, Ct)).CreatedAt;
+        var key = Unique("key");
+        MessageAppend Append(DateTimeOffset incarnation) => new(
+            [Msg("bob", "hello")],
+            new IdempotencyWrite(key, new string('a', 64), 201, _ => "{}", TimeSpan.FromHours(1)) { SessionCreatedAt = incarnation });
+
+        await Should.ThrowAsync<NotFoundException>(() => store.Messages.AppendAsync(workspace, session, Append(deleted), Ct));
+
+        (await MessageCountAsync(store, workspace, session)).ShouldBe(0);
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct)).ShouldBeNull();
+        (await store.Messages.AppendAsync(workspace, session, Append(recreated), Ct)).ShouldHaveSingleItem();
+    }
+
     private static async Task<long> MessageCountAsync(IMemoryStore store, string workspace, string session) =>
         (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Total;
 

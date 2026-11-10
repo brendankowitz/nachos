@@ -75,8 +75,14 @@ public sealed class TransportBoundaryTests : ApiTest
         const string captured = " [ { \"sentinel\" : 1e2, \"nullable\":null } ] \n";
         const string body = """{"messages":[{"content":"a","peer_id":"p"}]}""";
         using var document = JsonDocument.Parse(body);
+        var session = (await real.Sessions.GetAsync("w", "s", CancellationToken.None))!;
         var hash = Nachos.Core.Idempotency.RequestHasher.Hash("POST", "/v3/workspaces/{w}/sessions/{s}/messages",
-            new Dictionary<string, string> { ["w"] = "w", ["s"] = "s" },
+            new Dictionary<string, string>
+            {
+                ["w"] = "w",
+                ["s"] = "s",
+                ["s.uid"] = Nachos.Core.ResourceUid.ForSession("w", "s", session.CreatedAt),
+            },
             Nachos.Core.Idempotency.CanonicalJson.Serialize(document.RootElement));
         replay.TryGetAsync("w", "captured", Arg.Any<CancellationToken>()).Returns(
             new Nachos.Abstractions.Domain.IdempotencyRecord("captured", hash, 202, captured, DateTimeOffset.MaxValue));

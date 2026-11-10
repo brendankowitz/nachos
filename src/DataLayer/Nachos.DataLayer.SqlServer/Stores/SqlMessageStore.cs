@@ -102,7 +102,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             .SqlQueryRaw<SeqAllocation>(
                 """
                 UPDATE dbo.Sessions SET NextMessageSeq = NextMessageSeq + @count
-                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState
+                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState, deleted.CreatedAt
                 WHERE WorkspaceId = @workspace AND Name = @sessionName AND DATALENGTH(Name) = DATALENGTH(@sessionName)
                 """,
                 SqlParameters.Long("@count", messages.Count),
@@ -114,6 +114,11 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         {
             // Rolled back with the transaction, like the allocation.
             throw WriteAdmission.SessionDeleting();
+        }
+
+        if (idempotency?.SessionCreatedAt is { } incarnation && incarnation != allocation.CreatedAt)
+        {
+            throw Lookups.SessionNotFound(workspaceName, sessionName);
         }
 
         var session = new SessionKey(workspaceId, allocation.SessionId);
@@ -130,7 +135,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         {
             var peer = await Upserts.EnsurePeerAsync(db, session.WorkspaceId, name, "{}", "{}", isInternal: false, now, ct);
             senderPeers.Add(name, peer);
-            await JoinAsSenderAsync(db, session, peer.Id, now, ct);
+            await JoinAsSenderAsync(db, session, peer.Id, SenderJoin.JoinedAt(messages, name, now), ct);
         }
 
         var senders = senderPeers.ToDictionary(pair => pair.Key, pair => pair.Value.Id, StringComparer.Ordinal);
@@ -416,20 +421,22 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     }
 
     /// <summary>
-    /// Makes the sender an active member: a new member joins with the default config, a former member is reactivated in
-    /// place keeping its config, an active member is untouched. The append holds the session row lock.
+    /// Makes the sender an active member from <paramref name="joinedAt"/>: a new member joins with the default config, a
+    /// former member is reactivated in place keeping its config, an active member is untouched. The append holds the
+    /// session row lock.
     /// </summary>
-    private static async Task JoinAsSenderAsync(NachosDbContext db, SessionKey session, long peerId, DateTimeOffset now, CancellationToken ct) =>
+    private static async Task JoinAsSenderAsync(
+        NachosDbContext db, SessionKey session, long peerId, DateTimeOffset joinedAt, CancellationToken ct) =>
         await db.Database.ExecuteSqlRawAsync(
             """
-            UPDATE dbo.SessionPeers SET JoinedAt = @now, LeftAt = NULL
+            UPDATE dbo.SessionPeers SET JoinedAt = @joinedAt, LeftAt = NULL
             WHERE WorkspaceId = @workspace AND SessionId = @session AND PeerId = @peer AND LeftAt IS NOT NULL;
             IF NOT EXISTS (SELECT 1 FROM dbo.SessionPeers WHERE WorkspaceId = @workspace AND SessionId = @session AND PeerId = @peer)
                 INSERT dbo.SessionPeers (WorkspaceId, SessionId, PeerId, Configuration, JoinedAt)
-                VALUES (@workspace, @session, @peer, @config, @now);
+                VALUES (@workspace, @session, @peer, @config, @joinedAt);
             """,
             [
-                SqlParameters.Time("@now", now),
+                SqlParameters.Time("@joinedAt", joinedAt),
                 SqlParameters.Long("@workspace", session.WorkspaceId),
                 SqlParameters.Long("@session", session.SessionId),
                 SqlParameters.Long("@peer", peerId),
@@ -527,8 +534,8 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         }
     }
 
-    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value and its state.</summary>
-    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState);
+    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value, its state and incarnation.</summary>
+    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState, DateTimeOffset CreatedAt);
 
     /// <summary>A work item to insert for the message row <paramref name="MessageId"/>.</summary>
     private sealed record PendingWork(WorkTaskType TaskType, string WorkUnitKey, string Payload, int TokenCount, long MessageId);

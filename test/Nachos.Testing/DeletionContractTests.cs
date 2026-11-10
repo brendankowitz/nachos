@@ -180,6 +180,25 @@ public abstract class DeletionContractTests : M3ContractTestBase
     }
 
     [Fact]
+    public async Task DeletingWorkspace_ItsPendingConclusions_LeaveTheEmbeddingBacklog()
+    {
+        var (store, _) = await NewStoreAsync();
+        var workspace = await NewWorkspaceAsync(store);
+        await store.Peers.GetOrCreateAsync(workspace, "alice", null, null, Ct);
+        await store.Peers.GetOrCreateAsync(workspace, "bob", null, null, Ct);
+        await store.Conclusions.InsertAsync(
+            workspace, [new NewConclusion("alice", "bob", null, ConclusionLevel.Explicit, "bob likes tea", null, [], null)], Ct);
+        (await store.Embeddings.ListPendingAsync(100_000, Ct))
+            .ShouldContain(p => p.WorkspaceName == workspace && p.Kind == PendingEmbeddingKind.Conclusion);
+        var countBefore = await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, Ct);
+
+        await store.Deletion.BeginDeleteWorkspaceAsync(workspace, Ct);
+
+        (await store.Embeddings.ListPendingAsync(100_000, Ct)).ShouldNotContain(p => p.WorkspaceName == workspace);
+        (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, Ct)).ShouldBe(countBefore - 1);
+    }
+
+    [Fact]
     public async Task WorkerCommitsUnderDeleting_AreDiscardedAndCompleted()
     {
         var (store, _) = await NewStoreAsync();

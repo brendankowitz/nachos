@@ -17,8 +17,9 @@ public abstract record MessageSearchScope
     public sealed record Session(string SessionName) : MessageSearchScope;
 
     /// <summary>
-    /// What one peer could have seen: a message is in scope when the peer's membership of the message's session has
-    /// <c>JoinedAt &lt;= CreatedAt &lt; (LeftAt ?? forever)</c>.
+    /// What one peer could have seen: a message is in scope when the peer has a membership of the message's session and
+    /// either sent the message itself or the membership has <c>JoinedAt &lt;= CreatedAt &lt; (LeftAt ?? forever)</c>.
+    /// Another peer's message outside the window is never in scope.
     /// </summary>
     public sealed record PeerPerspective(string PeerName) : MessageSearchScope;
 }

@@ -44,6 +44,14 @@ internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbe
 
     private const string PendingChunksWhere = "WHERE e.SyncState = 0 AND w.LifecycleState <> 2 AND s.LifecycleState <> 2";
 
+    /// <summary>The conclusions, alias <c>c</c>, with their workspace <c>w</c>.</summary>
+    private const string PendingConclusionsFrom = """
+        FROM dbo.Conclusions AS c
+        JOIN dbo.Workspaces AS w ON w.Id = c.WorkspaceId
+        """;
+
+    private const string PendingConclusionsWhere = "WHERE c.EmbeddingState = 0 AND c.DeletedAt IS NULL AND w.LifecycleState <> 2";
+
     public async Task<IReadOnlyList<PendingEmbedding>> ListPendingAsync(int limit, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
@@ -57,9 +65,8 @@ internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbe
                     SELECT * FROM (
                         SELECT TOP (@limit) {(int)PendingEmbeddingKind.Conclusion} AS Kind, w.Name AS WorkspaceName,
                                c.PublicId AS SourceId, 0 AS ChunkIndex, c.Content, c.CreatedAt, c.Id
-                        FROM dbo.Conclusions AS c
-                        JOIN dbo.Workspaces AS w ON w.Id = c.WorkspaceId
-                        WHERE c.EmbeddingState = 0 AND c.DeletedAt IS NULL
+                        {PendingConclusionsFrom}
+                        {PendingConclusionsWhere}
                         ORDER BY c.CreatedAt, c.Id) AS conclusions
                     UNION ALL
                     SELECT * FROM (
@@ -86,7 +93,7 @@ internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbe
         var sql = kind switch
         {
             PendingEmbeddingKind.Conclusion =>
-                "SELECT COUNT_BIG(*) AS [Value] FROM dbo.Conclusions WHERE EmbeddingState = 0 AND DeletedAt IS NULL",
+                $"SELECT COUNT_BIG(*) AS [Value] {PendingConclusionsFrom} {PendingConclusionsWhere}",
             PendingEmbeddingKind.MessageChunk =>
                 $"SELECT COUNT_BIG(*) AS [Value] {PendingChunksFrom} {PendingChunksWhere}",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown pending embedding kind."),

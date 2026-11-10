@@ -62,7 +62,8 @@ public sealed class SqlServerNoFtsFixture : IAsyncLifetime
 
     private static async Task<MsSqlContainer> StartAsync()
     {
-        var container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2025-latest").Build();
+        // The same update as the Full-Text Search image's base (MSSQL_UPDATE in eng/docker/mssql-fts/Dockerfile); bump both together.
+        var container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2025-CU9-ubuntu-24.04").Build();
         await container.StartAsync();
         return container;
     }

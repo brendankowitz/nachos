@@ -56,8 +56,9 @@ internal static class SessionEndpoints
         }).Produces(202).Produces<ErrorResponse>(409)
             .WithDescription("Accepts the deletion and returns 202 with no body: the session is inactive at once, and a job " +
                 "deletes it with its messages, summaries and session-attributed conclusions (see GET W/jobs). Once accepted, " +
-                "every write under the session is a 409, and a repeated delete is a 202 naming the same job. 409 when the " +
-                "workspace is being deleted.");
+                "every write under the session is a 409, and a repeated delete while it is being deleted is again a 202 with " +
+                "no body and starts no second job; the one job stays visible in GET W/jobs. Once the job completes the session " +
+                "no longer exists and a delete is a 404. 409 when the workspace is being deleted.");
         group.MapPost("/{session_id}/peers", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);

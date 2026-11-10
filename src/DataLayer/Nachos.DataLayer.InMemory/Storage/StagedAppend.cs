@@ -58,11 +58,12 @@ internal sealed class StagedAppend
             _baseMemberships.Add(sender, membership);
             if (membership is not { IsActive: true })
             {
+                var joinedAt = SenderJoin.JoinedAt(messages, sender, now);
                 _memberships.Add(
                     sender,
                     membership is null
-                        ? new Membership(new SessionPeerConfig(), now, LeftAt: null)
-                        : membership with { JoinedAt = now, LeftAt = null });
+                        ? new Membership(new SessionPeerConfig(), joinedAt, LeftAt: null)
+                        : membership with { JoinedAt = joinedAt, LeftAt = null });
             }
         }
 

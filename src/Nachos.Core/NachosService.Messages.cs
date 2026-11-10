@@ -67,11 +67,18 @@ public sealed partial class NachosService
         JsonUnicodeValidator.Validate(requestBody);
         var messages = MessageEnvelopeReader.Read(requestBody, MessageJson);
         validator.ValidateMessages(messages);
+        var session = await RequireSession(workspaceId, sessionId, ct).ConfigureAwait(false);
+        // Bound to the session's incarnation, so a key replayed after the session is deleted and recreated under the same
+        // name never returns the deleted session's messages. The store re-checks the incarnation inside the append.
         var hash = idempotencyKey is null ? null : RequestHasher.Hash("POST",
             "/v3/workspaces/{w}/sessions/{s}/messages",
-            new Dictionary<string, string> { ["w"] = workspaceId, ["s"] = sessionId },
+            new Dictionary<string, string>
+            {
+                ["w"] = workspaceId,
+                ["s"] = sessionId,
+                ["s.uid"] = ResourceUid.ForSession(workspaceId, sessionId, session.CreatedAt),
+            },
             CanonicalJson.Serialize(requestBody));
-        var session = await RequireSession(workspaceId, sessionId, ct).ConfigureAwait(false);
         var workspace = await store.Workspaces.GetAsync(workspaceId, ct).ConfigureAwait(false);
         var inherited = configurationResolver.Resolve(workspace?.Configuration, session.Configuration);
         var derive = ResolveDeriveIntents(inherited, messages);
@@ -100,7 +107,10 @@ public sealed partial class NachosService
             chunks ??= chunker is null ? null : messages.Select(m => chunker.Chunk(m.Content)).ToArray();
             string? captured = null;
             var write = idempotencyKey is null ? null : new IdempotencyWrite(idempotencyKey, hash!, 201,
-                rows => captured = SerializeMessages(rows), TimeSpan.FromHours(24));
+                rows => captured = SerializeMessages(rows), TimeSpan.FromHours(24))
+            {
+                SessionCreatedAt = session.CreatedAt,
+            };
             try
             {
                 var rows = await store.Messages.AppendAsync(
