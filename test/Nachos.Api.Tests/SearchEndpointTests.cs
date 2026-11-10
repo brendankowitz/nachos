@@ -57,6 +57,21 @@ public sealed class SearchEndpointTests : MemoryApiTest
     }
 
     [Fact]
+    public async Task SessionSearch_FilterCannotEscapeTheRouteSession()
+    {
+        await SeedMessages();
+
+        var found = await Post(S + "/search",
+            """{"query":"green tea","filters":{"OR":[{"session_id":"other"},{"peer_id":"x"}]}}""");
+        var own = await Post(S + "/search",
+            """{"query":"green tea","filters":{"OR":[{"session_id":"other"},{"peer_id":"alice"}]}}""");
+
+        // The other session's "green tea" message matches the first branch, but the route's session still bounds the search.
+        Contents(found).ShouldBeEmpty();
+        Contents(own).ShouldBe(["I like green tea"]);
+    }
+
+    [Fact]
     public async Task PeerSearch_SeesOnlyThePeersSessions()
     {
         await SeedMessages();

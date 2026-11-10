@@ -51,6 +51,26 @@ public abstract class SearchContractTests : M3ContractTestBase
     }
 
     [Fact]
+    public async Task Search_SessionScope_FilterCannotEscapeIt()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        var other = Unique("sess");
+        await store.Sessions.GetOrCreateAsync(workspace, other, null, null, null, Ct);
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "plum in session"), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, other, Msg("bob", "plum elsewhere"), Vector(0));
+
+        // An OR naming the other session must still be confined to the scope's session.
+        var escape = FilterParser.Parse(new JsonObject
+        {
+            ["OR"] = new JsonArray(new JsonObject { ["session_id"] = other }, new JsonObject { ["peer_id"] = "bob" }),
+        }, ResourceKind.Message);
+        var scoped = Request(workspace, new MessageSearchScope.Session(session), escape);
+        (await LexicalAsync(store, scoped, "plum")).ShouldBe(["plum in session"]);
+        (await VectorAsync(store, scoped, Vector(0))).ShouldBe(["plum in session"]);
+    }
+
+    [Fact]
     public async Task Search_PeerPerspective_RespectsMembershipWindows()
     {
         var (store, clock) = await NewStoreAsync();
