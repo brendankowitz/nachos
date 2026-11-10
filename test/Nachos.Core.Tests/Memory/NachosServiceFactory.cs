@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
 using Nachos.Core.Context;
+using Nachos.Core.Jobs;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
 using Nachos.Core.Search;
@@ -23,6 +24,7 @@ internal static class NachosServiceFactory
             peerContext,
             new ConfigurationResolver(Options.Create(new NachosOptions()), counter),
             new HybridSearchService(store),
-            new SessionContextService(store, peerContext, representations, counter));
+            new SessionContextService(store, peerContext, representations, counter),
+            new JobService(store));
     }
 }

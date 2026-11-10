@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Nachos.Core.Deletion;
 using Nachos.Core.Deriver;
 using Nachos.Core.Summarizer;
 using Nachos.Core.Worker;
@@ -23,7 +24,7 @@ public sealed class WorkerHostingTests
     }
 
     [Fact]
-    public void AddNachosWorker_RegistersTheLoopsAndTheDeriverAndSummarizerOnce()
+    public void AddNachosWorker_RegistersTheLoopsAndTheHandlersOnce()
     {
         using var provider = Build(new() { ["Worker:MaxConcurrency"] = "7", ["Reconciler:TombstoneRetention"] = "01:00:00" });
 
@@ -34,7 +35,8 @@ public sealed class WorkerHostingTests
         var handlers = scope.ServiceProvider.GetServices<IWorkHandler>().ToList();
         handlers.OfType<DeriverService>().ShouldHaveSingleItem();
         handlers.OfType<SummarizerService>().ShouldHaveSingleItem();
-        handlers.Count.ShouldBe(2);
+        handlers.OfType<DeletionService>().ShouldHaveSingleItem();
+        handlers.Count.ShouldBe(3);
         provider.GetRequiredService<IOptions<WorkerOptions>>().Value.MaxConcurrency.ShouldBe(7);
         provider.GetRequiredService<IOptions<ReconcilerOptions>>().Value.TombstoneRetention.ShouldBe(TimeSpan.FromHours(1));
     }
@@ -47,6 +49,8 @@ public sealed class WorkerHostingTests
     [InlineData("Reconciler:EmbeddingBatchSize", "0", "Reconciler:EmbeddingBatchSize")]
     [InlineData("Reconciler:LeaseDuration", "00:00:00", "Reconciler:LeaseDuration")]
     [InlineData("Reconciler:FailedEmbeddingTicksBeforeError", "0", "Reconciler:FailedEmbeddingTicksBeforeError")]
+    [InlineData("Deletion:BatchSize", "0", "Deletion:BatchSize")]
+    [InlineData("Deletion:BatchSize", "4001", "Deletion:BatchSize")]
     public void InvalidOptions_FailWithTheirKey(string key, string value, string expected)
     {
         using var provider = Build(new() { [key] = value });
@@ -55,6 +59,7 @@ public sealed class WorkerHostingTests
         {
             _ = provider.GetRequiredService<IOptions<WorkerOptions>>().Value;
             _ = provider.GetRequiredService<IOptions<ReconcilerOptions>>().Value;
+            _ = provider.GetRequiredService<IOptions<DeletionOptions>>().Value;
         });
         failure.Message.ShouldContain(expected);
     }

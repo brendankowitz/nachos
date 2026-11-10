@@ -4,6 +4,7 @@ using Nachos.Abstractions;
 using Nachos.Core;
 using Nachos.Core.Configuration;
 using Nachos.Core.Context;
+using Nachos.Core.Jobs;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
 using Nachos.Core.Search;
@@ -37,6 +38,7 @@ public static class NachosServiceCollectionExtensions
         services.TryAddScoped<PeerContextService>();
         services.TryAddScoped<HybridSearchService>();
         services.TryAddScoped<SessionContextService>();
+        services.TryAddScoped<JobService>();
         services.TryAddScoped<NachosService>();
         services.TryAddScoped<INachosClient>(provider => provider.GetRequiredService<NachosService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, MissingEmbeddingGeneratorWarning>());

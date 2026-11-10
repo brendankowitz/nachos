@@ -40,7 +40,8 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// commit, so no reclaim can interleave); then, for a commit that writes results, the deletion barrier's S locks
 /// (<see cref="WriteAdmission.AdmitWorkerAsync"/>: the workspace row, then session rows in <c>Id</c> order); then work
 /// items, then collections or summaries, then conclusions. Deletion acceptance takes parent rows but never a lease row, so
-/// it cannot close a cycle with a commit. A claim takes an item before the lease row but never waits for the
+/// it cannot close a cycle with a commit. A deletion job step (<see cref="SqlDeletionStore"/>) takes its own lease row and
+/// every lease row it fences before any parent row, so it never waits for a lease while holding a parent. A claim takes an item before the lease row but never waits for the
 /// lease row, so the two orders cannot form a cycle. Every item read and update seeks (<c>FORCESEEK</c>): a scan would
 /// lock other units' rows and deadlock with their claimers. A deadlock victim of anything else is skipped like a lost race.
 /// </para>
