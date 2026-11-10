@@ -289,7 +289,7 @@ Tooling and policy issues: [#13](https://github.com/brendankowitz/nachos/issues/
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. Please read the design spec first. The clean-room rule is absolute: do not read or copy Honcho's source, tests or prompt text when contributing. The upstream SDKs are external test clients only.
+Issues and pull requests are welcome. Please read the design spec first and see the [code review guidelines](REVIEW.md) for review expectations. The clean-room rule is absolute: do not read or copy Honcho's source, tests or prompt text when contributing. The upstream SDKs are external test clients only.
 
 ## 📄 License
 
