@@ -5,7 +5,7 @@
 | **Status** | Proposed, revision 2 (2026-11-10). Replaces the 2026-11-09 draft. |
 | **Builds on** | The Nachos design, `2026-10-07-nachos-design.md` ("the main spec"). Section numbers such as §13.1 refer to the main spec as it stands on branch `nachos-m3`. |
 | **Review notes** | [`research/2026-11-10-team-nachos-review.md`](research/2026-11-10-team-nachos-review.md): what changed from the draft and why. |
-| **Clean room** | Main spec §3 applies. Honcho facts come only from its public docs and public OpenAPI. |
+| **Clean room** | Main spec §3 applies. Honcho facts come only from its public docs (pages under `https://honcho.dev/docs/v3/documentation/`; `docs.honcho.dev` redirects there) and the public OpenAPI (`https://honcho.dev/docs/v3/openapi.json`). Pages are cited by name: `design-patterns`, `scopes`, `dreaming`, and [`reference/platform`](https://honcho.dev/docs/v3/documentation/reference/platform). |
 
 Every route, table and claim in this document is a **Nachos extension (Δ)**. No Honcho route or DTO changes.
 
@@ -51,7 +51,7 @@ Team Nachos is one central Nachos server. Developers and agents keep working in 
 
 ### 3.1 Summary
 
-1. **Every Individual, Team and Group is its own workspace**, registered as a **node**. Workspaces are already the hard isolation boundary (Honcho's design-patterns page: "A workspace is a hard isolation boundary"; its dreaming page: "Dreams do not span across workspaces"): composite foreign keys make cross-workspace references structurally impossible (§7.2), and the deletion barrier (§13.1) is per workspace.
+1. **Every Individual, Team and Group is its own workspace**, registered as a **node**. Workspaces are already the hard isolation boundary (Honcho `design-patterns`: "A workspace is a hard isolation boundary."; `dreaming`: "Dreams do not span across workspaces or across different peer pairs."): composite foreign keys make cross-workspace references structurally impossible (§7.2), and the deletion barrier (§13.1) is per workspace.
 2. **A link** from a child node to a parent node carries the child's `contribute` and `pull` choices. Links are the only cross-workspace rows.
 3. **A lesson is a first-class resource**, not a conclusion. It lives in exactly one workspace.
 4. **Lessons move up by writing** (a member writes into its Team directly in T1; a worker promotes in T2). **Lessons are read down by federation**: a query on a node reads its own lessons plus those of the upstreams it pulls from. Nothing is copied down.
@@ -87,7 +87,7 @@ The draft stored lessons as conclusions about a person-free `practice` peer. Tha
 |---|---|
 | `POST C` needs a workspace key (§9.2); it never deduplicates and has no idempotency | Every team member's agent would need a new permission on a Honcho route, and reinforcement cannot be counted |
 | `times_derived` counts repeats inside one collection | It is not a count of distinct people, so a second table is needed anyway |
-| The wire `Conclusion` has no metadata, tags or project | Project scoping and topics have nowhere to live without changing a Honcho DTO |
+| The wire `Conclusion` and `ConclusionCreate` have no metadata, tags or project (public OpenAPI) | Project scoping and topics have nowhere to live without changing a Honcho DTO |
 | A collection is `(observer, observed)` | Each agent's lessons about `practice` land in a different collection; "the team's lessons" is a cross-collection query |
 | The Deriver extracts facts about the *sender* (§11.2) | It never produces a lesson about practice; a new extractor is needed regardless |
 | The Dreamer induces `preference`/`personality` patterns and writes peer cards (§11.10) | It would run over `practice` and produce nonsense |
@@ -96,10 +96,12 @@ A `Lessons` table costs five small tables and reuses what matters: the embedding
 
 ### 3.3 Alternatives rejected
 
-- **One shared workspace with scopes (M6).** Honcho's design-patterns page: "A scope bounds *recall*, not *access*" and "A workspace key reads any session, scoped or not." A scope-bound key does enforce its boundary on the server, but a scope's content is still derived from members' raw messages, so nothing is generalized or gated before it is shared.
+- **One shared workspace with scopes (M6).** Honcho `design-patterns`: "A scope bounds *recall*, not *access*." and "Not authorization. A workspace key reads any session, scoped or not." A scope-bound key does enforce its boundary on the server, but a scope's content is still derived from members' raw messages, so nothing is generalized or gated before it is shared.
 - **A `team` peer that observes everyone.** It must be in every session and it derives from raw messages.
 - **Copying lessons down into each member's workspace.** Every gate miss would be replicated, and retraction would need sync.
 - **A multi-workspace key or a peer-scoped key with a lesson permission.** See §10.4.
+
+Honcho documents no cross-workspace, team or organization memory; its only documented way to share is to point clients at one workspace. Everything here is therefore new surface, with no upstream behaviour to match.
 
 ## 4. Vocabulary
 
@@ -459,7 +461,7 @@ Reads never go down: a Team key cannot read a member's Individual workspace. Rea
 
 Each harness install gets **its own workspace-scoped key for the developer's Individual workspace**, with an expiry of at most 90 days, or the developer signs in with Entra. That one credential reaches the developer's own data plus upstream lessons through links.
 
-This replaces the draft's "peer-scoped key plus a new permission" for three reasons. A peer-scoped key cannot create a session or append a message (§9.2, from Honcho's docs), so it cannot capture at all. It would put one key per Team on every machine. And it changes the meaning of a Honcho key scope on Honcho routes. The draft's aim survives: an agent holds nothing that reads teammates' raw messages.
+This replaces the draft's "peer-scoped key plus a new permission" for three reasons. A peer-scoped key cannot create a session or append a message, so it cannot capture at all (Honcho `reference/platform`: "**read-only** access to the sessions its peer is an active member of … It cannot write to those sessions or act on other peers."). It would put one key per Team on every machine. And it changes the meaning of a Honcho key scope on Honcho routes. The draft's aim survives: an agent holds nothing that reads teammates' raw messages.
 
 Known gap, unchanged from main spec §9.4 item 21: an HS256 key cannot be revoked singly. Use expiry, or Entra.
 

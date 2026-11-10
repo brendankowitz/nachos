@@ -2,7 +2,7 @@
 
 Review of the 2026-11-09 draft of `../2026-11-09-team-nachos-design.md` against the Nachos code on branch `nachos-m3` and the main spec. These notes explain revision 2; the spec is the source of truth.
 
-Honcho facts come from its public docs (honcho.dev/docs) and public OpenAPI only, checked on 2026-11-10:
+Honcho facts come from its public docs (pages under `https://honcho.dev/docs/v3/documentation/`, named below; the platform reference is https://honcho.dev/docs/v3/documentation/reference/platform) and the public OpenAPI (`https://honcho.dev/docs/v3/openapi.json`) only, checked on 2026-11-10:
 
 - design-patterns: "A workspace is a hard isolation boundary." "Split workspaces only when you need hard isolation between products, customers, environments, or agents."
 - design-patterns, on scopes: "Not authorization. A workspace key reads any session, scoped or not." "A scope bounds *recall*, not *access*." The scopes page adds that a named-scope key "enforces the boundary on the server".
