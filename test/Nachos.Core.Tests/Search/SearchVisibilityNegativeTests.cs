@@ -43,7 +43,7 @@ public sealed class SearchVisibilityNegativeTests
         var search = Substitute.For<IMessageSearch>();
         IReadOnlyList<MessageHit> ranked = [.. hits.Select((m, i) => new MessageHit(m, i + 1))];
         search.LexicalAsync(default!, default!, default, default).ReturnsForAnyArgs(ranked);
-        search.VectorAsync(default!, default, default, default).ReturnsForAnyArgs(ranked);
+        search.VectorAsync(default!, default, default, default, default).ReturnsForAnyArgs(ranked);
         var store = Substitute.For<IMemoryStore>();
         store.Search.Returns(search);
         return store;
@@ -97,7 +97,7 @@ public sealed class SearchVisibilityNegativeTests
         var lying = LyingStore(Message("S1", "tea in S1"));
 
         (await f.Search.SearchAsync(everywhere, "tea", 10, nothing, default)).ShouldBeEmpty();
-        (await new HybridSearchService(lying).SearchAsync(everywhere, "tea", 10, nothing, default)).ShouldBeEmpty();
+        (await new HybridSearchService(lying, Options.Create(new NachosOptions())).SearchAsync(everywhere, "tea", 10, nothing, default)).ShouldBeEmpty();
         await lying.Search.Received().LexicalAsync(
             Arg.Is<MessageSearchRequest>(r => r.Filter is FilterNode.MatchNone), Arg.Any<IReadOnlyList<string>>(), Arg.Any<int>(),
             Arg.Any<CancellationToken>());
@@ -111,7 +111,7 @@ public sealed class SearchVisibilityNegativeTests
         var everywhere = new MessageSearchRequest(W, new MessageSearchScope.Workspace(), null);
 
         var found = await f.Search.SearchAsync(everywhere, "tea", 10, onlyS1, default);
-        var lied = await new HybridSearchService(LyingStore(Message("S2", "tea in S2"), Message("S1", "tea in S1")))
+        var lied = await new HybridSearchService(LyingStore(Message("S2", "tea in S2"), Message("S1", "tea in S1")), Options.Create(new NachosOptions()))
             .SearchAsync(everywhere, "tea", 10, onlyS1, default);
 
         found.Select(m => m.Content).ShouldBe(["tea in S1"]);

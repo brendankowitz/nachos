@@ -21,7 +21,7 @@ public abstract class SearchContractTests : M3ContractTestBase
         [.. (await store.Search.LexicalAsync(request, terms, 100, Ct)).Select(hit => hit.Message.Content)];
 
     private static async Task<List<string>> VectorAsync(IMemoryStore store, MessageSearchRequest request, float[] query, int take = 100) =>
-        [.. (await store.Search.VectorAsync(request, query, take, Ct)).Select(hit => hit.Message.Content)];
+        [.. (await store.Search.VectorAsync(request, query, take, null, Ct)).Select(hit => hit.Message.Content)];
 
     /// <summary>Appends one message whose single chunk is its content, embedded as <paramref name="vector"/>.</summary>
     private static async Task<MessageRecord> AppendEmbeddedAsync(
@@ -215,14 +215,36 @@ public abstract class SearchContractTests : M3ContractTestBase
             [(appended[2].PublicId, 0)] = Vector(0, 1, 0.5f),
         });
 
-        var hits = await store.Search.VectorAsync(Request(workspace), Vector(0), 100, Ct);
+        var hits = await store.Search.VectorAsync(Request(workspace), Vector(0), 100, null, Ct);
 
         hits.Select(hit => hit.Message.Content).ShouldBe(["two chunks", "tied", "near"]);
         hits.Select(hit => hit.Rank).ShouldBe([1, 2, 3]);
         (await VectorAsync(store, Request(workspace), Vector(0), take: 1)).ShouldBe(["two chunks"]);
-        await Should.ThrowAsync<ArgumentException>(() => store.Search.VectorAsync(Request(workspace), new float[2], 10, Ct));
-        await Should.ThrowAsync<ArgumentOutOfRangeException>(() => store.Search.VectorAsync(Request(workspace), Vector(0), 0, Ct));
+        await Should.ThrowAsync<ArgumentException>(() => store.Search.VectorAsync(Request(workspace), new float[2], 10, null, Ct));
+        await Should.ThrowAsync<ArgumentOutOfRangeException>(() => store.Search.VectorAsync(Request(workspace), Vector(0), 0, null, Ct));
         await Should.ThrowAsync<NotFoundException>(() => store.Search.LexicalAsync(Request(Unique("ws")), ["x"], 10, Ct));
+    }
+
+    [Fact]
+    public async Task Vector_CandidateCap_ComparesOnlyTheMostRecentlyStoredChunksInScope()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Sessions.GetOrCreateAsync(workspace, "other", null, null, null, Ct);
+        // Stored first but dated last: the cap follows storage order, not CreatedAt, which a caller may backdate.
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "stored first, exact", Start.AddHours(1)), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "stored second, far", Start), Vector(1));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "stored third, near", Start), Vector(0, 1, 0.5f));
+        await AppendEmbeddedAsync(store, workspace, "other", Msg("bob", "other session, newest", Start), Vector(0));
+
+        var inSession = Request(workspace, new MessageSearchScope.Session(session));
+        async Task<List<string>> CappedAsync(MessageSearchRequest request, int cap) =>
+            [.. (await store.Search.VectorAsync(request, Vector(0), 100, cap, Ct)).Select(hit => hit.Message.Content)];
+
+        (await CappedAsync(inSession, 2)).ShouldBe(["stored third, near", "stored second, far"]);
+        (await CappedAsync(inSession, 3)).ShouldBe(["stored first, exact", "stored third, near", "stored second, far"]);
+        (await CappedAsync(Request(workspace), 1)).ShouldBe(["other session, newest"]);
+        await Should.ThrowAsync<ArgumentOutOfRangeException>(() => store.Search.VectorAsync(inSession, Vector(0), 10, 0, Ct));
     }
 
     [Fact]

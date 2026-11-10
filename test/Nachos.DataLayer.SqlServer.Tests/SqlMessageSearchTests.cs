@@ -48,10 +48,10 @@ public abstract class SqlMessageSearchTests
         })
         {
             var request = new MessageSearchRequest(Workspace, scope, null);
-            var expected = Describe(await corpus.Reference.Search.VectorAsync(request, query, 100, Ct));
+            var expected = Describe(await corpus.Reference.Search.VectorAsync(request, query, 100, null, Ct));
             expected.ShouldNotBeEmpty();
-            Describe(await corpus.Ready.Search.VectorAsync(request, query, 100, Ct)).ShouldBe(expected);
-            Describe(await corpus.Ready.Search.VectorAsync(request, query, 2, Ct)).ShouldBe(expected.Take(2));
+            Describe(await corpus.Ready.Search.VectorAsync(request, query, 100, null, Ct)).ShouldBe(expected);
+            Describe(await corpus.Ready.Search.VectorAsync(request, query, 2, null, Ct)).ShouldBe(expected.Take(2));
         }
     }
 
@@ -190,8 +190,8 @@ public abstract class SqlMessageSearchTests
             Describe(await corpus.Like.Search.LexicalAsync(request, ["zebra"], 100, Ct)).ShouldBe(lexical);
             Describe(await corpus.Ready.Search.LexicalAsync(request, ["zebra"], 100, Ct)).ShouldBe(lexical);
 
-            var vector = Describe(await corpus.Reference.Search.VectorAsync(request, Vector(0), 100, Ct));
-            Describe(await corpus.Ready.Search.VectorAsync(request, Vector(0), 100, Ct)).ShouldBe(vector);
+            var vector = Describe(await corpus.Reference.Search.VectorAsync(request, Vector(0), 100, null, Ct));
+            Describe(await corpus.Ready.Search.VectorAsync(request, Vector(0), 100, null, Ct)).ShouldBe(vector);
         }
 
         (await corpus.Reference.Search.LexicalAsync(

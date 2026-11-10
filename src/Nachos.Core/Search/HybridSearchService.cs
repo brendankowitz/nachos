@@ -1,7 +1,9 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Configuration;
 using Nachos.Core.Memory;
 
 namespace Nachos.Core.Search;
@@ -15,10 +17,14 @@ namespace Nachos.Core.Search;
 /// The embedding generator is optional: without one, search is lexical only rather than unavailable, because the lexical
 /// half alone is useful. The host warns about the missing generator once, at startup. The chunker, registered with the
 /// generator, caps what is embedded: only the query's first chunk, because the model rejects a longer input as a client
-/// error, which no retry can fix.
+/// error, which no retry can fix. A workspace-scoped vector retrieval compares at most
+/// <see cref="SearchOptions.MaxVectorCandidates"/> chunks. Narrower scopes are not capped: they read only their own chunks
+/// through index seeks, and a "most recent first" cap would turn those seeks into a scan of every chunk (measured in the M3
+/// benchmark: peer search went from 0.6 s to 1.6 s at 1M messages).
 /// </remarks>
 public sealed class HybridSearchService(
     IMemoryStore store,
+    IOptions<NachosOptions> options,
     IEmbeddingGenerator<string, Embedding<float>>? embeddings = null,
     MessageChunker? chunker = null)
 {
@@ -47,6 +53,7 @@ public sealed class HybridSearchService(
 
         var visible = request with { Filter = policy.RestrictMessages(request.Filter) };
         var take = CandidatesPerResult * limit;
+        var vectorCap = request.Scope is MessageSearchScope.Workspace ? options.Value.Search.MaxVectorCandidates : null;
         var terms = LexicalQuery.Terms(query);
         var vector = VectorAsync();
         var lexical = terms.Count == 0
@@ -66,7 +73,8 @@ public sealed class HybridSearchService(
 
             var text = chunker is null ? query : chunker.Chunk(query)[0];
             var embedded = await QueryEmbedding.EmbedAsync(embeddings, text, ct).ConfigureAwait(false);
-            return await store.Search.VectorAsync(visible, embedded, take, ct).ConfigureAwait(false);
+            return await store.Search.VectorAsync(visible, embedded, take, vectorCap, ct)
+                .ConfigureAwait(false);
         }
     }
 }
