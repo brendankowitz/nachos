@@ -136,7 +136,7 @@ public sealed class CompatibilityTests
 
     internal static byte[] Manifest(params (string Method, string Path)[] routes) => Inputs.Utf8.GetBytes(new JsonObject
     {
-        ["source"] = "https://docs.honcho.dev/v3/openapi.json",
+        ["source"] = "https://honcho.dev/docs/v3/openapi.json",
         ["sha256"] = "d1b75ceab50534932bb7e53ae24ba4b0fd6db9d2cd54e8b3eb4c8e542040060f",
         ["version"] = "3.6.0",
         ["routes"] = new JsonArray(routes.Select(route => (JsonNode)new JsonObject
