@@ -248,6 +248,22 @@ public abstract class SearchContractTests : M3ContractTestBase
     }
 
     [Fact]
+    public async Task Vector_CandidateCap_CountsOnlyChunksThatPassTheFilter()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "older from bob"), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "newer from bob"), Vector(1));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("carol", "newest, from carol"), Vector(0));
+        var byBob = FilterParser.Parse(new JsonObject { ["peer_id"] = "bob" }, ResourceKind.Message);
+
+        // The newest chunk is filtered out first, so the one slot goes to the newest chunk that passes the filter.
+        var hits = await store.Search.VectorAsync(Request(workspace, filter: byBob), Vector(0), 100, 1, Ct);
+
+        hits.Select(hit => hit.Message.Content).ShouldBe(["newer from bob"]);
+    }
+
+    [Fact]
     public async Task Vector_PendingAndFailedChunks_BesideSyncedChunk_UseSyncedOnly()
     {
         var (store, _) = await NewStoreAsync();
