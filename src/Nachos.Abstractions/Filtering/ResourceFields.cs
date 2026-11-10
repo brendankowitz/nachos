@@ -136,6 +136,7 @@ public static class ResourceFields
             ["observed_id"] = new(FilterColumns.ObservedId, FieldType.Text),
             ["session_id"] = new(FilterColumns.SessionId, FieldType.Text),
             ["level"] = new(FilterColumns.Level, FieldType.Level),
+            // A Nachos extension: Honcho's public Using Filters page does not document times_derived as a filter.
             ["times_derived"] = new(FilterColumns.TimesDerived, FieldType.Number),
             ["created_at"] = CreatedAt,
         }.ToFrozenDictionary(StringComparer.Ordinal);
