@@ -1,5 +1,8 @@
 ---
 title: Search
+description: Hybrid message search - lexical any-term and exact vector retrieval in parallel, fused with reciprocal rank fusion and checked against visibility.
+sidebar:
+  order: 5
 ---
 
 Message search is **hybrid**: every query runs a vector (semantic) search and a lexical
@@ -24,6 +27,28 @@ of messages, best first.
 - `scope` on the workspace route is a `422` until scopes exist.
 
 ## How a query is ranked
+
+**Diagram key.** Solid boxes and arrows are built today. Dashed boxes and arrows marked
+*(planned)* are designed but not built yet; the label names the milestone.
+
+```mermaid
+flowchart LR
+  classDef planned stroke-dasharray: 5 5,color:#6b7280
+  q["query, limit, filters"] --> policy["Visibility: narrow the store query to the allowed sessions"]
+  policy --> terms["Words: at most 16, common words dropped"]
+  policy --> embed["Embed the query's first chunk"]
+  terms --> lex["Lexical: any word, full-text or LIKE, top 4 x limit"]
+  embed --> vec["Vector: exact cosine, best chunk per message, top 4 x limit"]
+  ann["Approximate vector index (planned, M7)"]:::planned -.-> vec
+  lex --> rrf["Fuse: sum of 1 / (60 + rank)"]
+  vec --> rrf
+  rrf --> check["Check every result against visibility again"]
+  check --> top["Top limit messages, best first"]
+```
+
+The two retrievals run at the same time. With no word left after sanitizing, the lexical side is
+skipped; with no embedding generator, the vector side returns nothing. Either way the other side
+still answers.
 
 1. **Vector.** The query is embedded (only its first chunk, so a very long query is never
    rejected by the model), and each candidate message is ranked by the cosine distance of its

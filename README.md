@@ -252,16 +252,23 @@ flowchart LR
   end
   Api[Nachos.Api<br/>REST /v3 and auth]
   Core[Nachos.Core<br/>services, validation, config]
+  Worker[Nachos.Worker<br/>queue consumer and reconciler]
   Store{{IMemoryStore}}
   Mem[(InMemory)]
   Sql[(SQL Server)]
+  AI[Chat and embedding models<br/>Azure OpenAI, local ONNX, fake AI]
   HttpClient --> Api
   Api --> Core
   InProc --> Core
   Core --> Store
+  Worker --> Store
+  Core --> AI
+  Worker --> AI
   Store --> Mem
   Store --> Sql
 ```
+
+The [Architecture](https://brendankowitz.github.io/nachos/architecture/) page has diagrams of the system, the model calls, the read paths and both deployments. [Observation model](https://brendankowitz.github.io/nachos/concepts/observation-model/) shows who forms memories of whom, and [Memory formation](https://brendankowitz.github.io/nachos/concepts/memory-formation/) walks a message through the queue, the lease and the Deriver.
 
 | Project | Role |
 | --- | --- |
