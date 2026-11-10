@@ -25,6 +25,7 @@
     <Project Path="test/Nachos.Api.Tests/Nachos.Api.Tests.csproj" />
     <Project Path="test/Nachos.AppHost.Tests/Nachos.AppHost.Tests.csproj" />
     <Project Path="test/Nachos.Architecture.Tests/Nachos.Architecture.Tests.csproj" />
+    <Project Path="test/Nachos.Benchmarks/Nachos.Benchmarks.csproj" />
     <Project Path="test/Nachos.Cli.Tests/Nachos.Cli.Tests.csproj" />
     <Project Path="test/Nachos.Client.Tests/Nachos.Client.Tests.csproj" />
     <Project Path="test/Nachos.Core.Tests/Nachos.Core.Tests.csproj" />
