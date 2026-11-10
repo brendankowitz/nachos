@@ -132,6 +132,19 @@ the worker's logs, where each failure is logged as `Work unit {WorkUnitKey} (ite
 `id` (one of the work item ids) or by its work unit key, `deletion:{workspace}:{kind}:{id}`, for
 example `deletion:demo:session:s1`.
 
+## What deletion does not do
+
+- **Keys are not revoked.** A peer- or session-scoped key names its peer or session by name, so
+  it keeps working against a later peer or session created with the same name. Issue scoped keys
+  with `expires_at`, or rotate the signing key to revoke every key at once.
+- **Idempotency records outlive a deleted session for up to 24 hours.** Each record holds the
+  captured response, including message bodies, and is removed when it expires or when its
+  workspace is deleted. Replaying the key against a recreated session of the same name answers
+  `422`, never the old response.
+- **Reads of a session in `Deleting` are not all hidden yet.** Search leaves it out, but
+  `GET .../context`, `GET .../summaries` and the message list still read it and can return
+  partially purged data until the job removes the session.
+
 ## Where the job runs
 
 With SQL Server the job runs in the [worker](/nachos/guides/run-the-worker/), so a deletion stays
