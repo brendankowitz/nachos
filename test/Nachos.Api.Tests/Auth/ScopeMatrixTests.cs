@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Nachos.Api.Auth;
 using Shouldly;
 
 namespace Nachos.Api.Tests.Auth;
@@ -52,6 +53,18 @@ public sealed partial class ScopeMatrixTests
         new("GET", P + "/context", null, "peer"),
         new("POST", P + "/representation", "{}", "peer"),
         new("GET", W + "/queue/status", null, "workspace"),
+        // M3 rows (plan Task 9 Step 0). Documented: a member's peer-scoped key reads S/context, S/summaries and S/search
+        // ("read-only access to the sessions its peer is an active member of (context, summaries, ..., search, ...)"), and
+        // P/search is a peer route ("acts on its own peer"). Fallback (docs silent): W/search, W/jobs and both deletes are
+        // workspace routes. DELETE W answers 409 because the seeded workspace has an active session.
+        new("DELETE", W, null, "workspace", 409),
+        new("DELETE", S, null, "workspace", 202),
+        new("POST", W + "/search", """{"query":"seed"}""", "workspace"),
+        new("GET", W + "/jobs", null, "workspace"),
+        new("POST", P + "/search", """{"query":"seed"}""", "peer"),
+        new("POST", S + "/search", """{"query":"seed"}""", "member"),
+        new("GET", S + "/context", null, "member"),
+        new("GET", S + "/summaries", null, "member"),
     ];
 
     internal static Route[] AllRoutes()
@@ -61,8 +74,7 @@ public sealed partial class ScopeMatrixTests
         return [.. Implemented, .. manifest.RootElement.GetProperty("routes").EnumerateArray()
             .Select(route => new Route(route.GetProperty("method").GetString()!, route.GetProperty("path").GetString()!, "{}", "admin", 501))
             .Where(route => route.Template.StartsWith("/v3", StringComparison.Ordinal) &&
-                !implemented.Contains(route.Method + " " + route.Template)),
-            new("GET", W + "/jobs", null, "admin", 501)];
+                !implemented.Contains(route.Method + " " + route.Template))];
     }
 
     private static readonly string[] Identities =
@@ -129,6 +141,22 @@ public sealed partial class ScopeMatrixTests
         await host.Store.Sessions.RemovePeersAsync("A", "s1", ["p1"], default);
         await host.Send("GET", Concrete(S + "/peers"), null, AuthHost.Key("peer"), 401);
         await host.Send("GET", "/v3/workspaces/A/sessions/missing/peers", null, AuthHost.Key("peer"), 401);
+    }
+
+    [Fact]
+    public void MemberReadAllowlist_HoldsOnlyReadsOfSessionRoutes()
+    {
+        // Spec §9.2: member-read grants reads only. A POST qualifies only as a read verb (list, search).
+        foreach (var entry in MemberReadRoutes.All)
+        {
+            var parts = entry.Split(' ');
+            var (method, template) = (parts[0], parts[1]);
+            template.ShouldStartWith(S + "/");
+            (method == "GET" || method == "POST" && (template.EndsWith("/list", StringComparison.Ordinal) ||
+                template.EndsWith("/search", StringComparison.Ordinal))).ShouldBeTrue(entry);
+        }
+        Implemented.Where(route => route.Level == "member").Select(route => route.Method + " " + route.Template)
+            .ShouldBe(MemberReadRoutes.All, ignoreOrder: true);
     }
 
     [Fact]

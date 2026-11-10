@@ -37,5 +37,13 @@ internal static class WorkspaceEndpoints
             return TypedResults.Ok(await client.UpdateWorkspaceAsync(workspace_id, body.Object("metadata"),
                 body.Optional("configuration", NachosJsonContext.Default.WorkspaceConfiguration, strict: true), http.RequestAborted));
         }).Accepts<WorkspaceUpdate>("application/json").Produces<Workspace>();
+        group.MapDelete("/{workspace_id}", async (string workspace_id, HttpContext http, INachosClient client) =>
+        {
+            await client.DeleteWorkspaceAsync(workspace_id, http.RequestAborted);
+            return TypedResults.Accepted((string?)null);
+        }).Produces(202).Produces<ErrorResponse>(409)
+            .WithDescription("Accepts the deletion and returns 202 with no body; a job deletes the workspace and everything in it " +
+                "(see GET W/jobs). 409 when the workspace has an active session: delete its sessions first. Once accepted, " +
+                "every write under the workspace is a 409, and a repeated delete is a 202 naming the same job.");
     }
 }

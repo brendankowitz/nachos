@@ -11,10 +11,6 @@ namespace Nachos.Core;
 /// The M3 message search routes (<c>W/search</c>, <c>S/search</c>, <c>P/search</c>). A session or peer that does not
 /// exist matches nothing; a missing workspace is a 404, except that a blank query returns no messages without reading.
 /// </summary>
-/// <remarks>
-/// These are not yet on <see cref="INachosClient"/>: the interface is one method per wire route, implemented over HTTP
-/// too, and the routes and the HTTP client arrive together in M3 Task 9.
-/// </remarks>
 public sealed partial class NachosService
 {
     /// <summary>Searches every session of the workspace.</summary>

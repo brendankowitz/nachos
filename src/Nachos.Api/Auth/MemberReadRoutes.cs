@@ -11,5 +11,8 @@ public static class MemberReadRoutes
         "GET " + Session + "/peers/{peer_id}/config",
         "POST " + Session + "/messages/list",
         "GET " + Session + "/messages/{message_id}",
+        "GET " + Session + "/context",
+        "GET " + Session + "/summaries",
+        "POST " + Session + "/search",
     }.ToFrozenSet(StringComparer.Ordinal);
 }

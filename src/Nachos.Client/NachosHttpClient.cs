@@ -37,8 +37,8 @@ namespace Nachos.Client;
 /// For an operation that returns a value, a success body that is not valid JSON (malformed, a duplicate property
 /// name, or a missing required member) or has the wrong shape (an entity that is not an object, a collection or page
 /// <c>items</c> that is not an array of objects, a null entry) throws <see cref="JsonException"/>; no null or
-/// placeholder entity is ever returned. <see cref="SetSessionPeerConfigAsync"/> and <see cref="AddGrantAsync"/>
-/// return nothing, so their success body is not interpreted at all.
+/// placeholder entity is ever returned. <see cref="SetSessionPeerConfigAsync"/>, <see cref="AddGrantAsync"/> and the
+/// deletes return nothing, so their success body is not interpreted at all.
 /// </para>
 /// <para>
 /// Strict JSON data: every <see cref="JsonObject"/> the caller passes as metadata, peer configuration or filters
@@ -78,6 +78,12 @@ public sealed class NachosHttpClient : INachosClient
     private const string ConclusionsQuery = Conclusions + "/query";
     private const string ConclusionById = Conclusions + "/{conclusion_id}";
     private const string QueueStatusRoute = W + "/queue/status";
+    private const string WorkspaceSearch = W + "/search";
+    private const string SessionSearch = S + "/search";
+    private const string PeerSearch = P + "/search";
+    private const string SessionContextRoute = S + "/context";
+    private const string SessionSummariesRoute = S + "/summaries";
+    private const string Jobs = W + "/jobs";
     private const string Keys = "/v3/keys";
     private const string Grants = "/v3/admin/grants";
 
@@ -101,6 +107,11 @@ public sealed class NachosHttpClient : INachosClient
     private static readonly string[] PeerCardNulls = ["peer_card"];
     private static readonly string[] PeerContextNulls = ["representation", "peer_card"];
     private static readonly string[] QueueStatusNulls = ["sessions"];
+
+    // Optional nullable members of the M3 wire entities: an omitted value reads as null.
+    private static readonly string[] SessionContextNulls = ["summary", "peer_representation", "peer_card"];
+    private static readonly string[] SessionSummariesNulls = ["short_summary", "long_summary"];
+    private static readonly string[] JobNulls = ["error", "completed_at"];
 
     private readonly HttpClient _http;
     private readonly Uri _baseAddress;
@@ -422,7 +433,7 @@ public sealed class NachosHttpClient : INachosClient
         AddQuery(parameters, "search_query", query.SearchQuery);
         AddQuery(parameters, "search_top_k", query.SearchTopK?.ToString(CultureInfo.InvariantCulture));
         AddQuery(parameters, "search_max_distance", query.SearchMaxDistance?.ToString("R", CultureInfo.InvariantCulture));
-        AddQuery(parameters, "include_most_frequent", query.IncludeMostFrequent switch { null => null, true => "true", false => "false" });
+        AddQuery(parameters, "include_most_frequent", Flag(query.IncludeMostFrequent));
         AddQuery(parameters, "max_conclusions", query.MaxConclusions?.ToString(CultureInfo.InvariantCulture));
         var json = await SendAsync(HttpMethod.Get, PeerContextRoute, [workspaceId, peerId], Joined(parameters), null, null, ct)
             .ConfigureAwait(false);
@@ -438,6 +449,80 @@ public sealed class NachosHttpClient : INachosClient
         AddQuery(parameters, "session_id", sessionId);
         var json = await SendAsync(HttpMethod.Get, QueueStatusRoute, [workspaceId], Joined(parameters), null, null, ct).ConfigureAwait(false);
         return ReadEntity<QueueStatus>(json, [], QueueStatusNulls);
+    }
+
+    public async Task<IReadOnlyList<Message>> SearchWorkspaceAsync(
+        string workspaceId, WorkspaceMessageSearchOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var json = await SendAsync(HttpMethod.Post, WorkspaceSearch, [workspaceId], null, options with { Filters = Data(options.Filters) },
+            null, ct).ConfigureAwait(false);
+        return ReadMessages(json);
+    }
+
+    public async Task<IReadOnlyList<Message>> SearchSessionAsync(
+        string workspaceId, string sessionId, MessageSearchOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var json = await SendAsync(HttpMethod.Post, SessionSearch, [workspaceId, sessionId], null,
+            options with { Filters = Data(options.Filters) }, null, ct).ConfigureAwait(false);
+        return ReadMessages(json);
+    }
+
+    public async Task<IReadOnlyList<Message>> SearchPeerAsync(
+        string workspaceId, string peerId, MessageSearchOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var json = await SendAsync(HttpMethod.Post, PeerSearch, [workspaceId, peerId], null,
+            options with { Filters = Data(options.Filters) }, null, ct).ConfigureAwait(false);
+        return ReadMessages(json);
+    }
+
+    public async Task<SessionContext> GetSessionContextAsync(
+        string workspaceId, string sessionId, SessionContextQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var parameters = new List<string>(12);
+        AddQuery(parameters, "tokens", query.Tokens?.ToString(CultureInfo.InvariantCulture));
+        AddQuery(parameters, "summary", Flag(query.Summary));
+        AddQuery(parameters, "search_query", query.SearchQuery);
+        AddQuery(parameters, "peer_target", query.PeerTarget);
+        AddQuery(parameters, "peer_perspective", query.PeerPerspective);
+        AddQuery(parameters, "scope", query.Scope);
+        foreach (var session in query.Sessions ?? [])
+        {
+            AddQuery(parameters, "sessions", session ?? throw new ArgumentException("A sessions entry is null.", nameof(query)));
+        }
+
+        AddQuery(parameters, "limit_to_session", Flag(query.LimitToSession));
+        AddQuery(parameters, "search_top_k", query.SearchTopK?.ToString(CultureInfo.InvariantCulture));
+        AddQuery(parameters, "search_max_distance", query.SearchMaxDistance?.ToString("R", CultureInfo.InvariantCulture));
+        AddQuery(parameters, "include_most_frequent", Flag(query.IncludeMostFrequent));
+        AddQuery(parameters, "max_conclusions", query.MaxConclusions?.ToString(CultureInfo.InvariantCulture));
+        var json = await SendAsync(HttpMethod.Get, SessionContextRoute, [workspaceId, sessionId], Joined(parameters), null, null, ct)
+            .ConfigureAwait(false);
+        var context = RequireObject(WireJson.Parse(json), nameof(SessionContext), [], SessionContextNulls);
+        RequireArrayOfObjects(context["messages"], nameof(Message), MetadataOnly);
+        return Read<SessionContext>(context);
+    }
+
+    public async Task<SessionSummaries> GetSessionSummariesAsync(string workspaceId, string sessionId, CancellationToken ct = default)
+    {
+        var json = await SendAsync(HttpMethod.Get, SessionSummariesRoute, [workspaceId, sessionId], null, null, null, ct)
+            .ConfigureAwait(false);
+        return ReadEntity<SessionSummaries>(json, [], SessionSummariesNulls);
+    }
+
+    public async Task DeleteSessionAsync(string workspaceId, string sessionId, CancellationToken ct = default) =>
+        await SendAsync(HttpMethod.Delete, S, [workspaceId, sessionId], null, null, null, ct).ConfigureAwait(false);
+
+    public async Task DeleteWorkspaceAsync(string workspaceId, CancellationToken ct = default) =>
+        await SendAsync(HttpMethod.Delete, W, [workspaceId], null, null, null, ct).ConfigureAwait(false);
+
+    public async Task<Page<Job>> ListJobsAsync(string workspaceId, PageRequest page, CancellationToken ct = default)
+    {
+        var json = await SendAsync(HttpMethod.Get, Jobs, [workspaceId], ListQuery(page), null, null, ct).ConfigureAwait(false);
+        return ReadPage<Job>(json, [], JobNulls);
     }
 
     /// <summary>Sends one request and returns the success body; any other status throws the mapped exception.</summary>
@@ -578,6 +663,11 @@ public sealed class NachosHttpClient : INachosClient
     }
 
     private static string? TargetQuery(string? target) => target is null ? null : "target=" + Uri.EscapeDataString(target);
+
+    private static string? Flag(bool? value) => value switch { null => null, true => "true", false => "false" };
+
+    private static Message[] ReadMessages(string json) =>
+        Read<Message[]>(RequireArrayOfObjects(WireJson.Parse(json), nameof(Message), MetadataOnly));
 
     private static string? Joined(List<string> parameters) => parameters.Count == 0 ? null : string.Join('&', parameters);
 

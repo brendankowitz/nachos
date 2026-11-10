@@ -49,7 +49,7 @@ public sealed class RequestShapeTests
             .ToArray();
 
         missing.ShouldBeEmpty();
-        typeof(INachosClient).GetMethods().Length.ShouldBe(32);
+        typeof(INachosClient).GetMethods().Length.ShouldBe(40);
     }
 
     [Fact]
@@ -593,6 +593,138 @@ public sealed class RequestShapeTests
             """{"total_work_units":0,"completed_work_units":0,"in_progress_work_units":0,"pending_work_units":0}""");
         unfiltered.Uri.PathAndQuery.ShouldBe("/v3/workspaces/w1/queue/status");
         bare.Sessions.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task SearchWorkspaceAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchWorkspaceAsync("w1", new WorkspaceMessageSearchOptions("green tea", 5, new JsonObject { ["peer_id"] = "alice" })),
+            HttpStatusCode.OK,
+            "[" + MessageJson + "]");
+
+        AssertRequest(request, "POST", W + "/search", "/v3/workspaces/w1/search",
+            """{"query":"green tea","limit":5,"filters":{"peer_id":"alice"}}""");
+        found.Single().Id.ShouldBe("m1");
+
+        var (_, scoped) = await Send(c => c.SearchWorkspaceAsync("w1", new WorkspaceMessageSearchOptions("q", Scope: "named")),
+            HttpStatusCode.OK, "[]");
+        AssertBody(scoped, """{"query":"q","limit":10,"scope":"named"}""");
+    }
+
+    [Fact]
+    public async Task SearchSessionAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchSessionAsync("w1", "s1", new MessageSearchOptions("tea")), HttpStatusCode.OK,
+            """[{"id":"m1","content":"hello","peer_id":"alice","session_id":"s1","created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":3}]""");
+
+        AssertRequest(request, "POST", S + "/search", "/v3/workspaces/w1/sessions/s1/search", """{"query":"tea","limit":10}""");
+        found.Single().Metadata.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task SearchPeerAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchPeerAsync("w1", "alice", new MessageSearchOptions("tea", 2, new JsonObject { ["session_id"] = "s1" })),
+            HttpStatusCode.OK, "[]");
+
+        AssertRequest(request, "POST", P + "/search", "/v3/workspaces/w1/peers/alice/search",
+            """{"query":"tea","limit":2,"filters":{"session_id":"s1"}}""");
+        found.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSessionContextAsync_Shape()
+    {
+        var (context, request) = await Send(
+            c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery(
+                Tokens: 500, Summary: false, SearchQuery: "green tea", PeerTarget: "bob", PeerPerspective: "alice", Scope: "named",
+                Sessions: ["s1", "s 2"], LimitToSession: false, SearchTopK: 3, SearchMaxDistance: 0.25, IncludeMostFrequent: true,
+                MaxConclusions: 7)),
+            HttpStatusCode.OK,
+            $$"""{"id":"s1","messages":[{{MessageJson}}],"summary":{"content":"so far","message_id":"m1","summary_type":"short","created_at":"2026-10-08T12:00:00Z","token_count":2},"peer_representation":"r","peer_card":["c"]}""");
+
+        AssertRequest(request, "GET", S + "/context",
+            "/v3/workspaces/w1/sessions/s1/context?tokens=500&summary=false&search_query=green%20tea&peer_target=bob&peer_perspective=alice&scope=named&sessions=s1&sessions=s%202&limit_to_session=false&search_top_k=3&search_max_distance=0.25&include_most_frequent=true&max_conclusions=7",
+            null);
+        context.Id.ShouldBe("s1");
+        context.Messages.Single().Id.ShouldBe("m1");
+        context.Summary.ShouldBe(new Summary("so far", "m1", "short",
+            DateTimeOffset.Parse(CreatedAt, System.Globalization.CultureInfo.InvariantCulture), 2));
+        context.PeerRepresentation.ShouldBe("r");
+        context.PeerCard.ShouldBe(["c"]);
+
+        var (bare, plain) = await Send(c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery()), HttpStatusCode.OK,
+            """{"id":"s1","messages":[]}""");
+        plain.Uri.PathAndQuery.ShouldBe("/v3/workspaces/w1/sessions/s1/context");
+        bare.Summary.ShouldBeNull();
+        bare.PeerRepresentation.ShouldBeNull();
+        bare.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task GetSessionSummariesAsync_Shape()
+    {
+        var (summaries, request) = await Send(c => c.GetSessionSummariesAsync("w1", "s1"), HttpStatusCode.OK,
+            """{"id":"s1","long_summary":{"content":"all of it","message_id":"m9","summary_type":"long","created_at":"2026-10-08T12:00:00Z","token_count":40}}""");
+
+        AssertRequest(request, "GET", S + "/summaries", "/v3/workspaces/w1/sessions/s1/summaries", null);
+        summaries.Id.ShouldBe("s1");
+        summaries.ShortSummary.ShouldBeNull();
+        summaries.LongSummary!.SummaryType.ShouldBe("long");
+        summaries.LongSummary.TokenCount.ShouldBe(40);
+    }
+
+    [Fact]
+    public async Task DeleteSessionAsync_Shape()
+    {
+        var (_, request) = await Send(
+            async c =>
+            {
+                await c.DeleteSessionAsync("w1", "s1");
+                return 0;
+            },
+            HttpStatusCode.Accepted,
+            null);
+
+        AssertRequest(request, "DELETE", S, "/v3/workspaces/w1/sessions/s1", null);
+    }
+
+    [Fact]
+    public async Task DeleteWorkspaceAsync_Shape()
+    {
+        var (_, request) = await Send(
+            async c =>
+            {
+                await c.DeleteWorkspaceAsync("w1");
+                return 0;
+            },
+            HttpStatusCode.Accepted,
+            null);
+
+        AssertRequest(request, "DELETE", W, "/v3/workspaces/w1", null);
+    }
+
+    [Fact]
+    public async Task ListJobsAsync_Shape()
+    {
+        var (page, request) = await Send(
+            c => c.ListJobsAsync("w1", new PageRequest(2, 10, Reverse: true)),
+            HttpStatusCode.OK,
+            PageOf("""{"id":"7","type":"deletion","target":{"kind":"session","id":"s1"},"status":"completed","attempts":1,"error":"superseded_by_workspace_deletion","created_at":"2026-10-08T12:00:00Z","completed_at":"2026-10-08T12:00:00Z"}""", page: 2, size: 10));
+
+        AssertRequest(request, "GET", W + "/jobs", "/v3/workspaces/w1/jobs?page=2&size=10&reverse=true", null);
+        AssertPage(page, page: 2, size: 10);
+        var created = DateTimeOffset.Parse(CreatedAt, System.Globalization.CultureInfo.InvariantCulture);
+        page.Items.Single().ShouldBe(new Job("7", "deletion", new JobTarget("session", "s1"), "completed", 1,
+            "superseded_by_workspace_deletion", created, created));
+
+        var (pending, _) = await Send(c => c.ListJobsAsync("w1", new PageRequest()), HttpStatusCode.OK,
+            PageOf("""{"id":"8","type":"deletion","target":{"kind":"workspace","id":"w1"},"status":"pending","attempts":0,"created_at":"2026-10-08T12:00:00Z"}""", page: 1, size: 50));
+        pending.Items.Single().Error.ShouldBeNull();
+        pending.Items.Single().CompletedAt.ShouldBeNull();
     }
 
     [Fact]

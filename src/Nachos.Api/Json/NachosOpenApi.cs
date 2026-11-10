@@ -52,6 +52,12 @@ internal static class NachosOpenApi
         {
             DescribeMemoryBounds(schema, property!.Name);
         }
+        else if ((declaringType == typeof(MessageSearchOptions) || declaringType == typeof(WorkspaceMessageSearchOptions)) &&
+            property!.Name == "limit")
+        {
+            schema.Minimum = "1";
+            schema.Maximum = "100";
+        }
         if (type == typeof(Workspace) || type == typeof(Peer) || type == typeof(Session) || type == typeof(Message))
         {
             schema.Required?.Remove("metadata");
@@ -67,12 +73,16 @@ internal static class NachosOpenApi
     private static readonly string[] ConclusionLevels =
         [ConclusionLevelNames.Explicit, ConclusionLevelNames.Deductive, ConclusionLevelNames.Inductive, ConclusionLevelNames.Contradiction];
 
-    // Response members the manifest marks optional although the records always carry them.
+    // Members the manifest marks optional although the records always carry them (responses) or default them (requests).
     private static readonly Dictionary<Type, string[]> WireRequired = new()
     {
         [typeof(Conclusion)] = ["id", "content", "observer_id", "observed_id", "created_at"],
         [typeof(PeerCardResponse)] = [],
         [typeof(PeerContext)] = ["peer_id", "target_id"],
+        [typeof(SessionContext)] = ["id", "messages"],
+        [typeof(SessionSummaries)] = ["id"],
+        [typeof(MessageSearchOptions)] = ["query"],
+        [typeof(WorkspaceMessageSearchOptions)] = ["query"],
         [typeof(QueueStatus)] = ["total_work_units", "completed_work_units", "in_progress_work_units", "pending_work_units"],
         [typeof(SessionQueueStatus)] = ["total_work_units", "completed_work_units", "in_progress_work_units", "pending_work_units"],
     };

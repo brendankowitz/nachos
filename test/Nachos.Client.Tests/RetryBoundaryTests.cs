@@ -268,6 +268,15 @@ public sealed class RetryBoundaryTests
         ["representation"] = (c => c.GetRepresentationAsync("w1", "alice", new PeerRepresentationGet()), """{"representation":""}"""),
         ["context"] = (c => c.GetPeerContextAsync("w1", "alice", new PeerContextQuery()), """{"peer_id":"alice","target_id":"alice","representation":null,"peer_card":null}"""),
         ["queue"] = (c => c.GetQueueStatusAsync("w1"), """{"total_work_units":0,"completed_work_units":0,"in_progress_work_units":0,"pending_work_units":0,"sessions":{}}"""),
+        ["workspace search"] = (c => c.SearchWorkspaceAsync("w1", new WorkspaceMessageSearchOptions("q")), "[]"),
+        ["session search"] = (c => c.SearchSessionAsync("w1", "s1", new MessageSearchOptions("q")), "[]"),
+        ["peer search"] = (c => c.SearchPeerAsync("w1", "alice", new MessageSearchOptions("q")), "[]"),
+        ["session context"] = (c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery()), """{"id":"s1","messages":[]}"""),
+        ["summaries"] = (c => c.GetSessionSummariesAsync("w1", "s1"), """{"id":"s1"}"""),
+        ["jobs"] = (c => c.ListJobsAsync("w1", new PageRequest()), """{"items":[],"total":0,"page":1,"size":50,"pages":0}"""),
+        // A repeated delete accepts the same job, so a replay is safe.
+        ["delete session"] = (c => c.DeleteSessionAsync("w1", "s1"), ""),
+        ["delete workspace"] = (c => c.DeleteWorkspaceAsync("w1"), ""),
     };
 
     private const string ConclusionJson =

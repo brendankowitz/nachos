@@ -9,10 +9,8 @@ namespace Nachos.Core;
 
 /// <summary>The M3 session context and summaries routes (<c>GET S/context</c>, <c>GET S/summaries</c>).</summary>
 /// <remarks>
-/// These are not yet on <see cref="INachosClient"/>: the interface is one method per wire route, implemented over HTTP
-/// too, and the routes and the HTTP client arrive together in M3 Task 9. Task 9's <c>S/context</c> route must also
-/// enforce, with a test, that a peer-scoped key is an active member of this session and of every session named in
-/// <c>sessions</c> (401 otherwise); this service has no notion of keys and checks neither.
+/// This service has no notion of keys. The HTTP host's authorization checks that a peer-scoped key is an active member
+/// of this session and of every session named in <c>sessions</c>, and that it reads only its own perspective.
 /// </remarks>
 public sealed partial class NachosService
 {

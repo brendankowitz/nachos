@@ -7,7 +7,7 @@ internal static class WireManifest
 {
     /// <summary>Nachos extension routes (spec §9.4) that the Honcho manifest cannot contain.</summary>
     public static readonly IReadOnlySet<(string Method, string Path)> ExtensionRoutes =
-        new HashSet<(string, string)> { ("POST", "/v3/admin/grants") };
+        new HashSet<(string, string)> { ("POST", "/v3/admin/grants"), ("GET", "/v3/workspaces/{workspace_id}/jobs") };
 
     private static readonly Lazy<IReadOnlyList<(string Method, string Path)>> LazyRoutes = new(Load);
 

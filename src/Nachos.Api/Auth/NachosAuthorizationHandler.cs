@@ -34,23 +34,55 @@ internal sealed class NachosAuthorizationHandler(IMemoryStore store, IConfigurat
         }
         if (access != RouteAccess.Session) return;
         var session = http.Request.RouteValues["session_id"] as string;
+        var isContext = template == SessionContextTemplate;
         if (principal.Session is not null && principal.Session == session)
         {
-            context.Succeed(requirement);
+            if (!isContext || SessionKeyMayReadContext(http.Request, session)) context.Succeed(requirement);
             return;
         }
         if (principal.Peer is null || session is null ||
             !MemberReadRoutes.All.Contains(http.Request.Method + " " + template)) return;
         if (template.EndsWith("/config", StringComparison.Ordinal) &&
             principal.Peer != http.Request.RouteValues["peer_id"] as string) return;
+        if (!await IsActiveMemberAsync(workspace, session, principal.Peer, http.RequestAborted)) return;
+        if (!isContext || await PeerKeyMayReadContextAsync(http.Request, workspace, session, principal.Peer))
+            context.Succeed(requirement);
+    }
+
+    private const string SessionContextTemplate = "/v3/workspaces/{workspace_id}/sessions/{session_id}/context";
+
+    // S/context reads beyond its own session: "sessions" widens the representation's allowlist, the perspective chooses
+    // whose view is read, and "scope" picks a scope's view. Honcho's docs: a scope "requires a workspace- or admin-level
+    // key", "a peer-scoped key must be an active member of every session named", a peer-scoped key "cannot ... act on
+    // other peers", and "a session-scoped key is confined to its own session". Workspace and admin keys pass as given.
+    // Until M6, NachosService reads with an unrestricted policy, so this is the only gate for scoped keys.
+    private static bool SessionKeyMayReadContext(HttpRequest request, string session) =>
+        QueryParameters.Text(request, "scope") is null &&
+        (QueryParameters.Texts(request, "sessions") ?? []).All(named => named == session);
+
+    private async Task<bool> PeerKeyMayReadContextAsync(HttpRequest request, string workspace, string session, string peer)
+    {
+        if (QueryParameters.Text(request, "scope") is not null) return false;
+        var observer = QueryParameters.Text(request, "peer_perspective") ?? QueryParameters.Text(request, "peer_target");
+        if (observer is not null && observer != peer) return false;
+        foreach (var named in (QueryParameters.Texts(request, "sessions") ?? []).Distinct(StringComparer.Ordinal))
+        {
+            if (named != session && !await IsActiveMemberAsync(workspace, named, peer, request.HttpContext.RequestAborted))
+                return false;
+        }
+        return true;
+    }
+
+    private async Task<bool> IsActiveMemberAsync(string workspace, string session, string peer, CancellationToken ct)
+    {
         try
         {
-            if (await store.Sessions.IsActiveMemberAsync(workspace, session, principal.Peer, http.RequestAborted))
-                context.Succeed(requirement);
+            return await store.Sessions.IsActiveMemberAsync(workspace, session, peer, ct);
         }
         catch (NotFoundException)
         {
             // A missing session cannot grant membership; operational store failures must propagate.
+            return false;
         }
     }
 

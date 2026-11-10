@@ -184,6 +184,54 @@ def test_idempotent_replay_returns_same_batch(nachos, workspace_id: str):
     assert len(list(plain_session.messages(filters=MATCH_ALL))) == 6
 
 
+def test_session_context_and_search(honcho: Honcho):
+    alice, bob = honcho.peer("alice"), honcho.peer("bob")
+    session = honcho.session("s1")
+    session.add_peers([alice, bob])
+    contents = ["I like green tea", "The train was late", "See you tomorrow"]
+    session.add_messages([alice.message(contents[0]), bob.message(contents[1]), alice.message(contents[2])])
+
+    # Three messages are under every summary threshold, so the context is the messages alone, oldest first.
+    context = session.context(summary=True, tokens=2000)
+    assert [m.content for m in context.messages] == contents
+    assert context.summary is None
+
+    # Lexical retrieval finds a message as soon as it is stored; vector matches may add others, so only membership is
+    # checked.
+    assert contents[0] in [m.content for m in session.search("green tea")]
+    assert contents[0] in [m.content for m in bob.search("green tea")]
+
+
+def test_session_delete_is_accepted_and_blocks_writes(nachos, honcho: Honcho, workspace_id: str):
+    alice = honcho.peer("alice")
+    doomed = honcho.session("s1")
+    doomed.add_peers([alice])
+    doomed.add_messages([alice.message("soon gone")])
+    kept = honcho.session("s2")
+    kept.add_peers([alice])
+
+    # 202 with no body: the SDK call returns without raising.
+    doomed.delete()
+
+    # Plain HTTP, because the SDK handles re-create a session on first use. A write under the deleted session is a 409
+    # while its job runs, or a 404 once the job has removed it.
+    base = f"{nachos.base_url}/v3/workspaces/{workspace_id}"
+    headers = {"Authorization": f"Bearer {nachos.admin_key}"}
+    late = httpx.post(f"{base}/sessions/s1/messages", json={"messages": [{"content": "late", "peer_id": "alice"}]}, headers=headers)
+    assert late.status_code in (404, 409)
+    jobs = httpx.get(f"{base}/jobs", headers=headers)
+    assert jobs.status_code == 200
+    assert [(job["type"], job["target"]) for job in jobs.json()["items"]] == [("deletion", {"kind": "session", "id": "s1"})]
+
+    # Honcho's DELETE W: "Returns 409 Conflict if the workspace contains active sessions."
+    with pytest.raises(Exception) as conflict:
+        honcho.delete_workspace(workspace_id)
+    assert getattr(conflict.value, "status", None) == 409
+
+    kept.delete()
+    honcho.delete_workspace(workspace_id)
+
+
 def test_unimplemented_call_surfaces_501_promptly(nachos, workspace_id: str):
     client = nachos.client(workspace_id, timeout=3)
     alice = client.peer("alice")

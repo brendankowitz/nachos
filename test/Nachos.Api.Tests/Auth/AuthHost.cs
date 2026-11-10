@@ -72,7 +72,7 @@ internal sealed class AuthHost : NachosApiFactory
         using var response = await Http.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
         ((int)response.StatusCode).ShouldBe(status, text);
-        if (status == 204) { text.ShouldBeEmpty(); return default; }
+        if (status is 202 or 204) { text.ShouldBeEmpty(); return default; }
         using var json = JsonDocument.Parse(text);
         return json.RootElement.Clone();
     }
