@@ -49,6 +49,15 @@ internal static class SessionEndpoints
             return TypedResults.Ok(await client.UpdateSessionAsync(workspace_id, session_id, body.Object("metadata"),
                 body.Optional("configuration", NachosJsonContext.Default.SessionConfiguration, strict: true), http.RequestAborted));
         }).Accepts<SessionUpdate>("application/json").Produces<Session>();
+        group.MapDelete("/{session_id}", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
+        {
+            await client.DeleteSessionAsync(workspace_id, session_id, http.RequestAborted);
+            return TypedResults.Accepted((string?)null);
+        }).Produces(202).Produces<ErrorResponse>(409)
+            .WithDescription("Accepts the deletion and returns 202 with no body: the session is inactive at once, and a job " +
+                "deletes it with its messages, summaries and session-attributed conclusions (see GET W/jobs). Once accepted, " +
+                "every write under the session is a 409, and a repeated delete is a 202 naming the same job. 409 when the " +
+                "workspace is being deleted.");
         group.MapPost("/{session_id}/peers", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);

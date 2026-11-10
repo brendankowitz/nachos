@@ -50,4 +50,11 @@ namespace Nachos.Api.Json;
 [JsonSerializable(typeof(RepresentationResponse))]
 [JsonSerializable(typeof(PeerContext))]
 [JsonSerializable(typeof(QueueStatus))]
+[JsonSerializable(typeof(MessageSearchOptions))]
+[JsonSerializable(typeof(WorkspaceMessageSearchOptions))]
+[JsonSerializable(typeof(SessionContext))]
+[JsonSerializable(typeof(SessionSummaries))]
+[JsonSerializable(typeof(Summary))]
+[JsonSerializable(typeof(Job))]
+[JsonSerializable(typeof(Page<Job>))]
 public partial class NachosJsonContext : JsonSerializerContext;

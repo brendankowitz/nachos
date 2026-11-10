@@ -5,9 +5,8 @@ namespace Nachos.Core;
 
 /// <summary>Queued deletion (<c>DELETE W</c>, <c>DELETE S</c>, both 202) and job listing (<c>GET W/jobs</c>, D6).</summary>
 /// <remarks>
-/// These are not yet on <see cref="INachosClient"/>: the interface is one method per wire route, implemented over HTTP
-/// too, and the routes and the HTTP client arrive together in M3 Task 9. A delete only accepts the job; the job removes the
-/// resource later, and its progress is listed by <see cref="ListJobsAsync"/>.
+/// A delete only accepts the job; the job removes the resource later, and its progress is listed by
+/// <see cref="ListJobsAsync"/>.
 /// </remarks>
 public sealed partial class NachosService
 {

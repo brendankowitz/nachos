@@ -35,6 +35,12 @@ public sealed partial class WireCoverageTests : ApiTest
         "GET /v3/workspaces/{workspace_id}/peers/{peer_id}/context",
         "POST /v3/workspaces/{workspace_id}/peers/{peer_id}/representation",
         "GET /v3/workspaces/{workspace_id}/queue/status",
+        "DELETE /v3/workspaces/{workspace_id}", "DELETE /v3/workspaces/{workspace_id}/sessions/{session_id}",
+        "POST /v3/workspaces/{workspace_id}/search", "POST /v3/workspaces/{workspace_id}/sessions/{session_id}/search",
+        "POST /v3/workspaces/{workspace_id}/peers/{peer_id}/search",
+        "GET /v3/workspaces/{workspace_id}/sessions/{session_id}/context",
+        "GET /v3/workspaces/{workspace_id}/sessions/{session_id}/summaries",
+        "GET /v3/workspaces/{workspace_id}/jobs",
     };
 
     /// <summary>The routes M2 implemented: exactly these left the 501 list (plan Task 8).</summary>
@@ -50,21 +56,35 @@ public sealed partial class WireCoverageTests : ApiTest
         ("GET", "/v3/workspaces/{workspace_id}/queue/status"),
     ];
 
+    /// <summary>The routes M3 implemented: exactly these left the 501 list (plan Task 9). <c>W/jobs</c> is an extension.</summary>
+    private static readonly (string Method, string Path)[] M3Routes =
+    [
+        ("DELETE", "/v3/workspaces/{workspace_id}"), ("DELETE", "/v3/workspaces/{workspace_id}/sessions/{session_id}"),
+        ("POST", "/v3/workspaces/{workspace_id}/search"), ("POST", "/v3/workspaces/{workspace_id}/sessions/{session_id}/search"),
+        ("POST", "/v3/workspaces/{workspace_id}/peers/{peer_id}/search"),
+        ("GET", "/v3/workspaces/{workspace_id}/sessions/{session_id}/context"),
+        ("GET", "/v3/workspaces/{workspace_id}/sessions/{session_id}/summaries"),
+        ("GET", "/v3/workspaces/{workspace_id}/jobs"),
+    ];
+
+    private static readonly string[] Extensions = ["POST /v3/admin/grants", "GET /v3/workspaces/{workspace_id}/jobs"];
+
     [Fact]
-    public void ImplementedSet_IsM1PlusExactlyTheM2Pairs()
+    public void ImplementedSet_IsM1PlusExactlyTheM2AndM3Pairs()
     {
         // M1 implemented 22 manifest routes plus the grants extension; every other manifest route must still answer 501
         // (EveryManifestRoute_IsMapped).
-        Implemented.Count.ShouldBe(23 + M2Routes.Length);
-        M2Routes.ShouldAllBe(route => Implemented.Contains(route.Method + " " + route.Path));
+        Implemented.Count.ShouldBe(23 + M2Routes.Length + M3Routes.Length);
+        M2Routes.Concat(M3Routes).ShouldAllBe(route => Implemented.Contains(route.Method + " " + route.Path));
         var manifest = Routes().Select(route => (string)route[0] + " " + (string)route[1]).ToHashSet(StringComparer.Ordinal);
-        Implemented.Where(route => route != "POST /v3/admin/grants").ShouldAllBe(route => manifest.Contains(route));
+        Implemented.Where(route => !Extensions.Contains(route)).ShouldAllBe(route => manifest.Contains(route));
+        Extensions.ShouldAllBe(route => !manifest.Contains(route));
     }
 
-    public static TheoryData<string, string> M2RouteData()
+    public static TheoryData<string, string> ImplementedMemoryRouteData()
     {
         var data = new TheoryData<string, string>();
-        foreach (var (method, path) in M2Routes)
+        foreach (var (method, path) in M2Routes.Concat(M3Routes).Where(route => !Extensions.Contains(route.Method + " " + route.Path)))
         {
             data.Add(method, path);
         }
@@ -72,8 +92,8 @@ public sealed partial class WireCoverageTests : ApiTest
     }
 
     [Theory]
-    [MemberData(nameof(M2RouteData))]
-    public async Task M2Route_DocumentsExactlyTheManifestQueryParameters(string method, string path)
+    [MemberData(nameof(ImplementedMemoryRouteData))]
+    public async Task MemoryRoute_DocumentsExactlyTheManifestQueryParameters(string method, string path)
     {
         using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "honcho-v3-wire.json")));
         var expected = manifest.RootElement.GetProperty("routes").EnumerateArray()

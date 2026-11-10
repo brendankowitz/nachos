@@ -214,6 +214,62 @@ test('idempotent replay returns the same batch', async () => {
   assert.equal((await (await plainSession.messages()).toArray()).length, 6);
 });
 
+test('session context and search', async () => {
+  const honcho = client(freshWorkspace());
+  const [alice, bob] = await Promise.all(['alice', 'bob'].map((id) => honcho.peer(id)));
+  const session = await honcho.session('s1');
+  await session.addPeers([alice, bob]);
+  const contents = ['I like green tea', 'The train was late', 'See you tomorrow'];
+  await session.addMessages([alice.message(contents[0]), bob.message(contents[1]), alice.message(contents[2])]);
+
+  // Three messages are under every summary threshold, so the context is the messages alone, oldest first.
+  const context = await session.context({ summary: true, tokens: 2000 });
+  assert.deepEqual(context.messages.map((m) => m.content), contents);
+  assert.equal(context.summary ?? null, null);
+
+  // The conformance host is in-memory, where lexical search sees a message as soon as it is stored (on SQL the full-text
+  // index populates asynchronously). Vector matches may add other messages, so only membership is checked.
+  assert.ok(Array.from(await session.search('green tea'), (m) => m.content).includes(contents[0]));
+  assert.ok(Array.from(await bob.search('green tea'), (m) => m.content).includes(contents[0]));
+});
+
+test('session delete is accepted and blocks writes', async () => {
+  const workspaceId = freshWorkspace();
+  const honcho = client(workspaceId);
+  const alice = await honcho.peer('alice');
+  const doomed = await honcho.session('s1');
+  await doomed.addPeers([alice]);
+  await doomed.addMessages([alice.message('soon gone')]);
+  const kept = await honcho.session('s2');
+  await kept.addPeers([alice]);
+
+  // 202 with no body: the SDK call resolves.
+  await doomed.delete();
+
+  // Plain fetch, because the SDK handles re-create a session on first use. A write under the deleted session is a 409
+  // while its job runs, or a 404 once the job has removed it.
+  const base = `${env.NACHOS_BASE_URL}/v3/workspaces/${workspaceId}`;
+  const headers = { Authorization: `Bearer ${env.NACHOS_ADMIN_KEY}`, 'Content-Type': 'application/json' };
+  const late = await fetch(`${base}/sessions/s1/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ messages: [{ content: 'late', peer_id: 'alice' }] }),
+  });
+  assert.ok([404, 409].includes(late.status), `expected 404 or 409, got ${late.status}`);
+  const jobs = await fetch(`${base}/jobs`, { headers });
+  assert.equal(jobs.status, 200);
+  assert.deepEqual((await jobs.json()).items.map((job) => [job.type, job.target]), [['deletion', { kind: 'session', id: 's1' }]]);
+
+  // Honcho's DELETE W: "Returns 409 Conflict if the workspace contains active sessions."
+  await assert.rejects(honcho.deleteWorkspace(workspaceId), (error) => {
+    assert.equal(error?.status, 409);
+    return true;
+  });
+
+  await kept.delete();
+  await honcho.deleteWorkspace(workspaceId);
+});
+
 test('an unimplemented call surfaces 501 promptly', async () => {
   const honcho = client(freshWorkspace(), { timeout: 3_000 });
   const alice = await honcho.peer('alice');

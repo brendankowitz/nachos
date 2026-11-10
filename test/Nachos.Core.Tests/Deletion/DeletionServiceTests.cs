@@ -156,7 +156,8 @@ public sealed class DeletionServiceTests
             configure: builder => builder.Services.TryAddEnumerable(ServiceDescriptor.Scoped<IWorkHandler, DeletionService>()),
             configureNachos: options => options.Deriver.MaxAttempts = 3);
         await fixture.SeedAsync();
-        fixture.Store.PurgeFailure = new InvalidOperationException("the purge failed");
+        // The message stands in for provider text that must never reach W/jobs (a server name, a connection string).
+        fixture.Store.PurgeFailure = new InvalidOperationException("Server=tcp:secret-host.example;Password=hunter2 the purge failed");
         var acceptance = await fixture.Store.Deletion.BeginDeleteSessionAsync(WorkerFixture.WorkspaceId, WorkerFixture.SessionId, Ct);
 
         await fixture.StartConsumerAsync();
@@ -169,7 +170,9 @@ public sealed class DeletionServiceTests
         var job = (await fixture.Store.Deletion.ListJobsAsync(WorkerFixture.WorkspaceId, new PageRequest(), Ct)).Items.Single();
         job.Id.ShouldBe(acceptance.JobId);
         job.Attempts.ShouldBe(3);
-        job.Error.ShouldNotBeNull().ShouldContain("the purge failed");
+        job.Error.ShouldBe("handler_failed: System.InvalidOperationException");
+        (await new Nachos.Core.Jobs.JobService(fixture.Store).ListAsync(WorkerFixture.WorkspaceId, new PageRequest(), Ct))
+            .Items.Single().Error.ShouldBe("handler_failed: System.InvalidOperationException");
         fixture.Store.Failures.Count.ShouldBe(3, "every attempt failed the same item, with backoff");
         (await fixture.Store.Sessions.GetAsync(WorkerFixture.WorkspaceId, WorkerFixture.SessionId, Ct))
             .ShouldNotBeNull().State.ShouldBe(LifecycleState.Deleting);
