@@ -18,10 +18,11 @@ namespace Nachos.DataLayer.SqlServer.Storage;
 /// other work, every other lease row it bumps before any parent row, so it never waits for a lease while holding a parent:
 /// otherwise a worker holding its lease and waiting for the workspace's S, queued behind an acceptance's X that waits for
 /// the job's S, would close a cycle. Between its lease rows and the parents, a job step reads its own deletion item under S
-/// to prove it still open: a claimer's update lock on it is compatible with S, and the one writer that closes it (a
-/// workspace job's cancel step, superseding it) takes every lease row it bumps before it, so it never waits for one
-/// after. Acceptance never touches
-/// lease rows.
+/// (U for removal, which then deletes or completes it) to prove it still open. A claimer's update lock on it is compatible
+/// with S. The one writer that closes it, a workspace job's cancel step superseding it, takes every lease row it bumps
+/// before the item, so it does not wait for a lease row after it, as long as the unit's lease row existed when the step
+/// read its units. On a unit's first claim there is a narrow window in which the lease row is inserted after that read; a
+/// deadlock is then possible, and its victim is retried as a transient failure. Acceptance never touches lease rows.
 /// </para>
 /// <para>
 /// Shared locks come from <c>WITH (REPEATABLEREAD)</c> alone, which locks even under read committed snapshot, never
@@ -223,14 +224,14 @@ internal static class WriteAdmission
     /// <summary>
     /// The barrier of a deletion job's cancel and purge steps (spec §13.1, the deletion-maintenance exemption): S on the
     /// workspace row, then, for a session target, S on the session row, both held to commit; the target must be being
-    /// deleted by one of the lease's items, still open (read under S before the parent rows). The caller already holds its lease row (and any other lease row it takes), so
-    /// this runs after every lease row of the transaction.
+    /// deleted by one of the lease's items, still open (read under S before the parent rows). The caller already holds its
+    /// lease row (and any other lease row it takes), so this runs after every lease row of the transaction.
     /// </summary>
     /// <exception cref="LeaseLostException">The target is gone, not being deleted, or being deleted by another item.</exception>
     /// <exception cref="InvalidOperationException">No transaction is open on <paramref name="db"/>.</exception>
     public static async Task AdmitDeletionJobAsync(NachosDbContext db, WorkLease lease, DeletionScope scope, CancellationToken ct)
     {
-        var open = await OpenItemsAsync(db, lease, ct);
+        var open = await OpenItemsAsync(db, lease, SharedLock, ct);
         if (scope.SessionId is not { } sessionId)
         {
             RequireJob(await ReadParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), open, lease);
@@ -244,13 +245,14 @@ internal static class WriteAdmission
     /// <summary>
     /// The barrier of a deletion job's removal: for a session target, S on the workspace row and then X on the session row;
     /// for a workspace target, X on the workspace row. Each X is taken directly by an <c>UPDATE</c>, never S first. The
-    /// target must be being deleted by one of the lease's items, still open (read under S before the parent rows). The caller already holds its lease row.
+    /// target must be being deleted by one of the lease's items, still open (read under U before the parent rows, since
+    /// removal then completes or deletes it, so its lock is never converted from S). The caller already holds its lease row.
     /// </summary>
     /// <exception cref="LeaseLostException">The target is gone, not being deleted, or being deleted by another item.</exception>
     /// <exception cref="InvalidOperationException">No transaction is open on <paramref name="db"/>.</exception>
     public static async Task LockDeletionTargetAsync(NachosDbContext db, WorkLease lease, DeletionScope scope, CancellationToken ct)
     {
-        var open = await OpenItemsAsync(db, lease, ct);
+        var open = await OpenItemsAsync(db, lease, UpdateLock, ct);
         if (scope.SessionId is not { } sessionId)
         {
             RequireJob(await LockParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), open, lease);
@@ -367,17 +369,18 @@ internal static class WriteAdmission
     }
 
     /// <summary>
-    /// The ids of the lease's items that are still open, read by key under S held to commit: after the lease row and before
-    /// the parent rows. A deletion item superseded by its workspace's job is no longer open, so a lease taken on it just
-    /// before that job fenced the unit cannot purge alongside the workspace job.
+    /// The ids of the lease's items that are still open, read by key under <paramref name="hints"/> (S, or U when the caller
+    /// goes on to change them, so the lock is never converted from S) held to commit: after the lease row and before the
+    /// parent rows. A deletion item superseded by its workspace's job is no longer open, so a lease taken on it just before
+    /// that job fenced the unit cannot purge alongside the workspace job.
     /// </summary>
-    private static async Task<HashSet<long>> OpenItemsAsync(NachosDbContext db, WorkLease lease, CancellationToken ct)
+    private static async Task<HashSet<long>> OpenItemsAsync(NachosDbContext db, WorkLease lease, string hints, CancellationToken ct)
     {
         RequireTransaction(db);
         var ids = await db.Database
             .SqlQueryRaw<long>(
                 string.Concat(
-                    "SELECT i.Id AS [Value] FROM dbo.WorkItems AS i WITH (", SharedLock, ", FORCESEEK) ",
+                    "SELECT i.Id AS [Value] FROM dbo.WorkItems AS i WITH (", hints, ", FORCESEEK) ",
                     "JOIN OPENJSON(@ids) WITH (Id bigint '$') AS j ON i.Id = j.Id WHERE i.Status IN (0, 1)"),
                 SqlParameters.LongText("@ids", JsonSerializer.Serialize(lease.Items.Select(item => item.Id).Order())))
             .ToListAsync(ct);

@@ -682,8 +682,9 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
         var (workspace, first) = await NewSessionAsync(store);
         var second = Unique("sess");
         await store.Sessions.GetOrCreateAsync(workspace, second, null, null, null, Ct);
+        await store.Sessions.AddPeersAsync(workspace, first, Members("alice", "bob"), Ct);
         await store.Messages.AppendAsync(workspace, first, new MessageAppend([Msg("held")]), Ct);
-        var a = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", first)], Ct)).Single();
+        var a =(await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", first)], Ct)).Single();
         var b = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes jazz", second)], Ct)).Single();
         var dependent = (await store.Conclusions.InsertAsync(
             workspace, [Conclusion("bob has calm tastes", null, ConclusionLevel.Inductive, a.PublicId, b.PublicId)], Ct)).Single();
