@@ -40,6 +40,7 @@ dotnet run --project test/Nachos.Benchmarks -c Release -- --scales 100000,250000
 | --- | --- | --- |
 | `--scales` | `100000,250000,500000,1000000` | Ascending message counts of the main workspace; each step adds to the previous one. |
 | `--queries` | `200` | The most queries per series. |
+| `--vector-caps` | (none) | Comma-separated candidate caps; each adds a store-level workspace vector series comparing only the newest that many chunks. |
 | `--search-budget-seconds` | `3600` | The `W/search` and `S/search` series stop after this long, so they normally reach `--queries`. |
 | `--budget-seconds` | `60` | Every other series stops after this long, once it has run 10 queries. |
 | `--memory-gb` | `12` | The container's memory cap; SQL Server's own limit is 2 GB less, leaving room for the full-text daemon. |

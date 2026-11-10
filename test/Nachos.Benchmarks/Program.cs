@@ -12,6 +12,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Benchmarks;
+using Nachos.Core.Configuration;
 using Nachos.DataLayer.SqlServer.Search;
 using Testcontainers.MsSql;
 
@@ -56,6 +57,7 @@ try
             $"stop after {settings.SearchBudget.TotalSeconds:N0} s, the others after {settings.Budget.TotalSeconds:N0} s (at least 10 queries); " +
             $"limit = {Limit} (each retrieval takes {Take}). A query that hits the 30 s command timeout counts as 30,000 ms. " +
             $"A series of fewer than {SeriesRunner.IndicativeBelow} queries is marked indicative only.")
+        .AppendLine(CultureInfo.InvariantCulture, $"- W/search, S/search and P/search use the product default Nachos:Search:MaxVectorCandidates = {DefaultCap()}; the store-level \"vector, workspace\" series compares every chunk.")
         .AppendLine(fullTextInstalled ? "" : "- **Full-Text Search is not installed: the fts series were skipped.**")
         .AppendLine();
 
@@ -144,11 +146,17 @@ try
 
         var store = likeScope.ServiceProvider.GetRequiredService<IMemoryStore>();
         results.Add(await runner.RunAsync("vector, workspace", settings.Budget, (i, c) =>
-            store.Search.VectorAsync(Request(Main, new MessageSearchScope.Workspace()), queries.Vector(i), Take, c), token));
+            store.Search.VectorAsync(Request(Main, new MessageSearchScope.Workspace()), queries.Vector(i), Take, null, c), token));
+        foreach (var cap in settings.VectorCaps)
+        {
+            results.Add(await runner.RunAsync($"vector, workspace, newest {cap:N0} chunks", settings.Budget, (i, c) =>
+                store.Search.VectorAsync(Request(Main, new MessageSearchScope.Workspace()), queries.Vector(i), Take, cap, c), token));
+        }
+
         results.Add(await runner.RunAsync("vector, session", settings.Budget, (i, c) =>
-            store.Search.VectorAsync(Request(Main, new MessageSearchScope.Session(queries.Session(i))), queries.Vector(i), Take, c), token));
+            store.Search.VectorAsync(Request(Main, new MessageSearchScope.Session(queries.Session(i))), queries.Vector(i), Take, null, c), token));
         results.Add(await runner.RunAsync("vector, peer", settings.Budget, (i, c) =>
-            store.Search.VectorAsync(Request(Main, new MessageSearchScope.PeerPerspective(queries.Peer(i))), queries.Vector(i), Take, c), token));
+            store.Search.VectorAsync(Request(Main, new MessageSearchScope.PeerPerspective(queries.Peer(i))), queries.Vector(i), Take, null, c), token));
 
         foreach (var (mode, provider) in clients)
         {
@@ -204,11 +212,22 @@ finally
 {
     if (container is not null)
     {
-        await container.DisposeAsync();
+        // A failed removal (for example after the Docker engine restarted) must not hide the error that ended the run.
+        try
+        {
+            await container.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Removing the SQL Server container failed: {ex.Message}");
+        }
     }
 }
 
 static MessageSearchRequest Request(string workspace, MessageSearchScope scope) => new(workspace, scope, null);
+
+static string DefaultCap() =>
+    new NachosOptions().Search.MaxVectorCandidates?.ToString("N0", CultureInfo.InvariantCulture) ?? "none";
 
 static ServiceProvider BuildServices(string connectionString)
 {
