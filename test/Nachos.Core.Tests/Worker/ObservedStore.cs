@@ -8,7 +8,7 @@ namespace Nachos.Core.Tests.Worker;
 /// Passes every call to <paramref name="inner"/> and records the worker-facing queue and idempotency calls, so tests can
 /// wait for a poll, a renewal or a reconciler tick instead of guessing how long one takes.
 /// </summary>
-internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore, IEmbeddingStore
+internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore, IEmbeddingStore, IDeletionStore
 {
     private int _renewals;
     private int _ticks;
@@ -27,7 +27,7 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public IEmbeddingStore Embeddings => this;
     public ISummaryStore Summaries => inner.Summaries;
     public IMessageSearch Search => inner.Search;
-    public IDeletionStore Deletion => inner.Deletion;
+    public IDeletionStore Deletion => this;
 
     /// <summary>A <see cref="TransientStoreException"/> is transient, as a store would report a deadlock.</summary>
     public bool IsTransientFailure(Exception exception) =>
@@ -185,6 +185,27 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct) =>
         inner.Embeddings.ResetSpaceAsync(space, batchSize, ct);
+
+    /// <summary>While set, each <see cref="PurgeBatchAsync"/> throws it instead of purging.</summary>
+    public volatile Exception? PurgeFailure;
+
+    public Task<DeletionAcceptance> BeginDeleteSessionAsync(string workspaceName, string sessionName, CancellationToken ct) =>
+        inner.Deletion.BeginDeleteSessionAsync(workspaceName, sessionName, ct);
+
+    public Task<DeletionAcceptance> BeginDeleteWorkspaceAsync(string workspaceName, CancellationToken ct) =>
+        inner.Deletion.BeginDeleteWorkspaceAsync(workspaceName, ct);
+
+    public Task CancelOtherWorkAsync(WorkLease lease, DeletionTarget target, CancellationToken ct) =>
+        inner.Deletion.CancelOtherWorkAsync(lease, target, ct);
+
+    public Task<bool> PurgeBatchAsync(WorkLease lease, DeletionTarget target, int batchSize, CancellationToken ct) =>
+        PurgeFailure is { } failure ? throw failure : inner.Deletion.PurgeBatchAsync(lease, target, batchSize, ct);
+
+    public Task RemoveAsync(WorkLease lease, DeletionTarget target, CancellationToken ct) => inner.Deletion.RemoveAsync(lease, target, ct);
+
+    public Task<Nachos.Abstractions.Contracts.Page<JobRecord>> ListJobsAsync(
+        string workspaceName, Nachos.Abstractions.PageRequest page, CancellationToken ct) =>
+        inner.Deletion.ListJobsAsync(workspaceName, page, ct);
 }
 
 /// <summary>A store failure that <see cref="ObservedStore.IsTransientFailure"/> reports as transient.</summary>

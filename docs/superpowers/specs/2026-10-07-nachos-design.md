@@ -486,6 +486,8 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 - **`PUT P/card` with a missing `target` is `404` (open parity question).** Honcho's SDK docs say `set_card` "creates the peer automatically", but black-box, the pinned SDKs (2.5.1) send the `PUT` without creating the target first, so against Nachos the call fails with `404` unless the target exists. M2 keeps the `404`: a server-side get-or-create would let a peer-scoped key create arbitrary peers. A later option is to auto-create the target only for workspace and admin keys and keep `404` for peer keys.
 - **The embedding generator is optional in API hosts.** Without one, a semantic read (`C/query`, or a `search_query`) is a `500`, and `POST C` stores conclusions pending for the reconciler.
 
+**`GET W/jobs` (Δ extension; M3 plan D6):** `GET W/jobs?page=&size=` returns the standard page envelope of `Job { id, type, target: { kind, id }, status, attempts, error?, created_at, completed_at? }`, oldest first. `id` is the job's work item id as a string; `type` is `deletion` (the only job type in M3); `target.kind` is `session` or `workspace`, and `target.id` the session's or the workspace's own id; `status` is `pending`, `in_progress`, `completed` or `dead_lettered`; `error` is the last failure, or `superseded_by_workspace_deletion` for a session job completed by its workspace's job. A session's job stays listed after the session is removed; a workspace's jobs go with the workspace.
+
 ### 9.4 Intentional deviations (Δ summary)
 
 1. Additional RFC 9457 fields on errors (the `detail` field is kept).
@@ -768,7 +770,7 @@ Prompts are Markdown templates with typed placeholders, stored as embedded resou
 
 | Operation | Behavior |
 |---|---|
-| `DELETE S` | Sets the session to `Deleting` (§13.1), so the wire shows `is_active = false`, and returns 202. A deletion job removes messages, embeddings, summaries, and session-attributed conclusions. Cross-session derived conclusions remain unless they become **unsupported** (all of their sources deleted). Then they are tombstoned, and a `card_refresh` dream is enqueued. |
+| `DELETE S` | Sets the session to `Deleting` (§13.1), so the wire shows `is_active = false`, and returns 202. A deletion job removes messages, embeddings, summaries, and session-attributed conclusions. Cross-session derived conclusions remain unless they become **unsupported** (all of their sources deleted). Then they are tombstoned, and a `card_refresh` dream is enqueued (from M5; M3 enqueues none, since the dream handler does not exist yet, and in M3 only API-created conclusions can have sources: M3 plan D7). |
 | `DELETE W` | Returns 409 while active sessions exist. Otherwise it sets the workspace to `Deleting` (§13.1), returns 202, and a job cascades the delete. |
 | `DELETE C/{id}` | Tombstones the conclusion immediately (hidden from all reads) and returns 204. The reconciler hard-deletes it later. |
 | Scope session removal | Tombstones the copied explicit facts and dependent derived conclusions, then enqueues a card rebuild and a reconsolidation dream. |
@@ -832,6 +834,13 @@ Every other handler stays blocked.
    - bump the `FencingToken` of every *other* active lease on the resource's work units, so in-flight ordinary handlers fail their fencing check.
 2. Cascade the deletes in bounded batches, checkpointing progress after each batch.
 3. Remove the row last. After that, the name can be reused.
+
+*As built (M3).* Step 1 is one transaction that takes the job's own lease row, then every other lease row it bumps (other deletion units first, then the rest, each in ordinal order), and only then the parent rows: a job step never waits for a lease while it holds a parent row. Every step also reads its own deletion item under S, after its lease row and before the parents, and stops as a lost lease when that item is no longer open (a session job superseded by its workspace's job). Step 2 runs `PurgeBatchAsync` until it reports nothing left, renewing the lease between batches; each batch is one transaction of at most `Deletion:BatchSize` rows (default 500, at most 4,000), deleted child first with `DELETE TOP`. The checkpoint is the set of rows left: a resumed job, in any process, carries on from what the store still holds, and no `deletion_progress` is written. The order is:
+
+- session: message chunks → summaries → the session's conclusions (with their own source rows), and in the same transaction each conclusion citing one just removed is tombstoned when none of its sources is still live (present and not tombstoned); the candidates are locked before that check, so two jobs removing one source each cannot both miss it; tombstoning does not cascade. Known gap: a `POST C` whose `source_ids` name a conclusion a job is removing at that moment reads its sources from a snapshot and can create a conclusion that is born unsupported, which no job re-evaluates → its work items other than its own deletion → memberships → messages;
+- workspace: all its sessions' rows table by table (chunks → summaries → every conclusion with its source rows, none tombstoned → work items other than its own deletion → memberships → messages → sessions) → collections → peer cards → idempotency records → its grants → peers.
+
+Step 3 takes the job's lease row, then X on the target's row, removes what is left, the row itself and the lease. A session's deletion item stays as its `W/jobs` record; a workspace's work items go with it.
 
 Failures retry with backoff on the same item. A dead-lettered deletion leaves the resource `Deleting`, so writes stay blocked, and is surfaced in `W/jobs` and metrics. An operator can re-enqueue it with `nachos` (M7 `inspect`).
 
