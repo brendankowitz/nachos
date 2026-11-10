@@ -17,8 +17,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 {
                     lock (workspace.Gate)
                     {
-                        pending.AddRange(workspace.Conclusions.Values
-                            .Where(c => c.IsLive && c.State == EmbeddingState.Pending)
+                        pending.AddRange(PendingConclusions(workspace)
                             .Select(c => (c.Record.CreatedAt, c.Order, PendingEmbedding.ForConclusion(workspace.Name, c.Record.PublicId, c.Record.Content))));
                         pending.AddRange(PendingChunkSessions(workspace)
                             .SelectMany(session => session.Chunks.Values)
@@ -45,7 +44,7 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                     lock (workspace.Gate)
                     {
                         count += kind == PendingEmbeddingKind.Conclusion
-                            ? workspace.Conclusions.Values.Count(c => c.IsLive && c.State == EmbeddingState.Pending)
+                            ? PendingConclusions(workspace).Count()
                             : PendingChunkSessions(workspace).Sum(session => session.Chunks.Values.Count(chunk => chunk.State == EmbeddingState.Pending));
                     }
                 }
@@ -244,6 +243,10 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
                 return reset;
             },
             ct);
+
+    /// <summary>The conclusions in the backlog: live and pending, and none of a workspace being deleted.</summary>
+    private static IEnumerable<StoredConclusion> PendingConclusions(WorkspaceEntry workspace) =>
+        workspace.IsDeleting ? [] : workspace.Conclusions.Values.Where(c => c.IsLive && c.State == EmbeddingState.Pending);
 
     /// <summary>The sessions whose chunks are in the backlog: none of a workspace or session being deleted, whose data is never embedded.</summary>
     private static IEnumerable<SessionEntry> PendingChunkSessions(WorkspaceEntry workspace) =>
