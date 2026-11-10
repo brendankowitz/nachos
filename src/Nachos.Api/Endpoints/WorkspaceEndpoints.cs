@@ -44,6 +44,8 @@ internal static class WorkspaceEndpoints
         }).Produces(202).Produces<ErrorResponse>(409)
             .WithDescription("Accepts the deletion and returns 202 with no body; a job deletes the workspace and everything in it " +
                 "(see GET W/jobs). 409 when the workspace has an active session: delete its sessions first. Once accepted, " +
-                "every write under the workspace is a 409, and a repeated delete is a 202 naming the same job.");
+                "every write under the workspace is a 409, and a repeated delete while it is being deleted is again a 202 " +
+                "with no body and starts no second job; the one job stays visible in GET W/jobs. A completed deletion removes " +
+                "the workspace together with its job row, so GET W/jobs (and a further delete) is then a 404.");
     }
 }
