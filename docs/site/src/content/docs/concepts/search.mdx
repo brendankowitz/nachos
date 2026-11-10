@@ -33,7 +33,8 @@ of messages, best first.
    first.
 3. **Fusion.** Each list retrieves `4 × limit` candidates. They are fused with reciprocal rank
    fusion: a message scores `1 / (60 + rank)` for each list it appears in, summed. Ties go to the
-   newest message, then the lowest id. The top `limit` are returned.
+   newest message (by `created_at`, then by sequence), then the lowest public id. The top `limit`
+   are returned.
 
 Any-word matching lets a question such as "what did the user say about lemons" find a message
 that only mentions lemons, because ranking rewards the messages that match more words.
