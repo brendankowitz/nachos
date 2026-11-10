@@ -101,7 +101,8 @@ public sealed class ReconcilerTests
         fixture.Store.FailBackfill = true;
 
         await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null, chunker: SmallChunker());
-        // The idempotency purge is the tick's last step, so each count is a tick whose steps all ran.
+        // A count is an idempotency purge, the step just before the backfill, so at two counts the first tick has run every
+        // step, its backfill included.
         await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 2, Interval);
 
         Gauge(fixture.Metrics, "nachos.queue.eligible_units").ShouldNotBeEmpty();

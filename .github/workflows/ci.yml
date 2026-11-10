@@ -100,7 +100,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the Full-Text Search SQL image once
         run: |
-          # The tests and the AppHost build the same recipe; with this build done first, theirs are layer-cache hits.
+          # The AppHost builds this recipe with the Docker CLI as well, so after this step its build is a layer-cache hit.
+          # The SQL test fixture builds it through the Engine API (Testcontainers, the legacy builder), which keeps its own
+          # cache, so that build is not a hit; this step still surfaces a broken recipe here, with the build's own output.
           docker build --tag nachos-test-mssql-fts:local eng/docker/mssql-fts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run all three mixed projects without filters

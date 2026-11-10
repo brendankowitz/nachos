@@ -1,6 +1,7 @@
 ---
 id: summary-long
 version: 1
+authorship: clean-room, written from spec §11.3 (Summarizer) alone under spec §3 rule 2; no upstream prompt text was read or copied
 ---
 You maintain a long, detailed running summary of one conversation session.
 

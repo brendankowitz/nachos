@@ -72,7 +72,10 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public int Renewals => Volatile.Read(ref _renewals);
 
-    /// <summary>Completed reconciler ticks: idempotency purges, a tick's last step.</summary>
+    /// <summary>
+    /// Reconciler ticks counted at their idempotency purge, the step just before the chunk backfill: at a count of n, the
+    /// first n - 1 ticks have run every step, and the n-th may still be backfilling.
+    /// </summary>
     public int Ticks => Volatile.Read(ref _ticks);
 
     public Task<WorkLease?> TryAcquireAsync(
