@@ -341,7 +341,9 @@ public sealed partial class QueueConsumerService : BackgroundService
 
     private readonly record struct TransientStreak(int Count, DateTimeOffset LastFailedAt);
 
-    private static string Describe(Exception exception) => $"{exception.GetType().FullName}: {exception.Message}";
+    // The recorded error is listed by GET W/jobs, so it names only the failure's type: an exception message can carry a
+    // server name, a connection string or user content. The full exception is logged where the failure is handled.
+    private static string Describe(Exception exception) => $"handler_failed: {exception.GetType().FullName}";
 
     /// <returns>False when <paramref name="ct"/> was cancelled.</returns>
     private async Task<bool> DelayAsync(TimeSpan delay, CancellationToken ct)
