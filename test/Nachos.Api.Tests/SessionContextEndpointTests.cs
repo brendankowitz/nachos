@@ -206,4 +206,66 @@ public sealed class SessionContextEndpointTests : MemoryApiTest
         await host.Send("GET", ScopedContext + "?peer_target=p1&sessions=s1", null, session, 200);
         await host.Send("GET", ScopedContext + "?peer_target=p1&sessions=s1&sessions=s2", null, session, 401);
     }
+
+    [Fact]
+    public async Task Context_SessionKey_PerspectiveOnlyWhenNarrowedToItsSession()
+    {
+        using var host = await ScopedHost();
+        var session = AuthHost.Key("session");
+        await host.Send("PUT", "/v3/workspaces/A/peers/p1/card", """{"peer_card":["p1 likes tea"]}""", AuthHost.Key("admin"), 200);
+
+        // Unnarrowed, a perspective is a peer's global view and card; the docs keep session keys off peer routes.
+        await host.Send("GET", ScopedContext + "?peer_target=p1", null, session, 401);
+        await host.Send("GET", ScopedContext + "?peer_perspective=p1", null, session, 401);
+        await host.Send("GET", ScopedContext, null, session, 200);
+        foreach (var narrowed in new[] { "?peer_target=p1&limit_to_session=true", "?sessions=s1&peer_target=p1" })
+        {
+            var context = await host.Send("GET", ScopedContext + narrowed, null, session, 200);
+            context.GetProperty("peer_card").ValueKind.ShouldBe(JsonValueKind.Null, narrowed);
+        }
+        // The same request under a workspace key does get the card, so its absence above is the narrowing.
+        (await host.Send("GET", ScopedContext + "?peer_target=p1", null, AuthHost.Key("workspace"), 200))
+            .GetProperty("peer_card").GetArrayLength().ShouldBe(1);
+    }
+
+    // The handler and the route read the query through one binder (SessionContextEndpoints.ReadQuery). Each variant would
+    // pass authorization with one reading and act on another if the two sides ever parsed differently.
+    [Theory]
+    [InlineData("peer_target=p2&peer_target=p1&limit_to_session=true", 200, 200)]
+    [InlineData("peer_target=p1&peer_target=p2&limit_to_session=true", 401, 200)]
+    [InlineData("Peer_Target=p2", 401, 401)]
+    [InlineData("peer_target=", 401, 401)]
+    [InlineData("peer_target=p1&sessions=s1,s2", 401, 401)]
+    [InlineData("peer_target=p1&%73essions=s1&%73essions=s3", 401, 401)]
+    [InlineData("peer_target=p1&%73essions=s1", 200, 200)]
+    [InlineData("peer_target=p1&LIMIT_TO_SESSION=true", 200, 200)]
+    [InlineData("peer_target=p1&scope=", 401, 401)]
+    [InlineData("peer_perspective=p1", 422, 401)]
+    public async Task Context_HandlerAndRoute_ReadTheSameParameters(string query, int peerStatus, int sessionStatus)
+    {
+        using var host = await ScopedHost();
+
+        await host.Send("GET", ScopedContext + "?" + query, null, AuthHost.Key("peer"), peerStatus);
+        await host.Send("GET", ScopedContext + "?" + query, null, AuthHost.Key("session"), sessionStatus);
+    }
+
+    [Fact]
+    public async Task Context_MoreThan100Sessions_IsALocated422_BeforeAnyMembershipQuery()
+    {
+        using var host = await ScopedHost();
+        // None of these sessions has p1 as a member, so a membership query before the cap would make the peer key's
+        // answer a 401; the 422 shows the cap comes first.
+        var many = string.Join('&', Enumerable.Range(0, 101).Select(i => "sessions=s" + i));
+        var hundred = "sessions=s1&" + string.Join('&', Enumerable.Range(0, 99).Select(i => "sessions=x" + i));
+
+        foreach (var identity in new[] { "peer", "workspace" })
+        {
+            var body = await host.Send("GET", ScopedContext + "?peer_target=p1&" + many, null, AuthHost.Key(identity), 422);
+            body.GetProperty("detail")[0].GetProperty("loc").EnumerateArray().Select(value => value.GetString())
+                .ShouldBe(["query", "sessions"], identity);
+        }
+        // Exactly 100 is within the cap: the peer key then fails on membership, the workspace key passes.
+        await host.Send("GET", ScopedContext + "?peer_target=p1&" + hundred, null, AuthHost.Key("peer"), 401);
+        await host.Send("GET", ScopedContext + "?peer_target=p1&" + hundred, null, AuthHost.Key("workspace"), 200);
+    }
 }
