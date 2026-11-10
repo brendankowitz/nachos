@@ -9,6 +9,8 @@ namespace Nachos.Api.Endpoints;
 
 internal static class SessionEndpoints
 {
+    private const string IncludeScopes = "include_scopes";
+
     public static void MapSessionEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/v3/workspaces/{workspace_id}/sessions");
@@ -81,19 +83,17 @@ internal static class SessionEndpoints
             }).Accepts<SessionPeerConfig>("application/json").Produces(204);
     }
 
-    private const string IncludeScopes = "include_scopes";
-
     // Each option narrows or annotates the list by scope membership. Ignoring one would answer a different question
     // than the caller asked, so only the defaults (no scope, false, false) are accepted until scopes land.
     private static void RejectScopeOptions(HttpRequest request, JsonElement body)
     {
         if (QueryParameters.Boolean(request, IncludeScopes) == true)
         {
-            throw QueryParameters.NotSupported(IncludeScopes);
+            throw RequestValidationException.Unsupported(["query", IncludeScopes]);
         }
         if (body.TryGetProperty("scope", out var scope) && scope.ValueKind != JsonValueKind.Null)
         {
-            throw QueryParameters.NotSupported("scope");
+            throw RequestValidationException.Unsupported(["body", "scope"]);
         }
         if (body.TryGetProperty("in_no_scope", out var inNoScope))
         {
@@ -102,7 +102,7 @@ internal static class SessionEndpoints
                 case JsonValueKind.False:
                     break;
                 case JsonValueKind.True:
-                    throw QueryParameters.NotSupported("in_no_scope");
+                    throw RequestValidationException.Unsupported(["body", "in_no_scope"]);
                 default:
                     throw RequestBody.Invalid(["body", "in_no_scope"], "Input should be a valid boolean.", "bool_type");
             }

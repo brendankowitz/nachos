@@ -5,8 +5,8 @@ namespace Nachos.Abstractions.Contracts;
 
 /// <summary>
 /// A session as exposed on the wire. <c>Id</c> is the client-chosen name; <c>Uid</c> is the immutable identifier the
-/// server assigns. <c>Scopes</c> names the scopes the session is an active member of, and is null unless a session
-/// list asked for them.
+/// server assigns. <c>Scopes</c> names the scopes the session is an active member of; it is always null until scopes
+/// land.
 /// </summary>
 public sealed record Session(
     [property: JsonPropertyName("id")] string Id,

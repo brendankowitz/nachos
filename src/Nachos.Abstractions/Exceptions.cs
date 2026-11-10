@@ -51,6 +51,13 @@ public sealed class RequestValidationException : NachosException
     }
 
     public IReadOnlyList<ValidationError> Errors { get; }
+
+    /// <summary>
+    /// The 422 for a documented option whose feature this version lacks, located at <paramref name="location"/>; its
+    /// last element names the option. Rejecting fails closed where ignoring would change the meaning of the request.
+    /// </summary>
+    public static RequestValidationException Unsupported(IReadOnlyList<object> location) =>
+        new([new ValidationError(location, location[^1] + " is not supported in this Nachos version", "unsupported")]);
 }
 
 /// <summary>Authentication or scope failure (401).</summary>

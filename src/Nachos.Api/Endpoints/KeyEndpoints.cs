@@ -22,7 +22,7 @@ internal static class KeyEndpoints
                 throw new NachosValidationException("key issuance requires configured signing keys");
             var query = http.Request.Query;
             if (query.ContainsKey(ScopeId))
-                throw QueryParameters.NotSupported(ScopeId);
+                throw RequestValidationException.Unsupported(["query", ScopeId]);
             var expiry = query["expires_at"].LastOrDefault();
             DateTimeOffset? expiresAt = null;
             if (expiry is not null)

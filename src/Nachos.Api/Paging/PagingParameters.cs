@@ -15,7 +15,7 @@ internal static class PagingParameters
     {
         if (request.Query.ContainsKey(Cursor))
         {
-            throw QueryParameters.NotSupported(Cursor);
+            throw RequestValidationException.Unsupported(["query", Cursor]);
         }
         return new(QueryParameters.Integer(request, "page") ?? 1, QueryParameters.Integer(request, "size") ?? PageRequest.DefaultSize,
             allowReverse && (QueryParameters.Boolean(request, "reverse") ?? false));

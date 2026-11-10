@@ -84,7 +84,7 @@ These are specified and, where a route exists, return **501**:
 
 The exact method and path pairs live in [`NotImplementedEndpoints.cs`](src/Nachos.Api/Endpoints/NotImplementedEndpoints.cs).
 
-Options on implemented routes that need a staged feature return **422** "... is not supported in this Nachos version" rather than being ignored: `cursor` pagination on every list route, `scope_id` on `POST /v3/keys`, and `include_scopes`, `scope` and `in_no_scope` on the session list. Their default values are accepted.
+Options on implemented routes that need a staged feature return **422** "... is not supported in this Nachos version" rather than being ignored: `cursor` pagination on every list route, `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list, and the conclusion filter fields `level`, `source_ids`, `source_message_ids` and `times_derived`. A request that omits them, or sends `include_scopes=false`, `"scope": null` or `"in_no_scope": false`, is accepted.
 
 ## 🛠️ Quick start
 

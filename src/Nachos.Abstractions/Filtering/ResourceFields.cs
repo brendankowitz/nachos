@@ -133,7 +133,18 @@ public static class ResourceFields
             ["created_at"] = CreatedAt,
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
-    /// <summary>The fields a filter on <paramref name="kind"/> may name. Other top-level keys are ignored.</summary>
+    // Honcho documents these conclusion filter fields (changelog v3.2.0 and v3.5.0) but Nachos does not filter on them;
+    // ignoring one would widen the result, so FilterParser rejects it.
+    private static readonly IReadOnlySet<string> ConclusionUnsupported =
+        new HashSet<string>(["level", "source_ids", "source_message_ids", "times_derived"], StringComparer.Ordinal)
+            .ToFrozenSet(StringComparer.Ordinal);
+
+    private static readonly IReadOnlySet<string> NoneUnsupported = FrozenSet<string>.Empty;
+
+    /// <summary>
+    /// The fields a filter on <paramref name="kind"/> may name. Other keys are ignored, except those in
+    /// <see cref="UnsupportedFor"/>.
+    /// </summary>
     public static IReadOnlyDictionary<string, FieldDefinition> For(ResourceKind kind) => kind switch
     {
         ResourceKind.Workspace => Workspace,
@@ -143,4 +154,8 @@ public static class ResourceFields
         ResourceKind.Conclusion => Conclusion,
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown resource kind."),
     };
+
+    /// <summary>Documented filter fields of <paramref name="kind"/> that Nachos rejects instead of ignoring.</summary>
+    public static IReadOnlySet<string> UnsupportedFor(ResourceKind kind) =>
+        kind == ResourceKind.Conclusion ? ConclusionUnsupported : NoneUnsupported;
 }

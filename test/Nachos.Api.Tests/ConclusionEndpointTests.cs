@@ -113,8 +113,8 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
         page.GetProperty("total").GetInt32().ShouldBe(2);
         page.GetProperty("pages").GetInt32().ShouldBe(2);
         page.GetProperty("items")[0].GetProperty("content").GetString().ShouldBe("three");
-        // Level is not a wire filter field; like any unknown top-level key it is ignored.
-        (await Post(C + "/list", """{"filters":{"level":"deductive"}}""")).GetProperty("total").GetInt32().ShouldBe(3);
+        // Honcho documents level as a conclusion filter; Nachos does not filter on it, so it is rejected, not ignored.
+        Location(await Post(C + "/list", """{"filters":{"level":"deductive"}}""", 422), "body", "filters", "level");
         Problem(await Post(C + "/list", """{"filters":{"observer_id":{"regex":"a"}}}""", 422), 422, JsonValueKind.String);
     }
 
