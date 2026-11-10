@@ -227,8 +227,8 @@ test('session context and search', async () => {
   assert.deepEqual(context.messages.map((m) => m.content), contents);
   assert.equal(context.summary ?? null, null);
 
-  // Lexical retrieval finds a message as soon as it is stored; vector matches may add others, so only membership is
-  // checked.
+  // The conformance host is in-memory, where lexical search sees a message as soon as it is stored (on SQL the full-text
+  // index populates asynchronously). Vector matches may add other messages, so only membership is checked.
   assert.ok(Array.from(await session.search('green tea'), (m) => m.content).includes(contents[0]));
   assert.ok(Array.from(await bob.search('green tea'), (m) => m.content).includes(contents[0]));
 });

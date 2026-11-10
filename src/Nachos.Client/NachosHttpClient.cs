@@ -433,7 +433,7 @@ public sealed class NachosHttpClient : INachosClient
         AddQuery(parameters, "search_query", query.SearchQuery);
         AddQuery(parameters, "search_top_k", query.SearchTopK?.ToString(CultureInfo.InvariantCulture));
         AddQuery(parameters, "search_max_distance", query.SearchMaxDistance?.ToString("R", CultureInfo.InvariantCulture));
-        AddQuery(parameters, "include_most_frequent", Flag(query.IncludeMostFrequent));
+        AddQuery(parameters, "include_most_frequent", ToWireFlag(query.IncludeMostFrequent));
         AddQuery(parameters, "max_conclusions", query.MaxConclusions?.ToString(CultureInfo.InvariantCulture));
         var json = await SendAsync(HttpMethod.Get, PeerContextRoute, [workspaceId, peerId], Joined(parameters), null, null, ct)
             .ConfigureAwait(false);
@@ -484,7 +484,7 @@ public sealed class NachosHttpClient : INachosClient
         ArgumentNullException.ThrowIfNull(query);
         var parameters = new List<string>(12);
         AddQuery(parameters, "tokens", query.Tokens?.ToString(CultureInfo.InvariantCulture));
-        AddQuery(parameters, "summary", Flag(query.Summary));
+        AddQuery(parameters, "summary", ToWireFlag(query.Summary));
         AddQuery(parameters, "search_query", query.SearchQuery);
         AddQuery(parameters, "peer_target", query.PeerTarget);
         AddQuery(parameters, "peer_perspective", query.PeerPerspective);
@@ -494,10 +494,10 @@ public sealed class NachosHttpClient : INachosClient
             AddQuery(parameters, "sessions", session ?? throw new ArgumentException("A sessions entry is null.", nameof(query)));
         }
 
-        AddQuery(parameters, "limit_to_session", Flag(query.LimitToSession));
+        AddQuery(parameters, "limit_to_session", ToWireFlag(query.LimitToSession));
         AddQuery(parameters, "search_top_k", query.SearchTopK?.ToString(CultureInfo.InvariantCulture));
         AddQuery(parameters, "search_max_distance", query.SearchMaxDistance?.ToString("R", CultureInfo.InvariantCulture));
-        AddQuery(parameters, "include_most_frequent", Flag(query.IncludeMostFrequent));
+        AddQuery(parameters, "include_most_frequent", ToWireFlag(query.IncludeMostFrequent));
         AddQuery(parameters, "max_conclusions", query.MaxConclusions?.ToString(CultureInfo.InvariantCulture));
         var json = await SendAsync(HttpMethod.Get, SessionContextRoute, [workspaceId, sessionId], Joined(parameters), null, null, ct)
             .ConfigureAwait(false);
@@ -664,7 +664,7 @@ public sealed class NachosHttpClient : INachosClient
 
     private static string? TargetQuery(string? target) => target is null ? null : "target=" + Uri.EscapeDataString(target);
 
-    private static string? Flag(bool? value) => value switch { null => null, true => "true", false => "false" };
+    private static string? ToWireFlag(bool? value) => value switch { null => null, true => "true", false => "false" };
 
     private static Message[] ReadMessages(string json) =>
         Read<Message[]>(RequireArrayOfObjects(WireJson.Parse(json), nameof(Message), MetadataOnly));

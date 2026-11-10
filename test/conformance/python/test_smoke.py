@@ -196,8 +196,8 @@ def test_session_context_and_search(honcho: Honcho):
     assert [m.content for m in context.messages] == contents
     assert context.summary is None
 
-    # Lexical retrieval finds a message as soon as it is stored; vector matches may add others, so only membership is
-    # checked.
+    # The conformance host is in-memory, where lexical search sees a message as soon as it is stored (on SQL the full-text
+    # index populates asynchronously). Vector matches may add other messages, so only membership is checked.
     assert contents[0] in [m.content for m in session.search("green tea")]
     assert contents[0] in [m.content for m in bob.search("green tea")]
 
