@@ -128,6 +128,43 @@ public sealed class EmbeddingSpaceCheckTests
     }
 
     [Fact]
+    public async Task ShutdownDuringARecheck_IsNotAVerdict_EvenWhenTheStoreThrowsSomethingElse()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        async Task<EmbeddingSpace?> FailOnceCancelled(CancellationToken ct)
+        {
+            entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            // What a provider may throw instead of OperationCanceledException once its call is cancelled.
+            throw new InvalidOperationException("Operation cancelled by user.");
+        }
+
+        var embeddings = Substitute.For<IEmbeddingStore>();
+        embeddings.GetSpaceAsync(Arg.Any<CancellationToken>()).Returns(call => ++reads == 1
+            ? Task.FromException<EmbeddingSpace?>(new TimeoutException("the database is not up yet"))
+            : FailOnceCancelled(call.Arg<CancellationToken>()));
+        var store = Substitute.For<IMemoryStore>();
+        store.Embeddings.Returns(embeddings);
+        store.IsUnavailableFailure(Arg.Any<Exception>()).Returns(call => call.Arg<Exception>() is TimeoutException);
+        using var check = Check(new DeterministicEmbeddingGenerator(), store: store);
+        await check.StartAsync(default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await check.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
+
+        _lifetime.Stopped.Task.IsCompleted.ShouldBeFalse();
+        Environment.ExitCode.ShouldBe(0);
+    }
+
+    [Fact]
     public async Task StopAfterDispose_IsANoOp()
     {
         var check = Check(new DeterministicEmbeddingGenerator(), store: FlakyStore(failures: int.MaxValue, new EmbeddingSpace(Fake, VectorSpace.Dimensions)));

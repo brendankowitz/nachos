@@ -75,9 +75,13 @@ stamped with it. At startup every host compares its configured model with the st
   (one written by a pre-release M3 build) always needs the reset.
 - **The in-memory provider** is stamped by the first start and forgets it with the process.
 - **Database unreachable at startup:** the host starts anyway (its readiness check reports the
-  store), holds back every embedding, and repeats the check in the background. A match
-  releases the embeddings; a mismatch keeps them held and stops the host with exit code 1 and
-  the same message. Any other store failure at startup, such as a missing table, a schema that
+  store), holds back every embedding, and repeats the check in the background (after 1 s,
+  doubling to every 5 s). A match releases the embeddings; a mismatch keeps them held and stops
+  the host with exit code 1 and the same message. While embeddings are held, request-path calls
+  that embed (creating conclusions, semantic queries) wait as well, until the check passes or
+  the request is cancelled. Connection failures that SQL Server reports at severity 20 or more
+  count as unreachable, and that includes TLS and certificate-trust failures: such a host keeps
+  retrying with embeddings held, and its readiness check shows the error. Any other store failure at startup, such as a missing table, a schema that
   is not current or a denied permission, fails startup.
 
 To switch models:
@@ -132,9 +136,10 @@ Official ONNX Runtime builds collect usage telemetry by default (see the `Privac
 `Microsoft.ML.OnnxRuntime` package), unless `ORT_DISABLE_TELEMETRY=1` is set before ONNX
 Runtime starts. Nachos sets it in its own process before loading a model, unless the variable
 is already set, and also turns off ONNX Runtime's optional events. To allow telemetry, set
-`ORT_DISABLE_TELEMETRY=0`. On Linux a variable set from .NET code may not be visible to
-native code, so set `ORT_DISABLE_TELEMETRY=1` in the hosts' environment there; the AppHost
-sets it for both hosts when local embeddings are on, and CI sets it too.
+`ORT_DISABLE_TELEMETRY=0`. On Linux and macOS a variable set from .NET code does not reach
+native code, so the in-process setting has no effect there: set `ORT_DISABLE_TELEMETRY=1` in the
+hosts' environment. A host that had to set it itself on those systems logs a warning at startup.
+The AppHost sets it for both hosts when local embeddings are on, and CI sets it too.
 
 ## Licences
 

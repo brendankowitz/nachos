@@ -77,7 +77,8 @@ internal static class EmbeddingCommands
                 await parse.InvocationConfiguration.Error.WriteLineAsync(
                     $"warning: '{id}' is not a local catalog model, the fake AI's '{DeterministicEmbeddingGenerator.ModelId}', or " +
                     $"{AzureDeploymentVariable}. It must be exactly the model id the hosts report (for Azure OpenAI, the embedding " +
-                    "deployment name), or they will refuse to start.");
+                    "deployment name), or they will refuse to start. If you configured the deployment elsewhere (appsettings, " +
+                    "user-secrets, Aspire), ignore this.");
             }
 
             var space = EmbeddingSpaceCheck.SpaceOf(id);

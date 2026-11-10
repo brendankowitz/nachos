@@ -33,6 +33,9 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public bool IsTransientFailure(Exception exception) =>
         exception is TransientStoreException || inner.IsTransientFailure(exception);
 
+    public bool IsUnavailableFailure(Exception exception) =>
+        exception is TransientStoreException || inner.IsUnavailableFailure(exception);
+
     /// <summary>While set, <see cref="TryAcquireAsync"/> throws, as an unavailable store would.</summary>
     public volatile bool FailAcquire;
 

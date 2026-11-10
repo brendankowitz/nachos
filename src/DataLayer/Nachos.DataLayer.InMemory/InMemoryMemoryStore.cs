@@ -96,4 +96,11 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
         ArgumentNullException.ThrowIfNull(exception);
         return false;
     }
+
+    /// <returns>False: this store is never unreachable.</returns>
+    public bool IsUnavailableFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return false;
+    }
 }

@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Core.Configuration;
 using Nachos.Core.Llm;
@@ -44,7 +46,11 @@ public static class NachosLocalEmbeddingsBuilderExtensions
             var options = provider.GetRequiredService<IOptions<LocalEmbeddingOptions>>().Value;
             var model = LocalEmbeddingModel.Find(options.Model)
                 ?? throw new InvalidOperationException($"Embeddings:Local:Model must be one of: {known}.");
-            return LocalEmbeddingGenerator.Create(model, options.ModelDirectory ?? LocalEmbeddingModel.DefaultDirectory, options.BatchSize);
+            return LocalEmbeddingGenerator.Create(
+                model,
+                options.ModelDirectory ?? LocalEmbeddingModel.DefaultDirectory,
+                options.BatchSize,
+                (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger<LocalEmbeddingGenerator>());
         }));
         return builder.UseEmbeddingGenerator(
             provider => provider.GetRequiredService<LocalEmbeddingGenerator>(),

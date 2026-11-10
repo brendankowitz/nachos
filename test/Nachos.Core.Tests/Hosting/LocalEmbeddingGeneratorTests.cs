@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
@@ -23,7 +24,7 @@ public sealed class LocalEmbeddingGeneratorTests
     public static TheoryData<string> Models => [.. LocalEmbeddingModel.All.Select(model => model.Id)];
 
     private static LocalEmbeddingGenerator Create(string model) =>
-        LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Find(model)!, RequiresLocalModelTheoryAttribute.Directory!, batchSize: 4);
+        LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Find(model)!, RequiresLocalModelTheoryAttribute.Directory!, batchSize: 4, NullLogger.Instance);
 
     private static async Task<float[]> EmbedAsync(LocalEmbeddingGenerator generator, string text) =>
         (await generator.GenerateAsync([text]))[0].Vector.ToArray();

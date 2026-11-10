@@ -82,5 +82,5 @@ public interface IMemoryStore
     /// (<see cref="IsTransientFailure"/>) or a failure to connect. Startup checks wait for such a failure to pass instead of
     /// failing the host; anything else (a missing table, a refused schema, a denied permission) is a configuration error.
     /// </summary>
-    bool IsUnavailableFailure(Exception exception) => IsTransientFailure(exception);
+    bool IsUnavailableFailure(Exception exception);
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.Tokenizers;
 using Nachos.Abstractions.Domain;
@@ -16,7 +17,7 @@ namespace Nachos.Hosting.LocalEmbeddings;
 /// Inputs run in batches of at most the configured size, and cancellation is checked between batches. The work is
 /// CPU-bound and runs on the caller's thread.
 /// </remarks>
-public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
+public sealed partial class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
 {
     private const string HiddenStateOutput = "last_hidden_state";
 
@@ -46,16 +47,24 @@ public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedd
     /// SHA-256, so the vectors are the ones the model id promises.
     /// </summary>
     /// <exception cref="InvalidOperationException">A file is missing or differs from the pinned one; the message says how to fetch it.</exception>
-    public static LocalEmbeddingGenerator Create(LocalEmbeddingModel model, string directory, int batchSize)
+    /// <param name="logger">Warns when telemetry could only be turned off in-process, which native code does not see on Linux or macOS.</param>
+    public static LocalEmbeddingGenerator Create(LocalEmbeddingModel model, string directory, int batchSize, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        ArgumentNullException.ThrowIfNull(logger);
         // ONNX Runtime's official builds send usage telemetry unless ORT_DISABLE_TELEMETRY=1 is set before its environment is
         // created (OrtEnv.Instance()); an operator who wants it sets the variable to anything else first.
         if (Environment.GetEnvironmentVariable(TelemetryVariable) is null)
         {
             Environment.SetEnvironmentVariable(TelemetryVariable, "1");
+            if (!OperatingSystem.IsWindows())
+            {
+                // .NET on Unix keeps its own copy of the environment and never calls setenv, so ONNX Runtime's getenv
+                // cannot see this.
+                LogTelemetryMayBeOn(logger);
+            }
         }
 
         var folder = model.FolderIn(directory);
@@ -185,4 +194,10 @@ public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedd
         var content = _tokenizer.EncodeToIds(text, _model.MaxContentTokens, addSpecialTokens: false, out _, out _);
         return [_tokenizer.ClassificationTokenId, .. content, _tokenizer.SeparatorTokenId];
     }
+
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "ONNX Runtime telemetry may still be on: ORT_DISABLE_TELEMETRY was unset, and on this operating system a variable " +
+                  "set by the process does not reach ONNX Runtime. Set ORT_DISABLE_TELEMETRY=1 in the host's environment.")]
+    private static partial void LogTelemetryMayBeOn(ILogger logger);
 }

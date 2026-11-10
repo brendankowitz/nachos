@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Core.Configuration;
 using Nachos.Core.Llm;
@@ -66,14 +67,15 @@ public sealed class LocalEmbeddingsHostingTests : IDisposable
     {
         using var provider = Build([]);
 
-        provider.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>().GetService<GatedEmbeddingGenerator>().ShouldNotBeNull();
+        // Outermost, so nothing (telemetry, option defaults) runs before a held request is released.
+        provider.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>().ShouldBeOfType<GatedEmbeddingGenerator>();
         provider.GetRequiredService<EmbeddingSpaceGate>().IsOpen.ShouldBeTrue();
     }
 
     [Fact]
     public void MissingFiles_FailWithTheFetchCommand()
     {
-        var error = Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32));
+        var error = Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32, NullLogger.Instance));
 
         error.Message.ShouldContain($"nachos models fetch bge-small-en-v1.5 --dir \"{_directory}\"");
     }
@@ -84,13 +86,16 @@ public sealed class LocalEmbeddingsHostingTests : IDisposable
     public void Create_TurnsOnnxRuntimeTelemetryOff_UnlessTheOperatorSetIt(string? before, string after)
     {
         var saved = Environment.GetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable);
+        var logger = new WarningCounter();
         try
         {
             Environment.SetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable, before);
 
-            Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32));
+            Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32, logger));
 
             Environment.GetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable).ShouldBe(after);
+            // Outside Windows the process's own setting does not reach ONNX Runtime, so the host says so.
+            logger.Warnings.ShouldBe(before is null && !OperatingSystem.IsWindows() ? 1 : 0);
         }
         finally
         {
@@ -108,7 +113,7 @@ public sealed class LocalEmbeddingsHostingTests : IDisposable
             File.WriteAllText(Path.Combine(folder, file.Name), "not the pinned file");
         }
 
-        var error = Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32));
+        var error = Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32, NullLogger.Instance));
 
         error.Message.ShouldContain("its SHA-256 differs");
     }
@@ -121,6 +126,25 @@ public sealed class LocalEmbeddingsHostingTests : IDisposable
             model.Files.Select(file => file.Name).ShouldBe([LocalEmbeddingModel.ModelFileName, LocalEmbeddingModel.VocabularyFileName]);
             model.Files.ShouldAllBe(file => file.Source.Scheme == Uri.UriSchemeHttps && !file.Source.AbsolutePath.Contains("/resolve/main/"));
             model.Files.ShouldAllBe(file => file.Sha256.Length == 64 && file.Sha256.All(c => char.IsAsciiHexDigitLower(c) || char.IsAsciiDigit(c)));
+        }
+    }
+
+    private sealed class WarningCounter : Microsoft.Extensions.Logging.ILogger
+    {
+        public int Warnings { get; private set; }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning)
+            {
+                Warnings++;
+            }
         }
     }
 }

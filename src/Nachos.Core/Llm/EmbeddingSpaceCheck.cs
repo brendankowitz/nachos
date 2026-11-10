@@ -27,7 +27,7 @@ namespace Nachos.Core.Llm;
 /// <para>
 /// A host must start while its database is unreachable (readiness reports it), so a store that cannot be reached
 /// (<see cref="IMemoryStore.IsUnavailableFailure"/>) only logs a warning. The <see cref="EmbeddingSpaceGate"/> is then closed,
-/// so every embedding waits, and the check is repeated in the background (after 1 s, doubling to 30 s): a match opens the
+/// so every embedding waits, and the check is repeated in the background (after 1 s, doubling to 5 s): a match opens the
 /// gate; a mismatch, or any other failure, keeps it closed, sets exit code 1 and stops the host (<paramref name="lifetime"/>;
 /// without one it is only logged). Any other store failure at startup (a missing table, a refused schema, a denied
 /// permission) fails startup. The probe uses the generator behind the gate, so it never waits on it.
@@ -42,7 +42,7 @@ public sealed partial class EmbeddingSpaceCheck(
     : IHostedService, IDisposable
 {
     private static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan MaxRetry = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MaxRetry = TimeSpan.FromSeconds(5);
 
     private readonly CancellationTokenSource _stopping = new();
     private Task _recheck = Task.CompletedTask;
@@ -126,8 +126,10 @@ public sealed partial class EmbeddingSpaceCheck(
                 Stop(mismatch, null);
                 return;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (Exception) when (ct.IsCancellationRequested)
             {
+                // Stopping: an in-flight store call may fail with something other than OperationCanceledException (a
+                // provider's own "operation cancelled", or a disposed scope), which is not a verdict on the database.
                 return;
             }
             catch (Exception exception)
