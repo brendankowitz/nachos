@@ -40,8 +40,15 @@ public sealed class MessageServiceTests
         replay.Status.ShouldBe(201);
         replay.Body.ShouldBe(f.Saved!.ResponseBody);
         f.Write!.Ttl.ShouldBe(TimeSpan.FromHours(24));
+        f.Write.SessionCreatedAt.ShouldBe(f.Clock.GetUtcNow());
         f.Write.RequestHash.ShouldBe(RequestHasher.Hash("POST", "/v3/workspaces/{w}/sessions/{s}/messages/",
-            new Dictionary<string, string> { ["w"] = "W", ["s"] = "S" }, CanonicalJson.Serialize(Json(Body))));
+            new Dictionary<string, string>
+            {
+                ["w"] = "W",
+                ["s"] = "S",
+                ["s.uid"] = ResourceUid.ForSession("W", "S", f.Clock.GetUtcNow()),
+            },
+            CanonicalJson.Serialize(Json(Body))));
     }
 
     [Fact]

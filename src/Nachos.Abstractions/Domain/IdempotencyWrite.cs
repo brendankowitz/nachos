@@ -14,4 +14,12 @@ public sealed record IdempotencyWrite(
     string RequestHash,
     int ResponseStatus,
     Func<IReadOnlyList<MessageRecord>, string> SerializeResponse,
-    TimeSpan Ttl);
+    TimeSpan Ttl)
+{
+    /// <summary>
+    /// The <c>CreatedAt</c> of the session incarnation <see cref="RequestHash"/> is bound to, or null when it is not bound
+    /// to one. When set, the append checks it inside its transaction and throws <see cref="NotFoundException"/> if the
+    /// session was deleted and recreated since, so a record is never stored under a hash bound to another incarnation.
+    /// </summary>
+    public DateTimeOffset? SessionCreatedAt { get; init; }
+}

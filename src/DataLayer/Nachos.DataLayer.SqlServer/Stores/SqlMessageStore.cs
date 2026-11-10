@@ -102,7 +102,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             .SqlQueryRaw<SeqAllocation>(
                 """
                 UPDATE dbo.Sessions SET NextMessageSeq = NextMessageSeq + @count
-                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState
+                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState, deleted.CreatedAt
                 WHERE WorkspaceId = @workspace AND Name = @sessionName AND DATALENGTH(Name) = DATALENGTH(@sessionName)
                 """,
                 SqlParameters.Long("@count", messages.Count),
@@ -114,6 +114,11 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         {
             // Rolled back with the transaction, like the allocation.
             throw WriteAdmission.SessionDeleting();
+        }
+
+        if (idempotency?.SessionCreatedAt is { } incarnation && incarnation != allocation.CreatedAt)
+        {
+            throw Lookups.SessionNotFound(workspaceName, sessionName);
         }
 
         var session = new SessionKey(workspaceId, allocation.SessionId);
@@ -529,8 +534,8 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         }
     }
 
-    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value and its state.</summary>
-    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState);
+    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value, its state and incarnation.</summary>
+    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState, DateTimeOffset CreatedAt);
 
     /// <summary>A work item to insert for the message row <paramref name="MessageId"/>.</summary>
     private sealed record PendingWork(WorkTaskType TaskType, string WorkUnitKey, string Payload, int TokenCount, long MessageId);

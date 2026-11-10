@@ -384,7 +384,7 @@ Key defaults (parity values):
   - Storage: `(WorkspaceId, Key)` is stored in `IdempotencyRecords` **in the same transaction** as the mutation, with a request hash, response status, response body, and 24 h expiry.
   - `RequestHash` = SHA-256 over:
     - the HTTP method;
-    - the **canonical target**: the route template plus resolved route values, for example `POST /v3/workspaces/{w}/sessions/{s}/messages` with `w` and `s`;
+    - the **canonical target**: the route template plus resolved route values, for example `POST /v3/workspaces/{w}/sessions/{s}/messages` with `w` and `s`. Δ (M3) For `POST M` the target also includes the session's `uid` (its incarnation), so a key replayed after `DELETE S` and a recreate of the same name is a different request (`422`), never a replay of the deleted session's message ids. The store re-checks the incarnation inside the append's transaction and answers `404` if the session was replaced after the hash was computed;
     - the canonicalized payload: sorted-key compact JSON, or for multipart, each part's name, filename, content type, and content hash.
     The same body sent to a different session or endpoint therefore never matches.
   - **Every replay is fully authenticated and authorized for the current caller and target before the stored record is read.** A caller who can't perform the operation gets the normal `401` (§9.2), never the stored response.

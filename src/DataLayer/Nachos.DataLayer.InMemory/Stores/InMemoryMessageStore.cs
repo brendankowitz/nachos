@@ -70,6 +70,10 @@ internal sealed class InMemoryMessageStore(InMemoryState state) : IMessageStore
                     var session = workspace.RequireWritableSession(sessionName);
                     var now = state.Clock.GetUtcNow();
                     var idempotency = append.Idempotency;
+                    if (idempotency?.SessionCreatedAt is { } incarnation && incarnation != session.Record.CreatedAt)
+                    {
+                        throw new NotFoundException($"Session '{sessionName}' not found in workspace '{workspaceName}'.");
+                    }
 
                     // An expired record is reclaimed by the overwrite at commit; an unexpired one wins.
                     if (idempotency is not null
