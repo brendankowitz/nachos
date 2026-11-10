@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Nachos.Abstractions;
@@ -212,6 +213,8 @@ static MessageSearchRequest Request(string workspace, MessageSearchScope scope) 
 static ServiceProvider BuildServices(string connectionString)
 {
     var services = new ServiceCollection();
+    // The option sections bind from configuration; empty configuration leaves every default in place.
+    services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
     services.AddNachos(nachos => nachos
         .UseSqlServer(options =>
         {
