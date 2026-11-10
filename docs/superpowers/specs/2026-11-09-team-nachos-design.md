@@ -5,7 +5,7 @@
 | **Status** | Proposed, revision 2 (2026-11-10). Replaces the 2026-11-09 draft. |
 | **Builds on** | The Nachos design, `2026-10-07-nachos-design.md` ("the main spec"). Section numbers such as §13.1 refer to the main spec as it stands on branch `nachos-m3`. |
 | **Review notes** | [`research/2026-11-10-team-nachos-review.md`](research/2026-11-10-team-nachos-review.md): what changed from the draft and why. |
-| **Clean room** | Main spec §3 applies. Honcho facts come only from its public docs (pages under `https://honcho.dev/docs/v3/documentation/`; `docs.honcho.dev` redirects there) and the public OpenAPI (`https://honcho.dev/docs/v3/openapi.json`). Pages are cited by name: `design-patterns`, `scopes`, `dreaming`, and [`reference/platform`](https://honcho.dev/docs/v3/documentation/reference/platform). |
+| **Clean room** | Main spec §3 applies. Honcho facts come only from its public docs (pages under `https://honcho.dev/docs/v3/documentation/`; `docs.honcho.dev` redirects there) and the public OpenAPI (`https://honcho.dev/docs/v3/openapi.json`). Pages cited: [`design-patterns`](https://honcho.dev/docs/v3/documentation/core-concepts/design-patterns.md), [`scopes`](https://honcho.dev/docs/v3/documentation/features/advanced/scopes.md), [`dreaming`](https://honcho.dev/docs/v3/documentation/features/advanced/dreaming.md), and [`reference/platform`](https://honcho.dev/docs/v3/documentation/reference/platform). |
 
 Every route, table and claim in this document is a **Nachos extension (Δ)**. No Honcho route or DTO changes.
 

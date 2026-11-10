@@ -4,10 +4,10 @@ Review of the 2026-11-09 draft of `../2026-11-09-team-nachos-design.md` against 
 
 Honcho facts come from its public docs (pages under `https://honcho.dev/docs/v3/documentation/`, named below; the platform reference is https://honcho.dev/docs/v3/documentation/reference/platform) and the public OpenAPI (`https://honcho.dev/docs/v3/openapi.json`) only, checked on 2026-11-10:
 
-- design-patterns: "A workspace is a hard isolation boundary." "Split workspaces only when you need hard isolation between products, customers, environments, or agents."
-- design-patterns, on scopes: "Not authorization. A workspace key reads any session, scoped or not." "A scope bounds *recall*, not *access*." The scopes page adds that a named-scope key "enforces the boundary on the server".
+- [`design-patterns`](https://honcho.dev/docs/v3/documentation/core-concepts/design-patterns.md): "A workspace is a hard isolation boundary." "Split workspaces only when you need hard isolation between products, customers, environments, or agents."
+- [`design-patterns`](https://honcho.dev/docs/v3/documentation/core-concepts/design-patterns.md), on scopes: "Not authorization. A workspace key reads any session, scoped or not." "A scope bounds *recall*, not *access*." The [`scopes`](https://honcho.dev/docs/v3/documentation/features/advanced/scopes.md) page adds that a named-scope key "enforces the boundary on the server".
 - platform reference: a peer-scoped key has "**read-only** access to the sessions its peer is an active member of … It cannot write to those sessions or act on other peers." Conclusions are not mentioned.
-- dreaming: "Dreams do not span across workspaces or across different peer pairs."
+- [`dreaming`](https://honcho.dev/docs/v3/documentation/features/advanced/dreaming.md): "Dreams do not span across workspaces or across different peer pairs."
 - No cross-workspace, team or organization memory feature is documented; the documented way to share is to point clients at one workspace.
 - OpenAPI: `Conclusion` and `ConclusionCreate` have no `metadata` field.
 
