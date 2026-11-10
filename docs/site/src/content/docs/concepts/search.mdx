@@ -27,7 +27,8 @@ of messages, best first.
 
 1. **Vector.** The query is embedded (only its first chunk, so a very long query is never
    rejected by the model), and each candidate message is ranked by the cosine distance of its
-   nearest chunk. The search is exact: every embedded chunk in scope is compared.
+   nearest chunk. Distances are exact; a workspace search compares at most
+   `Nachos:Search:MaxVectorCandidates` chunks, the most recently stored first (see [Scale](#scale)).
 2. **Lexical.** The query is reduced to plain words (below), and a message matches when it
    contains **any** of them. Matches rank by how many distinct words they contain, then newest
    first.
@@ -89,8 +90,25 @@ is not an error then. A transient failure of the embedding service is a `503` wi
 
 ## Scale
 
-Vector search is exact, so its cost grows with the number of embedded chunks in scope. A
-session-scoped search reads only that session's chunks; a workspace search reads them all. The
-measured latencies at up to a million messages, and the decision taken on them, are in the
+Exact vector search costs one distance per embedded chunk in scope. Session and peer searches
+read only their own sessions' chunks, through index seeks. A workspace search reads every chunk
+of the workspace, and at a million messages (about 1.5 million chunks) that took about 4
+seconds. So a workspace search's vector half compares at most
+`Nachos:Search:MaxVectorCandidates` chunks (100,000 by default, about half a second at that
+size), the most recently stored first. Session and peer searches are never capped: a cap there
+would turn their seeks into a scan of every chunk.
+
+The trade-off is recall. When a workspace holds more chunks than the cap, its older messages are
+not candidates for the vector half: a workspace search can miss an old message that is only
+semantically related. The lexical half still searches the whole workspace, so an old message
+that shares a word with the query is still found, and a session or peer search still finds it
+by meaning. Raise the cap for better recall over large workspaces at the cost of latency, or set
+it to an empty value to compare every chunk. Workspaces smaller than the cap are unaffected.
+
+The cap bounds only the vector half. At a million messages, a workspace search whose query
+contains a word found in most messages still took 1.5 to 3 seconds in the benchmark, because of its lexical half, on the
+full-text index as well as on `LIKE`. The measured latencies, and the choice of the default, are
+in the
 [M3 search benchmark](https://github.com/brendankowitz/nachos/blob/main/research/m3-search-benchmark.md).
-Approximate (ANN) vector search is planned for a later milestone.
+Approximate (ANN) vector search, planned for a later milestone, is the real fix for the vector
+half: it will search a large workspace without dropping its older messages.
