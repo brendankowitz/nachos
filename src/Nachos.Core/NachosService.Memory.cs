@@ -258,5 +258,11 @@ public sealed partial class NachosService
         new([new ValidationError(location, message, type)]);
 
     private static Conclusion Map(ConclusionRecord row) => new(row.PublicId, row.Content, row.ObserverName,
-        row.ObservedName, row.SessionName, ConclusionLevelNames.Of(row.Level), row.TimesDerived, row.SourceIds, row.CreatedAt);
+        row.ObservedName, row.SessionName, ConclusionLevelNames.Of(row.Level), row.TimesDerived, row.SourceIds, row.CreatedAt,
+        SourceMessageIds(row));
+
+    // The deriver records the messages it cited in the conclusion's provenance; conclusions created through the API
+    // carry none, which the wire reports as null.
+    private static IReadOnlyList<string>? SourceMessageIds(ConclusionRecord row) =>
+        row.InternalMetadata["source_message_ids"] is JsonArray ids ? [.. ids.Select(id => id!.GetValue<string>())] : null;
 }

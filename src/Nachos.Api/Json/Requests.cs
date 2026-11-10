@@ -23,6 +23,7 @@ public sealed record SessionCreate(
     [property: MaxLength(100)] IReadOnlyList<string>? Scopes = null);
 public sealed record SessionUpdate(JsonObject? Metadata = null, SessionConfiguration? Configuration = null);
 public sealed record ResourceGet(JsonObject? Filters = null);
+public sealed record WorkspaceSessionGet(JsonObject? Filters = null, string? Scope = null, bool InNoScope = false);
 public sealed record MessageUpdate(JsonObject? Metadata = null);
 public sealed record MessageBatchCreate(
     [property: MinLength(1), MaxLength(100)] IReadOnlyList<MessageCreate> Messages);

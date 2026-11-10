@@ -46,7 +46,7 @@ public sealed class NachosServiceTests
         var created = await Service.GetOrCreateWorkspaceAsync("W", metadata, config, _ct);
         var updated = await Service.UpdateWorkspaceAsync("W", ct: _ct);
 
-        created.ShouldBe(new Workspace(row.Name, row.Metadata, row.Configuration, Created));
+        created.ShouldBe(new Workspace(row.Name, row.Metadata, row.Configuration, Created, ResourceUid.ForWorkspace("W", Created)));
         updated.ShouldBe(created);
         await _store.Workspaces.Received(1).GetOrCreateAsync("W",
             Arg.Is<JsonObject>(m => !ReferenceEquals(m, metadata) && m["literal"]!.GetValue<string>() == "x"),
@@ -65,7 +65,7 @@ public sealed class NachosServiceTests
         var created = await Service.GetOrCreatePeerAsync("W", "P", configuration: config, ct: _ct);
         var updated = await Service.UpdatePeerAsync("W", "P", ct: _ct);
 
-        created.ShouldBe(new Peer("P", "W", Created, row.Metadata, row.Configuration));
+        created.ShouldBe(new Peer("P", "W", Created, row.Metadata, row.Configuration, ResourceUid.ForPeer("W", "P", Created)));
         updated.ShouldBe(created);
         await _store.Peers.Received(1).GetOrCreateAsync("W", "P", Arg.Is<JsonObject?>(m => m == null),
             Arg.Is<JsonObject>(c => !ReferenceEquals(c, config) && c["observe_me"]!.GetValue<bool>() == false), _ct, false);
@@ -87,7 +87,9 @@ public sealed class NachosServiceTests
             configuration: new(Reasoning: new(true)), peers: peers, ct: _ct);
         var updated = await Service.UpdateSessionAsync("W", "S", ct: _ct);
 
-        created.ShouldBe(new Session("S", active, "W", row.Metadata, row.Configuration, Created));
+        created.ShouldBe(new Session("S", active, "W", row.Metadata, row.Configuration, Created,
+            ResourceUid.ForSession("W", "S", Created)));
+        created.Scopes.ShouldBeNull();
         updated.ShouldBe(created);
         await _store.Sessions.Received(1).GetOrCreateAsync("W", "S", Arg.Is<JsonObject?>(m => m == null),
             Arg.Is<JsonObject>(c => c["reasoning"]!["enabled"]!.GetValue<bool>()),

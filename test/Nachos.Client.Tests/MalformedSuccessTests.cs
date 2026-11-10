@@ -12,9 +12,9 @@ namespace Nachos.Client.Tests;
 /// </summary>
 public sealed class MalformedSuccessTests
 {
-    private const string WorkspaceJson = """{"id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
-    private const string PeerJson = """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
-    private const string SessionJson = """{"id":"s1","is_active":true,"workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
+    private const string WorkspaceJson = """{"id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
+    private const string PeerJson = """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
+    private const string SessionJson = """{"id":"s1","is_active":true,"workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
     private const string MessageJson =
         """{"id":"m1","content":"hi","peer_id":"alice","session_id":"s1","created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":1}""";
 

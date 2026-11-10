@@ -98,7 +98,7 @@ public sealed partial class ScopeMatrixTests
             .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/v3", StringComparison.Ordinal)).ToArray();
         var actual = endpoints.SelectMany(endpoint => endpoint.Metadata.GetRequiredMetadata<HttpMethodMetadata>().HttpMethods
             .Select(method => method + " " + endpoint.RoutePattern.RawText)).Order().ToArray();
-        actual.Length.ShouldBe(56);
+        actual.Length.ShouldBe(59);
         actual.ShouldBe(AllRoutes().Select(route => route.Method + " " + route.Template).Order().ToArray());
         foreach (var endpoint in endpoints)
         {

@@ -106,10 +106,10 @@ public sealed class RealProducerTests
         evidence.Select(entry => entry.Key).ShouldNotContain(path => path.Contains(
             "/" + otherConfiguration + "/", StringComparison.Ordinal));
         var counts = compatibility["counts"]!;
-        counts["actualOperations"]!.GetValue<int>().ShouldBe(56);
+        counts["actualOperations"]!.GetValue<int>().ShouldBe(59);
         counts["declaredImplemented"]!.GetValue<int>().ShouldBe(31);
         counts["declaredPartial"]!.GetValue<int>().ShouldBe(1);
-        counts["staged501"]!.GetValue<int>().ShouldBe(24);
+        counts["staged501"]!.GetValue<int>().ShouldBe(27);
         counts["missing"]!.GetValue<int>().ShouldBe(1);
         counts["extensions"]!.GetValue<int>().ShouldBe(2);
         foreach (var path in new[] { "/v3/keys", "/v3/admin/grants" })

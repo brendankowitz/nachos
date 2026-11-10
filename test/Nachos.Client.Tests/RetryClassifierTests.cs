@@ -25,7 +25,7 @@ public sealed class RetryClassifierTests
     [Fact]
     public void Manifest_IsLoaded()
     {
-        WireManifest.Routes.Count.ShouldBe(55);
+        WireManifest.Routes.Count.ShouldBe(58);
     }
 
     /// <summary>
@@ -79,6 +79,9 @@ public sealed class RetryClassifierTests
     [InlineData("POST", H, RetryCategory.Never)]
     [InlineData("POST", "/v3/admin/grants", RetryCategory.Never)]
     [InlineData("POST", W + "/scopes/{scope_id}/sessions", RetryCategory.Never)]
+    [InlineData("POST", W + "/scopes/{scope_id}/sessions/remove", RetryCategory.Never)]
+    [InlineData("POST", W + "/dreams/list", RetryCategory.Retryable)]
+    [InlineData("GET", W + "/dreams/{run_id}", RetryCategory.Retryable)]
     // No Idempotency-Key support on conclusion create in M2 (spec §9.1).
     [InlineData("POST", C, RetryCategory.Never)]
     // Non-idempotent mutations: retryable only with an Idempotency-Key.

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.OpenApi;
+using Nachos.Abstractions;
 
 namespace Nachos.Api.Json;
 
@@ -41,6 +42,13 @@ internal static class QueryParameters
         "false" or "0" or "no" or "off" or "f" or "n" => false,
         _ => throw RequestBody.Invalid(["query", name], "Input should be a valid boolean.", "bool_parsing"),
     };
+
+    /// <summary>
+    /// The 422 for a documented parameter whose feature this version lacks: rejecting it fails closed where ignoring it
+    /// would silently change the meaning of the request.
+    /// </summary>
+    public static NachosValidationException NotSupported(string name) =>
+        new(name + " is not supported in this Nachos version");
 
     /// <summary>Declares optional query parameters on the operation, in the order given.</summary>
     public static RouteHandlerBuilder WithQuery(this RouteHandlerBuilder endpoint, params QueryParameter[] parameters) =>
