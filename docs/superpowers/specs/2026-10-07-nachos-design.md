@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Proposed (draft for review) |
 | **Date** | 2026-10-07 |
-| **Reference system** | [plastic-labs/honcho](https://github.com/plastic-labs/honcho) v3 API. Research baseline: server `3.2.2`, `main` @ `e8d8b4a`. **Wire-conformance pin:** the public OpenAPI `3.3.0` (see R4). |
+| **Reference system** | [plastic-labs/honcho](https://github.com/plastic-labs/honcho) v3 API. Research baseline: server `3.2.2`, `main` @ `e8d8b4a`. **Wire-conformance pin:** the public OpenAPI `3.6.0` (see R4). |
 | **Cross-check** | [`research/2026-10-07-honcho-feature-map-astra.md`](research/2026-10-07-honcho-feature-map-astra.md), an independent mapping by a GPT-6 Astra research agent |
 | **License** | MIT (clean-room; see §3) |
 
@@ -1049,7 +1049,7 @@ Until both hold, the worker stays at `minReplicas = 1`.
 | R1 | Exact vector search (the baseline on both platforms) may be slow for large workspace-wide message search. ANN has hard prerequisites: an `int` clustered PK, ≥ 100 rows, and no dacpac deployment. | Search is always pre-filtered (collection/session/time). Cap candidate rows. Benchmark exact search at 1M messages/workspace in M3. The ANN side-table design in §7.4 ships in M7 only if it meets the recall@k threshold. |
 | R2 | SQL Server Linux containers lack FTS by default. | Custom dev/test image with `mssql-server-fts` plus the `LIKE` fallback. Azure SQL has FTS. |
 | R3 | Clean-room prompts may underperform Honcho's tuned prompts. | Eval harness from M4. Prompt versions are tracked and iterated. |
-| R4 | Wire-compatibility drift as Honcho evolves. | Conformance pins the **public** OpenAPI document `https://docs.honcho.dev/v3/openapi.json` (version 3.3.0, raw-bytes SHA-256 `6aa5dd7f…2e3fe9`). Only a Nachos-generated manifest of interface facts, `test/contracts/honcho-v3-wire.json`, is committed; the raw document never is (§3). Re-pinning is a deliberate commit that regenerates the manifest. A scheduled job may report upstream drift, but it never re-pins automatically. |
+| R4 | Wire-compatibility drift as Honcho evolves. | Conformance pins the **public** OpenAPI document `https://docs.honcho.dev/v3/openapi.json` (version 3.6.0, raw-bytes SHA-256 `d1b75cea…40060f`). Only a Nachos-generated manifest of interface facts, `test/contracts/honcho-v3-wire.json`, is committed; the raw document never is (§3). Re-pinning is a deliberate commit that regenerates the manifest. A scheduled job may report upstream drift, but it never re-pins automatically. |
 | R5 | Tokenizer differences (.NET vs tiktoken) affect budgets and batching. | Use `Microsoft.ML.Tokenizers` Tiktoken encodings (same BPE tables). Run a corpus comparison test in M2. |
 | R6 | Azure OpenAI model availability and quota differ by region. | Model/deployment names are Bicep parameters. Fallback profiles. Quota preflight in `azd` hook. |
 | R7 | The KEDA `mssql` scaler needs a database identity. Upstream KEDA documents workload identity for mssql from 2.20+, but that does not prove Azure Container Apps exposes this version or auth path. | **Deployment-verification gate in M2.** If ACA supports managed identity for the mssql scale rule, use it. Otherwise scale on CPU with `minReplicas = 1`. **No SQL-login fallback**: the database is Entra-only (§18.2). |
