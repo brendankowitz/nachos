@@ -76,13 +76,14 @@ stamped with it. At startup every host compares its configured model with the st
 - **The in-memory provider** is stamped by the first start and forgets it with the process.
 - **Database unreachable at startup:** the host starts anyway (its readiness check reports the
   store), holds back every embedding, and repeats the check in the background (after 1 s,
-  doubling to every 5 s). A match releases the embeddings; a mismatch keeps them held and stops
+  doubling up to 5 s). A match releases the embeddings; a mismatch keeps them held and stops
   the host with exit code 1 and the same message. While embeddings are held, request-path calls
   that embed (creating conclusions, semantic queries) wait as well, until the check passes or
-  the request is cancelled. Connection failures that SQL Server reports at severity 20 or more
-  count as unreachable, and that includes TLS and certificate-trust failures: such a host keeps
-  retrying with embeddings held, and its readiness check shows the error. Any other store failure at startup, such as a missing table, a schema that
-  is not current or a denied permission, fails startup.
+  the request is cancelled. Connection failures (severity 20 or more) count as unreachable,
+  and that includes TLS and certificate-trust failures: such a host keeps retrying with
+  embeddings held, and its readiness check shows the error. Any other store failure at
+  startup, such as a missing table, a schema that is not current or a denied permission,
+  fails startup.
 
 To switch models:
 

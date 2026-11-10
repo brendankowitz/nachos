@@ -103,6 +103,7 @@ public sealed partial class EmbeddingSpaceCheck(
     private async Task RecheckAsync(EmbeddingSpace configured, CancellationToken ct)
     {
         var delay = FirstRetry;
+        var failures = 0;
         while (true)
         {
             try
@@ -111,7 +112,16 @@ public sealed partial class EmbeddingSpaceCheck(
                 var (mismatch, unavailable) = await CheckAsync(configured, ct).ConfigureAwait(false);
                 if (unavailable is not null)
                 {
-                    LogRecheckFailed(logger, unavailable);
+                    // The stack once; after that, one line per attempt, so a long outage does not flood the log.
+                    if (++failures == 1)
+                    {
+                        LogRecheckFailed(logger, unavailable);
+                    }
+                    else
+                    {
+                        LogStillWaiting(logger, failures, unavailable.Message);
+                    }
+
                     delay = delay * 2 < MaxRetry ? delay * 2 : MaxRetry;
                     continue;
                 }
@@ -247,6 +257,11 @@ public sealed partial class EmbeddingSpaceCheck(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The embedding model check is still waiting for the store; embeddings stay held back.")]
     private static partial void LogRecheckFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "The embedding model check is still waiting for the store (attempt {Attempt}: {Failure}); embeddings stay held back.")]
+    private static partial void LogStillWaiting(ILogger logger, int attempt, string failure);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "The embedding model matches the database's stamp; embeddings are released.")]
     private static partial void LogRechecked(ILogger logger);

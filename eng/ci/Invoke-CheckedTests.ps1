@@ -11,7 +11,7 @@ $portableProjects = @(
     'Nachos.Abstractions.Tests', 'Nachos.Api.Tests', 'Nachos.Architecture.Tests',
     'Nachos.Client.Tests', 'Nachos.Core.Tests', 'Nachos.DataLayer.InMemory.Tests',
     'Nachos.DataLayer.SqlServer.Tests',
-    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests'
+    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests', 'Nachos.Worker.Tests'
 )
 [xml] $solution = Get-Content (Join-Path $root 'Nachos.slnx') -Raw
 $declaredTests = @($solution.SelectNodes('//Project/@Path') | Where-Object {

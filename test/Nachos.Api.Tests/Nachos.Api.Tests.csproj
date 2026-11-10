@@ -2,8 +2,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nachos.Api\Nachos.Api.csproj" />
-    <!-- For the worker's own registration (WorkerServices), which HostedServiceOrderTests inspects; aliased, because both hosts generate a Program type. -->
-    <ProjectReference Include="..\..\src\Nachos.Worker\Nachos.Worker.csproj" Aliases="worker" />
     <ProjectReference Include="..\Nachos.Testing\Nachos.Testing.csproj" />
   </ItemGroup>
   <ItemGroup>

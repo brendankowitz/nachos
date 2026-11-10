@@ -165,6 +165,22 @@ public sealed class EmbeddingSpaceCheckTests
     }
 
     [Fact]
+    public async Task LongOutage_LogsTheStackOnce_ThenOneLinePerAttempt()
+    {
+        var logger = new WarningLogger();
+        using var generator = Gated();
+        // Unreachable at startup and for the first two rechecks, then stamped with the configured model.
+        using var check = Check(generator, logger, FlakyStore(failures: 3, new EmbeddingSpace(Fake, VectorSpace.Dimensions)));
+
+        await check.StartAsync(default);
+        await _gate.WaitAsync(default).WaitAsync(TimeSpan.FromSeconds(30));
+        await check.StopAsync(default);
+
+        logger.WarningsWithException.ShouldBe(2); // the startup warning and the first recheck failure
+        logger.Warnings.ShouldBe(3);
+    }
+
+    [Fact]
     public async Task StopAfterDispose_IsANoOp()
     {
         var check = Check(new DeterministicEmbeddingGenerator(), store: FlakyStore(failures: int.MaxValue, new EmbeddingSpace(Fake, VectorSpace.Dimensions)));
@@ -425,7 +441,12 @@ public sealed class EmbeddingSpaceCheckTests
 
     private sealed class WarningLogger : ILogger<EmbeddingSpaceCheck>
     {
-        public int Warnings { get; private set; }
+        private int _warnings;
+        private int _warningsWithException;
+
+        public int Warnings => Volatile.Read(ref _warnings);
+
+        public int WarningsWithException => Volatile.Read(ref _warningsWithException);
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -435,7 +456,11 @@ public sealed class EmbeddingSpaceCheckTests
         {
             if (logLevel == LogLevel.Warning)
             {
-                Warnings++;
+                Interlocked.Increment(ref _warnings);
+                if (exception is not null)
+                {
+                    Interlocked.Increment(ref _warningsWithException);
+                }
             }
         }
     }
