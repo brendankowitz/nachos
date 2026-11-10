@@ -7,6 +7,25 @@ answers `202 Accepted` with no body, the resource stops taking writes at once, a
 **deletion job** removes its data in batches. `GET /v3/workspaces/{id}/jobs` shows how the job is
 doing.
 
+**Diagram key.** Solid boxes and arrows are built today. In sequence diagrams, dotted frames
+(`loop`) only group steps.
+
+A session moves through these states. While it is `Deleting` it reads as `is_active: false`, every
+write under it answers `409`, and a repeated `DELETE` answers `202` for the same job. Once removed it
+answers `404` and its name is free. A workspace has the same `Deleting` state.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> Active
+  Active --> Inactive: is_active set to false
+  Inactive --> Active: reactivated
+  Active --> Deleting: DELETE answers 202
+  Inactive --> Deleting: DELETE answers 202
+  Deleting --> Removed: the job removes the row
+  Removed --> [*]
+```
+
 ## Delete a session
 
 ```bash
@@ -41,6 +60,32 @@ curl -s -X DELETE http://127.0.0.1:5080/v3/workspaces/demo -w "%{http_code}\n"
 `DELETE /v3/workspaces/{id}/conclusions/{id}` is different: it tombstones one conclusion at once
 and answers `204`.
 
+## What the job does
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant A as API
+  participant S as SQL Server
+  participant W as Worker: deletion job
+  C->>A: DELETE session s1
+  A->>S: One transaction: lock the workspace, then s1, set Deleting, queue the job
+  A->>C: 202 Accepted
+  Note over C,S: Every write under s1 now answers 409
+  W->>S: Lease the unit deletion:demo:session:s1
+  W->>S: Cancel s1's other work, fence out other leases
+  loop Until nothing is left
+    W->>S: Purge one batch, at most 500 rows, children first
+    W->>S: Renew the lease
+  end
+  W->>S: Remove the session row and the lease
+  Note over C,S: s1 answers 404, and W/jobs shows completed
+```
+
+Cancelling other work deletes the session's pending work items and raises the fencing token of
+every other lease on its work, so a Deriver or summarizer that is still running cannot commit a
+result for it. Its own deletion unit is left alone.
+
 ## Watch the job
 
 `GET /v3/workspaces/{id}/jobs` is a Nachos extension, so Honcho's SDKs have no method for it. It
@@ -62,6 +107,23 @@ takes the usual `page`, `size` and `reverse` parameters (oldest first by default
 
 `status` is `pending`, `in_progress`, `completed` or `dead_lettered`. `id` is the job's work item
 id in the database.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> pending: accepted
+  pending --> in_progress: leased
+  in_progress --> completed: row removed
+  in_progress --> pending: retry
+  in_progress --> dead_lettered: 5th failure
+  pending --> completed: superseded
+  dead_lettered --> pending: redriven
+  completed --> [*]
+```
+
+A failed attempt goes back to `pending` and is retried after a backoff; an outage that releases
+the job does not count as an attempt. A session's job that was still pending when its workspace was
+deleted completes with the error `superseded_by_workspace_deletion`.
 
 **`error` names only the failure type**, as `handler_failed: <exception type>` (for example
 `handler_failed: Microsoft.Data.SqlClient.SqlException`), never its message. The full reason is in

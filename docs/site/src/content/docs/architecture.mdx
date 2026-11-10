@@ -1,30 +1,224 @@
 ---
-title: Architecture & ADRs
+title: Architecture
+description: How Nachos is put together - the API, the memory core, the worker, the stores and the AI providers - and how it is deployed.
 ---
 
-The diagram maps the implemented source-MVP boundaries. It does not imply
-production deployment approval. The worker host (queue consumer and reconciler) is
-described in [Memory formation](/nachos/concepts/memory-formation/).
+Nachos is one memory core with two front doors and one background worker. Callers reach the
+core over HTTP through `Nachos.Api`, or in-process through `AddNachos()`. Every write is a short
+database transaction. Everything slow, such as asking a model for facts, writing summaries,
+embedding text or purging deleted data, is queued and done later by the worker. This page shows
+the parts, what they read and write, and how they are deployed. It describes the source MVP; it
+does not imply production deployment approval.
+
+**Diagram key.** Solid boxes and arrows are built today. Dashed boxes and arrows marked
+*(planned)* are designed but not built yet; the label names the milestone.
+
+## The system at a glance
+
+```mermaid
+flowchart TB
+  classDef planned stroke-dasharray: 5 5,color:#6b7280
+  subgraph callers["Callers"]
+    direction LR
+    sdk["Honcho Python and TypeScript SDKs"]
+    net["Nachos.Client (.NET)"]
+    mcpc["MCP clients (planned, M7)"]:::planned
+    lib["Your .NET app, in-process"]
+  end
+  subgraph api["Nachos.Api"]
+    direction LR
+    auth["Auth: NachosKey or Entra token"] --> gate["Validation, idempotency, write admission"]
+  end
+  core["Nachos.Core: messages, memory reads, search, context, deletion"]
+  subgraph worker["Worker host"]
+    consumer["Queue consumer: Deriver, Summarizer, deletion jobs"]
+    recon["Reconciler"]
+  end
+  ai["AI providers: chat and embeddings"]
+  store["Storage contracts: IMemoryStore"]
+  sql[("SQL Server or Azure SQL")]
+  mem[("In-memory provider")]
+  sdk --> auth
+  net --> auth
+  mcpc -.-> auth
+  lib --> core
+  gate --> core
+  core --> store
+  core --> ai
+  consumer --> store
+  consumer --> ai
+  recon --> store
+  recon --> ai
+  store --> sql
+  store --> mem
+```
+
+- **Callers.** Honcho's own Python and TypeScript SDKs call the `/v3` routes directly (see
+  [Honcho SDKs](/nachos/guides/honcho-sdks/) and [Compatibility status](/nachos/reference/compatibility/)).
+  `Nachos.Client` implements the same `INachosClient` interface over HTTP that `NachosService`
+  implements in-process, so .NET code is the same in both modes ([Use it as a library](/nachos/getting-started/library/)).
+- **API.** Authenticates a NachosKey (an HMAC-signed token from `nachos keys create`) or an Entra
+  token, checks the key's reach against the route, validates the body, replays idempotent
+  requests, and refuses writes under a resource that is being deleted. See [Authentication](/nachos/guides/auth/).
+- **Core.** The memory operations: messages, conclusions, representations, peer cards, search,
+  session context and deletion. Every read that returns memory passes through one visibility
+  policy (see [Observation model](/nachos/concepts/observation-model/#who-can-read-what)).
+- **Storage.** One set of contracts with two providers. SQL Server is the durable one; the
+  in-memory provider keeps the same queue, lease and fencing rules, for tests and quick starts.
+- **Worker.** Leases queued work and runs its handler; a singleton reconciler embeds what is
+  still unembedded and cleans up. See [Memory formation](/nachos/concepts/memory-formation/).
+
+## Who calls a model
+
+Only two kinds of work call a chat model, and both run in the worker. Embeddings are needed in
+more places, including on the request path to embed a search query.
 
 ```mermaid
 flowchart LR
-  Client["HTTP client"] --> Api["API and auth"]
-  Library["In-process host"] --> Core["Memory core"]
-  Api --> Core
-  Worker["Worker host"] --> Core
-  Core --> Contracts["Storage contracts"]
-  Contracts --> Sql["SQL provider"]
-  Contracts --> InMemory["In-memory provider"]
+  classDef planned stroke-dasharray: 5 5,color:#6b7280
+  deriver["Deriver: facts about a peer"]
+  summarizer["Summarizer: short and long summaries"]
+  dialectic["Dialectic chat (planned, M4)"]:::planned
+  dream["Dreaming (planned, M5)"]:::planned
+  reconciler["Reconciler: chunks and conclusions"]
+  reads["Search and semantic reads: the query"]
+  chat["Chat model: IChatClient"]
+  embed["Embeddings: IEmbeddingGenerator, 1536 dimensions"]
+  chatBackends["Azure OpenAI chat deployment, or the fake AI"]
+  embedBackends["Azure OpenAI embedding deployment, a local ONNX model, or the fake AI"]
+  deriver --> chat
+  summarizer --> chat
+  dialectic -.-> chat
+  dream -.-> chat
+  deriver --> embed
+  reconciler --> embed
+  reads --> embed
+  chat --> chatBackends
+  embed --> embedBackends
 ```
 
-| Boundary | Source-MVP responsibility |
+Chat goes to Azure OpenAI or to the fake AI. Embeddings go to Azure OpenAI, to a
+[local ONNX model](/nachos/guides/local-embeddings/), or to the fake AI's deterministic hashes. A
+database records which embedding model produced its vectors, and a host with a different model
+refuses to start. Without an embedding generator, search is lexical only and semantic reads answer
+`503`.
+
+## What comes out
+
+Everything a caller reads back is assembled from four kinds of stored data, and every path goes
+through the visibility policy first.
+
+```mermaid
+flowchart LR
+  classDef planned stroke-dasharray: 5 5,color:#6b7280
+  conclusions[("Conclusions, per observer and observed")]
+  cards[("Peer cards")]
+  messages[("Messages and their chunks")]
+  summaries[("Session summaries")]
+  policy{"Visibility policy"}
+  conclusions --> policy
+  cards --> policy
+  messages --> policy
+  summaries --> policy
+  policy --> rep["Representation"]
+  policy --> pctx["Peer context: representation and card"]
+  policy --> list["Conclusions list and query"]
+  policy --> search["Search: workspace, session, peer"]
+  policy --> sctx["Session context"]
+  policy -.-> chat["Peer and workspace chat (planned, M4 and M6)"]:::planned
+```
+
+| Output | Route | Built from |
+| --- | --- | --- |
+| Representation | `POST /v3/workspaces/{id}/peers/{id}/representation` | One observer's conclusions about one peer, ranked and rendered as text |
+| Peer context | `GET /v3/workspaces/{id}/peers/{id}/context` | The representation and the peer card |
+| Conclusions | `POST .../conclusions/list` and `.../conclusions/query` | Conclusions, filtered, or nearest to a query |
+| Search | `POST .../search` on a workspace, session or peer | Messages, by [hybrid search](/nachos/concepts/search/) |
+| Session context | `GET .../sessions/{id}/context` | Messages, a summary, and optionally a representation and card, within a [token budget](/nachos/concepts/session-context/) |
+
+## Deployment
+
+Both deployments run the same two programs against one database: `Nachos.Api`, which serves
+HTTP, and `Nachos.Worker`, which runs the queue consumer and the reconciler. With the in-memory
+provider there is only the API, which then runs the worker loops itself, because another process
+cannot see its memory.
+
+### Locally, with Aspire
+
+```mermaid
+flowchart LR
+  subgraph apphost["Aspire AppHost: dotnet run"]
+    workerc["worker: Nachos.Worker"]
+    apic["api: Nachos.Api"]
+    sqlc[("sql: SQL Server 2025 with Full-Text Search, data volume")]
+  end
+  ai["Your Azure OpenAI when AzureOpenAI:Endpoint is set, else the fake AI"]
+  workerc -->|"starts after the API is up"| apic
+  apic -->|"deploys the schema on first use"| sqlc
+  workerc --> sqlc
+  apic --> ai
+  workerc --> ai
+```
+
+The AppHost builds SQL Server from `eng/docker/mssql-fts`, so full-text search works locally,
+gives the API a development signing key, and points both hosts at Azure OpenAI or the fake AI.
+See [Quick start](/nachos/getting-started/quick-start/) and [Run the worker](/nachos/guides/run-the-worker/).
+
+### On Azure
+
+The repository has Bicep for this shape. It builds and lints offline, but it has **not** been
+shown to deploy successfully; see [Deploy to Azure](/nachos/getting-started/deploy-azure/).
+
+```mermaid
+flowchart LR
+  subgraph rg["Resource group (Bicep and azd)"]
+    subgraph cae["Container Apps environment"]
+      apia["nachos-api: external ingress"]
+      workera["nachos-worker: no ingress, min 1 replica, CPU scaling"]
+    end
+    sqla[("Azure SQL: Entra-only auth")]
+    kv["Key Vault"]
+    acr["Container Registry"]
+    mon["Log Analytics and Application Insights"]
+  end
+  aoaia["Your existing Azure OpenAI account"]
+  acr -->|"images"| cae
+  cae --> sqla
+  cae --> mon
+  cae --> aoaia
+  apia -->|"signing keys"| kv
+```
+
+Both apps reach Azure SQL, monitoring and Azure OpenAI; only the API reads Key Vault. They run as one user-assigned managed identity, which holds the SQL, Key Vault, registry and
+(when the account is named) Azure OpenAI roles. Bicep does not create the Azure OpenAI account; it
+takes an existing endpoint.
+
+## Projects and boundaries
+
+| Project | Responsibility |
 | --- | --- |
-| Abstractions | Wire contracts, domain values, and storage contracts |
-| Core and hosting | Memory operations and in-process composition |
-| API and client | HTTP hosting and a .NET transport client |
-| Providers | SQL and in-memory implementations of the storage boundary |
-| Worker | Queue consumer (Deriver) and reconciler against the same storage; the API runs them itself with the in-memory provider |
-| CLI and AppHost | Bootstrap operations and local orchestration |
+| `Nachos.Abstractions` | Wire contracts, domain records, `INachosClient`, and the storage contracts (stores, work queue, search). Depends only on the .NET base library. |
+| `Nachos.Core` | Memory operations, the Deriver, Summarizer and deletion handlers, the queue consumer and reconciler, hybrid search, session context, and the visibility policy. Never references SQL types. |
+| `Nachos.Hosting` | `AddNachos()` and `AddNachosWorker()`: composition, AI provider selection and startup checks. |
+| `Nachos.DataLayer.SqlServer` | The SQL Server provider: EF Core for query mapping, SqlClient for vectors, full-text, the queue and leases, and the schema deployer. |
+| `Nachos.DataLayer.SqlServer.Database` (and `.Sql2025`) | The database project that owns all DDL, built as two dacpacs, for Azure SQL and SQL Server 2025. |
+| `Nachos.DataLayer.InMemory` | The in-memory provider, with the same lease and fencing semantics. |
+| `Nachos.Api` | HTTP hosting, authentication and authorization, idempotency and error shapes. Runs the worker loops itself with the in-memory provider. |
+| `Nachos.Worker` | The worker host for SQL Server: queue consumer and reconciler. |
+| `Nachos.Client` | The .NET HTTP client. |
+| `Nachos.Cli` | The `nachos` tool: schema, keys, grants, embeddings and model downloads. |
+| `Nachos.AppHost`, `Nachos.ServiceDefaults` | Local orchestration with Aspire; OpenTelemetry, health checks and resilience defaults. |
+
+## What's built today
+
+| Built (M1 to M3) | Planned |
+| --- | --- |
+| Workspaces, peers, sessions, memberships, messages | Dialectic chat, `P/chat` (M4) |
+| Transactional queue, fenced leases, worker host, reconciler | Dreaming: deduction, induction, card refresh (M5) |
+| Deriver, deduplication, conclusions, representation, peer cards set by you | Scopes, workspace chat, webhooks, upload (M6) |
+| Summaries, hybrid search, session context, deletion jobs and `W/jobs` | MCP endpoint, approximate vector search, packaging (M7) |
+
+## Design sources
 
 The full [approved design](https://github.com/brendankowitz/nachos/blob/main/docs/superpowers/specs/2026-10-07-nachos-design.md)
 and [M1 implementation plan](https://github.com/brendankowitz/nachos/blob/main/docs/superpowers/plans/2026-10-07-nachos-m1-foundation.md)
