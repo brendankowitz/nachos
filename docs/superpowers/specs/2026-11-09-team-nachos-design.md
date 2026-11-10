@@ -51,7 +51,7 @@ Team Nachos is one central Nachos server. Developers and agents keep working in 
 
 ### 3.1 Summary
 
-1. **Every Individual, Team and Group is its own workspace**, registered as a **node**. Workspaces are already the hard isolation boundary: composite foreign keys make cross-workspace references structurally impossible (§7.2), and the deletion barrier (§13.1) is per workspace.
+1. **Every Individual, Team and Group is its own workspace**, registered as a **node**. Workspaces are already the hard isolation boundary (Honcho's design-patterns page: "A workspace is a hard isolation boundary"; its dreaming page: "Dreams do not span across workspaces"): composite foreign keys make cross-workspace references structurally impossible (§7.2), and the deletion barrier (§13.1) is per workspace.
 2. **A link** from a child node to a parent node carries the child's `contribute` and `pull` choices. Links are the only cross-workspace rows.
 3. **A lesson is a first-class resource**, not a conclusion. It lives in exactly one workspace.
 4. **Lessons move up by writing** (a member writes into its Team directly in T1; a worker promotes in T2). **Lessons are read down by federation**: a query on a node reads its own lessons plus those of the upstreams it pulls from. Nothing is copied down.
@@ -96,7 +96,7 @@ A `Lessons` table costs five small tables and reuses what matters: the embedding
 
 ### 3.3 Alternatives rejected
 
-- **One shared workspace with scopes (M6).** The draft quotes Honcho's docs describing a scope as a recall boundary, not an authorization boundary, and a workspace key reads every member's raw messages.
+- **One shared workspace with scopes (M6).** Honcho's design-patterns page: "A scope bounds *recall*, not *access*" and "A workspace key reads any session, scoped or not." A scope-bound key does enforce its boundary on the server, but a scope's content is still derived from members' raw messages, so nothing is generalized or gated before it is shared.
 - **A `team` peer that observes everyone.** It must be in every session and it derives from raw messages.
 - **Copying lessons down into each member's workspace.** Every gate miss would be replicated, and retraction would need sync.
 - **A multi-workspace key or a peer-scoped key with a lesson permission.** See §10.4.

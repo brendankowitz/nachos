@@ -2,7 +2,14 @@
 
 Review of the 2026-11-09 draft of `../2026-11-09-team-nachos-design.md` against the Nachos code on branch `nachos-m3` and the main spec. These notes explain revision 2; the spec is the source of truth.
 
-Honcho facts used here are the ones the main spec already cites from Honcho's public docs (§9.2). The draft's two quotations about workspaces and scopes were carried over as the draft gave them and were not re-verified in this review.
+Honcho facts come from its public docs (honcho.dev/docs) and public OpenAPI only, checked on 2026-11-10:
+
+- design-patterns: "A workspace is a hard isolation boundary." "Split workspaces only when you need hard isolation between products, customers, environments, or agents."
+- design-patterns, on scopes: "Not authorization. A workspace key reads any session, scoped or not." "A scope bounds *recall*, not *access*." The scopes page adds that a named-scope key "enforces the boundary on the server".
+- platform reference: a peer-scoped key has "**read-only** access to the sessions its peer is an active member of … It cannot write to those sessions or act on other peers." Conclusions are not mentioned.
+- dreaming: "Dreams do not span across workspaces or across different peer pairs."
+- No cross-workspace, team or organization memory feature is documented; the documented way to share is to point clients at one workspace.
+- OpenAPI: `Conclusion` and `ConclusionCreate` have no `metadata` field.
 
 ## Findings
 
