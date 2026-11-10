@@ -8,21 +8,35 @@ namespace Nachos.DataLayer.InMemory.Stores;
 internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearch
 {
     public Task<IReadOnlyList<MessageHit>> VectorAsync(
-        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, CancellationToken ct) =>
+        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, int? maxCandidates, CancellationToken ct) =>
         state.Run(
             () =>
             {
                 ArgumentNullException.ThrowIfNull(request);
                 ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
-                var vector = VectorMath.Own(query, nameof(query));
-                return Search(request, take, session =>
+                if (maxCandidates is { } cap)
                 {
-                    var distances = session.Chunks.Values
-                        .Where(chunk => chunk.State == EmbeddingState.Synced)
+                    ArgumentOutOfRangeException.ThrowIfLessThan(cap, 1, nameof(maxCandidates));
+                }
+
+                var vector = VectorMath.Own(query, nameof(query));
+                return Search(request, take, candidates =>
+                {
+                    var candidateIds = candidates.Select(c => c.Message.PublicId).ToHashSet(StringComparer.Ordinal);
+                    var chunks = candidates.Select(c => c.Session).Distinct()
+                        .SelectMany(session => session.Chunks.Values)
+                        .Where(chunk => chunk.State == EmbeddingState.Synced && candidateIds.Contains(chunk.MessageId));
+                    if (maxCandidates is { } limit)
+                    {
+                        // The most recently stored chunks, as on SQL Server (highest chunk id).
+                        chunks = chunks.OrderByDescending(chunk => chunk.Order).Take(limit);
+                    }
+
+                    var distances = chunks
                         .GroupBy(chunk => chunk.MessageId, StringComparer.Ordinal)
                         .ToDictionary(
-                            chunks => chunks.Key,
-                            chunks => chunks.Min(chunk => VectorMath.CosineDistance(chunk.Embedding!, vector)),
+                            group => group.Key,
+                            group => group.Min(chunk => VectorMath.CosineDistance(chunk.Embedding!, vector)),
                             StringComparer.Ordinal);
                     return message => distances.TryGetValue(message.PublicId, out var distance) ? distance : null;
                 });
@@ -48,27 +62,32 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
             ct);
 
     /// <summary>
-    /// The candidates of <paramref name="request"/> that <paramref name="scoreFor"/> scores (lower is better; null leaves a
+    /// The candidates of <paramref name="request"/> that the scoring function scores (lower is better; null leaves a
     /// message out), best first, ties newest first, then by public id.
     /// </summary>
-    /// <param name="scoreFor">Builds the scoring function of one session's messages, under the workspace gate.</param>
+    /// <param name="scoreFor">Builds the scoring function from every candidate, under the workspace gate.</param>
     private IReadOnlyList<MessageHit> Search(
-        MessageSearchRequest request, int take, Func<SessionEntry, Func<MessageRecord, double?>> scoreFor)
+        MessageSearchRequest request,
+        int take,
+        Func<IReadOnlyList<(SessionEntry Session, MessageRecord Message)>, Func<MessageRecord, double?>> scoreFor)
     {
         var workspace = state.RequireWorkspace(request.WorkspaceName);
         var filter = InMemoryFilterEvaluator.Prepare(request.Filter);
         lock (workspace.Gate)
         {
+            List<(SessionEntry Session, MessageRecord Message)> candidates =
+            [
+                .. Candidates(workspace, request.Scope).SelectMany(candidate => candidate.Session.Messages
+                    .Where(m => candidate.Visible(m) && InMemoryFilterEvaluator.Matches(filter, m))
+                    .Select(m => (candidate.Session, m))),
+            ];
+            var score = scoreFor(candidates);
             var scored = new List<(MessageRecord Message, double Score)>();
-            foreach (var (session, visible) in Candidates(workspace, request.Scope))
+            foreach (var (_, message) in candidates)
             {
-                var score = scoreFor(session);
-                foreach (var message in session.Messages.Where(m => visible(m) && InMemoryFilterEvaluator.Matches(filter, m)))
+                if (score(message) is { } value)
                 {
-                    if (score(message) is { } value)
-                    {
-                        scored.Add((message, value));
-                    }
+                    scored.Add((message, value));
                 }
             }
 

@@ -164,7 +164,7 @@ public abstract class DeletionContractTests : M3ContractTestBase
         foreach (var scoped in new[] { request, perspective, request with { Scope = new MessageSearchScope.Session(deleting) } })
         {
             var lexical = await store.Search.LexicalAsync(scoped, ["apple"], 10, Ct);
-            var vector = await store.Search.VectorAsync(scoped, Vector(0), 10, Ct);
+            var vector = await store.Search.VectorAsync(scoped, Vector(0), 10, null, Ct);
             lexical.Concat(vector).ShouldAllBe(hit => hit.Message.SessionName == kept);
         }
 
@@ -175,7 +175,7 @@ public abstract class DeletionContractTests : M3ContractTestBase
         await store.Deletion.BeginDeleteSessionAsync(workspace, kept, Ct);
         await store.Deletion.BeginDeleteWorkspaceAsync(workspace, Ct);
         (await store.Search.LexicalAsync(request, ["apple"], 10, Ct)).ShouldBeEmpty();
-        (await store.Search.VectorAsync(request, Vector(0), 10, Ct)).ShouldBeEmpty();
+        (await store.Search.VectorAsync(request, Vector(0), 10, null, Ct)).ShouldBeEmpty();
         (await store.Embeddings.ListPendingAsync(100_000, Ct)).ShouldNotContain(p => p.WorkspaceName == workspace);
     }
 

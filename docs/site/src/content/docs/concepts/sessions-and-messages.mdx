@@ -15,7 +15,10 @@ processing interprets their activity. A stored message is not itself a derived
 conclusion, summary, or evidence that a worker has finished processing.
 
 Conclusions are formed from messages in the background; see
-[Memory formation](/nachos/concepts/memory-formation/). Summaries, dialectic chat
-and session context generation are outside the current foundation. See the
-[design and roadmap](/nachos/architecture/) rather than inferring these capabilities
-from the documentation navigation.
+[Memory formation](/nachos/concepts/memory-formation/). Messages are found again with
+[search](/nachos/concepts/search/), and a session's rolling summaries and token-budgeted
+context are described in [Session context](/nachos/concepts/session-context/). Deleting a
+session is accepted at once and finished by a background job; see
+[Delete sessions and workspaces](/nachos/guides/delete-data/). Dialectic chat is outside
+the current build; see the [design and roadmap](/nachos/architecture/) rather than inferring
+capabilities from the documentation navigation.

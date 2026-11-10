@@ -23,7 +23,7 @@ internal static class NachosServiceFactory
             new ConclusionService(store, NullLogger<ConclusionService>.Instance),
             peerContext,
             new ConfigurationResolver(Options.Create(new NachosOptions()), counter),
-            new HybridSearchService(store),
+            new HybridSearchService(store, Options.Create(new NachosOptions())),
             new SessionContextService(store, peerContext, representations, counter),
             new JobService(store));
     }

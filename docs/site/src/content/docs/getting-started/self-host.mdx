@@ -13,9 +13,24 @@ The repository contains Azure SQL and SQL Server 2025 database projects plus
 the schema CLI. Prepare the database using the matching dacpac and a principal
 authorized for schema changes; use a narrower runtime identity afterwards.
 Read [Schema upgrades](/nachos/guides/schema-upgrades/) before changing any data.
-Full-text search is required for the SQL search path. The repository has an FTS
-image recipe under `eng/docker/mssql-fts`; do not assume the stock SQL image
-selected by AppHost includes FTS.
+Full-Text Search is optional. Where the server has it, Nachos creates the
+full-text index of message search itself at runtime; without it, lexical search
+falls back to `LIKE`, which is slower on large workspaces (see
+[Search](/nachos/concepts/search/)). The stock SQL Server Linux image has no
+Full-Text Search; the repository's image under `eng/docker/mssql-fts` adds it,
+and the AppHost uses that image. Azure SQL has it built in.
+
+The runtime identity creates the index only if it may create a full-text catalog
+and index (`db_ddladmin` allows both). Without that permission the attempt fails,
+is logged and retried at each check (every 30 seconds by default), and search
+stays on `LIKE`. To keep the runtime identity narrower, create the index once as
+an administrator; Nachos then finds it and uses it:
+
+```sql
+CREATE FULLTEXT CATALOG [NachosFts];
+CREATE FULLTEXT INDEX ON dbo.Messages (Content) KEY INDEX PK_Messages ON [NachosFts]
+    WITH CHANGE_TRACKING AUTO, STOPLIST OFF;
+```
 
 ## Configure the source API
 

@@ -69,7 +69,7 @@ public sealed class SqlM3DeletingStateTests(SqlServerFixture fixture) : IAsyncLi
         foreach (var request in requests)
         {
             (await store.Search.LexicalAsync(request, ["quokka"], 100, Ct)).ShouldNotBeEmpty();
-            (await store.Search.VectorAsync(request, Vector(), 100, Ct)).ShouldNotBeEmpty();
+            (await store.Search.VectorAsync(request, Vector(), 100, null, Ct)).ShouldNotBeEmpty();
         }
 
         (await store.Embeddings.ListUnchunkedMessagesAsync(100_000, Ct)).ShouldContain(m => m.WorkspaceName == workspace);
@@ -82,7 +82,7 @@ public sealed class SqlM3DeletingStateTests(SqlServerFixture fixture) : IAsyncLi
         foreach (var request in requests)
         {
             (await store.Search.LexicalAsync(request, ["quokka"], 100, Ct)).ShouldBeEmpty();
-            (await store.Search.VectorAsync(request, Vector(), 100, Ct)).ShouldBeEmpty();
+            (await store.Search.VectorAsync(request, Vector(), 100, null, Ct)).ShouldBeEmpty();
         }
 
         // The 19 chunks still pending leave the backlog.

@@ -24,13 +24,19 @@ representation. Nothing in this path runs inside your request.
    completed without calling a model.
 5. **Deduplication.** A new fact within `Nachos:Deriver:DedupMaxDistance` (cosine, 0.05 by
    default) of an existing conclusion from the same session corroborates that conclusion
-   instead of inserting a copy, and raises its `times_derived`. When the new fact is
+   instead of inserting a copy, and raises its `times_derived` (a retried batch does not raise
+   it twice; filtering conclusions on `times_derived` is a Nachos extension). When the new fact is
    richer than the stored one, it replaces the conclusion's content.
 6. **Commit.** New conclusions, corroborations, replacements and the completion of the queue items are
    written together. A crash leaves either all of it or none of it.
 
+The same consumer runs the other queued work: the session **summarizer** (see
+[Session context](/nachos/concepts/session-context/)) and **deletion jobs** (see
+[Delete sessions and workspaces](/nachos/guides/delete-data/)).
+
 A **reconciler** runs alongside the consumer. It embeds conclusions that were created
-without a vector (for example through the API while a model was unavailable), purges
+without a vector (for example through the API while a model was unavailable) and message
+chunks for [search](/nachos/concepts/search/), chunks messages stored before chunking existed, purges
 tombstoned conclusions, old completed queue items and expired idempotency keys after
 their retention period, reports the queue backlog gauges, and runs as a singleton
 through its own lease.
@@ -54,7 +60,8 @@ worker](/nachos/guides/run-the-worker/) shows how to redrive dead-lettered work.
 | `GET /v3/workspaces/{id}/queue/status` | Counts of pending, in-progress and completed work. |
 
 You can also create conclusions directly with `POST /v3/workspaces/{id}/conclusions` and
-delete them by id. Dialectic chat, search, session context, summaries and dreaming are not
+delete them by id. Messages are read back through [search](/nachos/concepts/search/) and
+[session context](/nachos/concepts/session-context/). Dialectic chat and dreaming are not
 built yet and answer `501`.
 
 ## Fake AI is not memory quality

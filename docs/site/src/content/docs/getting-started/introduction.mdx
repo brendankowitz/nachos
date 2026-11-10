@@ -13,6 +13,9 @@ unresolved license gates. Source availability is not production-release approval
 - Get-or-create, update and list operations for workspaces, peers and sessions;
   session membership and message batches, reads and metadata updates.
 - Ordered messages, metadata filters, pagination and idempotent batch replay.
+- Hybrid (vector and full-text) message search over a workspace, a session or a peer's view;
+  session context within a hard token budget, with rolling short and long summaries; and
+  session and workspace deletion as background jobs listed by `GET .../jobs`.
 - NachosKey and Microsoft Entra authentication with scoped authorization and grants.
 - In-memory and SQL storage, a schema/bootstrap CLI, Aspire orchestration,
   offline-validated Azure infrastructure and a .NET HTTP client.
@@ -22,11 +25,11 @@ unresolved license gates. Source availability is not production-release approval
 
 ## What is not implemented
 
-Dialectic chat, search, session context and summaries, dreaming, webhooks, scopes
-and native MCP remain future milestones. Their staged routes return **501**.
-Conclusions, peer cards, representations and the queue status route work, formed
-by a background worker; with the offline fake AI they are copies of messages, not
-memory quality (see [Memory formation](/nachos/concepts/memory-formation/)). Some operations have both implemented and staged variants;
+Dialectic chat, dreaming, webhooks, scopes and native MCP remain future milestones.
+Their staged routes return **501**. Conclusions, peer cards, representations, summaries
+and the queue status route work, formed by a background worker; with the offline fake AI
+they are copies of messages, not memory quality (see
+[Memory formation](/nachos/concepts/memory-formation/)). Some operations have both implemented and staged variants;
 inspect the [compatibility matrix](/nachos/reference/compatibility/).
 
 Do not assume production durability, complete upstream compatibility or a

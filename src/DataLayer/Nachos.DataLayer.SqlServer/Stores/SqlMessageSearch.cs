@@ -19,7 +19,8 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 /// </para>
 /// <para>
 /// <b>Vector</b> search is exact: <c>VECTOR_DISTANCE('cosine', …)</c> over the synced chunks of the candidates, each
-/// message ranked by its nearest chunk.
+/// message ranked by its nearest chunk. With a candidate cap only the most recently stored synced chunks in scope (highest
+/// <c>MessageEmbeddings.Id</c>) are compared.
 /// </para>
 /// <para>
 /// <b>Lexical</b> search uses <c>CONTAINSTABLE</c> while <see cref="FullTextIndexState.IsReady"/> and
@@ -49,11 +50,16 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
     private const string NewestFirst = "m.CreatedAt DESC, m.Seq DESC, m.PublicId";
 
     public async Task<IReadOnlyList<MessageHit>> VectorAsync(
-        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, CancellationToken ct)
+        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, int? maxCandidates, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
         ArgumentNullException.ThrowIfNull(request);
         ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
+        if (maxCandidates is { } cap)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(cap, 1, nameof(maxCandidates));
+        }
+
         Vectors.Require(query, nameof(query));
         return await SearchAsync(
             request,
@@ -64,12 +70,18 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                     """
                     FROM (
                         SELECT e.MessageId, MIN(VECTOR_DISTANCE('cosine', e.Embedding, @query)) AS Distance
+                    """,
+                    maxCandidates is null ? "" : "FROM (SELECT TOP (@maxCandidates) e.MessageId, e.Embedding",
+                    """
                         FROM dbo.MessageEmbeddings AS e
                         JOIN dbo.Messages AS m ON m.Id = e.MessageId
                         JOIN dbo.Sessions AS s ON s.Id = m.SessionId
                         WHERE e.WorkspaceId = @workspace AND e.SyncState = 1
                     """,
                     "AND " + candidates,
+                    // Chunk ids grow in storage order, so the cap keeps the most recently stored chunks: a backward scan
+                    // of the clustered key that stops after the cap, instead of a distance for every chunk in scope.
+                    maxCandidates is null ? "" : "ORDER BY e.Id DESC) AS e",
                     """
                         GROUP BY e.MessageId
                     ) AS d
@@ -77,7 +89,9 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                     """,
                     HitsFrom,
                     "ORDER BY d.Distance, " + NewestFirst),
-                [SqlParameters.Vector("@query", query)]),
+                maxCandidates is { } limit
+                    ? [SqlParameters.Vector("@query", query), SqlParameters.Int("@maxCandidates", limit)]
+                    : [SqlParameters.Vector("@query", query)]),
             ct);
     }
 

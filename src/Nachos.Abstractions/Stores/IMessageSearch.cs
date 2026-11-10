@@ -29,12 +29,16 @@ public interface IMessageSearch
     /// <summary>
     /// The <paramref name="take"/> messages nearest to <paramref name="query"/> by exact cosine distance, a message's
     /// distance being that of its nearest embedded chunk; ties go to the newest (<c>CreatedAt</c>, then <c>Seq</c>, then
-    /// public id). Messages with no embedded chunk are not candidates.
+    /// public id). Messages with no embedded chunk are not candidates. When <paramref name="maxCandidates"/> is set, only
+    /// that many of the candidates' embedded chunks are compared, the most recently stored first, so the cost of a large
+    /// scope is bounded and its older messages can be missed; null compares every chunk.
     /// </summary>
     /// <exception cref="ArgumentException">The vector is not <see cref="VectorSpace.Dimensions"/> long.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="take"/> is less than 1.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="take"/> or <paramref name="maxCandidates"/> is less than 1.
+    /// </exception>
     Task<IReadOnlyList<MessageHit>> VectorAsync(
-        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, CancellationToken ct);
+        MessageSearchRequest request, ReadOnlyMemory<float> query, int take, int? maxCandidates, CancellationToken ct);
 
     /// <summary>
     /// The <paramref name="take"/> best messages whose content contains at least one term, compared case-insensitively.
