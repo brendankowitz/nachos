@@ -30,12 +30,9 @@ flowchart TB
     auth["Auth: NachosKey or Entra token"] --> gate["Validation, idempotency, write admission"]
   end
   core["Nachos.Core: messages, memory reads, search, context, deletion"]
-  subgraph worker["Worker host"]
-    consumer["Queue consumer: Deriver, Summarizer, deletion jobs"]
-    recon["Reconciler"]
-  end
-  ai["AI providers: chat and embeddings"]
+  worker["Worker host: queue consumer (Deriver, Summarizer, deletion jobs) and reconciler"]
   store["Storage contracts: IMemoryStore"]
+  ai["AI providers: chat and embeddings"]
   sql[("SQL Server or Azure SQL")]
   mem[("In-memory provider")]
   sdk --> auth
@@ -43,12 +40,11 @@ flowchart TB
   mcpc -.-> auth
   lib --> core
   gate --> core
+  core ~~~ worker
   core --> store
+  worker --> store
+  worker --> ai
   core --> ai
-  consumer --> store
-  consumer --> ai
-  recon --> store
-  recon --> ai
   store --> sql
   store --> mem
 ```
