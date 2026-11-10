@@ -276,8 +276,8 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
     }
 
     /// <remarks>
-    /// Each batch is its own statement, seeking the state indexes, so a large database is never locked as a whole. Stored
-    /// models are removed from conclusions' internal metadata with the vectors. The stamp is replaced last: a reset that
+    /// Each batch is its own statement, so a large database is never locked as a whole: conclusions seek the state index, and
+    /// chunk rows are deleted outright. Stored models are removed from conclusions' internal metadata with the vectors. The stamp is replaced last: a reset that
     /// stops part-way leaves the old stamp, so hosts configured with the new model keep refusing to start until it is rerun.
     /// </remarks>
     public async Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct)
@@ -295,7 +295,7 @@ internal sealed class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbeddingSto
                 InternalMetadata = JSON_MODIFY(InternalMetadata, '$.{VectorSpace.ModelMetadataKey}', NULL)
             WHERE EmbeddingState <> 0
             """,
-            "UPDATE TOP (@batch) dbo.MessageEmbeddings SET Embedding = NULL, SyncState = 0 WHERE SyncState <> 0",
+            "DELETE TOP (@batch) FROM dbo.MessageEmbeddings",
         })
         {
             int changed;

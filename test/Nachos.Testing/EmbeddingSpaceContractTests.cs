@@ -74,9 +74,9 @@ public abstract class EmbeddingSpaceContractTests : M3ContractTestBase
     public async Task EmbeddingSpace_ListsRecordedModels_AndNullForChunkVectors()
     {
         var (store, _) = await NewStoreAsync();
-        await SeedVectorsAsync(store, "fake-hash-v1");
+        await SeedVectorsAsync(store, "fake");
 
-        (await store.Embeddings.ListVectorModelsAsync(Ct)).ShouldBe(["fake-hash-v1", null], ignoreOrder: true);
+        (await store.Embeddings.ListVectorModelsAsync(Ct)).ShouldBe(["fake", null], ignoreOrder: true);
     }
 
     [Fact]
@@ -89,18 +89,34 @@ public abstract class EmbeddingSpaceContractTests : M3ContractTestBase
             workspace, [new NewConclusion("alice", "bob", null, ConclusionLevel.Explicit, "gone", Vector(3), [], null)], Ct);
         await store.Conclusions.TombstoneAsync(workspace, tombstoned[0].PublicId, Ct);
 
-        // An embedded conclusion and chunk, a failed chunk and a tombstoned conclusion; batches of one exercise the loop.
+        // An embedded and a tombstoned conclusion are reset, and both chunks deleted; batches of one exercise the loops.
         var reset = await store.Embeddings.ResetSpaceAsync(Bge, batchSize: 1, Ct);
 
         reset.ShouldBe(4);
         (await store.Embeddings.GetSpaceAsync(Ct)).ShouldBe(Bge);
         (await store.Embeddings.ListVectorModelsAsync(Ct)).ShouldBeEmpty();
         (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, Ct)).ShouldBe(2);
-        (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, Ct)).ShouldBe(2);
+        (await store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, Ct)).ShouldBe(0);
         var conclusion = (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.CreatedAt, new PageRequest(), Ct)).Items
             .Single(c => c.Content == "bob likes tea");
         conclusion.InternalMetadata.ContainsKey(VectorSpace.ModelMetadataKey).ShouldBeFalse();
 
         (await store.Embeddings.ResetSpaceAsync(Bge, batchSize: 100, Ct)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task EmbeddingSpace_Reset_DeletesChunks_SoTheirMessagesAreRechunked()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await SeedVectorsAsync(store, Azure.Model);
+        var message = (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Items.Single();
+        (await store.Embeddings.ListUnchunkedMessagesAsync(100, Ct)).ShouldNotContain(m => m.PublicId == message.PublicId);
+
+        await store.Embeddings.ResetSpaceAsync(Bge, batchSize: 1, Ct);
+
+        (await store.Embeddings.ListPendingAsync(100, Ct)).ShouldNotContain(p => p.Kind == PendingEmbeddingKind.MessageChunk);
+        (await store.Embeddings.ListUnchunkedMessagesAsync(100, Ct)).Select(m => m.PublicId).ShouldBe([message.PublicId]);
+        await store.Embeddings.AddChunksAsync([new MessageChunk(workspace, session, message.PublicId, 0, "rechunked")], Ct);
+        (await store.Embeddings.ListPendingAsync(100, Ct)).ShouldContain(p => p.Kind == PendingEmbeddingKind.MessageChunk && p.Content == "rechunked");
     }
 }

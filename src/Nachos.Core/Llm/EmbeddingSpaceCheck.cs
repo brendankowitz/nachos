@@ -25,15 +25,18 @@ namespace Nachos.Core.Llm;
 /// cannot be stamped automatically.
 /// </para>
 /// <para>
-/// A host must start while its database is unreachable (readiness reports it), so a store failure during the model check
-/// only logs a warning; the check is then repeated in the background (after 1 s, doubling to 30 s) until it completes,
-/// and a mismatch found then stops the host (<paramref name="lifetime"/>; without one, it is only logged). Until that
-/// recheck, a host could embed with an unchecked model.
+/// A host must start while its database is unreachable (readiness reports it), so a store that cannot be reached
+/// (<see cref="IMemoryStore.IsUnavailableFailure"/>) only logs a warning. The <see cref="EmbeddingSpaceGate"/> is then closed,
+/// so every embedding waits, and the check is repeated in the background (after 1 s, doubling to 30 s): a match opens the
+/// gate; a mismatch, or any other failure, keeps it closed, sets exit code 1 and stops the host (<paramref name="lifetime"/>;
+/// without one it is only logged). Any other store failure at startup (a missing table, a refused schema, a denied
+/// permission) fails startup. The probe uses the generator behind the gate, so it never waits on it.
 /// </para>
 /// </remarks>
 public sealed partial class EmbeddingSpaceCheck(
     IEmbeddingGenerator<string, Embedding<float>> generator,
     IServiceScopeFactory scopes,
+    EmbeddingSpaceGate gate,
     ILogger<EmbeddingSpaceCheck> logger,
     IHostApplicationLifetime? lifetime = null)
     : IHostedService, IDisposable
@@ -43,19 +46,18 @@ public sealed partial class EmbeddingSpaceCheck(
 
     private readonly CancellationTokenSource _stopping = new();
     private Task _recheck = Task.CompletedTask;
+    private bool _disposed;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await ProbeDimensionsAsync(cancellationToken).ConfigureAwait(false);
-        string? mismatch;
-        try
+        var configured = SpaceOf(EmbeddingModelName.Of(generator));
+        var (mismatch, unavailable) = await CheckAsync(configured, cancellationToken).ConfigureAwait(false);
+        if (unavailable is not null)
         {
-            mismatch = await FindMismatchAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            LogStoreUnavailable(logger, exception);
-            _recheck = Task.Run(() => RecheckAsync(_stopping.Token), CancellationToken.None);
+            gate.Close();
+            LogStoreUnavailable(logger, unavailable);
+            _recheck = Task.Run(() => RecheckAsync(configured, _stopping.Token), CancellationToken.None);
             return;
         }
 
@@ -67,13 +69,29 @@ public sealed partial class EmbeddingSpaceCheck(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // A host may dispose its services before stopping them (WebApplicationFactory does); the recheck is cancelled by then.
+        if (Volatile.Read(ref _disposed))
+        {
+            return;
+        }
+
         await _stopping.CancelAsync().ConfigureAwait(false);
         await _recheck.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public void Dispose() => _stopping.Dispose();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, true))
+        {
+            return;
+        }
+
+        _stopping.Cancel();
+        _stopping.Dispose();
+    }
 
     /// <summary>The stamp the configured generator needs: its model id and that model's own vector size.</summary>
+    /// <exception cref="ArgumentException">The model id is blank or longer than <see cref="EmbeddingSpace.MaxModelLength"/>.</exception>
     public static EmbeddingSpace SpaceOf(string model) =>
         new(model, LocalEmbeddingModel.Find(model)?.Dimensions ?? VectorSpace.Dimensions);
 
@@ -82,7 +100,7 @@ public sealed partial class EmbeddingSpaceCheck(
         $"Embedding model '{configured}' does not match the database's '{stamped}'. " +
         $"Run 'nachos embeddings reset --model {configured}' to re-embed, or configure '{stamped}'.";
 
-    private async Task RecheckAsync(CancellationToken ct)
+    private async Task RecheckAsync(EmbeddingSpace configured, CancellationToken ct)
     {
         var delay = FirstRetry;
         while (true)
@@ -90,16 +108,22 @@ public sealed partial class EmbeddingSpaceCheck(
             try
             {
                 await Task.Delay(delay, ct).ConfigureAwait(false);
-                if (await FindMismatchAsync(ct).ConfigureAwait(false) is { } mismatch)
+                var (mismatch, unavailable) = await CheckAsync(configured, ct).ConfigureAwait(false);
+                if (unavailable is not null)
                 {
-                    LogMismatchStopping(logger, mismatch);
-                    lifetime?.StopApplication();
-                }
-                else
-                {
-                    LogRechecked(logger);
+                    LogRecheckFailed(logger, unavailable);
+                    delay = delay * 2 < MaxRetry ? delay * 2 : MaxRetry;
+                    continue;
                 }
 
+                if (mismatch is null)
+                {
+                    gate.Open();
+                    LogRechecked(logger);
+                    return;
+                }
+
+                Stop(mismatch, null);
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -108,18 +132,40 @@ public sealed partial class EmbeddingSpaceCheck(
             }
             catch (Exception exception)
             {
-                LogRecheckFailed(logger, exception);
-                delay = delay * 2 < MaxRetry ? delay * 2 : MaxRetry;
+                Stop("The embedding model could not be checked against the database's stamp.", exception);
+                return;
             }
         }
     }
 
-    /// <summary>The mismatch message, or null once the database is stamped with the configured model (stamping it if allowed).</summary>
-    private async Task<string?> FindMismatchAsync(CancellationToken ct)
+    /// <summary>Keeps the gate closed and stops the host with exit code 1.</summary>
+    private void Stop(string reason, Exception? exception)
     {
-        var configured = SpaceOf(EmbeddingModelName.Of(generator));
+        LogStopping(logger, reason, exception);
+        Environment.ExitCode = 1;
+        lifetime?.StopApplication();
+    }
+
+    /// <summary>
+    /// The mismatch message, or null once the database is stamped with the configured model (stamping it if allowed); or the
+    /// failure, when the store could not be reached. Any other store failure is thrown.
+    /// </summary>
+    private async Task<(string? Mismatch, Exception? Unavailable)> CheckAsync(EmbeddingSpace configured, CancellationToken ct)
+    {
         await using var scope = scopes.CreateAsyncScope();
-        var store = scope.ServiceProvider.GetRequiredService<IMemoryStore>().Embeddings;
+        var memory = scope.ServiceProvider.GetRequiredService<IMemoryStore>();
+        try
+        {
+            return (await FindMismatchAsync(memory.Embeddings, configured, ct).ConfigureAwait(false), null);
+        }
+        catch (Exception exception) when (!ct.IsCancellationRequested && memory.IsUnavailableFailure(exception))
+        {
+            return (null, exception);
+        }
+    }
+
+    private async Task<string?> FindMismatchAsync(IEmbeddingStore store, EmbeddingSpace configured, CancellationToken ct)
+    {
         var stamp = await store.GetSpaceAsync(ct).ConfigureAwait(false);
         if (stamp is null)
         {
@@ -150,7 +196,8 @@ public sealed partial class EmbeddingSpaceCheck(
         GeneratedEmbeddings<Embedding<float>> embeddings;
         try
         {
-            embeddings = await generator.GenerateAsync(["nachos embedding dimension probe"], cancellationToken: cancellationToken)
+            var ungated = generator.GetService<GatedEmbeddingGenerator>()?.Ungated ?? generator;
+            embeddings = await ungated.GenerateAsync(["nachos embedding dimension probe"], cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
@@ -193,17 +240,17 @@ public sealed partial class EmbeddingSpaceCheck(
     [LoggerMessage(
         Level = LogLevel.Warning,
         Message = "The embedding model could not be checked against the database's stamp because the store is unavailable. " +
-                  "Startup continues and the check is retried in the background.")]
+                  "Startup continues, embeddings are held back, and the check is retried in the background.")]
     private static partial void LogStoreUnavailable(ILogger logger, Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "The embedding model check is still waiting for the store.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The embedding model check is still waiting for the store; embeddings stay held back.")]
     private static partial void LogRecheckFailed(ILogger logger, Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "The embedding model matches the database's stamp.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "The embedding model matches the database's stamp; embeddings are released.")]
     private static partial void LogRechecked(ILogger logger);
 
-    [LoggerMessage(Level = LogLevel.Critical, Message = "{Mismatch} Stopping the host.")]
-    private static partial void LogMismatchStopping(ILogger logger, string mismatch);
+    [LoggerMessage(Level = LogLevel.Critical, Message = "{Reason} Embeddings stay held back; stopping the host.")]
+    private static partial void LogStopping(ILogger logger, string reason, Exception? exception);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "The database had no embedding model stamp; it is now stamped with '{Model}'.")]
     private static partial void LogStamped(ILogger logger, string model);

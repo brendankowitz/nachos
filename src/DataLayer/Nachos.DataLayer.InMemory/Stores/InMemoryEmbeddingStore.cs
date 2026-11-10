@@ -230,11 +230,8 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
 
                         foreach (var session in workspace.Sessions.Values)
                         {
-                            foreach (var (key, chunk) in session.Chunks.Where(c => c.Value.State != EmbeddingState.Pending).ToList())
-                            {
-                                session.Chunks[key] = chunk with { Embedding = null, State = EmbeddingState.Pending };
-                                reset++;
-                            }
+                            reset += session.Chunks.Count;
+                            session.Chunks.Clear();
                         }
                     }
                 }

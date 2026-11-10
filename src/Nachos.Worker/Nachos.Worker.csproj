@@ -23,5 +23,12 @@
     <Content Include="..\..\eng\licenses\Microsoft.SqlServer.Types\170.1000.7\license.md"
              Link="eng\licenses\Microsoft.SqlServer.Types\170.1000.7\license.md"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <!-- ONNX Runtime (local embeddings): MIT, and the notices of the components in its native binaries. -->
+    <Content Include="..\..\eng\licenses\Microsoft.ML.OnnxRuntime\1.31.1\LICENSE"
+             Link="eng\licenses\Microsoft.ML.OnnxRuntime\1.31.1\LICENSE"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="..\..\eng\licenses\Microsoft.ML.OnnxRuntime\1.31.1\ThirdPartyNotices.txt"
+             Link="eng\licenses\Microsoft.ML.OnnxRuntime\1.31.1\ThirdPartyNotices.txt"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 </Project>

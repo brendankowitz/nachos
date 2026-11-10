@@ -25,35 +25,95 @@ public sealed class EmbeddingSpaceCheckTests
 
     private readonly StopRecorder _lifetime = new();
 
+    private readonly EmbeddingSpaceGate _gate = new();
+
     private EmbeddingSpaceCheck Check(
         IEmbeddingGenerator<string, Embedding<float>> generator, ILogger<EmbeddingSpaceCheck>? logger = null, IMemoryStore? store = null)
     {
         var scopes = new ServiceCollection().AddSingleton(store ?? _store).BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-        return new(generator, scopes, logger ?? NullLogger<EmbeddingSpaceCheck>.Instance, _lifetime);
+        return new(generator, scopes, _gate, logger ?? NullLogger<EmbeddingSpaceCheck>.Instance, _lifetime);
     }
 
-    /// <summary>A store whose embedding stamp is unreadable for the first <paramref name="failures"/> reads, then <paramref name="stamp"/>.</summary>
-    private static IMemoryStore FlakyStore(int failures, EmbeddingSpace stamp)
+    /// <summary>The generator as the pipeline wraps it: behind <see cref="_gate"/>.</summary>
+    private GatedEmbeddingGenerator Gated() => new(new DeterministicEmbeddingGenerator(), _gate);
+
+    /// <summary>
+    /// A store that cannot be reached for the first <paramref name="failures"/> stamp reads, then reads <paramref name="stamp"/>.
+    /// </summary>
+    private static IMemoryStore FlakyStore(int failures, EmbeddingSpace stamp, Exception? failure = null, bool unavailable = true)
     {
         var embeddings = Substitute.For<IEmbeddingStore>();
         var reads = 0;
         embeddings.GetSpaceAsync(Arg.Any<CancellationToken>()).Returns(_ => ++reads <= failures
-            ? Task.FromException<EmbeddingSpace?>(new TimeoutException("the database is not up yet"))
+            ? Task.FromException<EmbeddingSpace?>(failure ?? new TimeoutException("the database is not up yet"))
             : Task.FromResult<EmbeddingSpace?>(stamp));
         var store = Substitute.For<IMemoryStore>();
         store.Embeddings.Returns(embeddings);
+        store.IsTransientFailure(Arg.Any<Exception>()).Returns(unavailable);
+        store.IsUnavailableFailure(Arg.Any<Exception>()).Returns(unavailable);
         return store;
     }
 
     [Fact]
-    public async Task StoreUnavailableAtStartup_StartsAndStopsTheHostWhenTheRecheckFindsAMismatch()
+    public async Task StoreUnavailableAtStartup_EmbeddingsWait_ThenRunOnceTheRecheckMatches()
     {
-        var check = Check(new DeterministicEmbeddingGenerator(), store: FlakyStore(failures: 2, new EmbeddingSpace(Azure, VectorSpace.Dimensions)));
+        using var generator = Gated();
+        using var check = Check(generator, store: FlakyStore(failures: 2, new EmbeddingSpace(Fake, VectorSpace.Dimensions)));
 
         await check.StartAsync(default);
+        var held = generator.GenerateAsync(["held back"]);
 
-        await _lifetime.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        _gate.IsOpen.ShouldBeFalse();
+        held.IsCompleted.ShouldBeFalse();
+        (await held.WaitAsync(TimeSpan.FromSeconds(30))).Count.ShouldBe(1);
+        _gate.IsOpen.ShouldBeTrue();
+        _lifetime.Stopped.Task.IsCompleted.ShouldBeFalse();
         await check.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task StoreUnavailableAtStartup_RecheckMismatch_KeepsEmbeddingsHeldAndStopsTheHostWithExitCode1()
+    {
+        using var generator = Gated();
+        using var check = Check(generator, store: FlakyStore(failures: 2, new EmbeddingSpace(Azure, VectorSpace.Dimensions)));
+        try
+        {
+            await check.StartAsync(default);
+            var held = generator.GenerateAsync(["held back"]);
+
+            await _lifetime.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await check.StopAsync(default);
+
+            Environment.ExitCode.ShouldBe(1);
+            held.IsCompleted.ShouldBeFalse();
+            _gate.IsOpen.ShouldBeFalse();
+        }
+        finally
+        {
+            Environment.ExitCode = 0;
+        }
+    }
+
+    [Fact]
+    public async Task HeldEmbedding_Cancelled_ThrowsOperationCanceled()
+    {
+        using var generator = Gated();
+        _gate.Close();
+        using var cancel = new CancellationTokenSource();
+
+        var held = generator.GenerateAsync(["held back"], cancellationToken: cancel.Token);
+        await cancel.CancelAsync();
+
+        await Should.ThrowAsync<OperationCanceledException>(() => held);
+    }
+
+    [Fact]
+    public async Task Probe_NeverWaitsOnTheGate()
+    {
+        using var generator = Gated();
+        _gate.Close();
+
+        await Check(generator).StartAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
@@ -65,6 +125,37 @@ public sealed class EmbeddingSpaceCheckTests
         await check.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
 
         _lifetime.Stopped.Task.IsCompleted.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task StopAfterDispose_IsANoOp()
+    {
+        var check = Check(new DeterministicEmbeddingGenerator(), store: FlakyStore(failures: int.MaxValue, new EmbeddingSpace(Fake, VectorSpace.Dimensions)));
+        await check.StartAsync(default);
+
+        check.Dispose();
+
+        await check.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task StoreFailureThatIsNotAvailability_FailsStartup()
+    {
+        var missingTable = new InvalidOperationException("Schema is stamped current but table EmbeddingSpace is missing.");
+        using var check = Check(
+            new DeterministicEmbeddingGenerator(),
+            store: FlakyStore(failures: 1, new EmbeddingSpace(Fake, VectorSpace.Dimensions), missingTable, unavailable: false));
+
+        (await Should.ThrowAsync<InvalidOperationException>(() => check.StartAsync(default))).ShouldBeSameAs(missingTable);
+        _gate.IsOpen.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task InvalidModelId_FailsStartup()
+    {
+        using var generator = new NamedGenerator(new string('m', EmbeddingSpace.MaxModelLength + 1));
+
+        await Should.ThrowAsync<ArgumentException>(() => Check(generator).StartAsync(default));
     }
 
     private async Task<(string Workspace, string Session)> NewSessionAsync()
@@ -239,6 +330,21 @@ public sealed class EmbeddingSpaceCheckTests
         var check = Check(new ThrowingGenerator(new OperationCanceledException(cancelled.Token)));
 
         await Should.ThrowAsync<OperationCanceledException>(() => check.StartAsync(cancelled.Token));
+    }
+
+    /// <summary>A working 1536-dimension generator that reports <paramref name="model"/> as its model id.</summary>
+    private sealed class NamedGenerator(string model) : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        private readonly DeterministicEmbeddingGenerator _inner = new();
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
+            IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default) =>
+            _inner.GenerateAsync(values, options, cancellationToken);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) =>
+            serviceType == typeof(EmbeddingGeneratorMetadata) ? new EmbeddingGeneratorMetadata("test", defaultModelId: model) : null;
+
+        public void Dispose() => _inner.Dispose();
     }
 
     private sealed class StopRecorder : IHostApplicationLifetime

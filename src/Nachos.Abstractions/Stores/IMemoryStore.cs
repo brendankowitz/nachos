@@ -76,4 +76,11 @@ public interface IMemoryStore
     /// The background workers retry such a failure without charging it to the work.
     /// </summary>
     bool IsTransientFailure(Exception exception);
+
+    /// <summary>
+    /// True when <paramref name="exception"/> means the store could not be reached or answered for now: a transient failure
+    /// (<see cref="IsTransientFailure"/>) or a failure to connect. Startup checks wait for such a failure to pass instead of
+    /// failing the host; anything else (a missing table, a refused schema, a denied permission) is a configuration error.
+    /// </summary>
+    bool IsUnavailableFailure(Exception exception) => IsTransientFailure(exception);
 }

@@ -159,6 +159,29 @@ public sealed class MessageChunkerTests
         chunks.ShouldContain(chunk => chunk.Contains("Café", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void LocalModel_LowerCaseAscii_UsesTokenOffsets_WithTwentyPercentOverlap()
+    {
+        // Lower-case ASCII with single spaces is its own normalized form, so the chunker cuts by token offsets; the
+        // tokenizer's [CLS]/[SEP] are not part of the encoded content and must not shift a cut.
+        var tokenizer = LocalTokenizer();
+        var chunker = new MessageChunker(new EmbeddingChunking(tokenizer, 50), chunkTokens: 512);
+        var content = Text(400, seed: 5);
+
+        var chunks = chunker.Chunk(content);
+
+        chunks.Count.ShouldBeGreaterThan(2);
+        content.ShouldStartWith(chunks[0]);
+        content.ShouldEndWith(chunks[^1]);
+        for (var i = 0; i + 1 < chunks.Count; i++)
+        {
+            var current = tokenizer.EncodeToIds(chunks[i], addSpecialTokens: false);
+            var next = tokenizer.EncodeToIds(chunks[i + 1], addSpecialTokens: false);
+            current.Count.ShouldBe(50);
+            next.Take(10).ShouldBe(current.Skip(40));
+        }
+    }
+
     [Theory]
     [InlineData(1, 8, 200)]
     [InlineData(2, 30, 400)]

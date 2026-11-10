@@ -20,6 +20,9 @@ public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedd
 {
     private const string HiddenStateOutput = "last_hidden_state";
 
+    /// <summary>ONNX Runtime's switch for its usage telemetry, which <see cref="Create"/> sets to 1 when it is unset.</summary>
+    public const string TelemetryVariable = "ORT_DISABLE_TELEMETRY";
+
     private readonly LocalEmbeddingModel _model;
     private readonly BertTokenizer _tokenizer;
     private readonly InferenceSession _session;
@@ -48,6 +51,13 @@ public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedd
         ArgumentNullException.ThrowIfNull(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        // ONNX Runtime's official builds send usage telemetry unless ORT_DISABLE_TELEMETRY=1 is set before its environment is
+        // created (OrtEnv.Instance()); an operator who wants it sets the variable to anything else first.
+        if (Environment.GetEnvironmentVariable(TelemetryVariable) is null)
+        {
+            Environment.SetEnvironmentVariable(TelemetryVariable, "1");
+        }
+
         var folder = model.FolderIn(directory);
         foreach (var file in model.Files)
         {
@@ -67,7 +77,6 @@ public sealed class LocalEmbeddingGenerator : IEmbeddingGenerator<string, Embedd
             }
         }
 
-        // Suppresses ONNX Runtime's optional usage events; its documentation names ORT_DISABLE_TELEMETRY=1 for the rest.
         OrtEnv.Instance().DisableTelemetryEvents();
         var tokenizer = LocalEmbeddingModel.CreateTokenizer(folder);
         using var options = new SessionOptions();

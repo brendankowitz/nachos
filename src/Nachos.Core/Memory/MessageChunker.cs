@@ -40,16 +40,17 @@ public sealed class MessageChunker
             return [];
         }
 
-        if (_tokenizer.CountTokens(content) <= _chunkTokens)
+        // One pass counts every token and reports the normalized text (2.0.0 has no CountTokens overload that returns it).
+        _tokenizer.GetIndexByTokenCount(content, int.MaxValue, out var normalized, out var tokenCount);
+        if (tokenCount <= _chunkTokens)
         {
             return [content];
         }
 
-        var tokens = _tokenizer.EncodeToTokens(content, out var normalized);
         // A normalizing tokenizer (BERT lower-cases, strips accents, spaces out CJK) reports offsets into its normalized
         // text, whose length can differ from the original, so its offsets cannot locate a cut in the original.
         return normalized is null || string.Equals(normalized, content, StringComparison.Ordinal)
-            ? ChunkByTokenOffsets(content, tokens)
+            ? ChunkByTokenOffsets(content, _tokenizer.EncodeToTokens(content, out _))
             : ChunkByMeasuring(content);
     }
 

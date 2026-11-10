@@ -75,28 +75,33 @@ stamped with it. At startup every host compares its configured model with the st
   (one written by a pre-release M3 build) always needs the reset.
 - **The in-memory provider** is stamped by the first start and forgets it with the process.
 - **Database unreachable at startup:** the host starts anyway (its readiness check reports the
-  store) and repeats the check in the background; a mismatch found then stops the host with
-  the same message.
+  store), holds back every embedding, and repeats the check in the background. A match
+  releases the embeddings; a mismatch keeps them held and stops the host with exit code 1 and
+  the same message. Any other store failure at startup, such as a missing table, a schema that
+  is not current or a denied permission, fails startup.
 
 To switch models:
 
-1. Stop the API and the worker. A host still running the old model would embed rows again
-   with it.
+1. Stop the API and the worker. The reset does not detect a host that is still running, and
+   one still running the old model would embed rows again with it.
 2. Reset the database to the new model:
 
    ```powershell
    dotnet run --project src\Nachos.Cli -- embeddings reset --model bge-small-en-v1.5 --connection "<connection string>"
    ```
 
-   Every conclusion and message chunk vector goes back to pending, in batches
-   (`--batch-size`, default 1000), and the database is stamped with the new model. It prints
-   `{"model":"…","reset":n}`. If it stops part-way, run it again: the stamp changes last.
-3. Start the hosts with the new model. The worker's reconciler re-embeds every pending row.
-   Until it has, those rows are missing from vector results; lexical search still finds the
-   messages.
+   Every conclusion vector goes back to pending, and every message chunk is deleted, because
+   chunks were cut for the previous model's tokenizer and input limit. Both run in batches
+   (`--batch-size`, default 1000), and then the database is stamped with the new model. It
+   prints `{"model":"…","reset":n}`, n being conclusions reset plus chunks deleted. If it stops
+   part-way, run it again: the stamp changes last.
+3. Start the hosts with the new model. The worker's reconciler re-embeds every pending
+   conclusion and re-chunks and embeds every message. Until it has, those rows are missing
+   from vector results; lexical search still finds the messages.
 
-`--model` takes whatever id the hosts report: a local model id, the Azure OpenAI embedding
-deployment name, or `fake-hash-v1` for the fake AI.
+`--model` takes whatever id the hosts report: a local model id (in any case; it is stamped as
+the catalog spells it), the Azure OpenAI embedding deployment name, or `fake` for the fake AI.
+Any other id gets a warning, since a host reporting a different id refuses to start.
 
 ## Quality and cost
 
@@ -110,6 +115,9 @@ deployment name, or `fake-hash-v1` for the fake AI.
   near-miss pairs; at them, only about a third (bge-small) or an eighth (MiniLM) of
   paraphrases merge, so expect more near-duplicate conclusions than with Azure OpenAI.
   The calibration is in `research/local-embeddings-calibration.md`.
+- **No query instruction.** bge-small-en-v1.5's authors suggest prefixing short search queries
+  with "Represent this sentence for searching relevant passages: ". Nachos does not: queries
+  and stored text are embedded the same way.
 - **Storage.** The database stores 1536-dimension vectors. A local model's 384 values are
   zero-padded to that size after normalization, which leaves every cosine distance exactly as
   the model computed it, but each vector takes four times the space it needs.
@@ -121,9 +129,12 @@ deployment name, or `fake-hash-v1` for the fake AI.
 ## Telemetry
 
 Official ONNX Runtime builds collect usage telemetry by default (see the `Privacy.md` in the
-`Microsoft.ML.OnnxRuntime` package). Nachos turns off its optional events when it loads a
-model; set `ORT_DISABLE_TELEMETRY=1` in the hosts' environment to turn it off entirely. The
-AppHost sets it for both hosts when local embeddings are on.
+`Microsoft.ML.OnnxRuntime` package), unless `ORT_DISABLE_TELEMETRY=1` is set before ONNX
+Runtime starts. Nachos sets it in its own process before loading a model, unless the variable
+is already set, and also turns off ONNX Runtime's optional events. To allow telemetry, set
+`ORT_DISABLE_TELEMETRY=0`. On Linux a variable set from .NET code may not be visible to
+native code, so set `ORT_DISABLE_TELEMETRY=1` in the hosts' environment there; the AppHost
+sets it for both hosts when local embeddings are on, and CI sets it too.
 
 ## Licences
 

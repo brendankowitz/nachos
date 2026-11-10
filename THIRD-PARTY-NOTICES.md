@@ -160,18 +160,20 @@ redistribution.
 `UseLocalEmbeddings` (in `Nachos.Hosting`, so in the API and worker) runs
 sentence-embedding models in-process with `Microsoft.ML.OnnxRuntime` 1.31.1
 and its dependency `Microsoft.ML.OnnxRuntime.Managed` 1.31.1, both published
-by Microsoft under the **MIT License** (Copyright (c) Microsoft Corporation;
-each package carries the text as `LICENSE`/`LICENSE.txt`). The native package
-also ships `ThirdPartyNotices.txt` for the components compiled into the ONNX
-Runtime binaries; that file must accompany redistribution of those binaries.
+by Microsoft under the **MIT License** (Copyright (c) Microsoft Corporation).
+The packages' identical [LICENSE](eng/licenses/Microsoft.ML.OnnxRuntime/1.31.1/LICENSE)
+and [ThirdPartyNotices.txt](eng/licenses/Microsoft.ML.OnnxRuntime/1.31.1/ThirdPartyNotices.txt),
+the notices of the components compiled into the ONNX Runtime binaries, are
+copied unchanged and ship with the API, worker and CLI output.
 The managed package's own dependencies (`System.Memory`,
 `System.Numerics.Tensors`) are MIT-licensed .NET packages.
 
 Official ONNX Runtime builds send usage telemetry by default (the package's
-`Privacy.md`). Nachos calls `OrtEnv.DisableTelemetryEvents()` before creating a
-session; the documented way to turn it off entirely is the environment variable
-`ORT_DISABLE_TELEMETRY=1`, which the AppHost and CI set and the local
-embeddings guide recommends.
+`Privacy.md`). Nachos sets `ORT_DISABLE_TELEMETRY=1` in its own process before
+ONNX Runtime starts, unless the variable is already set (set it to `0` to
+allow telemetry), and also calls `OrtEnv.DisableTelemetryEvents()`. On Linux a
+variable set by .NET code may not reach native code, so set it in the hosts'
+environment there; the AppHost and CI do.
 
 No model is bundled in this repository or any package: `nachos models fetch`
 downloads the pinned files from Hugging Face on the operator's request. The

@@ -24,7 +24,7 @@ public sealed class EmbeddingCommandTests(SqlServerFixture fixture)
     }
 
     [Fact]
-    public async Task Reset_ClearsVectorsToPending_AndRestamps()
+    public async Task Reset_DeletesChunks_AndRestamps()
     {
         var cs = await fixture.CreateDatabaseAsync();
         (await CliRun.RunAsync("schema", "upgrade", "--connection", cs)).ExitCode.ShouldBe(0);
@@ -41,12 +41,27 @@ public sealed class EmbeddingCommandTests(SqlServerFixture fixture)
                 SELECT WorkspaceId, Id, SessionId, 0, N'hello', 2, SYSDATETIMEOFFSET() FROM dbo.Messages;
             """);
 
-        var run = await ResetAsync(cs, "--model", "bge-small-en-v1.5");
+        // A catalog id in another case is stamped as the catalog spells it, which is what the hosts report.
+        var run = await ResetAsync(cs, "--model", "BGE-Small-EN-v1.5");
 
         run.ExitCode.ShouldBe(0, run.Error);
+        run.Error.ShouldBeEmpty();
         run.Out.Trim().ShouldBe("""{"model":"bge-small-en-v1.5","reset":1}""");
         (await ScalarAsync(cs, "SELECT CONCAT(Model, N'/', Dimensions) FROM dbo.EmbeddingSpace")).ShouldBe("bge-small-en-v1.5/384");
-        (await ScalarAsync(cs, "SELECT COUNT(*) FROM dbo.MessageEmbeddings WHERE SyncState = 0")).ShouldBe(1);
+        (await ScalarAsync(cs, "SELECT COUNT(*) FROM dbo.MessageEmbeddings")).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Reset_UnknownModel_WarnsButResets()
+    {
+        var cs = await fixture.CreateDatabaseAsync();
+        (await CliRun.RunAsync("schema", "upgrade", "--connection", cs)).ExitCode.ShouldBe(0);
+
+        var run = await ResetAsync(cs, "--model", "my-embedding-deployment");
+
+        run.ExitCode.ShouldBe(0, run.Error);
+        run.Error.ShouldContain("warning: 'my-embedding-deployment' is not a local catalog model");
+        (await ScalarAsync(cs, "SELECT Model FROM dbo.EmbeddingSpace")).ShouldBe("my-embedding-deployment");
     }
 
     [Fact]

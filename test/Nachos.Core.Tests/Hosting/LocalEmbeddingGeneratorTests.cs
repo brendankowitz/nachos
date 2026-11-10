@@ -39,6 +39,7 @@ public sealed class LocalEmbeddingGeneratorTests
         var vector = await EmbedAsync(generator, "Bob prefers dark roast coffee.");
 
         vector.Length.ShouldBe(VectorSpace.Dimensions);
+        Environment.GetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable).ShouldNotBeNull();
         Math.Sqrt(vector.Sum(value => (double)value * value)).ShouldBe(1, tolerance: 1e-5);
         vector.Skip(LocalEmbeddingModel.Find(model)!.Dimensions).ShouldAllBe(value => value == 0);
         vector.Take(LocalEmbeddingModel.Find(model)!.Dimensions).Count(value => value != 0).ShouldBeGreaterThan(300);

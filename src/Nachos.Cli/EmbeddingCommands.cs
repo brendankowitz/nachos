@@ -6,8 +6,9 @@ using Nachos.Core.Llm;
 namespace Nachos.Cli;
 
 /// <summary>
-/// <c>nachos embeddings reset</c>: switches a database to another embedding model. Every conclusion and chunk vector goes back to
-/// pending and the database is stamped with the new model; the worker's reconciler then re-embeds them with it.
+/// <c>nachos embeddings reset</c>: switches a database to another embedding model. Every conclusion vector goes back to pending,
+/// every message chunk is deleted (it was cut for the old model's tokenizer), and the database is stamped with the new model; the
+/// worker's reconciler then re-chunks and re-embeds with it.
 /// </summary>
 internal static class EmbeddingCommands
 {
@@ -21,6 +22,14 @@ internal static class EmbeddingCommands
         Reset(),
     };
 
+    /// <summary>The Azure OpenAI embedding deployment the hosts are configured with, when this shell has it too.</summary>
+    private const string AzureDeploymentVariable = "AzureOpenAI__EmbeddingDeployment";
+
+    private static bool IsKnownModel(string id) =>
+        LocalEmbeddingModel.Find(id) is not null
+        || id == DeterministicEmbeddingGenerator.ModelId
+        || id == Environment.GetEnvironmentVariable(AzureDeploymentVariable);
+
     private static Command Reset()
     {
         var connection = SchemaCommands.ConnectionOption();
@@ -32,14 +41,16 @@ internal static class EmbeddingCommands
         };
         var batchSize = new Option<int>("--batch-size")
         {
-            Description = "Rows cleared per statement.",
+            Description = "Rows reset or deleted per statement.",
             DefaultValueFactory = _ => 1000,
         };
         var command = new Command(
             "reset",
-            "Clear every stored vector back to pending and stamp the database with --model. Stop every API and worker first: a host " +
-            "still running the old model would embed rows again with it. Until the worker re-embeds them, those rows are missing from " +
-            "vector search (lexical search still finds messages). Prints {model, reset}. Exit 0: done; 2: the schema is not current; 1: error.")
+            "Send every conclusion vector back to pending, delete every message chunk, and stamp the database with --model (a catalog id " +
+            "is stamped as the catalog spells it; an unknown id gets a warning). Stop every API and worker first: a host still running is " +
+            "not detected, and with the old model it would embed rows again. Until the worker re-chunks and re-embeds, those rows are " +
+            "missing from vector search (lexical search still finds messages). Prints {model, reset}, reset counting conclusions reset " +
+            "and chunks deleted. Exit 0: done; 2: the schema is not current; 1: error.")
         {
             connection, model, batchSize,
         };
@@ -58,7 +69,18 @@ internal static class EmbeddingCommands
         });
         command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => GrantCommands.WithStoreAsync(parse, connection, deployer, async store =>
         {
-            var space = EmbeddingSpaceCheck.SpaceOf(parse.GetRequiredValue(model));
+            var requested = parse.GetRequiredValue(model);
+            // Hosts report a catalog model by its exact id, so a differently cased one would never match the stamp.
+            var id = LocalEmbeddingModel.Find(requested)?.Id ?? requested;
+            if (!IsKnownModel(id))
+            {
+                await parse.InvocationConfiguration.Error.WriteLineAsync(
+                    $"warning: '{id}' is not a local catalog model, the fake AI's '{DeterministicEmbeddingGenerator.ModelId}', or " +
+                    $"{AzureDeploymentVariable}. It must be exactly the model id the hosts report (for Azure OpenAI, the embedding " +
+                    "deployment name), or they will refuse to start.");
+            }
+
+            var space = EmbeddingSpaceCheck.SpaceOf(id);
             var reset = await store.Embeddings.ResetSpaceAsync(space, parse.GetValue(batchSize), ct);
             await parse.InvocationConfiguration.Output.WriteLineAsync(JsonSerializer.Serialize(new ResetJson(space.Model, reset), Json));
             return ExitCodes.Success;

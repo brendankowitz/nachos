@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -61,11 +62,40 @@ public sealed class LocalEmbeddingsHostingTests : IDisposable
     }
 
     [Fact]
+    public void EveryEmbeddingGoesThroughTheGate()
+    {
+        using var provider = Build([]);
+
+        provider.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>().GetService<GatedEmbeddingGenerator>().ShouldNotBeNull();
+        provider.GetRequiredService<EmbeddingSpaceGate>().IsOpen.ShouldBeTrue();
+    }
+
+    [Fact]
     public void MissingFiles_FailWithTheFetchCommand()
     {
         var error = Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32));
 
         error.Message.ShouldContain($"nachos models fetch bge-small-en-v1.5 --dir \"{_directory}\"");
+    }
+
+    [Theory]
+    [InlineData(null, "1")]
+    [InlineData("0", "0")]
+    public void Create_TurnsOnnxRuntimeTelemetryOff_UnlessTheOperatorSetIt(string? before, string after)
+    {
+        var saved = Environment.GetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable, before);
+
+            Should.Throw<InvalidOperationException>(() => LocalEmbeddingGenerator.Create(LocalEmbeddingModel.Default, _directory, 32));
+
+            Environment.GetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable).ShouldBe(after);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(LocalEmbeddingGenerator.TelemetryVariable, saved);
+        }
     }
 
     [Fact]

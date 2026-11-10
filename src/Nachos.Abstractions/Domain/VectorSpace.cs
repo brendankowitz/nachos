@@ -12,7 +12,7 @@ public static class VectorSpace
 
     /// <summary>
     /// The <see cref="ConclusionRecord.InternalMetadata"/> key naming the model that produced a conclusion's vector (an
-    /// Azure OpenAI deployment name, a local model id, or <c>fake-hash-v1</c>). The database itself holds one model's vectors
+    /// Azure OpenAI deployment name, a local model id, or <c>fake</c>). The database itself holds one model's vectors
     /// (<see cref="EmbeddingSpace"/>); before it is stamped, these names decide whether it can be.
     /// </summary>
     public const string ModelMetadataKey = "embedding_model";

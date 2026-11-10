@@ -1,5 +1,8 @@
+using Microsoft.Data.SqlClient;
 using Nachos.Abstractions.Stores;
+using Nachos.DataLayer.SqlServer.Schema;
 using Nachos.Testing;
+using Shouldly;
 
 namespace Nachos.DataLayer.SqlServer.Tests;
 
@@ -25,4 +28,21 @@ public sealed class SqlEmbeddingSpaceContractTests(SqlServerFixture fixture) : E
     Task IAsyncLifetime.DisposeAsync() => DisposeAsync();
 
     protected override IMemoryStore CreateStore(TimeProvider clock) => Database.CreateStore(clock);
+
+    [Fact]
+    public async Task UnreachableServer_IsUnavailable_AMissingTableIsNot()
+    {
+        var unreachable = new SqlServerOptions { ConnectionString = "Server=tcp:127.0.0.1,1;Database=nachos;Connect Timeout=2;Encrypt=false" };
+        var down = SqlTestDatabase.CreateStore(unreachable, new SchemaGate(new SchemaDeployer(unreachable), unreachable), TimeProvider.System);
+        var store = Database.CreateStore(TimeProvider.System);
+        (await store.Embeddings.GetSpaceAsync(default)).ShouldBeNull(); // the schema gate is verified before the table goes
+        await SchemaTestSql.ExecuteAsync(Database.ConnectionString, "DROP TABLE dbo.EmbeddingSpace");
+
+        var connectFailure = await Should.ThrowAsync<SqlException>(() => down.Embeddings.GetSpaceAsync(default));
+        var missingTable = await Should.ThrowAsync<SqlException>(() => store.Embeddings.GetSpaceAsync(default));
+
+        down.IsUnavailableFailure(connectFailure).ShouldBeTrue();
+        store.IsUnavailableFailure(missingTable).ShouldBeFalse();
+        store.IsUnavailableFailure(new InvalidOperationException("The schema gate refused.")).ShouldBeFalse();
+    }
 }

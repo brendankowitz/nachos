@@ -76,11 +76,12 @@ public interface IEmbeddingStore
     Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct);
 
     /// <summary>
-    /// Switches the database to <paramref name="space"/>: clears every conclusion and chunk vector back to pending (failed
-    /// ones too, and tombstoned conclusions' vectors), at most <paramref name="batchSize"/> rows per statement, then
-    /// replaces the stamp. The reconciler re-embeds the pending rows; until then they are missing from vector reads.
-    /// Repeating it after a failure part-way is safe.
+    /// Switches the database to <paramref name="space"/>: clears every conclusion vector back to pending (failed ones too, and
+    /// tombstoned conclusions' vectors) and deletes every message chunk, because chunks were sized for the previous model's
+    /// tokenizer and limit; at most <paramref name="batchSize"/> rows per statement. Then it replaces the stamp. The reconciler
+    /// re-embeds the pending conclusions and re-chunks the messages (<see cref="ListUnchunkedMessagesAsync"/>); until then they
+    /// are missing from vector reads. Repeating it after a failure part-way is safe.
     /// </summary>
-    /// <returns>How many conclusion and chunk rows were reset.</returns>
+    /// <returns>How many conclusions were reset and chunks deleted.</returns>
     Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct);
 }
