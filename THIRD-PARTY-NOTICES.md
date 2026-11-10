@@ -154,3 +154,32 @@ SHA-256 is `05dd7477a7feeda8b71eb826b7e4c702e5df6f44c35d6ce4d1ef3f7bfc8a0f36`.
 Dependency or resource changes require renewed identity verification. The
 package's complete license and third-party notices must still accompany
 redistribution.
+
+## Local embeddings: ONNX Runtime and the embedding models
+
+`UseLocalEmbeddings` (in `Nachos.Hosting`, so in the API and worker) runs
+sentence-embedding models in-process with `Microsoft.ML.OnnxRuntime` 1.31.1
+and its dependency `Microsoft.ML.OnnxRuntime.Managed` 1.31.1, both published
+by Microsoft under the **MIT License** (Copyright (c) Microsoft Corporation).
+The packages' identical [LICENSE](eng/licenses/Microsoft.ML.OnnxRuntime/1.31.1/LICENSE)
+and [ThirdPartyNotices.txt](eng/licenses/Microsoft.ML.OnnxRuntime/1.31.1/ThirdPartyNotices.txt),
+the notices of the components compiled into the ONNX Runtime binaries, are
+copied unchanged and ship with the API, worker and CLI output.
+The managed package's own dependencies (`System.Memory`,
+`System.Numerics.Tensors`) are MIT-licensed .NET packages.
+
+Official ONNX Runtime builds send usage telemetry by default (the package's
+`Privacy.md`). Nachos sets `ORT_DISABLE_TELEMETRY=1` in its own process before
+ONNX Runtime starts, unless the variable is already set (set it to `0` to
+allow telemetry), and also calls `OrtEnv.DisableTelemetryEvents()`. On Linux
+and macOS a variable set by .NET code does not reach native code, so there the
+hosts must have it in their environment (they log a warning when they had to
+set it themselves); the AppHost and CI set it.
+
+No model is bundled in this repository or any package: `nachos models fetch`
+downloads the pinned files from Hugging Face on the operator's request. The
+catalog pins `BAAI/bge-small-en-v1.5` (MIT) and
+`sentence-transformers/all-MiniLM-L6-v2` (Apache-2.0) at fixed revisions and
+SHA-256 hashes (`src/Nachos.Core/Llm/LocalEmbeddingModel.cs`). Anyone who
+redistributes those model files takes on their licence terms, including the
+Apache-2.0 attribution and NOTICE conditions for MiniLM.

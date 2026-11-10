@@ -33,5 +33,6 @@
     <Project Path="test/Nachos.DocsGen.Tests/Nachos.DocsGen.Tests.csproj" />
     <Project Path="test/Nachos.Infra.Tests/Nachos.Infra.Tests.csproj" />
     <Project Path="test/Nachos.Testing/Nachos.Testing.csproj" />
+    <Project Path="test/Nachos.Worker.Tests/Nachos.Worker.Tests.csproj" />
   </Folder>
 </Solution>

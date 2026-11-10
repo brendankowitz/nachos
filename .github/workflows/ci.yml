@@ -50,9 +50,25 @@ jobs:
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
           ./eng/ci/Test-WorkflowPolicy.ps1 -YamlAssembly ./eng/ci/WorkflowYaml/bin/Release/net10.0/YamlDotNet.dll
+      - name: Cache the pinned local embedding models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: artifacts/models
+          # The catalog pins every file's URL and SHA-256, so its hash is the models' identity.
+          key: local-embedding-models-${{ runner.os }}-${{ hashFiles('src/Nachos.Core/Llm/LocalEmbeddingModel.cs') }}
+      - name: Fetch the local embedding models (public HTTPS download, SHA-256 verified; cached files are re-verified)
+        run: |
+          . ./eng/ci/Enter-CiEnvironment.ps1
+          foreach ($model in @('bge-small-en-v1.5', 'all-minilm-l6-v2')) {
+            dotnet run --project src/Nachos.Cli -c Release --no-build -- models fetch $model --dir artifacts/models
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: All portable suites, with fresh per-project counts
         run: |
           . ./eng/ci/Enter-CiEnvironment.ps1
+          # Runs the real-model tests in Nachos.Core.Tests (LocalEmbeddingGeneratorTests); unset, they would skip and fail the lane.
+          $env:NACHOS_LOCAL_MODEL_DIR = (Resolve-Path artifacts/models).Path
+          $env:ORT_DISABLE_TELEMETRY = '1'
           ./eng/ci/Invoke-CheckedTests.ps1 -Slice Portable
       - name: Windows portable infrastructure contracts
         if: ${{ !cancelled() && runner.os == 'Windows' }}

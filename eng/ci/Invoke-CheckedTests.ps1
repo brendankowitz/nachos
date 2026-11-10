@@ -11,7 +11,7 @@ $portableProjects = @(
     'Nachos.Abstractions.Tests', 'Nachos.Api.Tests', 'Nachos.Architecture.Tests',
     'Nachos.Client.Tests', 'Nachos.Core.Tests', 'Nachos.DataLayer.InMemory.Tests',
     'Nachos.DataLayer.SqlServer.Tests',
-    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests'
+    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests', 'Nachos.Worker.Tests'
 )
 [xml] $solution = Get-Content (Join-Path $root 'Nachos.slnx') -Raw
 $declaredTests = @($solution.SelectNodes('//Project/@Path') | Where-Object {
@@ -38,7 +38,7 @@ switch ($Slice) {
         $filters['Nachos.DataLayer.SqlServer.Tests'] = ($sqlPortable | ForEach-Object {
             "FullyQualifiedName~Nachos.DataLayer.SqlServer.Tests.$_."
         }) -join '|'
-        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.'
+        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.&FullyQualifiedName!~.EmbeddingCommandTests.'
         $filters['Nachos.AppHost.Tests'] = 'FullyQualifiedName!~.AppHostSmokeTests.'
     }
     Sql { $projects = @('Nachos.DataLayer.SqlServer.Tests', 'Nachos.Cli.Tests', 'Nachos.AppHost.Tests') }

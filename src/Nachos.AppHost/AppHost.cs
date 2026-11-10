@@ -74,6 +74,25 @@ foreach (var project in new[] { api, worker })
     }
 }
 
+// Nachos:Ai:Embeddings=Local (for example Nachos__Ai__Embeddings=Local in the AppHost's environment) embeds in-process with a
+// local ONNX model instead, beside either chat backend. Fetch the model first with `nachos models fetch`; both hosts read it
+// from the default models directory unless Embeddings:Local:ModelDirectory is set too.
+if (string.Equals(builder.Configuration["Nachos:Ai:Embeddings"], "Local", StringComparison.OrdinalIgnoreCase))
+{
+    foreach (var project in new[] { api, worker })
+    {
+        project.WithEnvironment("Nachos__Ai__Embeddings", "Local")
+            .WithEnvironment("ORT_DISABLE_TELEMETRY", "1");
+        foreach (var setting in new[] { "Model", "ModelDirectory" })
+        {
+            if (builder.Configuration[$"Embeddings:Local:{setting}"] is { Length: > 0 } value)
+            {
+                project.WithEnvironment($"Embeddings__Local__{setting}", value);
+            }
+        }
+    }
+}
+
 if (developmentRun && string.IsNullOrWhiteSpace(azureOpenAiEndpoint))
 {
     // Idle polling backs off to 15 seconds by default; a local demo should not wait that long for its first conclusion.

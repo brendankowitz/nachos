@@ -7,7 +7,7 @@ namespace Nachos.DataLayer.SqlServer.Tests;
 
 internal static class SchemaTestSql
 {
-    public static readonly string[] M3Tables = ["MessageEmbeddings", "SessionSummaries"];
+    public static readonly string[] M3Tables = ["MessageEmbeddings", "SessionSummaries", "EmbeddingSpace"];
 
     public static SchemaDeployer Deployer(string connectionString) => new(new SqlServerOptions { ConnectionString = connectionString });
 

@@ -3,7 +3,7 @@ using System.CommandLine.Parsing;
 
 namespace Nachos.Cli;
 
-/// <summary>The <c>nachos</c> bootstrap command line: schema management, role grants and offline key minting.</summary>
+/// <summary>The <c>nachos</c> bootstrap command line: schema management, role grants, offline key minting and local embedding models.</summary>
 public static class CliApp
 {
     /// <summary>
@@ -14,11 +14,13 @@ public static class CliApp
     /// </summary>
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken ct)
     {
-        var root = new RootCommand("Nachos bootstrap tool: database schema management, role grants and offline key minting.")
+        var root = new RootCommand("Nachos bootstrap tool: database schema management, role grants, offline key minting and local embedding models.")
         {
             SchemaCommands.Create(),
             GrantCommands.Create(),
             KeyCommands.Create(),
+            ModelCommands.Create(),
+            EmbeddingCommands.Create(),
         };
 
         return await RunAsync(root, args, output, error, ct);

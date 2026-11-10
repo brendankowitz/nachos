@@ -155,6 +155,31 @@ public sealed class AppHostModelTests
         }
     }
 
+    [Fact]
+    public async Task LocalEmbeddings_ArePassedToBothHosts_WithTelemetryOff()
+    {
+        var model = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
+            ["--environment=Development", "--AzureOpenAI:Endpoint=", "--Nachos:Ai:Embeddings=Local", "--Embeddings:Local:Model=all-minilm-l6-v2"]);
+
+        foreach (var host in new[] { "api", "worker" })
+        {
+            var env = await EnvironmentAsync(model, host);
+            env["Nachos__Ai__Embeddings"].ShouldBe("Local");
+            env["Embeddings__Local__Model"].ShouldBe("all-minilm-l6-v2");
+            env["ORT_DISABLE_TELEMETRY"].ShouldBe("1");
+            env["Nachos__Ai__Mode"].ShouldBe("Fake");
+            env.Keys.ShouldNotContain("Embeddings__Local__ModelDirectory");
+        }
+    }
+
+    [Fact]
+    public async Task LocalEmbeddings_AreOffByDefault()
+    {
+        var model = await BuildModelAsync("Development", publish: false);
+
+        (await EnvironmentAsync(model, "worker")).Keys.ShouldNotContain("Nachos__Ai__Embeddings");
+    }
+
     private static async Task<IDistributedApplicationTestingBuilder> BuildModelAsync(string environment, bool publish)
     {
         // An empty endpoint overrides user secrets and the environment, so no test can reach a live Azure OpenAI account.

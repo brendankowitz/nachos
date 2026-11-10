@@ -88,6 +88,120 @@ public sealed class MessageChunkerTests
         chunker.Chunk(Text(200, seed: 3)).ShouldAllBe(chunk => Tokens(chunk) <= 30);
     }
 
+    /// <summary>
+    /// A small uncased WordPiece vocabulary with the catalog models' tokenizer settings: every lower-case word tokenizes
+    /// (letters and continuation letters), accents are stripped and CJK characters are split, as with the real vocab.txt.
+    /// </summary>
+    private static BertTokenizer LocalTokenizer()
+    {
+        var letters = Enumerable.Range('a', 26).Select(c => ((char)c).ToString()).ToList();
+        string[] vocabulary =
+        [
+            "[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", ".", ",", "日", "本", "語",
+            .. Words, "cafe", "uber", .. letters, .. letters.Select(letter => "##" + letter),
+        ];
+        var stream = new MemoryStream(Encoding.UTF8.GetBytes(string.Join('\n', vocabulary)));
+        return BertTokenizer.Create(stream, new BertOptions { LowerCaseBeforeTokenization = true, RemoveNonSpacingMarks = true, IndividuallyTokenizeCjk = true });
+    }
+
+    private static string MixedText(int seed, int words)
+    {
+        var random = new Random(seed);
+        var content = new StringBuilder();
+        for (var i = 0; i < words; i++)
+        {
+            content.Append(random.Next(7) switch
+            {
+                0 => "Café Über",
+                1 => "日本語テキスト",
+                2 => "🙂🎉",
+                3 => "Café RIVER.",
+                4 => "end.\n\n",
+                5 => Words[random.Next(Words.Length)].ToUpperInvariant(),
+                _ => Words[random.Next(Words.Length)],
+            }).Append(' ');
+        }
+
+        return content.ToString();
+    }
+
+    [Fact]
+    public void LocalModel_ChunksWithinModelMaxTokens()
+    {
+        var tokenizer = LocalTokenizer();
+        var model = LocalEmbeddingModel.AllMiniLmL6V2;
+        var chunker = new MessageChunker(new EmbeddingChunking(tokenizer, model.MaxContentTokens), chunkTokens: 512);
+        var content = MixedText(seed: 11, words: 1500);
+
+        var chunks = chunker.Chunk(content);
+
+        chunks.Count.ShouldBeGreaterThan(3);
+        chunks.ShouldAllBe(chunk => tokenizer.CountTokens(chunk) <= 254);
+        content.ShouldStartWith(chunks[0]);
+        content.TrimEnd().ShouldEndWith(chunks[^1].TrimEnd());
+        var searchFrom = 0;
+        var previousEnd = 0;
+        foreach (var chunk in chunks)
+        {
+            // Cut from the original text, so case, accents and spacing survive; and each overlaps the one before.
+            var at = content.IndexOf(chunk, searchFrom, StringComparison.Ordinal);
+            at.ShouldBeGreaterThanOrEqualTo(0);
+            if (previousEnd > 0)
+            {
+                at.ShouldBeLessThan(previousEnd);
+                tokenizer.CountTokens(content.AsSpan(at, previousEnd - at)).ShouldBeInRange(1, 254 / 5);
+            }
+
+            searchFrom = at + 1;
+            previousEnd = at + chunk.Length;
+        }
+
+        chunks.ShouldContain(chunk => chunk.Contains("Café", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LocalModel_LowerCaseAscii_UsesTokenOffsets_WithTwentyPercentOverlap()
+    {
+        // Lower-case ASCII with single spaces is its own normalized form, so the chunker cuts by token offsets; the
+        // tokenizer's [CLS]/[SEP] are not part of the encoded content and must not shift a cut.
+        var tokenizer = LocalTokenizer();
+        var chunker = new MessageChunker(new EmbeddingChunking(tokenizer, 50), chunkTokens: 512);
+        var content = Text(400, seed: 5);
+
+        var chunks = chunker.Chunk(content);
+
+        chunks.Count.ShouldBeGreaterThan(2);
+        content.ShouldStartWith(chunks[0]);
+        content.ShouldEndWith(chunks[^1]);
+        for (var i = 0; i + 1 < chunks.Count; i++)
+        {
+            var current = tokenizer.EncodeToIds(chunks[i], addSpecialTokens: false);
+            var next = tokenizer.EncodeToIds(chunks[i + 1], addSpecialTokens: false);
+            current.Count.ShouldBe(50);
+            next.Take(10).ShouldBe(current.Skip(40));
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 8, 200)]
+    [InlineData(2, 30, 400)]
+    [InlineData(3, 254, 3000)]
+    [InlineData(4, 1, 40)]
+    [InlineData(5, 4, 100)]
+    public void LocalModel_EveryChunkIsOriginalTextWithinLimit(int seed, int limit, int words)
+    {
+        var tokenizer = LocalTokenizer();
+        var chunker = new MessageChunker(new EmbeddingChunking(tokenizer, limit), chunkTokens: 512);
+        var content = MixedText(seed, words);
+
+        var chunks = chunker.Chunk(content);
+
+        chunks.ShouldNotBeEmpty();
+        chunks.ShouldAllBe(chunk => tokenizer.CountTokens(chunk) <= limit);
+        chunks.ShouldAllBe(chunk => content.Contains(chunk, StringComparison.Ordinal));
+        chunks.ShouldAllBe(chunk => HasNoSplitSurrogate(chunk));
+    }
+
     [Theory]
     [InlineData(1, 40, 50)]
     [InlineData(2, 64, 300)]

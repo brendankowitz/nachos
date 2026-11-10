@@ -83,6 +83,7 @@ public sealed class TransportBoundaryTests : ApiTest
         var store = Substitute.For<IMemoryStore>();
         store.Sessions.Returns(real.Sessions);
         store.Idempotency.Returns(replay);
+        store.Embeddings.Returns(real.Embeddings);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, M)
@@ -104,8 +105,14 @@ public sealed class TransportBoundaryTests : ApiTest
         var workspaces = Substitute.For<IWorkspaceStore>();
         workspaces.ListAsync(null, Arg.Any<PageRequest>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<Page<Nachos.Abstractions.Domain.WorkspaceRecord>>(new IOException("store unavailable")));
+        var embeddings = Substitute.For<IEmbeddingStore>();
+        embeddings.GetSpaceAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<Nachos.Abstractions.Domain.EmbeddingSpace?>(new IOException("store unavailable")));
         var store = Substitute.For<IMemoryStore>();
         store.Workspaces.Returns(workspaces);
+        // An unreachable store must not stop the host from starting: the embedding model check waits for it in the background.
+        store.Embeddings.Returns(embeddings);
+        store.IsUnavailableFailure(Arg.Any<Exception>()).Returns(true);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var response = await client.GetAsync(path);
@@ -222,6 +229,7 @@ public sealed class TransportBoundaryTests : ApiTest
         var store = Substitute.For<IMemoryStore>();
         store.Sessions.Returns(Factory.Services.GetRequiredService<IMemoryStore>().Sessions);
         store.Idempotency.Returns(replay);
+        store.Embeddings.Returns(Factory.Services.GetRequiredService<IMemoryStore>().Embeddings);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var abort = new CancellationTokenSource();

@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using Nachos.Abstractions.Domain;
+using Nachos.Core.Llm;
 
 namespace Nachos.Cli;
 
@@ -8,6 +9,9 @@ namespace Nachos.Cli;
 internal enum UsageError
 {
     AllowDataLossNeedsReview,
+    BatchSizeInvalid,
+    EmbeddingModelInvalid,
+    ModelUnknown,
     ObjectIdEmpty,
     ObjectIdPadded,
     ObjectIdTooLong,
@@ -70,6 +74,9 @@ internal static class UsageErrors
     private static string Text(UsageError error) => error switch
     {
         UsageError.AllowDataLossNeedsReview => "--allow-data-loss is only valid together with --approve-reviewed.",
+        UsageError.BatchSizeInvalid => "--batch-size must be at least 1.",
+        UsageError.EmbeddingModelInvalid => $"--model must be 1-{EmbeddingSpace.MaxModelLength} characters, without leading or trailing whitespace.",
+        UsageError.ModelUnknown => $"The model must be one of: {string.Join(", ", LocalEmbeddingModel.All.Select(model => model.Id))}.",
         UsageError.ObjectIdEmpty => "--object-id must not be empty.",
         UsageError.ObjectIdPadded => "--object-id must not start or end with whitespace.",
         UsageError.ObjectIdTooLong => $"--object-id must be at most {GrantCommands.MaxObjectIdLength} characters.",

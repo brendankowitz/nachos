@@ -64,9 +64,12 @@ Per-agent model profiles and fallbacks bind from `Llm`; an agent with no profile
 uses `AzureOpenAI:ChatDeployment`. The option table is in [Options](/nachos/reference/options/).
 
 Each embedded conclusion records the model that produced its vector in its internal metadata
-(`embedding_model`: the deployment name, or `fake`). Vectors from two models cannot be
-compared, and this version does not re-embed existing conclusions, so **switching between the
-fake AI and a real model, or between embedding models, needs a new database**.
+(`embedding_model`: the deployment name, a local model id, or `fake`). Vectors from two
+models cannot be compared, so the database is stamped with one embedding model, and a host
+configured with another refuses to start. To switch models, stop the API and the worker, run
+`nachos embeddings reset --model <id> --connection "<connection string>"`, and start them with
+the new model: the worker re-embeds every conclusion and message chunk. See
+[Run Nachos with local embeddings](/nachos/guides/local-embeddings/).
 
 ## In Azure
 

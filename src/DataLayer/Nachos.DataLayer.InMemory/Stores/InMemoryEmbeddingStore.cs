@@ -156,6 +156,95 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
             },
             ct);
 
+    public Task<EmbeddingSpace?> GetSpaceAsync(CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                lock (state.Gate)
+                {
+                    return state.Space;
+                }
+            },
+            ct);
+
+    public Task<IReadOnlyList<string?>> ListVectorModelsAsync(CancellationToken ct) =>
+        state.Run<IReadOnlyList<string?>>(
+            () =>
+            {
+                var models = new HashSet<string?>(StringComparer.Ordinal);
+                foreach (var workspace in state.AllWorkspaces())
+                {
+                    lock (workspace.Gate)
+                    {
+                        foreach (var conclusion in workspace.Conclusions.Values.Where(c => c.Embedding is not null))
+                        {
+                            models.Add(
+                                conclusion.Record.InternalMetadata[VectorSpace.ModelMetadataKey] is JsonValue model
+                                && model.TryGetValue<string>(out var name) ? name : null);
+                        }
+
+                        if (workspace.Sessions.Values.Any(session => session.Chunks.Values.Any(chunk => chunk.Embedding is not null)))
+                        {
+                            models.Add(null);
+                        }
+                    }
+                }
+
+                return [.. models];
+            },
+            ct);
+
+    public Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                ArgumentNullException.ThrowIfNull(space);
+                lock (state.Gate)
+                {
+                    return state.Space ??= space;
+                }
+            },
+            ct);
+
+    public Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct) =>
+        state.Run(
+            () =>
+            {
+                ArgumentNullException.ThrowIfNull(space);
+                ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+                long reset = 0;
+                foreach (var workspace in state.AllWorkspaces())
+                {
+                    lock (workspace.Gate)
+                    {
+                        foreach (var (id, conclusion) in workspace.Conclusions.Where(c => c.Value.State != EmbeddingState.Pending || c.Value.Embedding is not null).ToList())
+                        {
+                            workspace.Conclusions[id] = conclusion with
+                            {
+                                Record = conclusion.Record with { InternalMetadata = WithoutModel(conclusion.Record.InternalMetadata) },
+                                Embedding = null,
+                                State = EmbeddingState.Pending,
+                            };
+                            reset++;
+                        }
+
+                        foreach (var session in workspace.Sessions.Values)
+                        {
+                            reset += session.Chunks.Count;
+                            session.Chunks.Clear();
+                        }
+                    }
+                }
+
+                lock (state.Gate)
+                {
+                    state.Space = space;
+                }
+
+                return reset;
+            },
+            ct);
+
     /// <summary>The sessions whose chunks are in the backlog: none of a workspace or session being deleted, whose data is never embedded.</summary>
     private static IEnumerable<SessionEntry> PendingChunkSessions(WorkspaceEntry workspace) =>
         workspace.IsDeleting ? [] : workspace.Sessions.Values.Where(session => !session.IsDeleting);
@@ -165,6 +254,14 @@ internal sealed class InMemoryEmbeddingStore(InMemoryState state) : IEmbeddingSt
     {
         var copy = JsonNode.Parse(metadata.ToJsonString())!.AsObject();
         copy[VectorSpace.ModelMetadataKey] = embeddingModel;
+        return copy;
+    }
+
+    /// <summary>A store-owned copy of <paramref name="metadata"/> without the embedding model.</summary>
+    private static JsonObject WithoutModel(JsonObject metadata)
+    {
+        var copy = JsonNode.Parse(metadata.ToJsonString())!.AsObject();
+        copy.Remove(VectorSpace.ModelMetadataKey);
         return copy;
     }
 

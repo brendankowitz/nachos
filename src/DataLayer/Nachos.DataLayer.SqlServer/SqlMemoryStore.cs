@@ -98,4 +98,10 @@ public sealed class SqlMemoryStore : IMemoryStore
         ArgumentNullException.ThrowIfNull(exception);
         return SqlErrors.IsTransient(exception);
     }
+
+    public bool IsUnavailableFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return SqlErrors.IsTransient(exception) || SqlErrors.IsConnectionFailure(exception);
+    }
 }

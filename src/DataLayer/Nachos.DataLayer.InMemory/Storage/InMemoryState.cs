@@ -6,8 +6,8 @@ namespace Nachos.DataLayer.InMemory.Storage;
 /// <summary>All data of one <see cref="InMemoryMemoryStore"/>, shared by its sub-stores.</summary>
 /// <remarks>
 /// <para>
-/// Locking: <see cref="Gate"/> guards <see cref="Workspaces"/>, every <see cref="WorkspaceEntry.Record"/> and
-/// <see cref="Grants"/>. Each <see cref="WorkspaceEntry.Gate"/> guards that workspace's peers, sessions, memberships,
+/// Locking: <see cref="Gate"/> guards <see cref="Workspaces"/>, every <see cref="WorkspaceEntry.Record"/>,
+/// <see cref="Grants"/> and <see cref="Space"/>. Each <see cref="WorkspaceEntry.Gate"/> guards that workspace's peers, sessions, memberships,
 /// messages, chunks, summaries and idempotency records. <see cref="WorkQueueState.Gate"/> guards <see cref="Queue"/>.
 /// </para>
 /// <para>
@@ -33,6 +33,9 @@ internal sealed class InMemoryState(TimeProvider clock)
     public Dictionary<string, WorkspaceEntry> Workspaces { get; } = new(StringComparer.Ordinal);
 
     public List<GrantRecord> Grants { get; } = [];
+
+    /// <summary>The embedding model stamp, held for the life of the process; guarded by <see cref="Gate"/>.</summary>
+    public EmbeddingSpace? Space { get; set; }
 
     /// <summary>The work items and leases of every workspace.</summary>
     public WorkQueueState Queue { get; } = new();

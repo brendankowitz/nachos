@@ -74,17 +74,17 @@ internal static class GrantCommands
                 }
             }
         });
-        command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => WithStoreAsync(parse, connection, deployer, async grants =>
+        command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => WithStoreAsync(parse, connection, deployer, async store =>
         {
             var grant = new GrantRecord(parse.GetRequiredValue(objectId), parse.GetValue(workspace), parse.GetRequiredValue(role));
             if (add)
             {
-                await grants.AddAsync(grant, ct);
+                await store.Grants.AddAsync(grant, ct);
                 await parse.InvocationConfiguration.Output.WriteLineAsync("{\"added\":true}");
             }
             else
             {
-                await grants.RemoveAsync(grant, ct);
+                await store.Grants.RemoveAsync(grant, ct);
                 await parse.InvocationConfiguration.Output.WriteLineAsync("{\"removed\":true}");
             }
 
@@ -102,9 +102,9 @@ internal static class GrantCommands
             connection, objectId,
         };
         command.Validators.Add(result => RequireObjectId(result, UsageErrors.SingleValue(result, objectId)));
-        command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => WithStoreAsync(parse, connection, deployer, async grants =>
+        command.SetAction((parse, ct) => SchemaCommands.GuardAsync(parse, connection, deployer => WithStoreAsync(parse, connection, deployer, async store =>
         {
-            var listed = await grants.ListAsync(parse.GetValue(objectId), ct);
+            var listed = await store.Grants.ListAsync(parse.GetValue(objectId), ct);
             var rows = listed
                 .Select(grant => new GrantJson(grant.ObjectId, grant.Role, grant.WorkspaceName))
                 .OrderBy(row => row.ObjectId, StringComparer.Ordinal)
@@ -158,11 +158,11 @@ internal static class GrantCommands
     }
 
     /// <summary>
-    /// Runs <paramref name="body"/> against the grant store once the schema is known to be current. The store's own schema gate stays
-    /// at its default, which never deploys, so grants cannot change a database's schema.
+    /// Runs <paramref name="body"/> against the SQL store once the schema is known to be current. The store's own schema gate stays
+    /// at its default, which never deploys, so these commands cannot change a database's schema.
     /// </summary>
-    private static async Task<int> WithStoreAsync(
-        ParseResult parse, Option<string> connection, SchemaDeployer deployer, Func<IGrantStore, Task<int>> body, CancellationToken ct)
+    internal static async Task<int> WithStoreAsync(
+        ParseResult parse, Option<string> connection, SchemaDeployer deployer, Func<IMemoryStore, Task<int>> body, CancellationToken ct)
     {
         var status = await deployer.GetStatusAsync(ct);
         if (status.State != SchemaState.Current)
@@ -172,10 +172,10 @@ internal static class GrantCommands
         }
 
         var options = new SqlServerOptions { ConnectionString = parse.GetRequiredValue(connection) };
-        // Grants never search messages: a full-text index state that is never ready.
+        // These commands never search messages: a full-text index state that is never ready.
         var store = new SqlMemoryStore(
             options, new SchemaGate(deployer, options), new FullTextIndexState(), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
-        return await body(store.Grants);
+        return await body(store);
     }
 
     private static string NotCurrent(SchemaStatus status) => status.State switch

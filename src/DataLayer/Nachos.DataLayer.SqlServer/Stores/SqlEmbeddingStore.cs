@@ -270,6 +270,111 @@ internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbe
     [LoggerMessage(Level = LogLevel.Warning, Message = "A chunk backfill batch was chosen as a deadlock victim on attempt {Attempt} and rolled back; it is retried.")]
     private static partial void LogChunkBatchDeadlock(ILogger logger, int attempt, Exception exception);
 
+    public async Task<EmbeddingSpace?> GetSpaceAsync(CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        await using var db = await runtime.OpenAsync(ct);
+        return await ReadSpaceAsync(db, ct);
+    }
+
+    /// <remarks>
+    /// An embedded row is one in the synced state (the <c>SyncState</c> and <c>EmbeddingState</c> indexes), which is
+    /// exactly when it has a vector; tombstoned conclusions count too, since their vectors are still stored.
+    /// </remarks>
+    public async Task<IReadOnlyList<string?>> ListVectorModelsAsync(CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        await using var db = await runtime.OpenAsync(ct);
+        return await db.Database
+            .SqlQueryRaw<string?>(
+                $"""
+                SELECT DISTINCT JSON_VALUE(c.InternalMetadata, '$.{VectorSpace.ModelMetadataKey}') AS [Value]
+                FROM dbo.Conclusions AS c
+                WHERE c.EmbeddingState = 1
+                UNION
+                SELECT CAST(NULL AS nvarchar(4000)) WHERE EXISTS (SELECT 1 FROM dbo.MessageEmbeddings WHERE SyncState = 1)
+                """)
+            .ToListAsync(ct);
+    }
+
+    /// <remarks>The existence check holds <c>UPDLOCK, HOLDLOCK</c>, so two hosts stamping at once serialize instead of colliding on the key.</remarks>
+    public async Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        ArgumentNullException.ThrowIfNull(space);
+        await using var db = await runtime.OpenAsync(ct);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            INSERT dbo.EmbeddingSpace (Id, Model, Dimensions, StampedAt)
+            SELECT 1, @model, @dimensions, @now
+            WHERE NOT EXISTS (SELECT 1 FROM dbo.EmbeddingSpace WITH (UPDLOCK, HOLDLOCK) WHERE Id = 1)
+            """,
+            [
+                SqlParameters.Text("@model", space.Model),
+                SqlParameters.Int("@dimensions", space.Dimensions),
+                SqlParameters.Time("@now", runtime.Clock.GetUtcNow()),
+            ],
+            ct);
+        return await ReadSpaceAsync(db, ct)
+            ?? throw new InvalidOperationException("The embedding model stamp was not stored. Check that dbo.EmbeddingSpace is writable.");
+    }
+
+    /// <remarks>
+    /// Each batch is its own statement, so a large database is never locked as a whole: conclusions seek the state index, and
+    /// chunk rows are deleted outright. Stored models are removed from conclusions' internal metadata with the vectors. The stamp is replaced last: a reset that
+    /// stops part-way leaves the old stamp, so hosts configured with the new model keep refusing to start until it is rerun.
+    /// </remarks>
+    public async Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct)
+    {
+        ReentryGuard.ThrowIfReentered();
+        ArgumentNullException.ThrowIfNull(space);
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        await using var db = await runtime.OpenAsync(ct);
+        long reset = 0;
+        foreach (var sql in new[]
+        {
+            $"""
+            UPDATE TOP (@batch) dbo.Conclusions
+            SET Embedding = NULL, EmbeddingState = 0,
+                InternalMetadata = JSON_MODIFY(InternalMetadata, '$.{VectorSpace.ModelMetadataKey}', NULL)
+            WHERE EmbeddingState <> 0
+            """,
+            "DELETE TOP (@batch) FROM dbo.MessageEmbeddings",
+        })
+        {
+            int changed;
+            do
+            {
+                changed = await db.Database.ExecuteSqlRawAsync(sql, [SqlParameters.Int("@batch", batchSize)], ct);
+                reset += changed;
+            }
+            while (changed > 0);
+        }
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            MERGE dbo.EmbeddingSpace WITH (HOLDLOCK) AS t
+            USING (SELECT CAST(1 AS tinyint) AS Id) AS s ON t.Id = s.Id
+            WHEN MATCHED THEN UPDATE SET Model = @model, Dimensions = @dimensions, StampedAt = @now
+            WHEN NOT MATCHED THEN INSERT (Id, Model, Dimensions, StampedAt) VALUES (1, @model, @dimensions, @now);
+            """,
+            [
+                SqlParameters.Text("@model", space.Model),
+                SqlParameters.Int("@dimensions", space.Dimensions),
+                SqlParameters.Time("@now", runtime.Clock.GetUtcNow()),
+            ],
+            ct);
+        return reset;
+    }
+
+    private static async Task<EmbeddingSpace?> ReadSpaceAsync(NachosDbContext db, CancellationToken ct)
+    {
+        var rows = await db.Database
+            .SqlQueryRaw<SpaceRow>("SELECT Model, Dimensions FROM dbo.EmbeddingSpace WHERE Id = 1")
+            .ToListAsync(ct);
+        return rows.SingleOrDefault() is { } row ? new EmbeddingSpace(row.Model, row.Dimensions) : null;
+    }
+
     /// <summary>Applies <c>assignments</c> (fixed SQL chosen by the caller, never user input) while the conclusion is still pending.</summary>
     private async Task UpdatePendingConclusionAsync(PendingEmbedding pending, string assignments, SqlParameter[] values, CancellationToken ct)
     {
@@ -340,6 +445,8 @@ internal sealed partial class SqlEmbeddingStore(SqlStoreRuntime runtime) : IEmbe
 
         return pattern.Append("]%").ToString();
     }
+
+    private sealed record SpaceRow(string Model, int Dimensions);
 
     private sealed record PendingRow(int Kind, string WorkspaceName, string SourceId, int ChunkIndex, string Content);
 
