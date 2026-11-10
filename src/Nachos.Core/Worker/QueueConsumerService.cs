@@ -244,11 +244,11 @@ public sealed partial class QueueConsumerService : BackgroundService
         var delay = Backoff.Delay(_options.RetryDelay, _options.MaxRetryDelay, attempts);
         if (deadLettered > 0)
         {
-            LogHandlerFailedFinal(failure, lease.WorkUnitKey, attempts, deadLettered);
+            LogHandlerFailedFinal(failure, lease.WorkUnitKey, ItemIds(lease), attempts, deadLettered);
         }
         else
         {
-            LogHandlerFailed(failure, lease.WorkUnitKey, attempts, delay);
+            LogHandlerFailed(failure, lease.WorkUnitKey, ItemIds(lease), attempts, delay);
         }
 
         await FailAsync(lease, Describe(failure), delay, _deriver.MaxAttempts).ConfigureAwait(false);
@@ -368,11 +368,15 @@ public sealed partial class QueueConsumerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Warning, Message = "Leasing work for {Owner} failed; retrying after the idle delay.")]
     private partial void LogAcquireFailed(Exception exception, string owner);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Work unit {WorkUnitKey} failed on attempt {Attempt}; retrying in {RetryDelay}.")]
-    private partial void LogHandlerFailed(Exception exception, string workUnitKey, int attempt, TimeSpan retryDelay);
+    // The work item ids are the job ids GET W/jobs lists, whose error holds only the failure type.
+    private static string ItemIds(WorkLease lease) =>
+        string.Join(',', lease.Items.Select(item => item.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} failed on attempt {Attempt}, the last for {DeadLettered} of its items; dead-lettering them.")]
-    private partial void LogHandlerFailedFinal(Exception exception, string workUnitKey, int attempt, int deadLettered);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Work unit {WorkUnitKey} (items {WorkItemIds}) failed on attempt {Attempt}; retrying in {RetryDelay}.")]
+    private partial void LogHandlerFailed(Exception exception, string workUnitKey, string workItemIds, int attempt, TimeSpan retryDelay);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Work unit {WorkUnitKey} (items {WorkItemIds}) failed on attempt {Attempt}, the last for {DeadLettered} of its items; dead-lettering them.")]
+    private partial void LogHandlerFailedFinal(Exception exception, string workUnitKey, string workItemIds, int attempt, int deadLettered);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The lease on work unit {WorkUnitKey} was lost; it has a new owner, so it is not failed.")]
     private partial void LogLeaseLost(string workUnitKey);

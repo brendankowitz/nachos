@@ -447,7 +447,7 @@ Failures retry with M2 backoff on the same item. A dead-lettered deletion leaves
 - Docs:
   - README "What works today" and the 501 table;
   - concept pages "Search" and "Session context" (including the budget rule, D5);
-  - guide "Delete sessions and workspaces" (202 semantics, `W/jobs`, dead-letter redrive by SQL);
+  - guide "Delete sessions and workspaces" (202 semantics, `W/jobs`, dead-letter redrive by SQL). It must say that a job's `error` holds only the failure type (`handler_failed: <exception type>`), and the full reason is in the worker logs, matched by work item id (the job `id`) or work unit key;
   - generated options reference (`Embeddings:ChunkTokens`, `Summary`, `SessionContext`, `Deletion`, `Search`).
 
 **Depends on:** 3, 9.

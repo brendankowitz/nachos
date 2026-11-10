@@ -118,6 +118,7 @@ public sealed class SessionContextEndpointTests : MemoryApiTest
         var sessions = operation.GetProperty("parameters").EnumerateArray()
             .Single(parameter => parameter.GetProperty("name").GetString() == "sessions").GetProperty("schema");
         sessions.GetProperty("items").GetProperty("type").GetString().ShouldBe("string");
+        sessions.GetProperty("maxItems").GetInt32().ShouldBe(100);
         var tokens = operation.GetProperty("parameters").EnumerateArray()
             .Single(parameter => parameter.GetProperty("name").GetString() == "tokens").GetProperty("schema");
         tokens.GetProperty("maximum").GetInt32().ShouldBe(100_000);

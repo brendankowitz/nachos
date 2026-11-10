@@ -17,7 +17,7 @@ internal static class SessionContextEndpoints
             new("tokens", JsonSchemaType.Integer, "1", "100000"), new("summary", JsonSchemaType.Boolean),
             new("search_query", JsonSchemaType.String), new("peer_target", JsonSchemaType.String),
             new("peer_perspective", JsonSchemaType.String), new("scope", JsonSchemaType.String),
-            new("sessions", JsonSchemaType.Array, Items: JsonSchemaType.String), new("limit_to_session", JsonSchemaType.Boolean),
+            new("sessions", JsonSchemaType.Array, Items: JsonSchemaType.String, MaxItems: MaxSessions), new("limit_to_session", JsonSchemaType.Boolean),
             new("search_top_k", JsonSchemaType.Integer, "1", "100"), new("search_max_distance", JsonSchemaType.Number, "0", "1"),
             new("include_most_frequent", JsonSchemaType.Boolean), new("max_conclusions", JsonSchemaType.Integer, "1", "100"))
             .WithDescription("The context never exceeds tokens content tokens (1 to 100,000; 100,000 when absent). Any scope " +

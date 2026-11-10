@@ -61,6 +61,7 @@ internal static class QueryParameters
                     {
                         Type = parameter.Type | JsonSchemaType.Null, Minimum = parameter.Minimum, Maximum = parameter.Maximum,
                         Items = parameter.Items is { } items ? new OpenApiSchema { Type = items } : null,
+                        MaxItems = parameter.MaxItems,
                     },
                 });
             }
@@ -70,7 +71,7 @@ internal static class QueryParameters
 
 /// <summary>
 /// One optional query parameter as OpenAPI documents it; the bounds are inclusive. <paramref name="Items"/> is the item
-/// type of a repeated (array) parameter.
+/// type of a repeated (array) parameter, and <paramref name="MaxItems"/> its most values.
 /// </summary>
 internal sealed record QueryParameter(string Name, JsonSchemaType Type, string? Minimum = null, string? Maximum = null,
-    JsonSchemaType? Items = null);
+    JsonSchemaType? Items = null, int? MaxItems = null);
