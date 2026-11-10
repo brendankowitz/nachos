@@ -106,6 +106,69 @@ public abstract class SearchContractTests : M3ContractTestBase
     }
 
     [Fact]
+    public async Task Search_PeerPerspective_BackdatedImport_IsVisibleToTheImporter()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, joinsByAppend) = await NewSessionAsync(store);
+        var alreadyMember = Unique("sess");
+        var rejoinsByAppend = Unique("sess");
+        await store.Sessions.GetOrCreateAsync(workspace, alreadyMember, null, null, null, Ct);
+        await store.Sessions.GetOrCreateAsync(workspace, rejoinsByAppend, null, null, null, Ct);
+        clock.SetUtcNow(Start.AddMinutes(30));
+        await store.Sessions.AddPeersAsync(workspace, rejoinsByAppend, Members("alice"), Ct);
+        await store.Sessions.RemovePeersAsync(workspace, rejoinsByAppend, ["alice"], Ct);
+        await store.Sessions.AddPeersAsync(workspace, alreadyMember, Members("alice"), Ct);
+
+        // Each import is dated before alice's first membership of any session, and before now.
+        clock.SetUtcNow(Start.AddMinutes(60));
+        await AppendEmbeddedAsync(store, workspace, joinsByAppend, Msg("alice", "walrus joined by importing", Start.AddMinutes(1)), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, alreadyMember, Msg("alice", "walrus imported as member", Start.AddMinutes(2)), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, rejoinsByAppend, Msg("alice", "walrus rejoined by importing", Start.AddMinutes(3)), Vector(0));
+
+        var perspective = Request(workspace, new MessageSearchScope.PeerPerspective("alice"));
+        string[] visible = ["walrus rejoined by importing", "walrus imported as member", "walrus joined by importing"];
+        (await LexicalAsync(store, perspective, "walrus")).ShouldBe(visible);
+        (await VectorAsync(store, perspective, Vector(0))).ShouldBe(visible);
+    }
+
+    [Fact]
+    public async Task Search_PeerPerspective_JoiningByAppend_OpensTheWindowAtTheEarliestMessageOfTheBatch()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        clock.SetUtcNow(Start.AddMinutes(60));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "ibex before the import", Start.AddMinutes(5)), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "ibex inside the import", Start.AddMinutes(15)), Vector(0));
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            new MessageAppend([Msg("alice", "late import", Start.AddMinutes(20)), Msg("alice", "early import", Start.AddMinutes(10))]),
+            Ct);
+
+        var perspective = Request(workspace, new MessageSearchScope.PeerPerspective("alice"));
+        (await LexicalAsync(store, perspective, "ibex")).ShouldBe(["ibex inside the import"]);
+        (await VectorAsync(store, perspective, Vector(0))).ShouldBe(["ibex inside the import"]);
+    }
+
+    [Fact]
+    public async Task Search_PeerPerspective_AnotherPeersBackdatedMessage_StaysOutsideALaterJoinersWindow()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        clock.SetUtcNow(Start.AddMinutes(60));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "yak imported before alice", Start.AddMinutes(5)), Vector(0));
+        clock.SetUtcNow(Start.AddMinutes(70));
+        await store.Sessions.AddPeersAsync(workspace, session, Members("alice"), Ct);
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "yak backdated after alice joined", Start.AddMinutes(65)), Vector(0));
+        await AppendEmbeddedAsync(store, workspace, session, Msg("bob", "yak while alice is a member", Start.AddMinutes(75)), Vector(0));
+
+        var perspective = Request(workspace, new MessageSearchScope.PeerPerspective("alice"));
+        (await LexicalAsync(store, perspective, "yak")).ShouldBe(["yak while alice is a member"]);
+        (await VectorAsync(store, perspective, Vector(0))).ShouldBe(["yak while alice is a member"]);
+        (await LexicalAsync(store, Request(workspace, new MessageSearchScope.PeerPerspective("bob")), "yak")).Count.ShouldBe(3);
+    }
+
+    [Fact]
     public async Task Search_Filter_UsesMessageAllowlist()
     {
         var (store, _) = await NewStoreAsync();

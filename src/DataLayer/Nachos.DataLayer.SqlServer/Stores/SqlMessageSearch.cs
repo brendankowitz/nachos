@@ -13,8 +13,9 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 
 /// <remarks>
 /// <para>
-/// <b>Candidates</b> (alias <c>m</c>): the workspace's messages, narrowed by the scope (one session, or the sessions and
-/// <c>JoinedAt &lt;= CreatedAt &lt; LeftAt</c> windows of the peer's <c>SessionPeers</c> rows), then by the message filter
+/// <b>Candidates</b> (alias <c>m</c>): the workspace's messages, narrowed by the scope (one session, or the sessions of
+/// the peer's <c>SessionPeers</c> rows, keeping the peer's own messages and others' inside its
+/// <c>JoinedAt &lt;= CreatedAt &lt; LeftAt</c> window), then by the message filter
 /// (<see cref="SqlFilterCompiler"/>). A workspace or session being deleted (<c>LifecycleState = 2</c>) has none.
 /// </para>
 /// <para>
@@ -239,7 +240,8 @@ internal sealed class SqlMessageSearch(SqlStoreRuntime runtime, FullTextIndexSta
                 WHERE sp.WorkspaceId = m.WorkspaceId AND sp.SessionId = m.SessionId
                   AND member.WorkspaceId = m.WorkspaceId
                   AND member.Name = @scopePeer AND DATALENGTH(member.Name) = DATALENGTH(@scopePeer)
-                  AND sp.JoinedAt <= m.CreatedAt AND (sp.LeftAt IS NULL OR m.CreatedAt < sp.LeftAt))
+                  AND (m.PeerId = sp.PeerId
+                    OR (sp.JoinedAt <= m.CreatedAt AND (sp.LeftAt IS NULL OR m.CreatedAt < sp.LeftAt))))
             """,
             [SqlParameters.Text("@scopePeer", name)]),
         null => throw new ArgumentNullException(nameof(scope)),

@@ -104,7 +104,8 @@ internal sealed class InMemoryMessageSearch(InMemoryState state) : IMessageSearc
             {
                 var membership = session.Members[peer];
                 return (session, (Func<MessageRecord, bool>)(message =>
-                    membership.JoinedAt <= message.CreatedAt && (membership.LeftAt is not { } left || message.CreatedAt < left)));
+                    string.Equals(message.PeerName, peer, StringComparison.Ordinal)
+                    || (membership.JoinedAt <= message.CreatedAt && (membership.LeftAt is not { } left || message.CreatedAt < left))));
             }),
         _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "Unknown message search scope."),
     };
