@@ -90,6 +90,83 @@ public sealed class AppHostSmokeTests
         conclusion.GetProperty("level").GetString().ShouldBe("explicit");
     }
 
+    /// <summary>
+    /// The M3 read path end to end through the real hosts and SQL Server (with Full-Text Search): twenty messages make the
+    /// worker write a short summary (the default cadence is one per 20 messages), a message is found by session and
+    /// workspace search, and the session context stays within its token budget while taking the newest messages.
+    /// </summary>
+    /// <remarks>
+    /// Search is polled: the full-text index is created and populated in the background, and its change tracking indexes
+    /// new rows asynchronously, so a message can be briefly invisible to lexical search once the index is ready.
+    /// </remarks>
+    [Fact]
+    public async Task MessagesBecomeSearchableAndSummarized_WithFakeAI()
+    {
+        using var cts = new CancellationTokenSource(StartupTimeout + ConclusionTimeout);
+        await using var app = await StartAsync(cts.Token);
+        using var client = app.CreateHttpClient("api");
+
+        var workspace = $"smoke-{Guid.NewGuid():N}";
+        var session = $"/v3/workspaces/{workspace}/sessions/s";
+        (await client.PostAsJsonAsync("/v3/workspaces", new { id = workspace }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/v3/workspaces/{workspace}/sessions", new { id = "s" }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        var contents = Enumerable.Range(1, 20)
+            .Select(i => i == 7 ? "alice keeps a jar of saffron in the pantry" : $"message number {i} about the weather")
+            .ToArray();
+        using var posted = await client.PostAsJsonAsync(
+            $"{session}/messages",
+            new { messages = contents.Select(content => new { content, peer_id = "alice" }).ToArray() },
+            cts.Token);
+        posted.StatusCode.ShouldBe(HttpStatusCode.Created);
+
+        await WaitUntilAsync(() => SearchFindsAsync(client, $"{session}/search", "saffron", contents[6], cts.Token),
+            "session search", cts.Token);
+        await WaitUntilAsync(() => SearchFindsAsync(client, $"/v3/workspaces/{workspace}/search", "saffron", contents[6], cts.Token),
+            "workspace search", cts.Token);
+
+        var summary = default(JsonElement);
+        await WaitUntilAsync(async () =>
+        {
+            using var summaries = JsonDocument.Parse(await client.GetStringAsync($"{session}/summaries", cts.Token));
+            summary = summaries.RootElement.GetProperty("short_summary").Clone();
+            return summary.ValueKind != JsonValueKind.Null;
+        }, "short summary", cts.Token);
+        summary.GetProperty("summary_type").GetString().ShouldBe("short");
+
+        const int budget = 40;
+        using var context = JsonDocument.Parse(await client.GetStringAsync($"{session}/context?tokens={budget}&summary=false", cts.Token));
+        var messages = context.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        messages.ShouldNotBeEmpty();
+        messages.Sum(message => message.GetProperty("token_count").GetInt32()).ShouldBeLessThanOrEqualTo(budget);
+        messages[^1].GetProperty("content").GetString().ShouldBe(contents[^1], "the context ends at the newest message");
+    }
+
+    private static async Task<bool> SearchFindsAsync(
+        HttpClient client, string path, string query, string content, CancellationToken cancellationToken)
+    {
+        using var response = await client.PostAsJsonAsync(path, new { query }, cancellationToken);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        using var found = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        return found.RootElement.EnumerateArray().Any(message => message.GetProperty("content").GetString() == content);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, string what, CancellationToken cancellationToken)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(ConclusionTimeout);
+        while (!limit.IsCancellationRequested)
+        {
+            if (await condition())
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        throw new TimeoutException($"No {what} within {ConclusionTimeout}.");
+    }
+
     private static async Task<JsonElement> WaitForConclusionAsync(HttpClient client, string workspace, string content, CancellationToken cancellationToken)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
