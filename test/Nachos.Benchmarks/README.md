@@ -28,8 +28,8 @@ not a test project: `dotnet test` and the CI lanes never run it. The recorded re
 
 ## Running it
 
-It needs Docker and a lot of disk: 1M messages is about 1.5M vectors, roughly 9 GB, plus text and indexes, inside the
-container. Do not run it beside another Testcontainers run.
+It needs Docker and a lot of disk: 1M messages is about 1.5M vectors, 12.0 GB of `MessageEmbeddings` as measured,
+plus text and indexes, inside the container. Do not run it beside another Testcontainers run.
 
 ```powershell
 dotnet run --project test/Nachos.Benchmarks -c Release -- --memory-gb 12

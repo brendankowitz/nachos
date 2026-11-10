@@ -104,6 +104,8 @@ semantically related. The lexical half still searches the whole workspace, so an
 that shares a word with the query is still found, and a session or peer search still finds it
 by meaning. Raise the cap for better recall over large workspaces at the cost of latency, or set
 it to an empty value to compare every chunk. Workspaces smaller than the cap are unaffected.
+"Recent" means storage order, not `created_at`: messages from before chunking existed, which the
+reconciler chunks later, count as recent once their chunks are stored.
 
 The cap bounds only the vector half. At a million messages, a workspace search whose query
 contains a word found in most messages still took 1.5 to 3 seconds in the benchmark, because of its lexical half, on the

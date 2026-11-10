@@ -176,6 +176,14 @@ run-to-run noise. The store-level series of this run repeat the second run's wit
    deployment needs Full-Text Search, which the docs say.
 5. **Reset `DELETE TOP` ghost records (Task 11).** Not exercised; not observed.
 
+## Open items
+
+- **A selective filter on a capped workspace search** (not measured). The capped query scans the chunk key backwards
+  and stops once the cap's worth of chunks have passed the scope and the message filter. With a very selective filter
+  (for example a rare metadata value) on a large workspace, few rows pass, so the scan reads many rows before it stops,
+  up to every chunk of the workspace. That is no worse than the uncapped search, which reads every chunk anyway. The
+  cost is performance only: results stay correct, and the cap still counts only chunks that pass the filter.
+
 ## Decision
 
 The rule (plan Task 10): keep exact search if `W/search` p95 is at most 1 s on the dev host; otherwise add
