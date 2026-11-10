@@ -47,11 +47,9 @@ public sealed class UnsupportedOptionTests : ApiTest
     {
         { "/list", """{"filters":{"source_message_ids":["m1"]}}""", ["body", "filters", "source_message_ids"] },
         { "/list", """{"filters":{"source_ids":["c1"]}}""", ["body", "filters", "source_ids"] },
-        { "/list", """{"filters":{"level":"explicit"}}""", ["body", "filters", "level"] },
-        { "/list", """{"filters":{"times_derived":{"gte":2}}}""", ["body", "filters", "times_derived"] },
         { "/list", """{"filters":{"OR":[{"id":"x"},{"source_message_ids":["m1"]}]}}""", ["body", "filters", "OR", 1, "source_message_ids"] },
         { "/query", """{"query":"tea","filters":{"source_message_ids":["m1"]}}""", ["body", "filters", "source_message_ids"] },
-        { "/query", """{"query":"tea","filters":{"NOT":[{"level":"explicit"}]}}""", ["body", "filters", "NOT", 0, "level"] },
+        { "/query", """{"query":"tea","filters":{"NOT":[{"source_ids":["c1"]}]}}""", ["body", "filters", "NOT", 0, "source_ids"] },
     };
 
     /// <summary>Documented conclusion filter fields Nachos does not filter on are rejected, never ignored (matching all).</summary>

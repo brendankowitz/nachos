@@ -40,8 +40,7 @@ public sealed class FilterParserTests
     [Theory]
     [InlineData("""{"source_message_ids":["m1"]}""", new object[] { "body", "filters", "source_message_ids" })]
     [InlineData("""{"id":"c","AND":[{"id":"c"},{"source_ids":["c1"]}]}""", new object[] { "body", "filters", "AND", 1, "source_ids" })]
-    [InlineData("""{"NOT":[{"times_derived":2}]}""", new object[] { "body", "filters", "NOT", 0, "times_derived" })]
-    [InlineData("""{"level":"explicit"}""", new object[] { "body", "filters", "level" })]
+    [InlineData("""{"NOT":[{"source_message_ids":["m1"]}]}""", new object[] { "body", "filters", "NOT", 0, "source_message_ids" })]
     public void DocumentedUnsupportedConclusionField_IsLocated422(string json, object[] location)
     {
         var error = Should.Throw<RequestValidationException>(() => Parse(json, ResourceKind.Conclusion)).Errors.ShouldHaveSingleItem();
@@ -49,6 +48,35 @@ public sealed class FilterParserTests
         error.Loc.ShouldBe(location);
         error.Type.ShouldBe("unsupported");
         error.Msg.ShouldBe(location[^1] + " is not supported in this Nachos version");
+    }
+
+    [Fact]
+    public void ConclusionLevel_AcceptsTheFourNamesWithEqNeIn()
+    {
+        ParseRequired("""{"level":"deductive"}""", ResourceKind.Conclusion)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Level, FilterOp.Eq, Value("\"deductive\"")));
+        ParseRequired("""{"level":{"ne":"explicit"}}""", ResourceKind.Conclusion)
+            .ShouldBe(new FilterNode.Field(FilterColumns.Level, FilterOp.Ne, Value("\"explicit\"")));
+        ParseRequired("""{"level":["inductive","contradiction"]}""", ResourceKind.Conclusion)
+            .ShouldBeOfType<FilterNode.Field>().Op.ShouldBe(FilterOp.In);
+    }
+
+    [Theory]
+    [InlineData("""{"level":"explict"}""")]
+    [InlineData("""{"level":"Explicit"}""")]
+    [InlineData("""{"level":["explicit","bogus"]}""")]
+    [InlineData("""{"level":1}""")]
+    [InlineData("""{"level":{"contains":"ex"}}""")]
+    [InlineData("""{"level":{"gt":"explicit"}}""")]
+    public void ConclusionLevel_RejectsOtherValuesAndOperators(string json) =>
+        Should.Throw<NachosValidationException>(() => Parse(json, ResourceKind.Conclusion));
+
+    [Fact]
+    public void ConclusionTimesDerived_IsANumber()
+    {
+        ParseRequired("""{"times_derived":{"gte":"2"}}""", ResourceKind.Conclusion)
+            .ShouldBe(new FilterNode.Field(FilterColumns.TimesDerived, FilterOp.Gte, JsonValue.Create(2m)));
+        Should.Throw<NachosValidationException>(() => Parse("""{"times_derived":1.5}""", ResourceKind.Conclusion));
     }
 
     [Fact]

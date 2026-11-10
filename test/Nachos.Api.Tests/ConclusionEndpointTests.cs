@@ -113,8 +113,13 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
         page.GetProperty("total").GetInt32().ShouldBe(2);
         page.GetProperty("pages").GetInt32().ShouldBe(2);
         page.GetProperty("items")[0].GetProperty("content").GetString().ShouldBe("three");
-        // Honcho documents level as a conclusion filter; Nachos does not filter on it, so it is rejected, not ignored.
-        Location(await Post(C + "/list", """{"filters":{"level":"deductive"}}""", 422), "body", "filters", "level");
+        // Every conclusion created through the API is explicit and derived once.
+        (await Post(C + "/list", """{"filters":{"level":"deductive"}}""")).GetProperty("total").GetInt32().ShouldBe(0);
+        (await Post(C + "/list", """{"filters":{"level":["explicit","inductive"]}}""")).GetProperty("total").GetInt32().ShouldBe(3);
+        (await Post(C + "/list", """{"filters":{"times_derived":{"gt":1}}}""")).GetProperty("total").GetInt32().ShouldBe(0);
+        (await Post(C + "/query", """{"query":"one","filters":{"level":"deductive"}}""")).GetArrayLength().ShouldBe(0);
+        Problem(await Post(C + "/list", """{"filters":{"level":"explict"}}""", 422), 422, JsonValueKind.String);
+        Problem(await Post(C + "/list", """{"filters":{"level":{"contains":"ex"}}}""", 422), 422, JsonValueKind.String);
         Problem(await Post(C + "/list", """{"filters":{"observer_id":{"regex":"a"}}}""", 422), 422, JsonValueKind.String);
     }
 

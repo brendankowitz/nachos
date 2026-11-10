@@ -501,6 +501,33 @@ public abstract class MemoryContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task List_FiltersOnLevelAndTimesDerived()
+    {
+        var (store, clock) = await NewStoreAsync();
+        var (workspace, session) = await ArrangeAsync(store);
+        var told = await InsertAsync(store, workspace, Fact("told", session));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await InsertAsync(store, workspace, Fact("deduced", null, level: ConclusionLevel.Deductive));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await InsertAsync(store, workspace, Fact("induced", null, level: ConclusionLevel.Inductive));
+        var lease = await LeaseAsync(store, workspace, session);
+        await store.Conclusions.CommitDerivationAsync(lease, new DerivationChanges(workspace, [], [told.PublicId], []), Ct);
+
+        async Task<string[]> Contents(string json) => [.. (await ListAllAsync(store, workspace, Filter(json))).Select(x => x.Content)];
+
+        (await Contents("""{"level":"explicit"}""")).ShouldBe(["told"]);
+        (await Contents("""{"level":"contradiction"}""")).ShouldBeEmpty();
+        (await Contents("""{"level":["deductive","inductive"]}""")).ShouldBe(["deduced", "induced"]);
+        (await Contents("""{"level":{"in":["inductive"]}}""")).ShouldBe(["induced"]);
+        (await Contents("""{"level":{"ne":"explicit"}}""")).ShouldBe(["deduced", "induced"]);
+        (await Contents("""{"times_derived":2}""")).ShouldBe(["told"]);
+        (await Contents("""{"times_derived":{"gte":2}}""")).ShouldBe(["told"]);
+        (await Contents("""{"times_derived":{"lt":2}}""")).ShouldBe(["deduced", "induced"]);
+        (await Contents("""{"times_derived":[1,3]}""")).ShouldBe(["deduced", "induced"]);
+        (await Contents("""{"level":"explicit","times_derived":1}""")).ShouldBeEmpty();
+    }
+
+    [Fact]
     public async Task CommitDerivation_CorroborationOrReplacementOnly_RecordsActivityButNoNewExplicit()
     {
         var (store, clock) = await NewStoreAsync();

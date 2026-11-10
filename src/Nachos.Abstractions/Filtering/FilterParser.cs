@@ -36,6 +36,8 @@ namespace Nachos.Abstractions.Filtering;
 /// <see cref="decimal"/>; a non-integral number is rejected. A number beyond the <see cref="decimal"/> range can never
 /// equal a stored count, so <c>eq</c> matches nothing, <c>ne</c> everything, and <c>gt</c>/<c>gte</c>/<c>lt</c>/<c>lte</c>
 /// resolve to match-all or match-none by its sign; the parser folds that in, so the tree never holds such a value.
+/// <c>level</c> takes one of the four level names and allows <c>eq ne in</c>; a misspelled name is rejected rather than
+/// matching nothing. <c>times_derived</c> is a number like <c>token_count</c>.
 /// <c>created_at</c> takes ISO-8601 dates or date-times and is normalized to a UTC <see cref="DateTimeOffset"/>; a
 /// date-only value is UTC midnight and a value without an offset is taken as UTC. <c>is_active</c> takes real JSON
 /// booleans only. Text allows <c>eq ne in contains icontains</c>, numbers and timestamps <c>eq ne in gt gte lt lte</c>,
@@ -65,6 +67,9 @@ public static partial class FilterParser
     private const string Wildcard = "*";
 
     private static readonly JsonDocumentOptions StrictDocument = new() { AllowDuplicateProperties = false };
+
+    private static readonly string[] LevelNames =
+        [.. Enum.GetValues<Domain.ConclusionLevel>().Order().Select(Domain.ConclusionLevelNames.Of)];
 
     private static readonly HashSet<string> OperatorKeys =
         ["gt", "gte", "lt", "lte", "ne", "in", "contains", "icontains"];
@@ -417,6 +422,9 @@ public static partial class FilterParser
             case FieldType.Boolean when kind is JsonValueKind.True or JsonValueKind.False:
                 return new Operand(JsonValue.Create(kind == JsonValueKind.True));
 
+            case FieldType.Level when kind == JsonValueKind.String && LevelNames.Contains(value.GetValue<string>()):
+                return new Operand(JsonValue.Create(value.GetValue<string>()));
+
             default:
                 throw Invalid($"Field '{wireName}' expects {Describe(field.Type)}.");
         }
@@ -428,6 +436,7 @@ public static partial class FilterParser
         FieldType.Number => "an integral number or an integer string",
         FieldType.Timestamp => "an ISO-8601 date or date-time string",
         FieldType.Boolean => "a boolean (true or false)",
+        FieldType.Level => "one of " + string.Join(", ", LevelNames),
         _ => "a different value",
     };
 

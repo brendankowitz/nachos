@@ -43,11 +43,13 @@ public static class FilterColumns
 
     /// <summary>
     /// On a conclusion: its level, as text, the lowercase wire name (<see cref="Domain.ConclusionLevelNames.Of"/>:
-    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Always set. Core's visibility rules use
-    /// it; it is deliberately <b>not</b> a wire filter field (not in <see cref="ResourceFields"/>), so only hand-built
-    /// nodes name it.
+    /// <c>explicit</c>, <c>deductive</c>, <c>inductive</c>, <c>contradiction</c>). Always set. The wire field
+    /// <c>level</c> accepts only those names (<see cref="FieldType.Level"/>); Core's visibility rules also build nodes on it.
     /// </summary>
     public const string Level = "Level";
+
+    /// <summary>On a conclusion: how many times it has been derived (at least 1). Never unset.</summary>
+    public const string TimesDerived = "TimesDerived";
 
     /// <summary>A message's text content.</summary>
     public const string Content = "Content";
@@ -70,6 +72,9 @@ public enum FieldType
     Timestamp,
     Boolean,
     Metadata,
+
+    /// <summary>A conclusion level: one of the four wire names; any other value is rejected, not matched against.</summary>
+    Level,
 }
 
 /// <summary>A filterable field: the canonical <see cref="FilterColumns"/> column and its value type.</summary>
@@ -130,13 +135,15 @@ public static class ResourceFields
             ["observer_id"] = new(FilterColumns.ObserverId, FieldType.Text),
             ["observed_id"] = new(FilterColumns.ObservedId, FieldType.Text),
             ["session_id"] = new(FilterColumns.SessionId, FieldType.Text),
+            ["level"] = new(FilterColumns.Level, FieldType.Level),
+            ["times_derived"] = new(FilterColumns.TimesDerived, FieldType.Number),
             ["created_at"] = CreatedAt,
         }.ToFrozenDictionary(StringComparer.Ordinal);
 
-    // Honcho documents these conclusion filter fields (changelog v3.2.0 and v3.5.0) but Nachos does not filter on them;
-    // ignoring one would widen the result, so FilterParser rejects it.
+    // Honcho documents these conclusion filter fields (changelog v3.2.0 and v3.5.0) as containment over arrays, which
+    // Nachos does not filter on yet; ignoring one would widen the result, so FilterParser rejects it.
     private static readonly IReadOnlySet<string> ConclusionUnsupported =
-        new HashSet<string>(["level", "source_ids", "source_message_ids", "times_derived"], StringComparer.Ordinal)
+        new HashSet<string>(["source_ids", "source_message_ids"], StringComparer.Ordinal)
             .ToFrozenSet(StringComparer.Ordinal);
 
     private static readonly IReadOnlySet<string> NoneUnsupported = FrozenSet<string>.Empty;

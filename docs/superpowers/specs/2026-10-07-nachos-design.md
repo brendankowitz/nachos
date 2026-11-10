@@ -503,7 +503,7 @@ Abbreviations: `W` = `/v3/workspaces/{workspace_id}`, `P` = `W/peers/{peer_id}`,
 13. `Conclusion.source_message_ids` lists the cited messages in message order, not citation order: the deriver normalizes each fact's citations to their position in the batch, and deduplication merges citations with a union.
 14. **Known gap, to be fixed with M5's deriver work:** a corroboration adds one to `times_derived` but does not merge the new citations into `source_message_ids`, so the field under-reports the evidence for a conclusion that was derived again.
 15. The offset-page `total` is an exact count. Honcho caps it at `PAGINATION_COUNT_LIMIT` (default 100,000) and reports that limit plus one when there are more rows.
-16. Options of the 3.6.0 wire whose feature is staged are rejected, never ignored. The response is `422` with `type: "unsupported"` and a `loc` that names the option. The rejected options are: `cursor` on the list routes, `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list (their defaults are accepted), and the conclusion filter fields `level`, `source_ids`, `source_message_ids` and `times_derived`.
+16. Options of the 3.6.0 wire whose feature is staged are rejected, never ignored. The response is `422` with `type: "unsupported"` and a `loc` that names the option. The rejected options are: `cursor` on the list routes, `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list (their defaults are accepted), and the conclusion filter fields `source_ids` and `source_message_ids` (array containment, a later task). The conclusion filters `level` (the four level names; `eq`, `ne`, `in`) and `times_derived` (numeric comparisons) are implemented.
 
 ---
 

@@ -340,7 +340,8 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
         (ResourceKind.Conclusion, FilterColumns.ObserverId) => CollectionPeerName("ObserverPeerId", field),
         (ResourceKind.Conclusion, FilterColumns.ObservedId) => CollectionPeerName("ObservedPeerId", field),
         (ResourceKind.Conclusion, FilterColumns.Level) => LevelColumn(field),
-        (ResourceKind.Message, FilterColumns.TokenCount) => OrderedColumn($"{table}.TokenCount", field, ColumnType.TokenCount),
+        (ResourceKind.Conclusion, FilterColumns.TimesDerived) => OrderedColumn($"{table}.TimesDerived", field, ColumnType.Number),
+        (ResourceKind.Message, FilterColumns.TokenCount) => OrderedColumn($"{table}.TokenCount", field, ColumnType.Number),
         (ResourceKind.Session, FilterColumns.PeerId) => ActiveMemberNames(field),
         (ResourceKind.Session, FilterColumns.IsActive) => IsActive(field),
         (_, FilterColumns.CreatedAt) => OrderedColumn($"{table}.CreatedAt", field, ColumnType.Timestamp),
@@ -501,14 +502,14 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
 
     private enum ColumnType
     {
-        TokenCount,
+        Number,
         Timestamp,
     }
 
     /// <summary>A never-NULL number or timestamp column, compared with an operand of the column's normalized type.</summary>
     private string OrderedColumn(string column, FilterNode.Field field, ColumnType type)
     {
-        string Value(JsonNode operand) => type == ColumnType.TokenCount
+        string Value(JsonNode operand) => type == ColumnType.Number
             ? Parameter(SqlDbType.Decimal, operand.GetValue<decimal>().ToString(CultureInfo.InvariantCulture), (name, _) => SqlParameters.Decimal(name, operand.GetValue<decimal>()))
             : Parameter(SqlDbType.DateTimeOffset, operand.GetValue<DateTimeOffset>().ToString("O", CultureInfo.InvariantCulture), (name, _) => SqlParameters.Time(name, operand.GetValue<DateTimeOffset>()));
 
@@ -533,12 +534,12 @@ internal sealed class FilterWriter(ResourceKind kind, string table, int digestHe
             case FilterOp.Lte:
                 return Compare("<=");
             case FilterOp.In:
-                var elements = new JsonArray([.. field.Value!.AsArray().Select(element => type == ColumnType.TokenCount
+                var elements = new JsonArray([.. field.Value!.AsArray().Select(element => type == ColumnType.Number
                     ? (JsonNode)JsonValue.Create(element!.GetValue<decimal>())
                     : JsonValue.Create(element!.GetValue<DateTimeOffset>().ToString("O", CultureInfo.InvariantCulture)))]);
                 var list = Parameter(SqlDbType.NVarChar, elements.ToJsonString(), SqlParameters.LongText);
                 var item = Alias();
-                var sqlType = type == ColumnType.TokenCount ? "decimal(38, 0)" : "datetimeoffset(7)";
+                var sqlType = type == ColumnType.Number ? "decimal(38, 0)" : "datetimeoffset(7)";
                 return $"EXISTS (SELECT 1 FROM OPENJSON({list}) WITH (v {sqlType} '$') AS {item} WHERE {item}.v = {column})";
             default:
                 throw new NotSupportedException($"Operator {field.Op} does not apply to {column}.");
