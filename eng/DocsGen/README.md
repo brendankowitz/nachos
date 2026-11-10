@@ -111,7 +111,7 @@ to 32 MiB each. Inputs changing during generation are rejected before publishing
   canonical connection key or Aspire's fallback key; the canonical key wins.
   Neither configured key means in-memory. Signing secrets are never read.
 * **`compatibility.json`**: schema version 1, exact method/template comparison
-  against the local 3.3.0 wire manifest and its pinned upstream digest. No upstream
+  against the local 3.6.0 wire manifest and its pinned upstream digest. No upstream
   document is downloaded. `wireVersion`, `counts`, `routes`, `evidence` and
   `cliHelpSha256` describe the actual inputs; `sdkConformance: "not-run"` and
   `authentication: "not-assessed"` prevent declaration coverage being mistaken

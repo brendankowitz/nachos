@@ -22,6 +22,7 @@ internal static class NotImplementedEndpoints
         ("POST", S + "/search"), ("GET", S + "/summaries"),
         ("GET", W + "/webhooks"), ("POST", W + "/webhooks"), ("GET", W + "/webhooks/test"),
         ("DELETE", W + "/webhooks/{endpoint_id}"), ("GET", W + "/jobs"),
+        ("GET", W + "/dreams/{run_id}"), ("POST", W + "/dreams/list"), ("POST", Q + "/sessions/remove"),
     ];
 
     public static void MapNotImplementedEndpoints(this IEndpointRouteBuilder endpoints)

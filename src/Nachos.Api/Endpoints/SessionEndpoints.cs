@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.OpenApi;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Api.Json;
@@ -7,6 +9,8 @@ namespace Nachos.Api.Endpoints;
 
 internal static class SessionEndpoints
 {
+    private const string IncludeScopes = "include_scopes";
+
     public static void MapSessionEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/v3/workspaces/{workspace_id}/sessions");
@@ -32,9 +36,13 @@ internal static class SessionEndpoints
         group.MapPost("/list", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
+            RejectScopeOptions(http.Request, body.Root);
             return TypedResults.Ok(await client.ListSessionsAsync(workspace_id, body.Object("filters"),
                 PagingParameters.Read(http.Request), http.RequestAborted));
-        }).Accepts<ResourceGet>("application/json").Produces<Page<Session>>().WithPaging();
+        }).Accepts<WorkspaceSessionGet>("application/json").Produces<Page<Session>>().WithPaging()
+            .WithQuery(new QueryParameter(IncludeScopes, JsonSchemaType.Boolean))
+            .WithDescription("Scope membership is M6: a non-null scope, in_no_scope true or include_scopes true is a 422; " +
+                "the defaults are accepted.");
         group.MapPut("/{session_id}", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
@@ -73,5 +81,31 @@ internal static class SessionEndpoints
                     body.As(NachosJsonContext.Default.SessionPeerConfig), http.RequestAborted);
                 return TypedResults.NoContent();
             }).Accepts<SessionPeerConfig>("application/json").Produces(204);
+    }
+
+    // Each option narrows or annotates the list by scope membership. Ignoring one would answer a different question
+    // than the caller asked, so only the defaults (no scope, false, false) are accepted until scopes land.
+    private static void RejectScopeOptions(HttpRequest request, JsonElement body)
+    {
+        if (QueryParameters.Boolean(request, IncludeScopes) == true)
+        {
+            throw RequestValidationException.Unsupported(["query", IncludeScopes]);
+        }
+        if (body.TryGetProperty("scope", out var scope) && scope.ValueKind != JsonValueKind.Null)
+        {
+            throw RequestValidationException.Unsupported(["body", "scope"]);
+        }
+        if (body.TryGetProperty("in_no_scope", out var inNoScope))
+        {
+            switch (inNoScope.ValueKind)
+            {
+                case JsonValueKind.False:
+                    break;
+                case JsonValueKind.True:
+                    throw RequestValidationException.Unsupported(["body", "in_no_scope"]);
+                default:
+                    throw RequestBody.Invalid(["body", "in_no_scope"], "Input should be a valid boolean.", "bool_type");
+            }
+        }
     }
 }

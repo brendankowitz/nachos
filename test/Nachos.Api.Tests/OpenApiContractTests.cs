@@ -60,6 +60,7 @@ public sealed class OpenApiContractTests : ApiTest
     [InlineData("QueueStatus")]
     [InlineData("SessionQueueStatus")]
     [InlineData("Page_Conclusion_")]
+    [InlineData("WorkspaceSessionGet")]
     public async Task Schemas_MatchManifestTypesNullabilityRequirednessAndBounds(string name)
     {
         var document = await Send(HttpMethod.Get, "/openapi/v1.json");

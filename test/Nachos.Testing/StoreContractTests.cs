@@ -149,6 +149,26 @@ public abstract class StoreContractTests : IAsyncLifetime
         session2.CreatedAt.ShouldBe(session1.CreatedAt);
     }
 
+    /// <summary>The wire uid is derived from CreatedAt, so a provider must read back exactly the instant it returned.</summary>
+    [Fact]
+    public async Task CreatedAt_ReadsBackAtTickPrecision()
+    {
+        var (store, clock) = NewStore();
+        clock.Advance(TimeSpan.FromTicks(1_234_567));
+        var workspace = Unique("ws");
+
+        var createdWorkspace = await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+        var createdPeer = await store.Peers.GetOrCreateAsync(workspace, "p", null, null, Ct);
+        var createdSession = await store.Sessions.GetOrCreateAsync(workspace, "s", null, null, null, Ct);
+
+        createdWorkspace.CreatedAt.UtcTicks.ShouldBe(Start.UtcTicks + 1_234_567);
+        (await store.Workspaces.GetAsync(workspace, Ct))!.CreatedAt.UtcTicks.ShouldBe(createdWorkspace.CreatedAt.UtcTicks);
+        (await store.Peers.GetAsync(workspace, "p", Ct))!.CreatedAt.UtcTicks.ShouldBe(createdPeer.CreatedAt.UtcTicks);
+        (await store.Sessions.GetAsync(workspace, "s", Ct))!.CreatedAt.UtcTicks.ShouldBe(createdSession.CreatedAt.UtcTicks);
+        createdPeer.CreatedAt.UtcTicks.ShouldBe(createdWorkspace.CreatedAt.UtcTicks);
+        createdSession.CreatedAt.UtcTicks.ShouldBe(createdWorkspace.CreatedAt.UtcTicks);
+    }
+
     [Fact]
     public async Task GetOrCreate_IdsAreCaseSensitive()
     {

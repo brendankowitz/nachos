@@ -587,7 +587,7 @@ public sealed class RoundTripTests
     {
         var a = new Steps(null!);
         var b = new Steps(null!);
-        var workspace = new Workspace("w", Obj("""{"k":1}"""), Obj("""{"c":1}"""), RoundTripHarness.Start);
+        var workspace = new Workspace("w", Obj("""{"k":1}"""), Obj("""{"c":1}"""), RoundTripHarness.Start, "u-w");
 
         a.Record("w", workspace);
         b.Record("w", field switch

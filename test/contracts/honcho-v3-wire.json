@@ -1,7 +1,7 @@
 {
-  "source": "https://docs.honcho.dev/v3/openapi.json",
-  "sha256": "6aa5dd7fa958719e5f12565592617621141f0b9ae0a6b5450802dc152d2e3fe9",
-  "version": "3.3.0",
+  "source": "https://honcho.dev/docs/v3/openapi.json",
+  "sha256": "d1b75ceab50534932bb7e53ae24ba4b0fd6db9d2cd54e8b3eb4c8e542040060f",
+  "version": "3.6.0",
   "routes": [
     {
       "method": "GET",
@@ -17,6 +17,7 @@
       "query": [
         "expires_at",
         "peer_id",
+        "scope_id",
         "session_id",
         "workspace_id"
       ],
@@ -38,6 +39,7 @@
       "method": "POST",
       "path": "/v3/workspaces/list",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
@@ -87,6 +89,7 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/conclusions/list",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
@@ -125,6 +128,28 @@
     },
     {
       "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/dreams/list",
+      "query": [
+        "cursor",
+        "page",
+        "size"
+      ],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v3/workspaces/{workspace_id}/dreams/{run_id}",
+      "query": [],
+      "statuses": [
+        200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/peers",
       "query": [],
       "statuses": [
@@ -136,6 +161,7 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/peers/list",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
@@ -223,6 +249,7 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/peers/{peer_id}/sessions",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
@@ -269,6 +296,8 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/scopes/list",
       "query": [
+        "cursor",
+        "include_session_count",
         "page",
         "reverse",
         "size"
@@ -300,12 +329,22 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/sessions/list",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
       ],
       "statuses": [
         200,
+        422
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v3/workspaces/{workspace_id}/scopes/{scope_id}/sessions/remove",
+      "query": [],
+      "statuses": [
+        204,
         422
       ]
     },
@@ -350,6 +389,8 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/sessions/list",
       "query": [
+        "cursor",
+        "include_scopes",
         "page",
         "reverse",
         "size"
@@ -423,6 +464,7 @@
       "method": "POST",
       "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/list",
       "query": [
+        "cursor",
         "page",
         "reverse",
         "size"
@@ -472,6 +514,7 @@
       "method": "GET",
       "path": "/v3/workspaces/{workspace_id}/sessions/{session_id}/peers",
       "query": [
+        "cursor",
         "page",
         "size"
       ],
@@ -538,6 +581,7 @@
       "method": "GET",
       "path": "/v3/workspaces/{workspace_id}/webhooks",
       "query": [
+        "cursor",
         "page",
         "size"
       ],
@@ -641,6 +685,10 @@
         "source_ids": {
           "type": "array"
         },
+        "source_message_ids": {
+          "type": "array",
+          "nullable": true
+        },
         "times_derived": {
           "type": "integer"
         }
@@ -717,6 +765,254 @@
         }
       }
     },
+    "CursorPage_Conclusion_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Conclusion"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_DreamRun_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "DreamRun"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_Message_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Message"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_Peer_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Peer"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_Scope_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Scope"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_Session_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Session"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_WebhookEndpoint_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "WebhookEndpoint"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
+    "CursorPage_Workspace_": {
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "current_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "current_page_backwards": {
+          "type": "string",
+          "nullable": true
+        },
+        "items": {
+          "type": "array",
+          "ref": "Workspace"
+        },
+        "next_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "previous_page": {
+          "type": "string",
+          "nullable": true
+        },
+        "total": {
+          "type": "integer",
+          "nullable": true
+        }
+      }
+    },
     "DialecticConfiguration": {
       "required": [],
       "properties": {
@@ -776,6 +1072,43 @@
         }
       }
     },
+    "DreamConclusionRef": {
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "content": {
+          "type": "string",
+          "nullable": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+            "explicit",
+            "deductive",
+            "inductive",
+            "contradiction"
+          ]
+        },
+        "removed_in_run": {
+          "type": "string",
+          "nullable": true
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "current",
+            "removed",
+            "unavailable"
+          ]
+        }
+      }
+    },
     "DreamConfiguration": {
       "required": [],
       "properties": {
@@ -785,6 +1118,219 @@
         },
         "enabled": {
           "type": "boolean",
+          "nullable": true
+        }
+      }
+    },
+    "DreamCreatedConclusion": {
+      "required": [
+        "conclusion",
+        "sources"
+      ],
+      "properties": {
+        "conclusion": {
+          "ref": "DreamConclusionRef"
+        },
+        "sources": {
+          "type": "array",
+          "ref": "DreamConclusionRef"
+        },
+        "specialist": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DreamPeerCardChange": {
+      "required": [
+        "after",
+        "before"
+      ],
+      "properties": {
+        "after": {
+          "type": "array"
+        },
+        "before": {
+          "type": "array",
+          "nullable": true
+        }
+      }
+    },
+    "DreamRemovedConclusion": {
+      "required": [
+        "content",
+        "id"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string",
+          "nullable": true,
+          "enum": [
+            "explicit",
+            "deductive",
+            "inductive",
+            "contradiction"
+          ]
+        },
+        "replaced_by": {
+          "type": "string",
+          "nullable": true
+        },
+        "specialist": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DreamRun": {
+      "required": [
+        "created_count",
+        "id",
+        "observed_id",
+        "observer_id",
+        "peer_card_updated",
+        "removed_count",
+        "started_at",
+        "status"
+      ],
+      "properties": {
+        "created_count": {
+          "type": "integer"
+        },
+        "dream_type": {
+          "type": "string",
+          "nullable": true
+        },
+        "finished_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "observed_id": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "peer_card_updated": {
+          "type": "boolean"
+        },
+        "pruned_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "removed_count": {
+          "type": "integer"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "trigger_reason": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DreamRunDetail": {
+      "required": [
+        "created",
+        "created_count",
+        "id",
+        "observed_id",
+        "observer_id",
+        "peer_card_updated",
+        "removed",
+        "removed_count",
+        "started_at",
+        "status"
+      ],
+      "properties": {
+        "created": {
+          "type": "array",
+          "ref": "DreamCreatedConclusion"
+        },
+        "created_count": {
+          "type": "integer"
+        },
+        "dream_type": {
+          "type": "string",
+          "nullable": true
+        },
+        "finished_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "observed_id": {
+          "type": "string"
+        },
+        "observer_id": {
+          "type": "string"
+        },
+        "peer_card": {
+          "nullable": true,
+          "ref": "DreamPeerCardChange"
+        },
+        "peer_card_updated": {
+          "type": "boolean"
+        },
+        "pruned_at": {
+          "type": "string",
+          "nullable": true
+        },
+        "removed": {
+          "type": "array",
+          "ref": "DreamRemovedConclusion"
+        },
+        "removed_count": {
+          "type": "integer"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "trigger_reason": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "DreamRunList": {
+      "required": [],
+      "properties": {
+        "observed_id": {
+          "type": "string",
+          "nullable": true
+        },
+        "observer_id": {
+          "type": "string",
           "nullable": true
         }
       }
@@ -1071,6 +1617,37 @@
         }
       }
     },
+    "Page_DreamRun_": {
+      "required": [
+        "items",
+        "page",
+        "pages",
+        "size",
+        "total"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "ref": "DreamRun"
+        },
+        "page": {
+          "type": "integer",
+          "min": 1
+        },
+        "pages": {
+          "type": "integer",
+          "min": 0
+        },
+        "size": {
+          "type": "integer",
+          "min": 1
+        },
+        "total": {
+          "type": "integer",
+          "min": 0
+        }
+      }
+    },
     "Page_Message_": {
       "required": [
         "items",
@@ -1261,6 +1838,7 @@
       "required": [
         "created_at",
         "id",
+        "uid",
         "workspace_id"
       ],
       "properties": {
@@ -1275,6 +1853,9 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "uid": {
+          "type": "string"
         },
         "workspace_id": {
           "type": "string"
@@ -1528,6 +2109,10 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "session_count": {
+          "type": "integer",
+          "nullable": true
         }
       }
     },
@@ -1546,7 +2131,28 @@
         }
       }
     },
+    "ScopeGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        }
+      }
+    },
     "ScopeSessionsAdd": {
+      "required": [
+        "session_ids"
+      ],
+      "properties": {
+        "session_ids": {
+          "type": "array",
+          "min": 1,
+          "max": 100
+        }
+      }
+    },
+    "ScopeSessionsRemove": {
       "required": [
         "session_ids"
       ],
@@ -1571,6 +2177,7 @@
         "created_at",
         "id",
         "is_active",
+        "uid",
         "workspace_id"
       ],
       "properties": {
@@ -1588,6 +2195,13 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "scopes": {
+          "type": "array",
+          "nullable": true
+        },
+        "uid": {
+          "type": "string"
         },
         "workspace_id": {
           "type": "string"
@@ -1867,7 +2481,8 @@
     "Workspace": {
       "required": [
         "created_at",
-        "id"
+        "id",
+        "uid"
       ],
       "properties": {
         "configuration": {
@@ -1881,6 +2496,9 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "uid": {
+          "type": "string"
         }
       }
     },
@@ -1999,6 +2617,22 @@
         },
         "query": {
           "type": "string"
+        },
+        "scope": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "WorkspaceSessionGet": {
+      "required": [],
+      "properties": {
+        "filters": {
+          "type": "object",
+          "nullable": true
+        },
+        "in_no_scope": {
+          "type": "boolean"
         },
         "scope": {
           "type": "string",

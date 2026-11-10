@@ -70,6 +70,18 @@ public sealed class CredentialEndpointTests
     }
 
     [Theory]
+    [InlineData("workspace_id=A&scope_id=team")]
+    [InlineData("workspace_id=A&scope_id=")]
+    public async Task ScopeId_Returns422InsteadOfIssuingAnUnscopedKey(string query)
+    {
+        using var host = new AuthHost();
+        var error = (await host.Send("POST", "/v3/keys?" + query, null, AuthHost.Key("admin"), 422)).GetProperty("detail")[0];
+        error.GetProperty("loc").EnumerateArray().Select(part => part.GetString()).ShouldBe(["query", "scope_id"]);
+        error.GetProperty("type").GetString().ShouldBe("unsupported");
+        error.GetProperty("msg").GetString().ShouldBe("scope_id is not supported in this Nachos version");
+    }
+
+    [Theory]
     [InlineData("{}")]
     [InlineData("""{"object_id":"x"}""")]
     [InlineData("""{"role":"Nachos.Workspace"}""")]

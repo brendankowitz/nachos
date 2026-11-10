@@ -33,6 +33,7 @@ namespace Nachos.Api.Json;
 [JsonSerializable(typeof(SessionCreate))]
 [JsonSerializable(typeof(SessionUpdate))]
 [JsonSerializable(typeof(ResourceGet))]
+[JsonSerializable(typeof(WorkspaceSessionGet))]
 [JsonSerializable(typeof(MessageUpdate))]
 [JsonSerializable(typeof(MessageBatchCreate))]
 [JsonSerializable(typeof(GrantCreate))]

@@ -104,6 +104,7 @@ internal static class InMemoryFilterEvaluator
             FilterColumns.SessionId => new AnyOf(conclusion.SessionName is { } session ? [session] : []),
             FilterColumns.CreatedAt => conclusion.CreatedAt,
             FilterColumns.Level => ConclusionLevelNames.Of(conclusion.Level),
+            FilterColumns.TimesDerived => (decimal)conclusion.TimesDerived,
             _ => throw UnknownColumn(column, ResourceKind.Conclusion),
         }));
 

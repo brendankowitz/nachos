@@ -20,7 +20,9 @@ namespace Nachos.Abstractions.Filtering;
 /// configuration; see <see cref="StrictJsonData"/>.</para>
 /// <para><b>Top level.</b> An object whose keys are AND-ed together. <c>AND</c>, <c>OR</c> and <c>NOT</c> (upper case)
 /// each take an array of filter objects; <c>NOT [c1…cn]</c> is <c>NOT (c1 OR … OR cn)</c>. Keys that are not a field
-/// of the resource are ignored (they match everything).</para>
+/// of the resource are ignored (they match everything), except a documented field Nachos does not filter on
+/// (<see cref="ResourceFields.UnsupportedFor"/>), which is a <see cref="RequestValidationException"/> located at
+/// <c>["body", "filters", …, key]</c>.</para>
 /// <para><b>Field values.</b> A scalar is equality, <c>null</c> is <see cref="FilterOp.IsNull"/>, <c>"*"</c> matches
 /// everything, a bare array is <see cref="FilterOp.In"/> (an empty one matches nothing, one holding <c>"*"</c>
 /// matches everything, and a <c>null</c> element also admits unset values), and an object holds operators from
@@ -34,6 +36,8 @@ namespace Nachos.Abstractions.Filtering;
 /// <see cref="decimal"/>; a non-integral number is rejected. A number beyond the <see cref="decimal"/> range can never
 /// equal a stored count, so <c>eq</c> matches nothing, <c>ne</c> everything, and <c>gt</c>/<c>gte</c>/<c>lt</c>/<c>lte</c>
 /// resolve to match-all or match-none by its sign; the parser folds that in, so the tree never holds such a value.
+/// <c>level</c> takes one of the four level names and allows <c>eq ne in</c>; a misspelled name is rejected rather than
+/// matching nothing. <c>times_derived</c> is a number like <c>token_count</c>.
 /// <c>created_at</c> takes ISO-8601 dates or date-times and is normalized to a UTC <see cref="DateTimeOffset"/>; a
 /// date-only value is UTC midnight and a value without an offset is taken as UTC. <c>is_active</c> takes real JSON
 /// booleans only. Text allows <c>eq ne in contains icontains</c>, numbers and timestamps <c>eq ne in gt gte lt lte</c>,
@@ -63,6 +67,9 @@ public static partial class FilterParser
     private const string Wildcard = "*";
 
     private static readonly JsonDocumentOptions StrictDocument = new() { AllowDuplicateProperties = false };
+
+    private static readonly string[] LevelNames =
+        [.. Enum.GetValues<Domain.ConclusionLevel>().Order().Select(Domain.ConclusionLevelNames.Of)];
 
     private static readonly HashSet<string> OperatorKeys =
         ["gt", "gte", "lt", "lte", "ne", "in", "contains", "icontains"];
@@ -133,12 +140,12 @@ public static partial class FilterParser
             throw new NachosValidationException($"Filters contain an invalid string: {ex.Message}", ex);
         }
 
-        var fields = ResourceFields.For(kind);
+        var fields = new Fields(ResourceFields.For(kind), ResourceFields.UnsupportedFor(kind));
         return root switch
         {
             null => null,
             JsonObject { Count: 0 } => null,
-            JsonObject obj => ParseObject(obj, fields),
+            JsonObject obj => ParseObject(obj, fields, ["body", "filters"]),
             _ => throw Invalid("Filters must be a JSON object."),
         };
     }
@@ -167,7 +174,10 @@ public static partial class FilterParser
         }
     }
 
-    private static FilterNode ParseObject(JsonObject obj, IReadOnlyDictionary<string, FieldDefinition> fields)
+    /// <summary>The resource's filterable fields and the documented ones it rejects.</summary>
+    private sealed record Fields(IReadOnlyDictionary<string, FieldDefinition> Known, IReadOnlySet<string> Unsupported);
+
+    private static FilterNode ParseObject(JsonObject obj, Fields fields, IReadOnlyList<object> path)
     {
         var children = new List<FilterNode>();
         foreach (var (key, value) in obj)
@@ -175,20 +185,24 @@ public static partial class FilterParser
             switch (key)
             {
                 case "AND":
-                    children.Add(Conjunction(ParseList(key, value, fields)));
+                    children.Add(Conjunction(ParseList(key, value, fields, path)));
                     break;
                 case "OR":
-                    var alternatives = ParseList(key, value, fields);
+                    var alternatives = ParseList(key, value, fields, path);
                     children.Add(alternatives.Count == 0 ? new FilterNode.MatchNone() : new FilterNode.Or(alternatives));
                     break;
                 case "NOT":
-                    var excluded = ParseList(key, value, fields);
+                    var excluded = ParseList(key, value, fields, path);
                     children.Add(excluded.Count == 0 ? new FilterNode.MatchAll() : new FilterNode.Not(excluded));
                     break;
                 default:
-                    if (fields.TryGetValue(key, out var field))
+                    if (fields.Known.TryGetValue(key, out var field))
                     {
                         children.Add(ParseField(key, field, value));
+                    }
+                    else if (fields.Unsupported.Contains(key))
+                    {
+                        throw RequestValidationException.Unsupported([.. path, key]);
                     }
 
                     break;
@@ -198,8 +212,7 @@ public static partial class FilterParser
         return Conjunction(children);
     }
 
-    private static List<FilterNode> ParseList(
-        string key, JsonNode? value, IReadOnlyDictionary<string, FieldDefinition> fields)
+    private static List<FilterNode> ParseList(string key, JsonNode? value, Fields fields, IReadOnlyList<object> path)
     {
         if (value is not JsonArray array)
         {
@@ -207,14 +220,14 @@ public static partial class FilterParser
         }
 
         var children = new List<FilterNode>(array.Count);
-        foreach (var element in array)
+        for (var index = 0; index < array.Count; index++)
         {
-            if (element is not JsonObject child)
+            if (array[index] is not JsonObject child)
             {
                 throw Invalid($"'{key}' must be an array of filter objects.");
             }
 
-            children.Add(ParseObject(child, fields));
+            children.Add(ParseObject(child, fields, [.. path, key, index]));
         }
 
         return children;
@@ -409,6 +422,9 @@ public static partial class FilterParser
             case FieldType.Boolean when kind is JsonValueKind.True or JsonValueKind.False:
                 return new Operand(JsonValue.Create(kind == JsonValueKind.True));
 
+            case FieldType.Level when kind == JsonValueKind.String && LevelNames.Contains(value.GetValue<string>()):
+                return new Operand(JsonValue.Create(value.GetValue<string>()));
+
             default:
                 throw Invalid($"Field '{wireName}' expects {Describe(field.Type)}.");
         }
@@ -420,6 +436,7 @@ public static partial class FilterParser
         FieldType.Number => "an integral number or an integer string",
         FieldType.Timestamp => "an ISO-8601 date or date-time string",
         FieldType.Boolean => "a boolean (true or false)",
+        FieldType.Level => "one of " + string.Join(", ", LevelNames),
         _ => "a different value",
     };
 

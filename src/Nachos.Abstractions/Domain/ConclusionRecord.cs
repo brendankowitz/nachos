@@ -11,7 +11,10 @@ namespace Nachos.Abstractions.Domain;
 /// <param name="SessionName">The session an explicit conclusion was stated in; null when it is not session-attributed.</param>
 /// <param name="TimesDerived">1 on insert; each corroboration adds one.</param>
 /// <param name="SourceIds">The public ids of the conclusions this one was reasoned from; empty for explicit ones.</param>
-/// <param name="InternalMetadata">Provenance never sent on the wire, such as <c>source_message_ids</c> and the prompt version.</param>
+/// <param name="InternalMetadata">
+/// Provenance such as the prompt version, never sent on the wire, except <c>source_message_ids</c>, which the wire
+/// <c>Conclusion</c> exposes.
+/// </param>
 public sealed record ConclusionRecord(
     string PublicId,
     string WorkspaceName,

@@ -78,11 +78,13 @@ These are specified and, where a route exists, return **501**:
 | --- | --- |
 | Reasoning | workspace and peer chat, workspace, peer and session search, session context and summaries |
 | Sessions | delete, clone, `messages/upload`; a create with nonempty `scopes` |
-| Scopes | create, list, get, status, and scope-session link, list, delete |
+| Scopes | create, list, get, status, and scope-session link, list, delete, remove |
 | Webhooks | list, create, test, delete |
-| Workspace ops | delete, `schedule_dream`, `jobs` |
+| Workspace ops | delete, `schedule_dream`, dream runs (list, get), `jobs` |
 
 The exact method and path pairs live in [`NotImplementedEndpoints.cs`](src/Nachos.Api/Endpoints/NotImplementedEndpoints.cs).
+
+Options on implemented routes that need a staged feature return **422** "... is not supported in this Nachos version" rather than being ignored: `cursor` pagination on every list route, `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list, and the conclusion filter fields `source_ids` and `source_message_ids`. A request that omits them, or sends `include_scopes=false`, `"scope": null` or `"in_no_scope": false`, is accepted.
 
 ## 🛠️ Quick start
 
