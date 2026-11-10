@@ -11,7 +11,7 @@ public sealed class DeletionOptions
     public const int MaxBatchSize = 4000;
 
     /// <summary>
-    /// The most rows one purge transaction counts and deletes, from 1 to <see cref="MaxBatchSize"/>; default 500. A removed
+    /// The most rows one purge transaction counts and deletes, from 1 to 4,000 (<see cref="MaxBatchSize"/>); default 500. A removed
     /// conclusion's own source rows go with it, uncounted.
     /// </summary>
     public int BatchSize { get; set; } = 500;

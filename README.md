@@ -16,7 +16,7 @@
 
 ---
 
-> **Status: pre-release source MVP (milestone M1).** No packages are published: no NuGet packages, no container images, no tagged release. Build it from this repository. The [documentation site](https://brendankowitz.github.io/nachos/) is published from `main`. Azure definitions in [`infra/`](infra) are validated offline only. The project is developed with AI agents under manual review, and it is a clean-room implementation of the [Honcho](https://honcho.dev) v3 API shape. No Honcho source is included; see [License](#-license) below.
+> **Status: pre-release source MVP (milestone M3).** No packages are published: no NuGet packages, no container images, no tagged release. Build it from this repository. The [documentation site](https://brendankowitz.github.io/nachos/) is published from `main`. Azure definitions in [`infra/`](infra) are validated offline only. The project is developed with AI agents under manual review, and it is a clean-room implementation of the [Honcho](https://honcho.dev) v3 API shape. No Honcho source is included; see [License](#-license) below.
 
 ---
 
@@ -26,7 +26,7 @@
 
 The same `INachosClient` surface is implemented in-process and over HTTP. Storage is either a non-durable in-memory provider or SQL Server, with the schema owned by a database project. Authentication fails closed unless you explicitly disable it for local development.
 
-Memory formation is in this milestone: a background worker turns messages into conclusions and peer representations. Dialectic chat, search, session context and summaries, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. The [documentation site](https://brendankowitz.github.io/nachos/) is built from [`docs/site`](docs/site).
+A background worker turns messages into conclusions, peer representations and rolling session summaries. Messages can be searched (vector and full-text, fused), a session context is assembled within a hard token budget, and sessions and workspaces are deleted by background jobs. Dialectic chat, dreaming, webhooks, scopes and MCP answer `501 Not Implemented`. The [design spec](docs/superpowers/specs/2026-10-07-nachos-design.md) describes that later end state. The [documentation site](https://brendankowitz.github.io/nachos/) is built from [`docs/site`](docs/site).
 
 ## ✨ What works today
 
@@ -43,10 +43,19 @@ Memory formation is in this milestone: a background worker turns messages into c
 - **Peer cards and representations.** Get and put a peer `card`; `POST .../peers/{id}/representation` and `GET .../peers/{id}/context` read what is known about a peer. `GET .../queue/status` reports pending work.
 - **Where the worker runs.** With SQL Server, `Nachos.Worker` is its own host; replicas share the queue through leases. With the in-memory provider the API runs the loops itself, because another process cannot see in-memory state.
 - **Azure OpenAI or fake AI.** Set `AzureOpenAI:Endpoint` to use your own Azure OpenAI resource with managed identity or `az login` (`DefaultAzureCredential`; never a key). Without an endpoint every local (Development) host runs the **fake AI**, which copies each message into a conclusion with a deterministic embedding. It exercises the pipeline offline and is **not a memory-quality mode**. Outside Development a host without an endpoint refuses to start unless `Nachos:Ai:Mode=Fake` asks for the fake AI explicitly.
-- **Local embeddings.** `Nachos:Ai:Embeddings=Local` embeds in-process on the CPU with a small ONNX model (`bge-small-en-v1.5` by default, or `all-minilm-l6-v2`), fetched once with `nachos models fetch`, so embeddings need no paid service; chat still needs Azure OpenAI or the fake AI. A database is stamped with one embedding model and hosts refuse another until `nachos embeddings reset` re-embeds it. See the [local embeddings guide](docs/site/src/content/docs/guides/local-embeddings.mdx).
-- **SQL Server needs the M2 schema.** The schema version stays `1`, so a database made by an earlier build lacks the new tables. Recreate a pre-release database, or run `nachos schema report` then `schema upgrade --approve-reviewed`.
+- **Local embeddings.** `Nachos:Ai:Embeddings=Local` embeds in-process on the CPU with a small ONNX model (`bge-small-en-v1.5` by default, or `all-minilm-l6-v2`), fetched once with `nachos models fetch`, so embeddings need no paid service; chat still needs Azure OpenAI or the fake AI. A database is stamped with one embedding model and hosts refuse another until `nachos embeddings reset` re-embeds it. See the [local embeddings guide](https://brendankowitz.github.io/nachos/guides/local-embeddings/).
+- **SQL Server needs the M3 schema.** The schema version stays `1`, so a database made by an earlier build lacks the new tables. Recreate a pre-release database, or run `nachos schema report` then `schema upgrade --approve-reviewed`.
 
 See [Memory formation](https://brendankowitz.github.io/nachos/concepts/memory-formation/) and [Run the worker](https://brendankowitz.github.io/nachos/guides/run-the-worker/).
+
+### 🔎 Recall and deletion
+
+- **Hybrid search.** `POST .../search` on a workspace, a session or a peer (the messages the peer could have seen while it was a member). Vector and lexical results are fused with reciprocal rank fusion. A message is chunked when it is stored and embedded by the worker's reconciler; until then it is still found by its words. On SQL Server the lexical half uses a full-text index that Nachos creates at runtime where Full-Text Search is installed, and falls back to `LIKE` where it is not. Without an embedding model, search is lexical only. Vector search is exact; the [M3 benchmark](research/m3-search-benchmark.md) records its cost at scale.
+- **Summaries.** The worker keeps a short summary every 20 messages and a long one every 60 per session, cumulatively. `GET .../sessions/{id}/summaries` reads them.
+- **Session context within a hard budget.** `GET .../sessions/{id}/context` returns the newest messages, the best summary that fits and, with `peer_target`, the peer's representation and card, and **never exceeds `tokens`** (1 to 100,000, counted as content tokens).
+- **Deletion as background jobs.** `DELETE` on a session or workspace answers `202`, blocks writes at once (`409` while it runs), and a resumable job removes the data. `GET .../jobs` (a Nachos extension) lists the jobs with their status and error.
+
+See [Search](https://brendankowitz.github.io/nachos/concepts/search/), [Session context](https://brendankowitz.github.io/nachos/concepts/session-context/) and [Delete sessions and workspaces](https://brendankowitz.github.io/nachos/guides/delete-data/).
 
 ### 🧩 Embeddable .NET library
 
@@ -76,15 +85,17 @@ These are specified and, where a route exists, return **501**:
 
 | Area | Staged surface |
 | --- | --- |
-| Reasoning | workspace and peer chat, workspace, peer and session search, session context and summaries |
-| Sessions | delete, clone, `messages/upload`; a create with nonempty `scopes` |
+| Reasoning | workspace and peer chat |
+| Sessions | clone, `messages/upload`; a create with nonempty `scopes` |
 | Scopes | create, list, get, status, and scope-session link, list, delete, remove |
 | Webhooks | list, create, test, delete |
-| Workspace ops | delete, `schedule_dream`, dream runs (list, get), `jobs` |
+| Workspace ops | `schedule_dream`, dream runs (list, get) |
 
 The exact method and path pairs live in [`NotImplementedEndpoints.cs`](src/Nachos.Api/Endpoints/NotImplementedEndpoints.cs).
 
-Options on implemented routes that need a staged feature return **422** "... is not supported in this Nachos version" rather than being ignored: `cursor` pagination on every list route, `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list, and the conclusion filter fields `source_ids` and `source_message_ids`. A request that omits them, or sends `include_scopes=false`, `"scope": null` or `"in_no_scope": false`, is accepted.
+Options on implemented routes that need a staged feature return **422** "... is not supported in this Nachos version" rather than being ignored: `cursor` pagination on every list route (including `jobs`), `scope_id` on `POST /v3/keys`, `include_scopes`, `scope` and `in_no_scope` on the session list, and the conclusion filter fields `source_ids` and `source_message_ids`. A request that omits them, or sends `include_scopes=false`, `"scope": null` or `"in_no_scope": false`, is accepted. Any `scope` on workspace search, session context or a peer representation is also a `422`, until scopes land.
+
+The conclusion filter field `times_derived` is a Nachos extension: Honcho's public filter documentation does not list it.
 
 ## 🛠️ Quick start
 
@@ -142,6 +153,13 @@ Conclusions appear on their own: with the in-memory provider the API also runs t
 ```bash
 curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/conclusions/list   -H "Content-Type: application/json" -d '{}'
 curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/peers/alice/representation   -H "Content-Type: application/json" -d '{}'
+```
+
+Search and session context read the messages back. With the in-memory provider a message is found by its words at once; a short summary appears after 20 messages in a session.
+
+```bash
+curl -s -X POST http://127.0.0.1:5080/v3/workspaces/demo/sessions/s1/search -H "Content-Type: application/json" -d '{"query":"hello"}'
+curl -s "http://127.0.0.1:5080/v3/workspaces/demo/sessions/s1/context?tokens=500"
 ```
 
 To call an authenticated server, configure a signing key and send a NachosKey minted with that same secret. See the [authentication guide](https://brendankowitz.github.io/nachos/guides/auth/).
@@ -256,7 +274,7 @@ flowchart LR
 | [`Nachos.Api`](src/Nachos.Api) | ASP.NET Core minimal API for `/v3`, authentication and idempotency. |
 | [`Nachos.Client`](src/Nachos.Client) | HTTP implementation of `INachosClient`. |
 | [`Nachos.Cli`](src/Nachos.Cli) | The `nachos` bootstrap command line. |
-| [`Nachos.Worker`](src/Nachos.Worker) | Background host for the queue consumer (Deriver) and the reconciler; SQL Server only. |
+| [`Nachos.Worker`](src/Nachos.Worker) | Background host for the queue consumer (Deriver, summarizer, deletion jobs) and the reconciler; SQL Server only. |
 | [`Nachos.AppHost`](src/Nachos.AppHost) | Aspire local-development host (SQL Server 2025, the API and the worker). |
 | [`Nachos.ServiceDefaults`](src/Nachos.ServiceDefaults) | OpenTelemetry, health checks, shared service defaults. |
 | [`infra/`](infra), [`azure.yaml`](azure.yaml) | Bicep and `azd` definitions for Azure Container Apps and Azure SQL. |
