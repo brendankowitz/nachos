@@ -2,6 +2,7 @@ using System.Data;
 using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using Microsoft.Data.SqlTypes;
+using Nachos.Abstractions.Domain;
 
 namespace Nachos.Benchmarks;
 
@@ -16,13 +17,10 @@ internal sealed class Seeder(string connectionString, Corpus corpus, int seed)
     private const int BatchSize = 10_000;
 
     private readonly Random _random = new(seed);
-    private readonly float[] _vector = new float[Corpus.Dimensions];
+    private readonly float[] _vector = new float[VectorSpace.Dimensions];
     private readonly DateTimeOffset _start = DateTimeOffset.UtcNow;
     private long _nextMessageId = 1;
-    private long _created;
-
-    /// <summary>Messages written so far, in every workspace.</summary>
-    public long Created => _created;
+    private long _messagesWritten;
 
     /// <summary>Appends messages to <paramref name="workspace"/> until it holds <paramref name="target"/>.</summary>
     public async Task SeedAsync(SeedWorkspace workspace, long target, CancellationToken ct)
@@ -90,7 +88,7 @@ internal sealed class Seeder(string connectionString, Corpus corpus, int seed)
             var seq = ++session.LastSeq;
             var peer = seq % 2 == 0 ? session.SecondPeerId : session.FirstPeerId;
             var id = _nextMessageId++;
-            var createdAt = _start.AddSeconds(_created++);
+            var createdAt = _start.AddSeconds(_messagesWritten++);
             var words = _random.Next(30, 71);
             var text = corpus.Text(_random, words);
             messages.Rows.Add(id, workspace.Id, session.Id, peer, $"bm{id:x20}", seq, text, words * 2, "{}", "{}", createdAt);

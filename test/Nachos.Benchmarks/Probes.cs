@@ -51,11 +51,26 @@ internal sealed class Probes(string connectionString)
             plan is null ? "" : IndexOperations(plan));
     }
 
-    /// <summary>Waits until the full-text index has no pending changes and no population running.</summary>
-    public async Task WaitForFullTextAsync(CancellationToken ct)
+    /// <summary>Whether the server has Full-Text Search (<c>IsFullTextInstalled</c> = 1; NULL counts as not installed).</summary>
+    public async Task<bool> IsFullTextInstalledAsync(CancellationToken ct)
     {
+        await using var connection = await OpenAsync(ct);
+        await using var command = new SqlCommand("SELECT ISNULL(CAST(SERVERPROPERTY('IsFullTextInstalled') AS int), 0)", connection);
+        return (int)(await command.ExecuteScalarAsync(ct))! == 1;
+    }
+
+    /// <summary>Waits until the full-text index has no pending changes and no population running.</summary>
+    /// <exception cref="TimeoutException">It has not caught up within <paramref name="deadline"/>.</exception>
+    public async Task WaitForFullTextAsync(TimeSpan deadline, CancellationToken ct)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         while (true)
         {
+            if (clock.Elapsed > deadline)
+            {
+                throw new TimeoutException($"The full-text index still had pending changes after {deadline}.");
+            }
+
             await using var connection = await OpenAsync(ct);
             await using var command = new SqlCommand(
                 """

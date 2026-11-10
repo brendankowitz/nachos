@@ -32,7 +32,7 @@ It needs Docker and a lot of disk: 1M messages is about 1.5M vectors, roughly 9 
 container. Do not run it beside another Testcontainers run.
 
 ```powershell
-dotnet run --project test/Nachos.Benchmarks -c Release -- --memory-gb 10
+dotnet run --project test/Nachos.Benchmarks -c Release -- --memory-gb 12
 dotnet run --project test/Nachos.Benchmarks -c Release -- --scales 100000,250000 --queries 50 --budget-seconds 30
 ```
 
@@ -40,7 +40,13 @@ dotnet run --project test/Nachos.Benchmarks -c Release -- --scales 100000,250000
 | --- | --- | --- |
 | `--scales` | `100000,250000,500000,1000000` | Ascending message counts of the main workspace; each step adds to the previous one. |
 | `--queries` | `200` | The most queries per series. |
-| `--budget-seconds` | `60` | A series stops after this long, once it has run 10 queries. |
-| `--memory-gb` | `10` | The container's memory cap; SQL Server gets 1 GB less. |
-| `--connection` | (none) | Use this server instead of starting a container. The benchmark creates its own database there. |
+| `--search-budget-seconds` | `3600` | The `W/search` and `S/search` series stop after this long, so they normally reach `--queries`. |
+| `--budget-seconds` | `60` | Every other series stops after this long, once it has run 10 queries. |
+| `--memory-gb` | `12` | The container's memory cap; SQL Server's own limit is 2 GB less, leaving room for the full-text daemon. |
+| `--connection` | (none) | Use this server instead of starting a container. The benchmark creates a `nachos_bench_<timestamp>` database there and **leaves it behind**; drop it yourself when you are done. |
 | `--out` | `artifacts/benchmarks` | Where the report goes. |
+
+A query that hits the 30 s command timeout counts as 30,000 ms in the percentiles and in the `timeouts` column. A series
+of fewer than 50 queries is marked "indicative only". The full-text series are skipped (and the report says so) on a
+server without Full-Text Search; otherwise each one first checks that the index is ready, and the waits for the index
+give up after 90 minutes.

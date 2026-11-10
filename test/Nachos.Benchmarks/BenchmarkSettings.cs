@@ -2,14 +2,24 @@ using System.Globalization;
 
 namespace Nachos.Benchmarks;
 
-/// <summary>The command line: <c>[--scales 100000,250000,500000,1000000] [--queries 200] [--budget-seconds 60]
-/// [--memory-gb 10] [--connection &lt;server connection string&gt;] [--out &lt;directory&gt;]</c>.</summary>
+/// <summary>The command line; see README.md for the options.</summary>
+/// <param name="SearchBudget">The time budget of the <c>W/search</c> and <c>S/search</c> series, which should reach
+/// <see cref="Queries"/>.</param>
+/// <param name="Budget">The time budget of every other series.</param>
 internal sealed record BenchmarkSettings(
-    IReadOnlyList<long> Scales, int Queries, TimeSpan Budget, int MemoryGb, string? Connection, string OutputDirectory)
+    IReadOnlyList<long> Scales,
+    int Queries,
+    TimeSpan SearchBudget,
+    TimeSpan Budget,
+    int MemoryGb,
+    string? Connection,
+    string OutputDirectory)
 {
     public const int Seed = 20261109;
 
-    /// <exception cref="ArgumentException">An option is unknown, lacks its value, or has a value out of range.</exception>
+    /// <exception cref="ArgumentException">
+    /// An option is unknown, lacks its value, is not a number where one is expected, or is out of range.
+    /// </exception>
     public static BenchmarkSettings Parse(string[] args)
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -23,15 +33,16 @@ internal sealed record BenchmarkSettings(
             values[args[i][2..]] = args[i + 1];
         }
 
-        var unknown = values.Keys.Except(["scales", "queries", "budget-seconds", "memory-gb", "connection", "out"]).ToList();
+        string[] known = ["scales", "queries", "search-budget-seconds", "budget-seconds", "memory-gb", "connection", "out"];
+        var unknown = values.Keys.Except(known).ToList();
         if (unknown.Count > 0)
         {
             throw new ArgumentException($"Unknown option(s): {string.Join(", ", unknown)}.");
         }
 
-        var scales = values.TryGetValue("scales", out var scaleText)
-            ? scaleText.Split(',').Select(s => long.Parse(s, CultureInfo.InvariantCulture)).ToArray()
-            : [100_000L, 250_000L, 500_000L, 1_000_000L];
+        long[] scales = values.TryGetValue("scales", out var scaleText)
+            ? [.. scaleText.Split(',').Select(text => ParseLong("scales", text))]
+            : [100_000, 250_000, 500_000, 1_000_000];
         if (scales.Length == 0 || scales.Any(s => s < 1) || !scales.SequenceEqual(scales.Order()))
         {
             throw new ArgumentException("--scales must be positive and ascending: each step adds messages to the previous one.");
@@ -39,16 +50,24 @@ internal sealed record BenchmarkSettings(
 
         var settings = new BenchmarkSettings(
             scales,
-            Int(values, "queries", 200),
-            TimeSpan.FromSeconds(Int(values, "budget-seconds", 60)),
-            Int(values, "memory-gb", 10),
+            ParseInt(values, "queries", 200),
+            TimeSpan.FromSeconds(ParseInt(values, "search-budget-seconds", 3_600)),
+            TimeSpan.FromSeconds(ParseInt(values, "budget-seconds", 60)),
+            ParseInt(values, "memory-gb", 12),
             values.GetValueOrDefault("connection"),
             values.GetValueOrDefault("out") ?? Path.Combine("artifacts", "benchmarks"));
-        return settings.Queries < 1 || settings.MemoryGb < 4
-            ? throw new ArgumentException("--queries must be at least 1 and --memory-gb at least 4.")
+        return settings.Queries < 1 || settings.MemoryGb < 6
+            ? throw new ArgumentException("--queries must be at least 1 and --memory-gb at least 6.")
             : settings;
     }
 
-    private static int Int(Dictionary<string, string> values, string name, int fallback) =>
-        values.TryGetValue(name, out var text) ? int.Parse(text, CultureInfo.InvariantCulture) : fallback;
+    private static int ParseInt(Dictionary<string, string> values, string name, int fallback) =>
+        !values.TryGetValue(name, out var text) ? fallback
+        : int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value
+        : throw new ArgumentException($"--{name} must be a whole number; got '{text}'.");
+
+    private static long ParseLong(string name, string text) =>
+        long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : throw new ArgumentException($"--{name} must be whole numbers; got '{text}'.");
 }

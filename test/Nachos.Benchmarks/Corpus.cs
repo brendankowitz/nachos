@@ -8,8 +8,6 @@ namespace Nachos.Benchmarks;
 /// </summary>
 internal sealed class Corpus
 {
-    public const int Dimensions = 1536;
-
     private static readonly string[] Syllables =
         ["ka", "lo", "mi", "ne", "su", "ta", "ri", "po", "ve", "zu", "ba", "de", "fi", "go", "hu", "ja", "ke", "lu", "mo", "ni"];
 

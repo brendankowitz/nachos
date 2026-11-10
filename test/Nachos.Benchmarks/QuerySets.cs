@@ -1,3 +1,5 @@
+using Nachos.Abstractions.Domain;
+
 namespace Nachos.Benchmarks;
 
 /// <summary>
@@ -25,7 +27,7 @@ internal sealed class QuerySets
         _peers = [.. Enumerable.Range(0, count).Select(_ => $"p{random.Next(peerCount)}")];
         _vectors = [.. Enumerable.Range(0, count).Select(_ =>
         {
-            var vector = new float[Corpus.Dimensions];
+            var vector = new float[VectorSpace.Dimensions];
             Corpus.FillUnitVector(random, vector);
             return vector;
         })];

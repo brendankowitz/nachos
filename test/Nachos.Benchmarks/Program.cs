@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -27,6 +28,7 @@ const int Peers = 50;
 const int SmallMessages = 2_000;
 const int Limit = MessageSearchOptions.DefaultLimit;
 const int Take = 4 * Limit;
+var fullTextDeadline = TimeSpan.FromMinutes(90);
 
 MsSqlContainer? container = null;
 var server = settings.Connection;
@@ -40,6 +42,7 @@ try
 {
     var connectionString = await CreateDatabaseAsync(server, ct);
     var probes = new Probes(connectionString);
+    var fullTextInstalled = await probes.IsFullTextInstalledAsync(ct);
     var report = new StringBuilder();
     Directory.CreateDirectory(settings.OutputDirectory);
     var reportPath = Path.Combine(settings.OutputDirectory, $"m3-search-{DateTime.UtcNow:yyyyMMdd-HHmmss}.md");
@@ -48,8 +51,11 @@ try
             $"{GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024):N0} MB available to .NET, {RuntimeInformation.FrameworkDescription}")
         .AppendLine(CultureInfo.InvariantCulture, $"- Server: {await probes.ServerAsync(ct)}")
         .AppendLine(CultureInfo.InvariantCulture, $"- Container memory cap: {(container is null ? "none (external server)" : $"{settings.MemoryGb} GB")}")
-        .AppendLine(CultureInfo.InvariantCulture, $"- Series: up to {settings.Queries} sequential queries or {settings.Budget.TotalSeconds:N0} s each (at least 10), " +
-            $"after 2 warm-up queries; limit = {Limit} (each retrieval takes {Take}); 30 s command timeout")
+        .AppendLine(CultureInfo.InvariantCulture, $"- Series: up to {settings.Queries} sequential queries after 2 warm-ups; W/search and S/search " +
+            $"stop after {settings.SearchBudget.TotalSeconds:N0} s, the others after {settings.Budget.TotalSeconds:N0} s (at least 10 queries); " +
+            $"limit = {Limit} (each retrieval takes {Take}). A query that hits the 30 s command timeout counts as 30,000 ms. " +
+            $"A series of fewer than {SeriesRunner.IndicativeBelow} queries is marked indicative only.")
+        .AppendLine(fullTextInstalled ? "" : "- **Full-Text Search is not installed: the fts series were skipped.**")
         .AppendLine();
 
     // Two containers over one database: "fts" runs the hosted services (the full-text index maintenance, so it searches with
@@ -57,6 +63,7 @@ try
     // with the LIKE fallback, exactly as on a server without Full-Text Search.
     await using var like = BuildServices(connectionString);
     await using var fts = BuildServices(connectionString);
+    var ftsState = fts.GetRequiredService<FullTextIndexState>();
     var corpus = new Corpus(5_000);
     var main = await CreateWorkspaceAsync(like, connectionString, Main, Sessions, Peers, ct);
     var small = await CreateWorkspaceAsync(like, connectionString, Small, 1, 2, ct);
@@ -74,13 +81,12 @@ try
     {
         Console.WriteLine($"Scale {scale:N0}");
         await seeder.SeedAsync(main, scale, ct);
-        while (!fts.GetRequiredService<FullTextIndexState>().IsReady)
+        if (fullTextInstalled)
         {
-            Console.WriteLine("  waiting for the full-text index to be ready");
-            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            await WaitForReadyAsync(ct);
+            await probes.WaitForFullTextAsync(fullTextDeadline, ct);
         }
 
-        await probes.WaitForFullTextAsync(ct);
         await MeasureAsync(scale, report, ct);
         await File.WriteAllTextAsync(reportPath, report.ToString(), ct);
         Console.WriteLine($"  results so far: {Path.GetFullPath(reportPath)}");
@@ -93,30 +99,54 @@ try
 
     Console.WriteLine(report);
 
+    async Task WaitForReadyAsync(CancellationToken token)
+    {
+        var clock = Stopwatch.StartNew();
+        while (!ftsState.IsReady)
+        {
+            if (clock.Elapsed > fullTextDeadline)
+            {
+                throw new TimeoutException($"The full-text index was not ready within {fullTextDeadline}.");
+            }
+
+            Console.WriteLine("  waiting for the full-text index to be ready");
+            await Task.Delay(TimeSpan.FromSeconds(10), token);
+        }
+    }
+
+    // An fts series run while the index is not ready would silently measure LIKE instead.
+    Task<SeriesResult> RunAsync(
+        string name, string mode, TimeSpan budget, Func<int, CancellationToken, Task> query, CancellationToken token) =>
+        mode == "fts" && !ftsState.IsReady
+            ? throw new InvalidOperationException($"The full-text index stopped being ready before '{name}'.")
+            : runner.RunAsync(name, budget, query, token);
+
     async Task MeasureAsync(long scale, StringBuilder text, CancellationToken token)
     {
         await using var ftsScope = fts.CreateAsyncScope();
         await using var likeScope = like.CreateAsyncScope();
-        var clients = new[] { ("fts", ftsScope.ServiceProvider), ("like", likeScope.ServiceProvider) };
+        (string Mode, IServiceProvider Provider)[] clients = fullTextInstalled
+            ? [("fts", ftsScope.ServiceProvider), ("like", likeScope.ServiceProvider)]
+            : [("like", likeScope.ServiceProvider)];
         var results = new List<SeriesResult>();
 
         foreach (var (mode, provider) in clients)
         {
             var client = provider.GetRequiredService<INachosClient>();
-            results.Add(await runner.RunAsync($"W/search ({mode})", (i, c) =>
+            results.Add(await RunAsync($"W/search ({mode})", mode, settings.SearchBudget, (i, c) =>
                 client.SearchWorkspaceAsync(Main, new WorkspaceMessageSearchOptions(queries.Text(i), Limit), c), token));
-            results.Add(await runner.RunAsync($"S/search ({mode})", (i, c) =>
+            results.Add(await RunAsync($"S/search ({mode})", mode, settings.SearchBudget, (i, c) =>
                 client.SearchSessionAsync(Main, queries.Session(i), new MessageSearchOptions(queries.Text(i), Limit), c), token));
-            results.Add(await runner.RunAsync($"P/search ({mode})", (i, c) =>
+            results.Add(await RunAsync($"P/search ({mode})", mode, settings.Budget, (i, c) =>
                 client.SearchPeerAsync(Main, queries.Peer(i), new MessageSearchOptions(queries.Text(i), Limit), c), token));
         }
 
-        var store = ftsScope.ServiceProvider.GetRequiredService<IMemoryStore>();
-        results.Add(await runner.RunAsync("vector, workspace", (i, c) =>
+        var store = likeScope.ServiceProvider.GetRequiredService<IMemoryStore>();
+        results.Add(await runner.RunAsync("vector, workspace", settings.Budget, (i, c) =>
             store.Search.VectorAsync(Request(Main, new MessageSearchScope.Workspace()), queries.Vector(i), Take, c), token));
-        results.Add(await runner.RunAsync("vector, session", (i, c) =>
+        results.Add(await runner.RunAsync("vector, session", settings.Budget, (i, c) =>
             store.Search.VectorAsync(Request(Main, new MessageSearchScope.Session(queries.Session(i))), queries.Vector(i), Take, c), token));
-        results.Add(await runner.RunAsync("vector, peer", (i, c) =>
+        results.Add(await runner.RunAsync("vector, peer", settings.Budget, (i, c) =>
             store.Search.VectorAsync(Request(Main, new MessageSearchScope.PeerPerspective(queries.Peer(i))), queries.Vector(i), Take, c), token));
 
         foreach (var (mode, provider) in clients)
@@ -124,15 +154,15 @@ try
             var search = provider.GetRequiredService<IMemoryStore>().Search;
             foreach (var (label, terms) in queries.TermSets)
             {
-                results.Add(await runner.RunAsync($"lexical {label}, workspace ({mode})", (i, c) =>
+                results.Add(await RunAsync($"lexical {label}, workspace ({mode})", mode, settings.Budget, (i, c) =>
                     search.LexicalAsync(Request(Main, new MessageSearchScope.Workspace()), terms[i % terms.Count], Take, c), token));
             }
 
-            results.Add(await runner.RunAsync($"lexical 1 common term, {SmallMessages:N0}-message workspace ({mode})", (i, c) =>
-                search.LexicalAsync(Request(Small, new MessageSearchScope.Workspace()), [queries.Common(i)], Take, c), token));
+            results.Add(await RunAsync($"lexical 1 common term, {SmallMessages:N0}-message workspace ({mode})", mode, settings.Budget,
+                (i, c) => search.LexicalAsync(Request(Small, new MessageSearchScope.Workspace()), [queries.Common(i)], Take, c), token));
         }
 
-        results.Add(await runner.RunAsync("reconciler ListUnchunkedMessagesAsync(500), nothing unchunked", (_, c) =>
+        results.Add(await runner.RunAsync("reconciler ListUnchunkedMessagesAsync(500), nothing unchunked", settings.Budget, (_, c) =>
             store.Embeddings.ListUnchunkedMessagesAsync(500, c), token));
 
         text.AppendLine(CultureInfo.InvariantCulture, $"## {scale:N0} messages in the main workspace").AppendLine()
@@ -147,19 +177,23 @@ try
         foreach (var r in results)
         {
             var s = r.Statement;
+            var name = r.IsIndicative ? $"{r.Name}, indicative only (n < {SeriesRunner.IndicativeBelow})" : r.Name;
             text.AppendLine(CultureInfo.InvariantCulture,
-                $"| {r.Name} | {r.Count} | {r.Failures} | {r.P50Ms:N1} | {r.P95Ms:N1} | {r.MaxMs:N1} | {s?.LogicalReads:N0} | {s?.CpuMs:N1} | {s?.Dop} | {s?.IndexOperations} |");
+                $"| {name} | {r.Count} | {r.Timeouts} | {r.P50Ms:N1} | {r.P95Ms:N1} | {r.MaxMs:N1} | {s?.LogicalReads:N0} | {s?.CpuMs:N1} | {s?.Dop} | {s?.IndexOperations} |");
         }
 
-        text.AppendLine().AppendLine("| CONTAINSTABLE condition | rows, all workspaces | rows in the main workspace | rows in the small workspace |")
-            .AppendLine("| --- | ---: | ---: | ---: |");
-        IReadOnlyList<IReadOnlyList<string>> common = [[queries.Common(0)]];
-        foreach (var (label, terms) in queries.TermSets.Prepend(("1 common term", common)))
+        if (fullTextInstalled)
         {
-            var condition = string.Join(" OR ", terms[0].Select(term => $"\"{term}*\""));
-            var (all, inMain) = await probes.FullTextCandidatesAsync(condition, main.Id, token);
-            var (_, inSmall) = await probes.FullTextCandidatesAsync(condition, small.Id, token);
-            text.AppendLine(CultureInfo.InvariantCulture, $"| {label}: `{condition}` | {all:N0} | {inMain:N0} | {inSmall:N0} |");
+            text.AppendLine().AppendLine("| CONTAINSTABLE condition | rows, all workspaces | rows in the main workspace | rows in the small workspace |")
+                .AppendLine("| --- | ---: | ---: | ---: |");
+            IReadOnlyList<IReadOnlyList<string>> common = [[queries.Common(0)]];
+            foreach (var (label, terms) in queries.TermSets.Prepend(("1 common term", common)))
+            {
+                var condition = string.Join(" OR ", terms[0].Select(term => $"\"{term}*\""));
+                var (all, inMain) = await probes.FullTextCandidatesAsync(condition, main.Id, token);
+                var (_, inSmall) = await probes.FullTextCandidatesAsync(condition, small.Id, token);
+                text.AppendLine(CultureInfo.InvariantCulture, $"| {label}: `{condition}` | {all:N0} | {inMain:N0} | {inSmall:N0} |");
+            }
         }
 
         text.AppendLine();
@@ -199,10 +233,11 @@ static async Task<MsSqlContainer> StartContainerAsync(int memoryGb, Cancellation
         .Build();
     await image.CreateAsync(ct);
 
-    // The container's cgroup limit is what protects the host; SQL Server is told about it with 1 GB of headroom.
+    // The cgroup limit is what protects the host. SQL Server gets 2 GB less, which leaves room for the full-text daemon
+    // (fdhost) and the rest of the container outside the engine's own memory manager.
     var bytes = memoryGb * 1024L * 1024 * 1024;
     var container = new MsSqlBuilder(image)
-        .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", ((memoryGb - 1) * 1024).ToString(CultureInfo.InvariantCulture))
+        .WithEnvironment("MSSQL_MEMORY_LIMIT_MB", ((memoryGb - 2) * 1024).ToString(CultureInfo.InvariantCulture))
         .WithCreateParameterModifier(parameters =>
         {
             parameters.HostConfig ??= new Docker.DotNet.Models.HostConfig();
