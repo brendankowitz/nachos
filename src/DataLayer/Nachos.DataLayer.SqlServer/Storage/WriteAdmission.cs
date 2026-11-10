@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Domain;
@@ -16,7 +17,11 @@ namespace Nachos.DataLayer.SqlServer.Storage;
 /// child rows. A worker commit takes its lease row first. A deletion job step takes its own lease row and, when it fences
 /// other work, every other lease row it bumps before any parent row, so it never waits for a lease while holding a parent:
 /// otherwise a worker holding its lease and waiting for the workspace's S, queued behind an acceptance's X that waits for
-/// the job's S, would close a cycle. Acceptance never touches lease rows.
+/// the job's S, would close a cycle. Between its lease rows and the parents, a job step reads its own deletion item under S
+/// to prove it still open: a claimer's update lock on it is compatible with S, and the one writer that closes it (a
+/// workspace job's cancel step, superseding it) takes every lease row it bumps before it, so it never waits for one
+/// after. Acceptance never touches
+/// lease rows.
 /// </para>
 /// <para>
 /// Shared locks come from <c>WITH (REPEATABLEREAD)</c> alone, which locks even under read committed snapshot, never
@@ -218,40 +223,42 @@ internal static class WriteAdmission
     /// <summary>
     /// The barrier of a deletion job's cancel and purge steps (spec §13.1, the deletion-maintenance exemption): S on the
     /// workspace row, then, for a session target, S on the session row, both held to commit; the target must be being
-    /// deleted by one of the lease's items. The caller already holds its lease row (and any other lease row it takes), so
+    /// deleted by one of the lease's items, still open (read under S before the parent rows). The caller already holds its lease row (and any other lease row it takes), so
     /// this runs after every lease row of the transaction.
     /// </summary>
     /// <exception cref="LeaseLostException">The target is gone, not being deleted, or being deleted by another item.</exception>
     /// <exception cref="InvalidOperationException">No transaction is open on <paramref name="db"/>.</exception>
     public static async Task AdmitDeletionJobAsync(NachosDbContext db, WorkLease lease, DeletionScope scope, CancellationToken ct)
     {
+        var open = await OpenItemsAsync(db, lease, ct);
         if (scope.SessionId is not { } sessionId)
         {
-            RequireJob(await ReadParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), lease);
+            RequireJob(await ReadParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), open, lease);
             return;
         }
 
         _ = await ReadParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct) ?? throw new LeaseLostException(lease.WorkUnitKey);
-        RequireJob(await ReadParentAsync(db, SessionsTable, sessionId, ct), lease);
+        RequireJob(await ReadParentAsync(db, SessionsTable, sessionId, ct), open, lease);
     }
 
     /// <summary>
     /// The barrier of a deletion job's removal: for a session target, S on the workspace row and then X on the session row;
     /// for a workspace target, X on the workspace row. Each X is taken directly by an <c>UPDATE</c>, never S first. The
-    /// target must be being deleted by one of the lease's items. The caller already holds its lease row.
+    /// target must be being deleted by one of the lease's items, still open (read under S before the parent rows). The caller already holds its lease row.
     /// </summary>
     /// <exception cref="LeaseLostException">The target is gone, not being deleted, or being deleted by another item.</exception>
     /// <exception cref="InvalidOperationException">No transaction is open on <paramref name="db"/>.</exception>
     public static async Task LockDeletionTargetAsync(NachosDbContext db, WorkLease lease, DeletionScope scope, CancellationToken ct)
     {
+        var open = await OpenItemsAsync(db, lease, ct);
         if (scope.SessionId is not { } sessionId)
         {
-            RequireJob(await LockParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), lease);
+            RequireJob(await LockParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct), open, lease);
             return;
         }
 
         _ = await ReadParentAsync(db, WorkspacesTable, scope.WorkspaceId, ct) ?? throw new LeaseLostException(lease.WorkUnitKey);
-        RequireJob(await LockParentAsync(db, SessionsTable, sessionId, ct), lease);
+        RequireJob(await LockParentAsync(db, SessionsTable, sessionId, ct), open, lease);
     }
 
     public static ConflictException WorkspaceDeleting() => new("workspace is being deleted");
@@ -359,10 +366,28 @@ internal static class WriteAdmission
             .SingleOrDefault();
     }
 
-    /// <exception cref="LeaseLostException">The parent is not being deleted by one of the lease's items.</exception>
-    private static void RequireJob(DeletionParent? parent, WorkLease lease)
+    /// <summary>
+    /// The ids of the lease's items that are still open, read by key under S held to commit: after the lease row and before
+    /// the parent rows. A deletion item superseded by its workspace's job is no longer open, so a lease taken on it just
+    /// before that job fenced the unit cannot purge alongside the workspace job.
+    /// </summary>
+    private static async Task<HashSet<long>> OpenItemsAsync(NachosDbContext db, WorkLease lease, CancellationToken ct)
     {
-        if (parent is not { LifecycleState: Deleting, DeletionJobId: { } jobId } || !lease.Items.Any(item => item.Id == jobId))
+        RequireTransaction(db);
+        var ids = await db.Database
+            .SqlQueryRaw<long>(
+                string.Concat(
+                    "SELECT i.Id AS [Value] FROM dbo.WorkItems AS i WITH (", SharedLock, ", FORCESEEK) ",
+                    "JOIN OPENJSON(@ids) WITH (Id bigint '$') AS j ON i.Id = j.Id WHERE i.Status IN (0, 1)"),
+                SqlParameters.LongText("@ids", JsonSerializer.Serialize(lease.Items.Select(item => item.Id).Order())))
+            .ToListAsync(ct);
+        return [.. ids];
+    }
+
+    /// <exception cref="LeaseLostException">The parent is not being deleted by one of the lease's open items.</exception>
+    private static void RequireJob(DeletionParent? parent, HashSet<long> openItems, WorkLease lease)
+    {
+        if (parent is not { LifecycleState: Deleting, DeletionJobId: { } jobId } || !openItems.Contains(jobId))
         {
             throw new LeaseLostException(lease.WorkUnitKey);
         }

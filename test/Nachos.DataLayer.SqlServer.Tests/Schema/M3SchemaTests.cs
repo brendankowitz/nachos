@@ -90,6 +90,7 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
             DROP TABLE [dbo].[SessionSummaries];
             DROP TABLE [dbo].[MessageEmbeddings];
             DROP INDEX [UX_Messages_Workspace_Session_Id] ON [dbo].[Messages];
+            DROP INDEX [IX_ConclusionSources_Source] ON [dbo].[ConclusionSources];
             """);
         var deployer = Deployer(connectionString);
 
@@ -101,6 +102,10 @@ public sealed class M3SchemaTests(SqlServerFixture fixture)
 
         applied.Applied.ShouldBeTrue();
         (await M3TableCountAsync(connectionString)).ShouldBe(M3Tables.Length);
+        (await ScalarAsync<int>(
+                connectionString,
+                "SELECT COUNT(*) FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.ConclusionSources') AND name = N'IX_ConclusionSources_Source'"))
+            .ShouldBe(1);
         (await ScalarAsync<int>(connectionString, "SELECT COUNT(*) FROM [dbo].[Workspaces] WHERE [Name] = N'kept'")).ShouldBe(1);
         (await deployer.ReportAsync(default)).HasPendingChanges.ShouldBeFalse();
     }

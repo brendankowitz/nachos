@@ -592,24 +592,38 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
         var commit = store.Conclusions.CommitDerivationAsync(
             derivation, new DerivationChanges(workspace, [Conclusion("bob says hello", session)], [], []), Ct);
         await WaitForLockWaitersAsync(1);
-        var cancel = store.Deletion.CancelOtherWorkAsync(own, DeletionTarget.Session(workspace, session), Ct);
+        // The cancel step runs on connections named for it, so the lock DMVs can tell its session from the others.
+        const string CancelApp = "nachos-deletion-cancel";
+        var cancelling = SqlTestDatabase.CreateStore(
+            new SqlServerOptions
+            {
+                ConnectionString = new SqlConnectionStringBuilder(Database.ConnectionString) { ApplicationName = CancelApp }.ConnectionString,
+            },
+            Database.Gate,
+            new FakeTimeProvider(Start));
+        var cancel = cancelling.Deletion.CancelOtherWorkAsync(own, DeletionTarget.Session(workspace, session), Ct);
         await WaitForLockWaitersAsync(2);
         var acceptance = store.Deletion.BeginDeleteWorkspaceAsync(workspace, Ct);
         await WaitForLockWaitersAsync(3);
 
+        const string LeaseWaiters = """
+            SELECT COUNT(*) FROM sys.dm_tran_locks AS w
+            JOIN sys.partitions AS wp ON wp.hobt_id = w.resource_associated_entity_id
+            JOIN sys.dm_exec_sessions AS s ON s.session_id = w.request_session_id
+            WHERE w.resource_database_id = DB_ID() AND w.request_status = 'WAIT' AND wp.object_id = OBJECT_ID(N'dbo.WorkUnitLeases')
+            """;
+        (await ScalarAsync(LeaseWaiters, CancelApp)).ShouldBe(1, "exactly one session waits on a lease row");
+        (await ScalarAsync(LeaseWaiters + " AND s.program_name = @name", CancelApp)).ShouldBe(1, "the lease waiter is the cancel step");
         (await ScalarAsync(
                 """
                 SELECT COUNT(*) FROM sys.dm_tran_locks AS held
                 JOIN sys.partitions AS p ON p.hobt_id = held.resource_associated_entity_id
+                JOIN sys.dm_exec_sessions AS s ON s.session_id = held.request_session_id
                 WHERE held.resource_database_id = DB_ID() AND held.request_status = 'GRANT'
                   AND p.object_id IN (OBJECT_ID(N'dbo.Workspaces'), OBJECT_ID(N'dbo.Sessions'))
-                  AND held.request_session_id IN (
-                      SELECT w.request_session_id FROM sys.dm_tran_locks AS w
-                      JOIN sys.partitions AS wp ON wp.hobt_id = w.resource_associated_entity_id
-                      WHERE w.resource_database_id = DB_ID() AND w.request_status = 'WAIT'
-                        AND wp.object_id = OBJECT_ID(N'dbo.WorkUnitLeases'))
+                  AND s.program_name = @name
                 """,
-                workspace))
+                CancelApp))
             .ShouldBe(0, "the cancel step waits on a lease row holding no parent row");
         await blocking.RollbackAsync();
 
@@ -653,6 +667,106 @@ public sealed class SqlDeletionBarrierTests(SqlServerFixture fixture) : IAsyncLi
             (removed.JobId, target, JobStatus.Completed),
             (again.JobId, target, JobStatus.Pending),
         ]);
+    }
+
+    /// <summary>
+    /// Two session jobs each remove one of a conclusion's two sources at once. The first batch is held open after its
+    /// conclusion step (on an uncommitted lock of its session's messages) while the second runs. Each batch's own snapshot
+    /// still shows the other's source live, so without the dependent's lock neither would tombstone it; with it, the second
+    /// batch waits for the first to commit and then sees both sources gone.
+    /// </summary>
+    [Fact]
+    public async Task OverlappingSessionPurges_TombstoneSharedDependent()
+    {
+        var store = Database.CreateStore(new FakeTimeProvider(Start));
+        var (workspace, first) = await NewSessionAsync(store);
+        var second = Unique("sess");
+        await store.Sessions.GetOrCreateAsync(workspace, second, null, null, null, Ct);
+        await store.Messages.AppendAsync(workspace, first, new MessageAppend([Msg("held")]), Ct);
+        var a = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes tea", first)], Ct)).Single();
+        var b = (await store.Conclusions.InsertAsync(workspace, [Conclusion("bob likes jazz", second)], Ct)).Single();
+        var dependent = (await store.Conclusions.InsertAsync(
+            workspace, [Conclusion("bob has calm tastes", null, ConclusionLevel.Inductive, a.PublicId, b.PublicId)], Ct)).Single();
+        await store.Deletion.BeginDeleteSessionAsync(workspace, first, Ct);
+        await store.Deletion.BeginDeleteSessionAsync(workspace, second, Ct);
+        var firstJob = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        var secondJob = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        firstJob.WorkUnitKey.ShouldBe(DeletionTarget.Session(workspace, first).WorkUnitKey);
+
+        await using var blocker = await OpenAsync();
+        await using var blocking = (SqlTransaction)await blocker.BeginTransactionAsync();
+        await ExecuteAsync(
+            blocker,
+            blocking,
+            "UPDATE m SET Content = m.Content FROM dbo.Messages AS m JOIN dbo.Sessions AS s ON s.Id = m.SessionId WHERE s.Name = @session",
+            ("@session", first));
+        var firstBatch = store.Deletion.PurgeBatchAsync(firstJob, DeletionTarget.Session(workspace, first), 500, Ct);
+        await WaitForLockWaitersAsync(1);
+        var secondBatch = store.Deletion.PurgeBatchAsync(secondJob, DeletionTarget.Session(workspace, second), 500, Ct);
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+        {
+            while (!secondBatch.IsCompleted && await CountLockWaitersAsync() < 2)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20), timeout.Token);
+            }
+        }
+
+        await blocking.RollbackAsync();
+        await firstBatch;
+        await secondBatch;
+        foreach (var (lease, session) in new[] { (firstJob, first), (secondJob, second) })
+        {
+            var target = DeletionTarget.Session(workspace, session);
+            while (await store.Deletion.PurgeBatchAsync(lease, target, 500, Ct))
+            {
+            }
+
+            await store.Deletion.RemoveAsync(lease, target, Ct);
+        }
+
+        (await store.Conclusions.GetAsync(workspace, dependent.PublicId, Ct)).ShouldBeNull("both of its sources were removed");
+        (await ScalarAsync("SELECT COUNT(*) FROM dbo.Conclusions WHERE PublicId = @name AND DeletedAt IS NOT NULL", dependent.PublicId))
+            .ShouldBe(1);
+    }
+
+    /// <summary>
+    /// What the race leaves when a session job is leased just before its workspace's job fences the unit (the lease row
+    /// did not exist when the fence read the units) and the workspace job then supersedes the item: a held lease on a
+    /// closed item. Every job step on it is a lost lease, with nothing written.
+    /// </summary>
+    [Fact]
+    public async Task SupersededItem_ItsLeaseWritesNothing()
+    {
+        var store = Database.CreateStore(new FakeTimeProvider(Start));
+        var (workspace, session) = await NewSessionAsync(store);
+        await store.Messages.AppendAsync(workspace, session, new MessageAppend([Msg("kept")]), Ct);
+        var target = DeletionTarget.Session(workspace, session);
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        var lease = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        await using (var connection = await OpenAsync())
+        {
+            await using var command = new SqlCommand(
+                "UPDATE dbo.WorkItems SET Status = 2, Error = N'superseded_by_workspace_deletion', CompletedAt = SYSDATETIMEOFFSET() WHERE Id = @id",
+                connection);
+            command.Parameters.AddWithValue("@id", lease.Items.Single().Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Should.ThrowAsync<LeaseLostException>(() => store.Deletion.CancelOtherWorkAsync(lease, target, Ct));
+        await Should.ThrowAsync<LeaseLostException>(() => store.Deletion.PurgeBatchAsync(lease, target, 500, Ct));
+        await Should.ThrowAsync<LeaseLostException>(() => store.Deletion.RemoveAsync(lease, target, Ct));
+
+        (await store.Messages.ListAsync(workspace, session, null, new PageRequest(), Ct)).Total.ShouldBe(1);
+        (await store.Sessions.GetAsync(workspace, session, Ct)).ShouldNotBeNull().State.ShouldBe(LifecycleState.Deleting);
+        await store.WorkQueue.RenewAsync(lease, Lease, Ct);
+    }
+
+    private async Task<int> CountLockWaitersAsync()
+    {
+        await using var connection = await OpenAsync();
+        await using var command = new SqlCommand(
+            "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE database_id = DB_ID() AND wait_type LIKE N'LCK[_]M[_]%'", connection);
+        return (int)(await command.ExecuteScalarAsync())!;
     }
 
     private static async Task ShouldRejectWritesAsync(SqlMemoryStore store, string workspace, string session)

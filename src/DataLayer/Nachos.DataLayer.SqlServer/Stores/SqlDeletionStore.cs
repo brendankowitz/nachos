@@ -352,8 +352,17 @@ internal sealed class SqlDeletionStore(SqlStoreRuntime runtime) : IDeletionStore
     /// D7: a conclusion that cites one this batch removed (<c>@gone</c>) is tombstoned when none of its sources is still
     /// live (present and not tombstoned). Candidates come from a snapshot read; only they are updated, by key.
     /// </summary>
+    /// <remarks>
+    /// The candidates are first locked (X, by a no-op update in <c>Id</c> order), and only then re-evaluated by a new
+    /// statement, whose snapshot starts once the locks are granted. Otherwise two jobs that each remove one of a
+    /// conclusion's two sources would each still see the other's source live in their own snapshot, and neither would
+    /// tombstone it. With the lock, the second job waits for the first to commit and then sees both sources gone.
+    /// </remarks>
     private const string TombstoneDependents = """
         INSERT @dependents (Id) SELECT DISTINCT cs.DerivedId FROM dbo.ConclusionSources AS cs JOIN @gone AS g ON g.Id = cs.SourceId;
+        UPDATE d SET DeletedAt = d.DeletedAt
+        FROM dbo.Conclusions AS d WITH (FORCESEEK) JOIN @dependents AS x ON x.Id = d.Id
+        WHERE d.DeletedAt IS NULL;
         UPDATE d SET DeletedAt = @now
         FROM dbo.Conclusions AS d WITH (FORCESEEK) JOIN @dependents AS x ON x.Id = d.Id
         WHERE d.DeletedAt IS NULL AND NOT EXISTS (
@@ -434,15 +443,15 @@ internal sealed class SqlDeletionStore(SqlStoreRuntime runtime) : IDeletionStore
             $"EXISTS (SELECT 1 FROM {table} AS r WHERE {predicate})");
 
         /// <summary>
-        /// Conclusions, lowest id first, with their own source rows (which reference them); <paramref name="afterDelete"/>
-        /// runs with the removed ids in <c>@gone</c>. Source rows that name a removed conclusion stay: reads leave purged
-        /// sources out.
+        /// Conclusions, in any order (each batch re-evaluates the dependents of exactly the ones it removed), with their own
+        /// source rows (which reference them); <paramref name="afterDelete"/> runs with the removed ids in <c>@gone</c>.
+        /// Source rows that name a removed conclusion stay: reads leave purged sources out.
         /// </summary>
         public static PurgeStep Conclusions(string predicate, string afterDelete) => new(
             $"""
             IF @left > 0
             BEGIN
-                INSERT @gone (Id) SELECT TOP (@left) r.Id FROM dbo.Conclusions AS r WHERE {predicate} ORDER BY r.Id;
+                INSERT @gone (Id) SELECT TOP (@left) r.Id FROM dbo.Conclusions AS r WHERE {predicate};
                 DELETE cs FROM dbo.ConclusionSources AS cs WITH (FORCESEEK) JOIN @gone AS g ON g.Id = cs.DerivedId;
                 DELETE c FROM dbo.Conclusions AS c WITH (FORCESEEK) JOIN @gone AS g ON g.Id = c.Id;
                 SET @left -= @@ROWCOUNT;

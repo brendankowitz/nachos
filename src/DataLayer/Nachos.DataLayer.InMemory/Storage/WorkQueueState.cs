@@ -50,14 +50,16 @@ internal sealed class WorkQueueState
     /// <summary>
     /// The deletion job's first step (spec §13.1) for everything <paramref name="inTarget"/> selects, except the unit
     /// <paramref name="ownWorkUnitKey"/>: removes open non-deletion items, completes open deletion items with
-    /// <paramref name="supersededReason"/>, and gives every lease on the selected units a new fencing token, so its
-    /// holder's next check fails.
+    /// <paramref name="supersededReason"/>, and gives every lease on a unit with an open selected item a new fencing token,
+    /// so its holder's next check fails. A unit with only closed items there is left alone: a worker in flight on a unit
+    /// always holds an open item of it.
     /// </summary>
     public void CancelOtherWork(Func<QueuedItem, bool> inTarget, string ownWorkUnitKey, string supersededReason, DateTimeOffset now)
     {
         var others = _items
             .Where(item => inTarget(item) && !string.Equals(item.WorkUnitKey, ownWorkUnitKey, StringComparison.Ordinal))
             .ToList();
+        var fenced = others.Where(item => item.IsOpen).Select(item => item.WorkUnitKey).Distinct(StringComparer.Ordinal).ToList();
         foreach (var item in others.Where(item => item.IsOpen && item.TaskType == WorkTaskType.Deletion))
         {
             item.Status = WorkItemStatus.Succeeded;
@@ -66,7 +68,7 @@ internal sealed class WorkQueueState
         }
 
         Remove(others.Where(item => item.IsOpen).ToHashSet());
-        foreach (var workUnitKey in others.Select(item => item.WorkUnitKey).Distinct(StringComparer.Ordinal))
+        foreach (var workUnitKey in fenced)
         {
             if (_leases.TryGetValue(workUnitKey, out var lease))
             {

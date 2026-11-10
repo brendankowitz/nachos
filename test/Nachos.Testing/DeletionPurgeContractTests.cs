@@ -2,6 +2,7 @@ using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Abstractions.Work;
 using Shouldly;
 using Xunit;
 
@@ -331,5 +332,80 @@ public abstract class DeletionPurgeContractTests : M3ContractTestBase
         (await store.Conclusions.GetAsync(workspace, derived.PublicId, Ct)).ShouldBeNull();
         // Tombstoning does not cascade: this one cites a conclusion that was tombstoned, not removed.
         (await store.Conclusions.GetAsync(workspace, secondHand.PublicId, Ct)).ShouldNotBeNull();
+    }
+
+    /// <summary>
+    /// Only units with an open item under the target are fenced: a worker in flight always holds one. A lease on a unit
+    /// whose items there are all closed (here a maintenance lease on the session's summary unit) is left alone.
+    /// </summary>
+    [Fact]
+    public async Task CancelOtherWork_FencesOnlyUnitsWithOpenItems()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await NewSessionAsync(store);
+        var appended = await store.Messages.AppendAsync(
+            workspace, session, new MessageAppend([.. Enumerable.Range(0, 20).Select(i => Msg("bob", $"m{i}"))], Summary: new SummaryIntent(20, 1000)), Ct);
+        var summary = (await AcquireAsync(store, WorkTaskType.Summary)).ShouldNotBeNull();
+        await store.Summaries.SaveAsync(
+            summary, workspace, session, [new NewSummary(SummaryKind.Short, "s", appended[^1].PublicId, 20, 1)], Ct);
+        var idle = (await store.WorkQueue.TryLeaseAsync(WorkUnitKeys.Summary(workspace, session), "maintenance", Lease, Ct)).ShouldNotBeNull();
+        await store.Sessions.AddPeersAsync(
+            workspace, session, new Dictionary<string, SessionPeerConfig> { ["alice"] = new(ObserveOthers: true) }, Ct);
+        await store.Messages.AppendAsync(workspace, session, new MessageAppend([Msg("bob", "derive me")], Derive: [DeriveIntent.Derive]), Ct);
+        var inFlight = (await AcquireAsync(store, WorkTaskType.Representation)).ShouldNotBeNull();
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        var own = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+
+        await store.Deletion.CancelOtherWorkAsync(own, DeletionTarget.Session(workspace, session), Ct);
+
+        await Should.ThrowAsync<LeaseLostException>(() => store.WorkQueue.RenewAsync(inFlight, Lease, Ct));
+        await store.WorkQueue.RenewAsync(idle, Lease, Ct);
+        await store.WorkQueue.RenewAsync(own, Lease, Ct);
+    }
+
+    /// <summary>
+    /// A workspace's job removes every row of it: sessions and their rows, conclusions and their collections, peer cards,
+    /// idempotency records, its grants and its peers; a workspace of the same name then starts empty.
+    /// </summary>
+    [Fact]
+    public async Task WorkspacePurge_RemovesEveryWorkspaceRow()
+    {
+        var (store, _) = await NewStoreAsync();
+        var (workspace, session) = await PopulatedSessionAsync(store);
+        await store.Peers.GetOrCreateAsync(workspace, "carol", null, null, Ct);
+        await store.PeerCards.SetAsync(workspace, "alice", "bob", ["likes tea"], PeerCardAuthor.Api, Ct);
+        await store.PeerCards.SetAsync(workspace, "carol", "bob", ["drinks tea"], PeerCardAuthor.Api, Ct);
+        await store.Conclusions.InsertAsync(workspace, [new NewConclusion("carol", "alice", null, ConclusionLevel.Explicit, "alice hums", null, [], null)], Ct);
+        var key = Unique("key");
+        await store.Messages.AppendAsync(
+            workspace,
+            session,
+            new MessageAppend([Msg("bob", "once")], new IdempotencyWrite(key, "hash", 201, _ => "{}", TimeSpan.FromHours(1))),
+            Ct);
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct)).ShouldNotBeNull();
+        var grantee = Unique("object");
+        await store.Grants.AddAsync(new GrantRecord(grantee, workspace, GrantRoles.Workspace), Ct);
+        await store.Deletion.BeginDeleteSessionAsync(workspace, session, Ct);
+        await store.Deletion.BeginDeleteWorkspaceAsync(workspace, Ct);
+        _ = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+        var job = (await AcquireAsync(store, WorkTaskType.Deletion)).ShouldNotBeNull();
+
+        await RunJobAsync(store, job, DeletionTarget.Workspace(workspace), batchSize: 3);
+
+        (await store.Workspaces.GetAsync(workspace, Ct)).ShouldBeNull();
+        (await store.Grants.ListAsync(grantee, Ct)).ShouldBeEmpty();
+        await store.Workspaces.GetOrCreateAsync(workspace, null, null, Ct);
+        (await store.Idempotency.TryGetAsync(workspace, key, Ct)).ShouldBeNull();
+        (await store.Peers.ListAsync(workspace, PeerKind.All, null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Sessions.ListAsync(workspace, null, new PageRequest(), Ct)).Total.ShouldBe(0);
+        foreach (var peer in new[] { "alice", "bob", "carol" })
+        {
+            await store.Peers.GetOrCreateAsync(workspace, peer, null, null, Ct);
+        }
+
+        (await store.PeerCards.GetAsync(workspace, "alice", "bob", Ct)).ShouldBeNull();
+        (await store.PeerCards.GetAsync(workspace, "carol", "bob", Ct)).ShouldBeNull();
+        (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.CreatedAt, new PageRequest(), Ct)).Total.ShouldBe(0);
+        (await store.Deletion.ListJobsAsync(workspace, new PageRequest(), Ct)).Items.ShouldBeEmpty();
     }
 }

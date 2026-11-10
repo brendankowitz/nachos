@@ -39,6 +39,7 @@ public sealed partial class DeletionService : IWorkHandler
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
+        // Deliberately the consumer's lease length (QueueConsumerService leases every task type with it), despite the name.
         _leaseDuration = nachosOptions.Value.Deriver.LeaseDuration;
         _batchSize = options.Value.BatchSize;
         _logger = logger;
