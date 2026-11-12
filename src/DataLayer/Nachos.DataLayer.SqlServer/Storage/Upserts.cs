@@ -9,8 +9,9 @@ namespace Nachos.DataLayer.SqlServer.Storage;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Lock order.</b> Every transaction that writes memberships first takes the session row (an update lock via
-/// <see cref="LockSessionAsync"/>, or the exclusive lock of the append's <c>Seq</c> allocation), then the idempotency
+/// <b>Lock order.</b> Every transaction that writes memberships first takes the workspace row's shared lock and then the
+/// session row (an update lock via <see cref="WriteAdmission.LockSessionAsync"/>, or the exclusive lock of the append's
+/// <c>Seq</c> allocation), the deletion write barrier of <see cref="WriteAdmission"/>; then the idempotency
 /// key range (appends only), then peers in ordinal name order, then memberships. Membership writers are therefore
 /// serialized per session, which rules out lock cycles between them (row scans in id order against appends in name
 /// order would otherwise deadlock), and makes the read-then-insert of a membership race-free.
@@ -60,13 +61,6 @@ internal static class Upserts
                 ?? throw Lookups.TrailingSpaceCollision("peer", name);
         }
     }
-
-    /// <summary>Holds the session row's update lock until the transaction ends; the first step of the lock order.</summary>
-    public static Task LockSessionAsync(NachosDbContext db, long sessionId, CancellationToken ct) =>
-        db.Database.ExecuteSqlRawAsync(
-            "SELECT Id FROM dbo.Sessions WITH (UPDLOCK, ROWLOCK) WHERE Id = @session",
-            [SqlParameters.Long("@session", sessionId)],
-            ct);
 
     /// <summary>
     /// Makes each peer an active member with its config, creating missing peers. An active member keeps its

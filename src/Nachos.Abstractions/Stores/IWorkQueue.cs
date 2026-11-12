@@ -4,9 +4,10 @@ using Nachos.Abstractions.Domain;
 namespace Nachos.Abstractions.Stores;
 
 /// <summary>
-/// The fenced work queue. See <see cref="IMemoryStore"/> for the rules shared by all stores. In M2 the only producer is
-/// <see cref="IMessageStore.AppendAsync(string, string, IReadOnlyList{NewMessage}, IdempotencyWrite?, IReadOnlyList{DeriveIntent}?, CancellationToken)"/>,
-/// which enqueues in the append's own transaction.
+/// The fenced work queue. See <see cref="IMemoryStore"/> for the rules shared by all stores. There is no standalone
+/// enqueue: every producer enqueues in the transaction of the write that makes the work due,
+/// <see cref="IMessageStore.AppendAsync(string, string, MessageAppend, CancellationToken)"/> and the
+/// <see cref="IDeletionStore"/> acceptances.
 /// </summary>
 /// <remarks>
 /// <para>

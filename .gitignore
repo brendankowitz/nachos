@@ -433,3 +433,5 @@ obj/
 *.dacpac
 .test-runs/
 node_modules/
+# Agent worktrees; other .claude/ content may be tracked.
+.claude/worktrees/

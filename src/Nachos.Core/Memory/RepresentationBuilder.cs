@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using Nachos.Abstractions;
@@ -37,6 +36,22 @@ public sealed class RepresentationBuilder(
         RepresentationQuery query,
         CancellationToken ct)
     {
+        var ranked = await RankAsync(workspaceName, observerName, observedName, policy, query, ct).ConfigureAwait(false);
+        return ranked.Format(ranked.Count);
+    }
+
+    /// <summary>
+    /// The conclusions <see cref="BuildAsync"/> would render, best-ranked first, so a caller can render fewer of them
+    /// without reading again.
+    /// </summary>
+    public async Task<RankedRepresentation> RankAsync(
+        string workspaceName,
+        string observerName,
+        string observedName,
+        VisibilityPolicy policy,
+        RepresentationQuery query,
+        CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(query);
         var filter = policy.Restrict(Collection(observerName, observedName, query.Filter));
@@ -59,7 +74,7 @@ public sealed class RepresentationBuilder(
         sources.Add((await store.Conclusions.ListAsync(workspaceName, filter, ConclusionOrder.CreatedAt, newest, ct)
             .ConfigureAwait(false)).Items);
 
-        return Format(Merge(sources, policy, query.MaxConclusions));
+        return new RankedRepresentation(Merge(sources, policy, query.MaxConclusions));
     }
 
     private static FilterNode.And Collection(string observerName, string observedName, FilterNode? filter)
@@ -91,32 +106,5 @@ public sealed class RepresentationBuilder(
         }
 
         return kept;
-    }
-
-    private static string Format(List<(int Rank, ConclusionRecord Conclusion)> conclusions)
-    {
-        var text = new StringBuilder();
-        var sections = conclusions
-            .OrderBy(c => c.Rank)
-            .ThenBy(c => c.Conclusion.CreatedAt)
-            .ThenBy(c => c.Conclusion.PublicId, StringComparer.Ordinal)
-            .GroupBy(c => c.Conclusion.Level)
-            .OrderBy(section => section.Key);
-        foreach (var section in sections)
-        {
-            if (text.Length > 0)
-            {
-                text.Append('\n');
-            }
-
-            text.Append("## ").Append(section.Key).Append("\n\n");
-            foreach (var (_, conclusion) in section)
-            {
-                // API-created content may span lines; one line per bullet keeps the list structure intact.
-                text.Append("- ").Append(conclusion.Content.ReplaceLineEndings(" ")).Append('\n');
-            }
-        }
-
-        return text.ToString();
     }
 }

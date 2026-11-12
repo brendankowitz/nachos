@@ -260,6 +260,69 @@ public interface INachosClient
         string workspaceId, string peerId, PeerContextQuery query, CancellationToken ct = default);
 
     /// <summary>
+    /// Searches the messages of every session of the workspace (<c>POST W/search</c>): vector and lexical matches fused,
+    /// best first. A blank query finds nothing.
+    /// </summary>
+    /// <exception cref="RequestValidationException"><c>limit</c> is out of bounds or a filter is invalid.</exception>
+    /// <exception cref="NachosValidationException"><c>scope</c> is set; scopes are not supported in this version.</exception>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    Task<IReadOnlyList<Message>> SearchWorkspaceAsync(
+        string workspaceId, WorkspaceMessageSearchOptions options, CancellationToken ct = default);
+
+    /// <summary>Searches one session's messages (<c>POST S/search</c>); a session that does not exist matches nothing.</summary>
+    /// <exception cref="RequestValidationException"><c>limit</c> is out of bounds or a filter is invalid.</exception>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    Task<IReadOnlyList<Message>> SearchSessionAsync(
+        string workspaceId, string sessionId, MessageSearchOptions options, CancellationToken ct = default);
+
+    /// <summary>
+    /// Searches the messages the peer could have seen (<c>POST P/search</c>): those of its sessions sent while it was a
+    /// member. A peer that does not exist matches nothing.
+    /// </summary>
+    /// <exception cref="RequestValidationException"><c>limit</c> is out of bounds or a filter is invalid.</exception>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    Task<IReadOnlyList<Message>> SearchPeerAsync(
+        string workspaceId, string peerId, MessageSearchOptions options, CancellationToken ct = default);
+
+    /// <summary>
+    /// The session's context (<c>GET S/context</c>): its newest messages, summary and, with a <c>peer_target</c>, a
+    /// representation and card, never more than <see cref="SessionContextQuery.Tokens"/> content tokens.
+    /// </summary>
+    /// <exception cref="RequestValidationException">A bound is exceeded or the parameters do not combine.</exception>
+    /// <exception cref="NachosValidationException">An id is invalid, or <c>scope</c> is set; scopes are not supported in this version.</exception>
+    /// <exception cref="NotFoundException">The workspace or the session does not exist.</exception>
+    Task<SessionContext> GetSessionContextAsync(
+        string workspaceId, string sessionId, SessionContextQuery query, CancellationToken ct = default);
+
+    /// <summary>The session's current short and long summaries (<c>GET S/summaries</c>); each is null until one exists.</summary>
+    /// <exception cref="NotFoundException">The workspace or the session does not exist.</exception>
+    Task<SessionSummaries> GetSessionSummariesAsync(string workspaceId, string sessionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Accepts the session's deletion (<c>DELETE S</c>, 202 with no body): it is inactive at once, every later write
+    /// under it is a 409, and a job (see <see cref="ListJobsAsync"/>) removes it with its messages, summaries and
+    /// session-attributed conclusions. Repeating it while the job runs is harmless and names the same job.
+    /// </summary>
+    /// <exception cref="NotFoundException">The workspace or the session does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
+    Task DeleteSessionAsync(string workspaceId, string sessionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Accepts the workspace's deletion (<c>DELETE W</c>, 202 with no body): every later write under it is a 409, and a
+    /// job removes it with everything in it. Repeating it while the job runs is harmless and names the same job.
+    /// </summary>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace has an active session; delete its sessions first.</exception>
+    Task DeleteWorkspaceAsync(string workspaceId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The workspace's background jobs (<c>GET W/jobs</c>, a Nachos extension), oldest first (newest first when
+    /// <see cref="PageRequest.Reverse"/>). In M3 these are its deletions and its sessions'.
+    /// </summary>
+    /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    Task<Page<Job>> ListJobsAsync(string workspaceId, PageRequest page, CancellationToken ct = default);
+
+    /// <summary>
     /// Counts the workspace's reasoning work, optionally only that observed by <paramref name="observerId"/>, sent by
     /// <paramref name="senderId"/> or in <paramref name="sessionId"/>.
     /// </summary>

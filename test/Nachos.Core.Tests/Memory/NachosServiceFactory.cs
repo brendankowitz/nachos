@@ -2,8 +2,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
+using Nachos.Core.Context;
+using Nachos.Core.Jobs;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 
@@ -14,9 +17,14 @@ internal static class NachosServiceFactory
 {
     public static NachosService Create(IMemoryStore store, ITokenCounter counter, RequestValidator validator, IKeyIssuer issuer)
     {
+        var representations = new RepresentationBuilder(store);
+        var peerContext = new PeerContextService(store, representations);
         return new(store, counter, validator, issuer,
             new ConclusionService(store, NullLogger<ConclusionService>.Instance),
-            new PeerContextService(store, new RepresentationBuilder(store)),
-            new ConfigurationResolver(Options.Create(new NachosOptions()), counter));
+            peerContext,
+            new ConfigurationResolver(Options.Create(new NachosOptions()), counter),
+            new HybridSearchService(store, Options.Create(new NachosOptions())),
+            new SessionContextService(store, peerContext, representations, counter),
+            new JobService(store));
     }
 }

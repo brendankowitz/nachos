@@ -8,7 +8,7 @@ namespace Nachos.Core.Tests.Worker;
 /// Passes every call to <paramref name="inner"/> and records the worker-facing queue and idempotency calls, so tests can
 /// wait for a poll, a renewal or a reconciler tick instead of guessing how long one takes.
 /// </summary>
-internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore, IEmbeddingStore
+internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQueue, IIdempotencyStore, IEmbeddingStore, IDeletionStore
 {
     private int _renewals;
     private int _ticks;
@@ -25,10 +25,16 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
     public IPeerCardStore PeerCards => inner.PeerCards;
     public IWorkQueue WorkQueue => this;
     public IEmbeddingStore Embeddings => this;
+    public ISummaryStore Summaries => inner.Summaries;
+    public IMessageSearch Search => inner.Search;
+    public IDeletionStore Deletion => this;
 
     /// <summary>A <see cref="TransientStoreException"/> is transient, as a store would report a deadlock.</summary>
     public bool IsTransientFailure(Exception exception) =>
         exception is TransientStoreException || inner.IsTransientFailure(exception);
+
+    public bool IsUnavailableFailure(Exception exception) =>
+        exception is TransientStoreException || inner.IsUnavailableFailure(exception);
 
     /// <summary>While set, <see cref="TryAcquireAsync"/> throws, as an unavailable store would.</summary>
     public volatile bool FailAcquire;
@@ -66,7 +72,10 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public int Renewals => Volatile.Read(ref _renewals);
 
-    /// <summary>Completed reconciler ticks: idempotency purges, a tick's last step.</summary>
+    /// <summary>
+    /// Reconciler ticks counted at their idempotency purge, the step just before the chunk backfill: at a count of n, the
+    /// first n - 1 ticks have run every step, and the n-th may still be backfilling.
+    /// </summary>
     public int Ticks => Volatile.Read(ref _ticks);
 
     public Task<WorkLease?> TryAcquireAsync(
@@ -156,10 +165,50 @@ internal sealed class ObservedStore(IMemoryStore inner) : IMemoryStore, IWorkQue
 
     public Task<long> CountPendingAsync(CancellationToken ct) => inner.Embeddings.CountPendingAsync(ct);
 
+    public Task<long> CountPendingAsync(PendingEmbeddingKind kind, CancellationToken ct) => inner.Embeddings.CountPendingAsync(kind, ct);
+
     public Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> embedding, string embeddingModel, CancellationToken ct) =>
         DropEmbeddingSaves ? Task.CompletedTask : inner.Embeddings.SaveAsync(pending, embedding, embeddingModel, ct);
 
     public Task MarkFailedAsync(PendingEmbedding pending, CancellationToken ct) => inner.Embeddings.MarkFailedAsync(pending, ct);
+
+    public bool FailBackfill { get; set; }
+
+    public Task<IReadOnlyList<MessageRecord>> ListUnchunkedMessagesAsync(int limit, CancellationToken ct) =>
+        FailBackfill ? throw new InvalidOperationException("backfill failed") :
+        inner.Embeddings.ListUnchunkedMessagesAsync(limit, ct);
+
+    public Task AddChunksAsync(IReadOnlyList<MessageChunk> chunks, CancellationToken ct) => inner.Embeddings.AddChunksAsync(chunks, ct);
+
+    public Task<EmbeddingSpace?> GetSpaceAsync(CancellationToken ct) => inner.Embeddings.GetSpaceAsync(ct);
+
+    public Task<IReadOnlyList<string?>> ListVectorModelsAsync(CancellationToken ct) => inner.Embeddings.ListVectorModelsAsync(ct);
+
+    public Task<EmbeddingSpace> StampSpaceAsync(EmbeddingSpace space, CancellationToken ct) => inner.Embeddings.StampSpaceAsync(space, ct);
+
+    public Task<long> ResetSpaceAsync(EmbeddingSpace space, int batchSize, CancellationToken ct) =>
+        inner.Embeddings.ResetSpaceAsync(space, batchSize, ct);
+
+    /// <summary>While set, each <see cref="PurgeBatchAsync"/> throws it instead of purging.</summary>
+    public volatile Exception? PurgeFailure;
+
+    public Task<DeletionAcceptance> BeginDeleteSessionAsync(string workspaceName, string sessionName, CancellationToken ct) =>
+        inner.Deletion.BeginDeleteSessionAsync(workspaceName, sessionName, ct);
+
+    public Task<DeletionAcceptance> BeginDeleteWorkspaceAsync(string workspaceName, CancellationToken ct) =>
+        inner.Deletion.BeginDeleteWorkspaceAsync(workspaceName, ct);
+
+    public Task CancelOtherWorkAsync(WorkLease lease, DeletionTarget target, CancellationToken ct) =>
+        inner.Deletion.CancelOtherWorkAsync(lease, target, ct);
+
+    public Task<bool> PurgeBatchAsync(WorkLease lease, DeletionTarget target, int batchSize, CancellationToken ct) =>
+        PurgeFailure is { } failure ? throw failure : inner.Deletion.PurgeBatchAsync(lease, target, batchSize, ct);
+
+    public Task RemoveAsync(WorkLease lease, DeletionTarget target, CancellationToken ct) => inner.Deletion.RemoveAsync(lease, target, ct);
+
+    public Task<Nachos.Abstractions.Contracts.Page<JobRecord>> ListJobsAsync(
+        string workspaceName, Nachos.Abstractions.PageRequest page, CancellationToken ct) =>
+        inner.Deletion.ListJobsAsync(workspaceName, page, ct);
 }
 
 /// <summary>A store failure that <see cref="ObservedStore.IsTransientFailure"/> reports as transient.</summary>

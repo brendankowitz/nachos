@@ -6,8 +6,11 @@ using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Json;
 using Nachos.Abstractions.Stores;
 using Nachos.Core.Configuration;
+using Nachos.Core.Context;
+using Nachos.Core.Jobs;
 using Nachos.Core.Keys;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
 using Nachos.Core.Tokens;
 using Nachos.Core.Validation;
 
@@ -24,7 +27,11 @@ public sealed partial class NachosService(
     IKeyIssuer keyIssuer,
     ConclusionService conclusionService,
     PeerContextService peerContext,
-    IConfigurationResolver configurationResolver) : INachosClient
+    IConfigurationResolver configurationResolver,
+    HybridSearchService search,
+    SessionContextService sessionContext,
+    JobService jobs,
+    MessageChunker? chunker = null) : INachosClient
 {
     public async Task<Workspace> GetOrCreateWorkspaceAsync(string id, JsonObject? metadata = null,
         WorkspaceConfiguration? configuration = null, CancellationToken ct = default)
@@ -274,10 +281,13 @@ public sealed partial class NachosService(
 
     private static JsonObject? Canonical(JsonObject? value) => StrictJsonData.ToCanonical(value)?.AsObject();
 
-    private static Workspace Map(WorkspaceRecord row) => new(row.Name, row.Metadata, row.Configuration, row.CreatedAt);
-    private static Peer Map(PeerRecord row) => new(row.Name, row.WorkspaceName, row.CreatedAt, row.Metadata, row.Configuration);
+    private static Workspace Map(WorkspaceRecord row) => new(row.Name, row.Metadata, row.Configuration, row.CreatedAt,
+        ResourceUid.ForWorkspace(row.Name, row.CreatedAt));
+    private static Peer Map(PeerRecord row) => new(row.Name, row.WorkspaceName, row.CreatedAt, row.Metadata, row.Configuration,
+        ResourceUid.ForPeer(row.WorkspaceName, row.Name, row.CreatedAt));
     private static Session Map(SessionRecord row) => new(row.Name, row.State == LifecycleState.Active,
-        row.WorkspaceName, row.Metadata, row.Configuration, row.CreatedAt);
+        row.WorkspaceName, row.Metadata, row.Configuration, row.CreatedAt,
+        ResourceUid.ForSession(row.WorkspaceName, row.Name, row.CreatedAt));
     private static Message Map(MessageRecord row) => new(row.PublicId, row.Content, row.PeerName, row.SessionName,
         row.Metadata, row.CreatedAt, row.WorkspaceName, row.TokenCount);
     private static Page<TOut> MapPage<TIn, TOut>(Page<TIn> page, Func<TIn, TOut> map) =>

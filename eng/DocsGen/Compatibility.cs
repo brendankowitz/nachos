@@ -23,9 +23,9 @@ internal static partial class Compatibility
             root.GetProperty("components").GetProperty("schemas").ValueKind != JsonValueKind.Object)
             throw new InvalidDataException();
         var pin = manifest.RootElement;
-        if (pin.GetProperty("version").GetString() != "3.3.0" ||
-            pin.GetProperty("source").GetString() != "https://docs.honcho.dev/v3/openapi.json" ||
-            pin.GetProperty("sha256").GetString() != "6aa5dd7fa958719e5f12565592617621141f0b9ae0a6b5450802dc152d2e3fe9")
+        if (pin.GetProperty("version").GetString() != "3.6.0" ||
+            pin.GetProperty("source").GetString() != "https://honcho.dev/docs/v3/openapi.json" ||
+            pin.GetProperty("sha256").GetString() != "d1b75ceab50534932bb7e53ae24ba4b0fd6db9d2cd54e8b3eb4c8e542040060f")
             throw new InvalidDataException();
 
         var actual = new SortedDictionary<string, (string Method, string Path, string[] Responses)>(StringComparer.Ordinal);

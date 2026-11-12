@@ -113,8 +113,13 @@ public sealed class ConclusionEndpointTests : MemoryApiTest
         page.GetProperty("total").GetInt32().ShouldBe(2);
         page.GetProperty("pages").GetInt32().ShouldBe(2);
         page.GetProperty("items")[0].GetProperty("content").GetString().ShouldBe("three");
-        // Level is not a wire filter field; like any unknown top-level key it is ignored.
-        (await Post(C + "/list", """{"filters":{"level":"deductive"}}""")).GetProperty("total").GetInt32().ShouldBe(3);
+        // Every conclusion created through the API is explicit and derived once.
+        (await Post(C + "/list", """{"filters":{"level":"deductive"}}""")).GetProperty("total").GetInt32().ShouldBe(0);
+        (await Post(C + "/list", """{"filters":{"level":["explicit","inductive"]}}""")).GetProperty("total").GetInt32().ShouldBe(3);
+        (await Post(C + "/list", """{"filters":{"times_derived":{"gt":1}}}""")).GetProperty("total").GetInt32().ShouldBe(0);
+        (await Post(C + "/query", """{"query":"one","filters":{"level":"deductive"}}""")).GetArrayLength().ShouldBe(0);
+        Problem(await Post(C + "/list", """{"filters":{"level":"explict"}}""", 422), 422, JsonValueKind.String);
+        Problem(await Post(C + "/list", """{"filters":{"level":{"contains":"ex"}}}""", 422), 422, JsonValueKind.String);
         Problem(await Post(C + "/list", """{"filters":{"observer_id":{"regex":"a"}}}""", 422), 422, JsonValueKind.String);
     }
 
@@ -172,7 +177,7 @@ public sealed class ConclusionEndpointWithoutEmbeddingsTests : ApiTest
         services.AddSingleton<ILoggerProvider>(_warnings);
         services.RemoveAll<IEmbeddingGenerator<string, Embedding<float>>>();
         services.RemoveAll<IWorkHandler>();
-        foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingDimensionCheck)).ToList())
+        foreach (var probe in services.Where(d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(EmbeddingSpaceCheck)).ToList())
         {
             services.Remove(probe);
         }

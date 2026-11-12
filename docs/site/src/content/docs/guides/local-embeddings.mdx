@@ -1,0 +1,149 @@
+---
+title: Run Nachos with local embeddings
+---
+
+Nachos can embed text with a small sentence-embedding model that runs inside the API and
+worker processes, on the CPU, through ONNX Runtime. No embedding service, key or network
+call is needed once the model is on disk. It is an option beside Azure OpenAI, not a
+replacement: chat (the Deriver and the summarizer) still needs a chat model, or the
+[fake AI](/nachos/concepts/memory-formation/), which is not memory quality.
+
+## The models
+
+| Id | Licence | Size | Max input | Pooling | Dedup threshold |
+|---|---|---|---|---|---|
+| `bge-small-en-v1.5` (default) | MIT | 384 dimensions, 133 MB | 512 tokens | `[CLS]` | 0.04 |
+| `all-minilm-l6-v2` | Apache-2.0 | 384 dimensions, 90 MB | 256 tokens | mean | 0.035 |
+
+Both are English models. Their files (`model.onnx`, `vocab.txt`) are pinned to a fixed
+Hugging Face revision and SHA-256 in `src/Nachos.Core/Llm/LocalEmbeddingModel.cs`. Nothing is
+bundled with Nachos: you fetch them once.
+
+## 1. Fetch the model
+
+```powershell
+dotnet run --project src\Nachos.Cli -- models fetch bge-small-en-v1.5
+```
+
+The files go to `nachos/models/bge-small-en-v1.5/` under your local application data
+(`%LOCALAPPDATA%` on Windows, `~/.local/share` on Linux); `--dir <path>` puts them under
+another directory. Each download is checked against its pinned SHA-256 and deleted if it does
+not match. A file that is already there with the right hash is skipped; one with another hash
+is left alone and the command exits with 2.
+
+The hosts check the hashes again at startup, so a changed file never produces vectors under
+the model's name.
+
+## 2. Turn it on
+
+From configuration, for the API and the worker:
+
+```text
+Nachos__Ai__Embeddings=Local
+Embeddings__Local__Model=bge-small-en-v1.5          # optional; this is the default
+Embeddings__Local__ModelDirectory=D:\nachos-models  # optional; the fetch --dir, if you used one
+ORT_DISABLE_TELEMETRY=1                             # recommended; see below
+```
+
+`Nachos:Ai:Embeddings=Local` replaces the embeddings of whichever chat backend is selected
+(Azure OpenAI or the fake AI). With the AppHost, set `Nachos__Ai__Embeddings=Local` (and
+optionally `Embeddings__Local__Model` and `Embeddings__Local__ModelDirectory`) in the AppHost's
+environment or user secrets; it passes them to both hosts.
+
+In your own host, call `UseLocalEmbeddings()` after the chat registration:
+
+```csharp
+services.AddNachos(nachos => nachos
+    .UseSqlServer(configuration)
+    .UseAzureOpenAI(new DefaultAzureCredential(), _ => { })
+    .UseLocalEmbeddings(options => options.Model = "all-minilm-l6-v2"));
+```
+
+Settings bind from `Embeddings:Local` (`Model`, `ModelDirectory`, `BatchSize`, default 32);
+see [Options](/nachos/reference/options/).
+
+## One model per database
+
+Vectors from two models are not comparable, so a database holds one model's vectors and is
+stamped with it. At startup every host compares its configured model with the stamp:
+
+- **Stamped with another model:** the host refuses to start with
+  `Embedding model '<configured>' does not match the database's '<stamped>'. Run 'nachos embeddings reset --model <configured>' to re-embed, or configure '<stamped>'.`
+- **Not stamped yet:** the host stamps it when the database holds no vectors, or when every
+  stored vector records the configured model. Otherwise it refuses with the same message.
+  Message chunk vectors record no model, so a database that has embedded chunks but no stamp
+  (one written by a pre-release M3 build) always needs the reset.
+- **The in-memory provider** is stamped by the first start and forgets it with the process.
+- **Database unreachable at startup:** the host starts anyway (its readiness check reports the
+  store), holds back every embedding, and repeats the check in the background (after 1 s,
+  doubling up to 5 s). A match releases the embeddings; a mismatch keeps them held and stops
+  the host with exit code 1 and the same message. While embeddings are held, request-path calls
+  that embed (creating conclusions, semantic queries) wait as well, until the check passes or
+  the request is cancelled. Connection failures (severity 20 or more) count as unreachable,
+  and that includes TLS and certificate-trust failures: such a host keeps retrying with
+  embeddings held, and its readiness check shows the error. Any other store failure at
+  startup, such as a missing table, a schema that is not current or a denied permission,
+  fails startup.
+
+To switch models:
+
+1. Stop the API and the worker. The reset does not detect a host that is still running, and
+   one still running the old model would embed rows again with it.
+2. Reset the database to the new model:
+
+   ```powershell
+   dotnet run --project src\Nachos.Cli -- embeddings reset --model bge-small-en-v1.5 --connection "<connection string>"
+   ```
+
+   Every conclusion vector goes back to pending, and every message chunk is deleted, because
+   chunks were cut for the previous model's tokenizer and input limit. Both run in batches
+   (`--batch-size`, default 1000), and then the database is stamped with the new model. It
+   prints `{"model":"…","reset":n}`, n being conclusions reset plus chunks deleted. If it stops
+   part-way, run it again: the stamp changes last.
+3. Start the hosts with the new model. The worker's reconciler re-embeds every pending
+   conclusion and re-chunks and embeds every message. Until it has, those rows are missing
+   from vector results; lexical search still finds the messages.
+
+`--model` takes whatever id the hosts report: a local model id (in any case; it is stamped as
+the catalog spells it), the Azure OpenAI embedding deployment name, or `fake` for the fake AI.
+Any other id gets a warning, since a host reporting a different id refuses to start.
+
+## Quality and cost
+
+- **Quality.** These models are smaller than `text-embedding-3-small` and English-only.
+  Recall in semantic search is lower, and they separate a paraphrase from a near miss
+  ("prefers dark roast" against "prefers light roast") less well.
+- **Dedup threshold.** The Deriver merges a new conclusion into an existing one closer than
+  `Nachos:Deriver:DedupMaxDistance`. Its 0.05 default was chosen for OpenAI's distance
+  scale, so each local model brings its own calibrated value (the table above), which
+  applies unless you set the key. The values were chosen for no false merges on a fixture of
+  near-miss pairs; at them, only about a third (bge-small) or an eighth (MiniLM) of
+  paraphrases merge, so expect more near-duplicate conclusions than with Azure OpenAI.
+  The calibration is in `research/local-embeddings-calibration.md`.
+- **No query instruction.** bge-small-en-v1.5's authors suggest prefixing short search queries
+  with "Represent this sentence for searching relevant passages: ". Nachos does not: queries
+  and stored text are embedded the same way.
+- **Storage.** The database stores 1536-dimension vectors. A local model's 384 values are
+  zero-padded to that size after normalization, which leaves every cosine distance exactly as
+  the model computed it, but each vector takes four times the space it needs.
+- **CPU.** On an Intel Core i7-14700K, a short input takes about 3 ms with bge-small and
+  1-2 ms with MiniLM; a batch of 32 full-length chunks takes about 1.4 s (bge-small, 512
+  tokens) or 0.3 s (MiniLM, 256 tokens). Chunks are sized to the model's own limit (510 or
+  254 tokens), with the usual 20% overlap.
+
+## Telemetry
+
+Official ONNX Runtime builds collect usage telemetry by default (see the `Privacy.md` in the
+`Microsoft.ML.OnnxRuntime` package), unless `ORT_DISABLE_TELEMETRY=1` is set before ONNX
+Runtime starts. Nachos sets it in its own process before loading a model, unless the variable
+is already set, and also turns off ONNX Runtime's optional events. To allow telemetry, set
+`ORT_DISABLE_TELEMETRY=0`. On Linux and macOS a variable set from .NET code does not reach
+native code, so the in-process setting has no effect there: set `ORT_DISABLE_TELEMETRY=1` in the
+hosts' environment. A host that had to set it itself on those systems logs a warning at startup.
+The AppHost sets it for both hosts when local embeddings are on, and CI sets it too.
+
+## Licences
+
+ONNX Runtime is MIT-licensed. `bge-small-en-v1.5` is MIT; `all-minilm-l6-v2` is Apache-2.0.
+Nachos does not redistribute either model; if you do, their licence terms apply to you. See
+`THIRD-PARTY-NOTICES.md`.

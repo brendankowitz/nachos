@@ -2,8 +2,11 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Context;
 using Nachos.Core.Deriver;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
+using Nachos.Core.Summarizer;
 using Shouldly;
 
 namespace Nachos.Architecture.Tests;
@@ -15,7 +18,8 @@ namespace Nachos.Architecture.Tests;
 /// </summary>
 public sealed class ArchitectureTests
 {
-    private static readonly Type[] MemoryStores = [typeof(IConclusionStore), typeof(IPeerCardStore)];
+    private static readonly Type[] MemoryStores =
+        [typeof(IConclusionStore), typeof(IPeerCardStore), typeof(IMessageSearch), typeof(ISummaryStore)];
 
     // Everything else on the memory stores is a read, so a read member added later is covered without editing this list.
     private static readonly HashSet<string> Writes = new(StringComparer.Ordinal)
@@ -25,13 +29,16 @@ public sealed class ArchitectureTests
         nameof(IConclusionStore.TombstoneAsync),
         nameof(IConclusionStore.PurgeTombstonesAsync),
         nameof(IPeerCardStore.SetAsync),
+        nameof(ISummaryStore.SaveAsync),
     };
 
-    // The Deriver's dedup lookups decide which of its own facts are new; they never return memory to a caller.
+    // The Deriver's dedup lookups decide which of its own facts are new, and the Summarizer reads the summary it is
+    // extending; neither returns memory to a caller.
     private static readonly HashSet<string> Exempt = new(StringComparer.Ordinal)
     {
         $"{typeof(ConclusionDeduplicator).FullName}.{nameof(IConclusionStore.FindExactAsync)}",
         $"{typeof(ConclusionDeduplicator).FullName}.{nameof(IConclusionStore.FindNearestAsync)}",
+        $"{typeof(SummarizerService).FullName}.{nameof(ISummaryStore.GetAsync)}",
     };
 
     private static readonly Dictionary<short, OpCode> OpCodesByValue = typeof(OpCodes)
@@ -48,6 +55,10 @@ public sealed class ArchitectureTests
         reads.ShouldContain(r => r.Owner.DeclaringType == typeof(ConclusionDeduplicator) && r.Read.Name == nameof(IConclusionStore.FindExactAsync));
         reads.ShouldContain(r => r.Owner.DeclaringType == typeof(RepresentationBuilder) && r.Read.Name == nameof(IConclusionStore.QueryAsync));
         reads.ShouldContain(r => r.Owner.DeclaringType == typeof(PeerContextService) && r.Read.DeclaringType == typeof(IPeerCardStore));
+        reads.ShouldContain(r => r.Owner.DeclaringType == typeof(HybridSearchService) && r.Read.Name == nameof(IMessageSearch.VectorAsync));
+        reads.ShouldContain(r => r.Owner.DeclaringType == typeof(HybridSearchService) && r.Read.Name == nameof(IMessageSearch.LexicalAsync));
+        reads.ShouldContain(r => r.Owner.DeclaringType == typeof(SummarizerService) && r.Read.DeclaringType == typeof(ISummaryStore));
+        reads.ShouldContain(r => r.Owner.DeclaringType == typeof(SessionContextService) && r.Read.Name == nameof(ISummaryStore.ListAsync));
 
         reads.Where(r => !TakesPolicy(r.Owner) && !Exempt.Contains($"{r.Owner.DeclaringType!.FullName}.{r.Read.Name}"))
             .Select(r => $"{r.Owner.DeclaringType!.FullName}.{r.Owner.Name} calls {r.Read.DeclaringType!.Name}.{r.Read.Name}")

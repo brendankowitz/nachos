@@ -38,6 +38,12 @@ internal static class SqlErrors
             or 4060 or 4221 or 40143 or 40197 or 40613 or 42108 or 42109
             or 10928 or 10929 or 40501 or 40540 or 49918 or 49919 or 49920);
 
+    /// <summary>
+    /// True for a <see cref="SqlException"/> of severity 20 or more: the connection could not be opened or was broken (a server
+    /// that is down or not found, a network error), as opposed to a statement the server refused.
+    /// </summary>
+    public static bool IsConnectionFailure(Exception exception) => Find(exception) is { Class: >= 20 };
+
     // EF Core may wrap the provider exception; the SqlException is then the inner one.
     private static SqlException? Find(Exception? exception)
     {

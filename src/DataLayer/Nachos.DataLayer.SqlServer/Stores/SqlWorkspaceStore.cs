@@ -5,6 +5,7 @@ using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Filtering;
 using Nachos.Abstractions.Stores;
+using Nachos.DataLayer.SqlServer.Entities;
 using Nachos.DataLayer.SqlServer.Filtering;
 using Nachos.DataLayer.SqlServer.Storage;
 
@@ -12,7 +13,10 @@ namespace Nachos.DataLayer.SqlServer.Stores;
 
 internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceStore
 {
-    /// <remarks>Read, else insert; a lost insert race (2627/2601) re-reads the winner's committed row.</remarks>
+    /// <remarks>
+    /// Read, else insert; a lost insert race (2627/2601) re-reads the winner's committed row. Finding a workspace being
+    /// deleted writes nothing, so it needs no lock: it is refused as of the read.
+    /// </remarks>
     public async Task<WorkspaceRecord> GetOrCreateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct)
     {
@@ -24,7 +28,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
 
         if (await db.Workspaces.AsNoTracking().Named(name).FirstOrDefaultAsync(ct) is { } existing)
         {
-            return existing.ToRecord();
+            return Admitted(existing).ToRecord();
         }
 
         try
@@ -44,7 +48,7 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
         {
             var winner = await db.Workspaces.AsNoTracking().Named(name).FirstOrDefaultAsync(ct)
                 ?? throw Lookups.TrailingSpaceCollision("workspace", name);
-            return winner.ToRecord();
+            return Admitted(winner).ToRecord();
         }
     }
 
@@ -63,16 +67,17 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
         var storedConfiguration = SqlJson.ToStorageOptional(configuration, JsonField.Configuration);
         await using var db = await runtime.OpenAsync(ct);
 
+        // One statement: the update takes the row's exclusive lock itself (spec §13.1), so no S lock comes first.
         var updated = await JsonUpdate.ApplyAsync(
             db.Workspaces,
             "dbo.Workspaces",
-            "Name = @name AND DATALENGTH(Name) = DATALENGTH(@name)",
+            "Name = @name AND DATALENGTH(Name) = DATALENGTH(@name) AND LifecycleState <> 2",
             storedMetadata,
             storedConfiguration,
             [SqlParameters.Text("@name", name)],
             ct);
-        return (updated ?? await db.Workspaces.AsNoTracking().Named(name).FirstOrDefaultAsync(ct)
-            ?? throw Lookups.WorkspaceNotFound(name)).ToRecord();
+        return (updated ?? Admitted(await db.Workspaces.AsNoTracking().Named(name).FirstOrDefaultAsync(ct)
+            ?? throw Lookups.WorkspaceNotFound(name))).ToRecord();
     }
 
     public async Task<Page<WorkspaceRecord>> ListAsync(FilterNode? filter, PageRequest page, CancellationToken ct)
@@ -91,4 +96,8 @@ internal sealed class SqlWorkspaceStore(SqlStoreRuntime runtime) : IWorkspaceSto
             workspace => workspace.ToRecord(),
             ct);
     }
+
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
+    private static WorkspaceEntity Admitted(WorkspaceEntity workspace) =>
+        workspace.LifecycleState == WriteAdmission.Deleting ? throw WriteAdmission.WorkspaceDeleting() : workspace;
 }

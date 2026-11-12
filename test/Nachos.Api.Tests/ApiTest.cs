@@ -27,7 +27,7 @@ public abstract class ApiTest : IDisposable
         using var response = await Client.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
         ((int)response.StatusCode).ShouldBe(status, text);
-        if (status == 204)
+        if (status is 202 or 204)
         {
             text.ShouldBeEmpty();
             return default;

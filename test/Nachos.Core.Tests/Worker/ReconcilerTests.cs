@@ -9,6 +9,7 @@ using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
 using Nachos.Core.Llm;
+using Nachos.Core.Memory;
 using Nachos.Core.Worker;
 using Shouldly;
 
@@ -36,6 +37,94 @@ public sealed class ReconcilerTests
         var match = (await QueryAsync(fixture.Store, "alice likes tea"))[0];
         match.Conclusion.PublicId.ShouldBe(created[0].PublicId);
         match.Distance.ShouldBe(0, 1e-6);
+    }
+
+    [Fact]
+    public async Task EmbedsPendingChunks()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var generator = new SelectiveEmbeddings();
+        await AppendAsync(fixture.Store, [["first chunk", "second chunk"], ["third chunk"]]);
+        (await fixture.Store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, Ct)).ShouldBe(3);
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).ShouldBeEmpty();
+        generator.Calls.Single().ShouldBe(["first chunk", "second chunk", "third chunk"], ignoreOrder: true);
+    }
+
+    [Fact]
+    public async Task BacklogGauges_SplitConclusionsFromMessageChunks()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        await InsertAsync(fixture.Store, "pending conclusion");
+        await AppendAsync(fixture.Store, [["one", "two"]]);
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null);
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, Interval);
+
+        Gauge(fixture.Metrics, "nachos.conclusions.embedding_pending").ShouldBe([1]);
+        Gauge(fixture.Metrics, "nachos.messages.embedding_pending").ShouldBe([2]);
+    }
+
+    [Fact]
+    public async Task BackfillsChunksForUnchunkedMessages()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        var chunker = SmallChunker();
+        var longContent = string.Join(' ', Enumerable.Range(0, 120).Select(i => $"word{i}"));
+        await AppendUnchunkedAsync(fixture.Store, "short message", longContent, "   ");
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count.ShouldBe(2);
+
+        // No generator: the chunks stay pending, where they can be inspected.
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null, chunker: chunker);
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count == 0, Interval);
+
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).ShouldBeEmpty();
+        var pending = await fixture.Store.Embeddings.ListPendingAsync(100, Ct);
+        var expected = chunker.Chunk(longContent);
+        expected.Count.ShouldBeGreaterThan(1);
+        pending.Where(p => p.Content == "short message").ShouldHaveSingleItem().ChunkIndex.ShouldBe(0);
+        pending.Where(p => p.Content != "short message").OrderBy(p => p.ChunkIndex).Select(p => p.Content).ShouldBe(expected);
+    }
+
+    [Fact]
+    public async Task FailingBackfill_DoesNotStopTheOtherSteps()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        await AppendUnchunkedAsync(fixture.Store, "one");
+        fixture.Store.FailBackfill = true;
+
+        await using var reconciler = await StartAsync(fixture, fixture.Store, generator: null, chunker: SmallChunker());
+        // A count is an idempotency purge, the step just before the backfill, so at two counts the first tick has run every
+        // step, its backfill included.
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 2, Interval);
+
+        Gauge(fixture.Metrics, "nachos.queue.eligible_units").ShouldNotBeEmpty();
+        fixture.Logs.At(LogLevel.Error).ShouldContain(m => m.StartsWith("Chunking unchunked messages failed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BackfillIsBoundedPerTick_AndIdempotent()
+    {
+        await using var fixture = new WorkerFixture(handlerType: null);
+        await fixture.SeedAsync();
+        await AppendUnchunkedAsync(fixture.Store, "one", "two", "three");
+
+        await using var reconciler = await StartAsync(
+            fixture, fixture.Store, generator: null, options => options.BackfillBatch = 2, SmallChunker());
+        await Pump.UntilAsync(fixture.Clock, async () => (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count < 3, Interval / 10);
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).Count.ShouldBe(1);
+
+        await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 4, Interval);
+
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, Ct)).ShouldBeEmpty();
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Select(p => p.Content).ShouldBe(["one", "two", "three"], ignoreOrder: true);
     }
 
     [Fact]
@@ -191,7 +280,7 @@ public sealed class ReconcilerTests
             fixture, fixture.Store, generator: null, options => options.TombstoneRetention = TimeSpan.Zero);
         await Pump.UntilAsync(fixture.Clock, () => fixture.Store.Ticks >= 1, TimeSpan.Zero);
 
-        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().ConclusionId.ShouldBe(created[0].PublicId);
+        (await fixture.Store.Embeddings.ListPendingAsync(10, Ct)).Single().SourceId.ShouldBe(created[0].PublicId);
         (await fixture.Inner.Conclusions.PurgeTombstonesAsync(TimeSpan.Zero, Ct)).ShouldBe(0);
     }
 
@@ -406,7 +495,8 @@ public sealed class ReconcilerTests
         WorkerFixture fixture,
         IMemoryStore store,
         IEmbeddingGenerator<string, Embedding<float>>? generator,
-        Action<ReconcilerOptions>? configure = null)
+        Action<ReconcilerOptions>? configure = null,
+        MessageChunker? chunker = null)
     {
         var options = new ReconcilerOptions { Interval = Interval };
         configure?.Invoke(options);
@@ -417,10 +507,29 @@ public sealed class ReconcilerTests
             fixture.Services.GetRequiredService<IServiceScopeFactory>(),
             fixture.Metrics,
             new RecordingLogger<ReconcilerService>(fixture.Logs),
-            generator);
+            generator,
+            chunker);
         await service.StartAsync(Ct);
         return new Running(service);
     }
+
+    private static MessageChunker SmallChunker() => new(EmbeddingChunking.Cl100kBase(), chunkTokens: 40);
+
+    /// <summary>Appends one message per entry of <paramref name="chunks"/>, each with those chunks.</summary>
+    private static Task<IReadOnlyList<MessageRecord>> AppendAsync(ObservedStore store, IReadOnlyList<IReadOnlyList<string>> chunks) =>
+        store.Messages.AppendAsync(
+            Workspace,
+            WorkerFixture.SessionId,
+            new MessageAppend([.. chunks.Select((_, i) => new NewMessage("alice", $"message {i}", 2, null, null))], Chunks: chunks),
+            Ct);
+
+    /// <summary>Appends messages with no chunks, as before chunking existed.</summary>
+    private static Task<IReadOnlyList<MessageRecord>> AppendUnchunkedAsync(ObservedStore store, params string[] contents) =>
+        store.Messages.AppendAsync(
+            Workspace,
+            WorkerFixture.SessionId,
+            new MessageAppend([.. contents.Select(content => new NewMessage("alice", content, 2, null, null))]),
+            Ct);
 
     private static Task<IReadOnlyList<ConclusionRecord>> InsertAsync(ObservedStore store, params string[] contents) =>
         store.Conclusions.InsertAsync(

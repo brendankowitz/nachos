@@ -89,7 +89,8 @@ public sealed partial class InMemoryMemoryStore
                 content,
                 tokenCount,
                 JsonCopy.Own(metadata, "metadata"),
-                createdAt));
+                createdAt),
+                _state.NextOrder());
         }
     }
 

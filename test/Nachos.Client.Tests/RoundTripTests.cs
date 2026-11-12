@@ -336,6 +336,77 @@ public sealed class RoundTripTests
                 await s.Do("filtered", c => c.GetQueueStatusAsync("w", observerId: "alice", senderId: "bob", sessionId: "s"));
                 await s.Do("invalid observer id", c => c.GetQueueStatusAsync("w", observerId: "bad id!"));
             }),
+        new(
+            "search: workspace, session, peer",
+            [nameof(INachosClient.SearchWorkspaceAsync), nameof(INachosClient.SearchSessionAsync), nameof(INachosClient.SearchPeerAsync)],
+            async s =>
+            {
+                await s.Do("search a missing workspace", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions("tea")));
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                await s.Do("other session", c => c.GetOrCreateSessionAsync("w", "other"));
+                await s.Do("messages", c => c.CreateMessagesAsync("w", "s", [new MessageCreate("I like green tea", "alice"), new MessageCreate("The train was late", "bob")]));
+                // Results that tie on terms matched and recency are ordered by generated id, which differs between the two
+                // stores, so no two matches of a query here tie.
+                await s.Do("other messages", c => c.CreateMessagesAsync("w", "other", [new MessageCreate("tea elsewhere", "alice")]));
+                await s.Do("workspace search", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions("green tea")));
+                await s.Do("workspace search, limit 1", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions("green tea", 1)));
+                await s.Do("workspace search filtered to bob", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions("train", Filters: Obj("""{"peer_id":"bob"}"""))));
+                await s.Do("workspace search with a scope", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions("tea", Scope: "named")));
+                await s.Do("blank query", c => c.SearchWorkspaceAsync("w", new WorkspaceMessageSearchOptions(" ")));
+                await s.Do("session search", c => c.SearchSessionAsync("w", "s", new MessageSearchOptions("green tea")));
+                await s.Do("missing session search", c => c.SearchSessionAsync("w", "missing", new MessageSearchOptions("green tea")));
+                await s.Do("session search limit 0", c => c.SearchSessionAsync("w", "s", new MessageSearchOptions("tea", 0)));
+                await s.Do("session search limit 101", c => c.SearchSessionAsync("w", "s", new MessageSearchOptions("tea", 101)));
+                await s.Do("peer search as bob", c => c.SearchPeerAsync("w", "bob", new MessageSearchOptions("green tea")));
+                await s.Do("peer search with a bad filter", c => c.SearchPeerAsync("w", "alice", new MessageSearchOptions("tea", Filters: Obj("""{"peer_id":{"regex":"a"}}"""))));
+            }),
+        new(
+            "session context and summaries",
+            [nameof(INachosClient.GetSessionContextAsync), nameof(INachosClient.GetSessionSummariesAsync)],
+            async s =>
+            {
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                await s.Do("other session", c => c.GetOrCreateSessionAsync("w", "other"));
+                await s.Do("messages", c => c.CreateMessagesAsync("w", "s", [new MessageCreate("first", "alice"), new MessageCreate("second", "bob"), new MessageCreate("third", "alice")]));
+                await s.Do("conclusion", c => c.CreateConclusionsAsync("w", [new ConclusionCreate("Alice likes tea", "alice", "alice", "s")]));
+                await s.Do("context", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery()));
+                await s.Do("context, one token", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(Tokens: 1)));
+                await s.Do("context about alice", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", SearchQuery: "tea", SearchTopK: 2)));
+                await s.Do("context from bob's perspective", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", PeerPerspective: "bob")));
+                await s.Do("context over two sessions", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", Sessions: ["s", "other"])));
+                await s.Do("context limited to the session", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", LimitToSession: true, Summary: false)));
+                await s.Do("context with sessions lacking this one", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", Sessions: ["other"])));
+                await s.Do("context tokens 0", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(Tokens: 0)));
+                await s.Do("context tokens over the maximum", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(Tokens: 100_001)));
+                await s.Do("context perspective without a target", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerPerspective: "bob")));
+                await s.Do("context with a scope", c => c.GetSessionContextAsync("w", "s", new SessionContextQuery(PeerTarget: "alice", Scope: "named")));
+                await s.Do("context of a missing session", c => c.GetSessionContextAsync("w", "missing", new SessionContextQuery()));
+                await s.Do("summaries", c => c.GetSessionSummariesAsync("w", "s"));
+                await s.Do("summaries of a missing session", c => c.GetSessionSummariesAsync("w", "missing"));
+            }),
+        new(
+            "deletion and jobs",
+            [nameof(INachosClient.DeleteSessionAsync), nameof(INachosClient.DeleteWorkspaceAsync), nameof(INachosClient.ListJobsAsync)],
+            async s =>
+            {
+                await s.Do("delete a missing workspace", c => c.DeleteWorkspaceAsync("w"));
+                await s.Do("workspace", c => c.GetOrCreateWorkspaceAsync("w"));
+                await s.Do("no jobs", c => c.ListJobsAsync("w", FirstPage));
+                await s.Do("session", c => c.GetOrCreateSessionAsync("w", "s"));
+                await s.Do("messages", c => c.CreateMessagesAsync("w", "s", [new MessageCreate("hello", "alice")]));
+                await s.Do("delete the workspace with an active session", c => c.DeleteWorkspaceAsync("w"));
+                await s.Do("delete a missing session", c => c.DeleteSessionAsync("w", "missing"));
+                await s.Do("delete the session", c => c.DeleteSessionAsync("w", "s"));
+                await s.Do("delete the session again", c => c.DeleteSessionAsync("w", "s"));
+                await s.Do("write under the deleted session", c => c.CreateMessagesAsync("w", "s", [new MessageCreate("late", "alice")]));
+                await s.Do("one job", c => c.ListJobsAsync("w", FirstPage));
+                await s.Do("delete the workspace", c => c.DeleteWorkspaceAsync("w"));
+                await s.Do("delete the workspace again", c => c.DeleteWorkspaceAsync("w"));
+                await s.Do("write under the deleted workspace", c => c.UpdateWorkspaceAsync("w", Obj("""{"a":1}""")));
+                await s.Do("both jobs, newest first", c => c.ListJobsAsync("w", new PageRequest(1, 1, Reverse: true)));
+            }),
     ];
 
     public static TheoryData<string> ScenarioNames => [.. Scenarios.Select(s => s.Name)];
@@ -587,7 +658,7 @@ public sealed class RoundTripTests
     {
         var a = new Steps(null!);
         var b = new Steps(null!);
-        var workspace = new Workspace("w", Obj("""{"k":1}"""), Obj("""{"c":1}"""), RoundTripHarness.Start);
+        var workspace = new Workspace("w", Obj("""{"k":1}"""), Obj("""{"c":1}"""), RoundTripHarness.Start, "u-w");
 
         a.Record("w", workspace);
         b.Record("w", field switch
@@ -773,6 +844,7 @@ public sealed class RoundTripTests
                 Message m => [m.Id],
                 IEnumerable<Message> list => list.Select(m => m.Id),
                 Page<Message> page => page.Items.Select(m => m.Id),
+                SessionContext context => context.Messages.Select(m => m.Id),
                 _ => [],
             };
             foreach (var id in messages)
@@ -793,9 +865,10 @@ public sealed class RoundTripTests
             }
         }
 
-        // Only each record's own top-level "id" is aliased: the record itself, each record of a list, or each record
-        // of a page's "items". The tree is walked no deeper, so a generated id repeated anywhere else (content, a
-        // metadata "id", any nested value) is never touched and still compares as the deterministic data it is.
+        // Only each record's own top-level "id" is aliased: the record itself, each record of a list, each record of a
+        // page's "items", or each message of a session context's "messages". The tree is walked no deeper, so a
+        // generated id repeated anywhere else (content, a metadata "id", any nested value) is never touched and still
+        // compares as the deterministic data it is.
         private string Normalize(string json)
         {
             var root = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { MaxDepth = Compare.MaxDepth })!;
@@ -805,6 +878,13 @@ public sealed class RoundTripTests
                     foreach (var item in items)
                     {
                         AliasOwnId(item);
+                    }
+
+                    break;
+                case JsonObject context when context["messages"] is JsonArray messages:
+                    foreach (var message in messages)
+                    {
+                        AliasOwnId(message);
                     }
 
                     break;

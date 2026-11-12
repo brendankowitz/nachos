@@ -59,7 +59,16 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
         PeerCards = new InMemoryPeerCardStore(_state);
         WorkQueue = new InMemoryWorkQueue(_state);
         Embeddings = new InMemoryEmbeddingStore(_state);
+        Summaries = new InMemorySummaryStore(_state);
+        Search = new InMemoryMessageSearch(_state);
+        Deletion = new InMemoryDeletionStore(_state);
     }
+
+    public ISummaryStore Summaries { get; }
+
+    public IMessageSearch Search { get; }
+
+    public IDeletionStore Deletion { get; }
 
     public IWorkspaceStore Workspaces { get; }
 
@@ -83,6 +92,13 @@ public sealed partial class InMemoryMemoryStore : IMemoryStore
 
     /// <returns>False: nothing this store throws is fixed by retrying.</returns>
     public bool IsTransientFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return false;
+    }
+
+    /// <returns>False: this store is never unreachable.</returns>
+    public bool IsUnavailableFailure(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
         return false;

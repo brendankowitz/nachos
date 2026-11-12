@@ -146,7 +146,7 @@ public sealed class ChatClientsTests
         services.AddOptions<LlmOptions>().Configure(o => o.Profiles["default"] = new ModelProfile());
         services.AddNachos(nachos => nachos
             .UseChatClient((_, _) => provider)
-            .UseEmbeddingGenerator(_ => new DeterministicEmbeddingGenerator()));
+            .UseEmbeddingGenerator(_ => new DeterministicEmbeddingGenerator(), _ => EmbeddingChunking.Cl100kBase()));
         await using var root = services.BuildServiceProvider();
 
         var chat = root.GetRequiredService<NachosChatClients>().ForAgent("deriver");
@@ -160,7 +160,7 @@ public sealed class ChatClientsTests
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
         services.AddOptions<EmbeddingOptions>().Configure(o => o.RequestDimensions = 1536);
-        services.AddNachos(nachos => nachos.UseEmbeddingGenerator(_ => new DeterministicEmbeddingGenerator(dimensions: 8)));
+        services.AddNachos(nachos => nachos.UseEmbeddingGenerator(_ => new DeterministicEmbeddingGenerator(dimensions: 8), _ => EmbeddingChunking.Cl100kBase()));
         await using var root = services.BuildServiceProvider();
 
         var embeddings = await root.GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>()

@@ -16,6 +16,7 @@ public sealed class NachosOptionsTests
     [InlineData("short_tokens", 0)]
     [InlineData("long_tokens", -1)]
     [InlineData("custom_tokens", 0)]
+    [InlineData("vector_candidates", 0)]
     public void Resolver_RejectsInvalidDeploymentLimits(string field, int value)
     {
         var options = new NachosOptions();
@@ -26,6 +27,7 @@ public sealed class NachosOptionsTests
             case "short_tokens": options.Summary.MaxTokensShort = value; break;
             case "long_tokens": options.Summary.MaxTokensLong = value; break;
             case "custom_tokens": options.Deriver.MaxCustomInstructionsTokens = value; break;
+            case "vector_candidates": options.Search.MaxVectorCandidates = value; break;
         }
 
         Should.Throw<OptionsValidationException>(() =>

@@ -107,7 +107,7 @@ public sealed partial class ConclusionService(
             var model = EmbeddingModelName.Of(embeddings);
             for (var i = 0; i < created.Count; i++)
             {
-                var pending = new PendingEmbedding(workspaceName, created[i].PublicId, created[i].Content);
+                var pending = PendingEmbedding.ForConclusion(workspaceName, created[i].PublicId, created[i].Content);
                 await store.Embeddings.SaveAsync(pending, vectors[i].Vector, model, ct).ConfigureAwait(false);
             }
         }

@@ -1,10 +1,14 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Schema;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer;
 using Nachos.DataLayer.SqlServer.Schema;
+using Nachos.DataLayer.SqlServer.Search;
+using Nachos.DataLayer.SqlServer.Storage;
+using Nachos.DataLayer.SqlServer.Stores;
 using Nachos.Hosting;
 
 namespace Microsoft.Extensions.DependencyInjection;
@@ -15,7 +19,8 @@ public static class SqlServerBuilderExtensions
     /// Selects the SQL Server provider: <see cref="IMemoryStore"/> is a scoped <see cref="SqlMemoryStore"/>,
     /// <see cref="ISchemaManager"/> the dacpac <see cref="SchemaDeployer"/>, and one <see cref="SchemaGate"/> per
     /// container verifies (and, when <see cref="SqlServerOptions.AutomaticSchemaDeploymentEnabled"/>, deploys) the schema
-    /// before the first store operation.
+    /// before the first store operation. A hosted <c>FullTextIndexMaintenance</c> creates the full-text index of message
+    /// search where the server supports it, and reports its readiness through the singleton <see cref="FullTextIndexState"/>.
     /// </summary>
     /// <remarks>
     /// The last provider selected wins: any earlier <see cref="IMemoryStore"/> registration is removed. Calling this again
@@ -49,10 +54,26 @@ public static class SqlServerBuilderExtensions
         services.RemoveAll<SchemaGate>();
         services.AddSingleton(provider => new SchemaGate(
             provider.GetRequiredService<ISchemaManager>(), provider.GetRequiredService<SqlServerOptions>()));
+        services.TryAddSingleton<FullTextIndexState>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, FullTextIndexMaintenance>(provider =>
+        {
+            var options = provider.GetRequiredService<SqlServerOptions>();
+            var gate = provider.GetRequiredService<SchemaGate>();
+            var clock = provider.GetRequiredService<TimeProvider>();
+            var logger = provider.GetRequiredService<ILogger<FullTextIndexMaintenance>>();
+            return new FullTextIndexMaintenance(
+                options,
+                gate,
+                provider.GetRequiredService<FullTextIndexState>(),
+                new SqlWorkQueue(new SqlStoreRuntime(options, gate, clock, logger)),
+                clock,
+                logger);
+        }));
         services.RemoveAll<IMemoryStore>();
         services.AddScoped<IMemoryStore>(provider => new SqlMemoryStore(
             provider.GetRequiredService<SqlServerOptions>(),
             provider.GetRequiredService<SchemaGate>(),
+            provider.GetRequiredService<FullTextIndexState>(),
             provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<ILogger<SqlMemoryStore>>()));
         return builder;

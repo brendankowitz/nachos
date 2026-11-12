@@ -10,7 +10,9 @@ namespace Nachos.Api.Endpoints;
 
 internal static class KeyEndpoints
 {
-    private static readonly string[] QueryNames = ["workspace_id", "peer_id", "session_id", "expires_at"];
+    // Named scopes are M6. Minting a key without the requested scope restriction would widen its access, so refuse.
+    private const string ScopeId = "scope_id";
+    private static readonly string[] QueryNames = ["workspace_id", "peer_id", "session_id", "expires_at", ScopeId];
 
     internal static void MapKeyEndpoints(this IEndpointRouteBuilder endpoints) =>
         endpoints.MapPost("/v3/keys", async (HttpContext http, INachosClient client, IConfiguration configuration,
@@ -19,6 +21,8 @@ internal static class KeyEndpoints
             if (!configuration.GetValue("Nachos:Auth:Enabled", true) || signingKeys.Value.Keys.Count == 0)
                 throw new NachosValidationException("key issuance requires configured signing keys");
             var query = http.Request.Query;
+            if (query.ContainsKey(ScopeId))
+                throw RequestValidationException.Unsupported(["query", ScopeId]);
             var expiry = query["expires_at"].LastOrDefault();
             DateTimeOffset? expiresAt = null;
             if (expiry is not null)

@@ -1,7 +1,8 @@
-# SQL Server 2025 with Full-Text Search, for the M3 hybrid-search work. M1 runs the stock image (see Nachos.AppHost);
-# this recipe is built and verified now so M3 can adopt it without surprises.
+# SQL Server 2025 with Full-Text Search, for the M3 hybrid-search work. The AppHost and the SQL Server integration tests
+# run this image; the stock image is used only to prove the schema deploys where Full-Text Search is absent.
 #
-# Bump the update tag and the package version together; both must name the same build (CU9 = 17.0.5005.3).
+# Bump the update tag and the package version together; both must name the same build (CU9 = 17.0.5005.3). The stock-image
+# test fixtures (test/Nachos.DataLayer.SqlServer.Tests and test/Nachos.Cli.Tests, SqlServerFixture.cs) pin the same update.
 ARG MSSQL_UPDATE=CU9
 ARG MSSQL_PACKAGE_VERSION=17.0.5005.3-1
 

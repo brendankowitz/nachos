@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Nachos.Abstractions.Stores;
 using Nachos.DataLayer.SqlServer.Schema;
+using Nachos.DataLayer.SqlServer.Search;
 using Nachos.DataLayer.SqlServer.Storage;
 using Nachos.DataLayer.SqlServer.Stores;
 
@@ -17,7 +18,8 @@ namespace Nachos.DataLayer.SqlServer;
 /// <b>Rules.</b> Times come from the <see cref="TimeProvider"/>, never the database clock. Names and public ids
 /// compare ordinally and case-sensitively, including trailing spaces. Lists are in creation order with the identity
 /// column as the tiebreak (messages in <c>Seq</c> order). Writes that race (get-or-create, membership, <c>Seq</c>,
-/// idempotency keys) follow the lock order documented on <c>Storage.Upserts</c>; RCSI makes plain reads lock-free.
+/// idempotency keys) follow the lock order documented on <c>Storage.Upserts</c>; RCSI makes plain reads lock-free. Every
+/// write under a workspace or session first passes the deletion write barrier of <c>Storage.WriteAdmission</c> (spec §13.1).
 /// </para>
 /// <para>
 /// <b>JSON</b> is stored losslessly as text in <c>nvarchar(max)</c> columns that a CHECK constraint requires to hold a
@@ -36,10 +38,16 @@ namespace Nachos.DataLayer.SqlServer;
 /// </remarks>
 public sealed class SqlMemoryStore : IMemoryStore
 {
-    public SqlMemoryStore(SqlServerOptions options, SchemaGate schemaGate, TimeProvider clock, ILogger<SqlMemoryStore> logger)
+    public SqlMemoryStore(
+        SqlServerOptions options,
+        SchemaGate schemaGate,
+        FullTextIndexState fullTextIndex,
+        TimeProvider clock,
+        ILogger<SqlMemoryStore> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(schemaGate);
+        ArgumentNullException.ThrowIfNull(fullTextIndex);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
 
@@ -54,6 +62,9 @@ public sealed class SqlMemoryStore : IMemoryStore
         PeerCards = new SqlPeerCardStore(runtime);
         WorkQueue = new SqlWorkQueue(runtime);
         Embeddings = new SqlEmbeddingStore(runtime);
+        Summaries = new SqlSummaryStore(runtime);
+        Search = new SqlMessageSearch(runtime, fullTextIndex);
+        Deletion = new SqlDeletionStore(runtime);
     }
 
     public IWorkspaceStore Workspaces { get; }
@@ -76,9 +87,21 @@ public sealed class SqlMemoryStore : IMemoryStore
 
     public IEmbeddingStore Embeddings { get; }
 
+    public ISummaryStore Summaries { get; }
+
+    public IMessageSearch Search { get; }
+
+    public IDeletionStore Deletion { get; }
+
     public bool IsTransientFailure(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
         return SqlErrors.IsTransient(exception);
+    }
+
+    public bool IsUnavailableFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        return SqlErrors.IsTransient(exception) || SqlErrors.IsConnectionFailure(exception);
     }
 }

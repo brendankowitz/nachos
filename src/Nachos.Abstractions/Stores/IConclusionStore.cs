@@ -103,6 +103,7 @@ public interface IConclusionStore
     /// <c>TimesDerived = 1</c> and a new public id; one without an embedding is pending.
     /// </summary>
     /// <exception cref="NotFoundException">A conclusion names a peer or session that does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace, or a session a conclusion names, is being deleted.</exception>
     Task<IReadOnlyList<ConclusionRecord>> InsertAsync(
         string workspaceName, IReadOnlyList<NewConclusion> conclusions, CancellationToken ct);
 

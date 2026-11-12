@@ -101,12 +101,13 @@ public sealed class AppHostModelTests
 
     [Theory]
     [MemberData(nameof(AllModes))]
-    public async Task SqlServer_RunsThePinnedImage(string environment, bool publish)
+    public async Task SqlServer_BuildsTheFullTextSearchImage(string environment, bool publish)
     {
         var model = await BuildModelAsync(environment, publish);
 
-        var image = Resource(model, "sql").Annotations.OfType<ContainerImageAnnotation>().Single();
-        image.Tag.ShouldBe("2025-CU9-ubuntu-24.04", "keep in step with eng/docker/mssql-fts/Dockerfile");
+        var build = Resource(model, "sql").Annotations.OfType<DockerfileBuildAnnotation>().Single();
+        Path.GetFullPath(build.ContextPath).TrimEnd(Path.DirectorySeparatorChar).ShouldEndWith(Path.Combine("eng", "docker", "mssql-fts"));
+        File.Exists(Path.Combine(build.ContextPath, "Dockerfile")).ShouldBeTrue();
     }
 
     [Theory]
@@ -152,6 +153,31 @@ public sealed class AppHostModelTests
             env["AzureOpenAI__EmbeddingDeployment"].ShouldBe("embed");
             env.Keys.ShouldNotContain("Nachos__Ai__Mode");
         }
+    }
+
+    [Fact]
+    public async Task LocalEmbeddings_ArePassedToBothHosts_WithTelemetryOff()
+    {
+        var model = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Nachos_AppHost>(
+            ["--environment=Development", "--AzureOpenAI:Endpoint=", "--Nachos:Ai:Embeddings=Local", "--Embeddings:Local:Model=all-minilm-l6-v2"]);
+
+        foreach (var host in new[] { "api", "worker" })
+        {
+            var env = await EnvironmentAsync(model, host);
+            env["Nachos__Ai__Embeddings"].ShouldBe("Local");
+            env["Embeddings__Local__Model"].ShouldBe("all-minilm-l6-v2");
+            env["ORT_DISABLE_TELEMETRY"].ShouldBe("1");
+            env["Nachos__Ai__Mode"].ShouldBe("Fake");
+            env.Keys.ShouldNotContain("Embeddings__Local__ModelDirectory");
+        }
+    }
+
+    [Fact]
+    public async Task LocalEmbeddings_AreOffByDefault()
+    {
+        var model = await BuildModelAsync("Development", publish: false);
+
+        (await EnvironmentAsync(model, "worker")).Keys.ShouldNotContain("Nachos__Ai__Embeddings");
     }
 
     private static async Task<IDistributedApplicationTestingBuilder> BuildModelAsync(string environment, bool publish)

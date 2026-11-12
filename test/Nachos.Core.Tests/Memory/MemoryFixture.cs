@@ -1,13 +1,16 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Nachos.Abstractions.Contracts;
 using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Context;
 using Nachos.Core.Memory;
+using Nachos.Core.Search;
 using Nachos.Core.Tests.Deriver;
+using Nachos.Core.Tests.Worker;
+using Nachos.Core.Tokens;
 using Nachos.DataLayer.InMemory;
 using Shouldly;
 
@@ -24,10 +27,17 @@ internal sealed class MemoryFixture : IDisposable
     private readonly ServiceProvider _provider;
     private readonly IServiceScope _scope;
 
-    public MemoryFixture()
+    /// <param name="tokenCounter">Replaces the default token counter, for tests that need exact counts.</param>
+    public MemoryFixture(ITokenCounter? tokenCounter = null)
     {
         var services = new ServiceCollection();
-        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Logs);
+        services.AddSingleton(typeof(ILogger<>), typeof(RecordingLogger<>));
+        if (tokenCounter is not null)
+        {
+            services.AddSingleton(tokenCounter);
+        }
+
         services.AddSingleton<TimeProvider>(Clock);
         services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(Embeddings);
         services.AddNachos(builder => builder.UseInMemory());
@@ -41,6 +51,8 @@ internal sealed class MemoryFixture : IDisposable
 
     public FlakyEmbeddingGenerator Embeddings { get; } = new();
 
+    public RecordingLogs Logs { get; } = new();
+
     public IMemoryStore Store { get; }
 
     public NachosService Service => Get<NachosService>();
@@ -50,6 +62,12 @@ internal sealed class MemoryFixture : IDisposable
     public RepresentationBuilder Representations => Get<RepresentationBuilder>();
 
     public PeerContextService PeerContext => Get<PeerContextService>();
+
+    public HybridSearchService Search => Get<HybridSearchService>();
+
+    public SessionContextService SessionContext => Get<SessionContextService>();
+
+    public ITokenCounter TokenCounter => Get<ITokenCounter>();
 
     private static CancellationToken Ct => CancellationToken.None;
 
@@ -96,6 +114,25 @@ internal sealed class MemoryFixture : IDisposable
     public async Task SayAsync(string peer, string content, string session = "S1") =>
         await Store.Messages.AppendAsync(W, session, [new NewMessage(peer, content, 5, null, Clock.GetUtcNow())], null,
             [DeriveIntent.Derive], Ct);
+
+    /// <summary>
+    /// Appends one message to <paramref name="session"/>, a minute after the previous one, with its content as its only
+    /// chunk; the chunk is embedded as <paramref name="vector"/>, or left pending when it is null.
+    /// </summary>
+    public async Task<MessageRecord> PostAsync(string peer, string content, string session = "S1", float[]? vector = null)
+    {
+        var message = (await Store.Messages.AppendAsync(W, session,
+            new MessageAppend([new NewMessage(peer, content, 5, null, Clock.GetUtcNow())], Chunks: [[content]]), Ct)).Single();
+        Clock.Advance(TimeSpan.FromMinutes(1));
+        if (vector is not null)
+        {
+            var pending = await Store.Embeddings.ListPendingAsync(100_000, Ct);
+            await Store.Embeddings.SaveAsync(
+                pending.Single(p => p.Kind == PendingEmbeddingKind.MessageChunk && p.SourceId == message.PublicId), vector, "test", Ct);
+        }
+
+        return message;
+    }
 
     private T Get<T>()
         where T : notnull => _scope.ServiceProvider.GetRequiredService<T>();

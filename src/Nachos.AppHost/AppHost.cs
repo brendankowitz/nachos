@@ -7,11 +7,11 @@ var builder = DistributedApplication.CreateBuilder(args);
 // environment) must never reach a published manifest, so it is gated on run mode as well as on the environment.
 var developmentRun = builder.ExecutionContext.IsRunMode && builder.Environment.IsDevelopment();
 
-// The image tag is the same build the FTS image in eng/docker/mssql-fts/Dockerfile is based on; bump both together.
-// The data volume keeps the database across restarts, so the default (persisted) SA password parameter is kept
+// SQL Server runs the Full-Text Search image built from eng/docker/mssql-fts; the base tag (MSSQL_UPDATE) is pinned in that
+// Dockerfile. The data volume keeps the database across restarts, so the default (persisted) SA password parameter is kept
 // rather than regenerated.
 var sql = builder.AddSqlServer("sql")
-    .WithImageTag("2025-CU9-ubuntu-24.04")
+    .WithDockerfile("../../eng/docker/mssql-fts")
     .WithDataVolume();
 var nachosDb = sql.AddDatabase("nachos");
 
@@ -69,6 +69,25 @@ foreach (var project in new[] { api, worker })
             if (builder.Configuration[$"AzureOpenAI:{setting}"] is { Length: > 0 } deployment)
             {
                 project.WithEnvironment($"AzureOpenAI__{setting}", deployment);
+            }
+        }
+    }
+}
+
+// Nachos:Ai:Embeddings=Local (for example Nachos__Ai__Embeddings=Local in the AppHost's environment) embeds in-process with a
+// local ONNX model instead, beside either chat backend. Fetch the model first with `nachos models fetch`; both hosts read it
+// from the default models directory unless Embeddings:Local:ModelDirectory is set too.
+if (string.Equals(builder.Configuration["Nachos:Ai:Embeddings"], "Local", StringComparison.OrdinalIgnoreCase))
+{
+    foreach (var project in new[] { api, worker })
+    {
+        project.WithEnvironment("Nachos__Ai__Embeddings", "Local")
+            .WithEnvironment("ORT_DISABLE_TELEMETRY", "1");
+        foreach (var setting in new[] { "Model", "ModelDirectory" })
+        {
+            if (builder.Configuration[$"Embeddings:Local:{setting}"] is { Length: > 0 } value)
+            {
+                project.WithEnvironment($"Embeddings__Local__{setting}", value);
             }
         }
     }

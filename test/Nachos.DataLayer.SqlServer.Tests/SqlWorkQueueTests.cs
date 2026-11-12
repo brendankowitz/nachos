@@ -315,6 +315,188 @@ public sealed class SqlWorkQueueTests(SqlServerFixture fixture)
     }
 
     /// <summary>
+    /// Every lock combination of the deletion write barrier (spec §13.1) at once, on shared sessions of one workspace:
+    /// appends and derivation commits (lease, then workspace and session S), membership changes (workspace S, session U),
+    /// session updates (workspace S, session X), message metadata updates (workspace and session S), the chunk backfill
+    /// (S on several sessions), conclusion inserts naming several sessions, and workspace updates (workspace X). Part-way
+    /// through, a spare session that has its own pending work and backfill is accepted for deletion. Every call must
+    /// succeed and the server's deadlock counter must not move.
+    /// </summary>
+    [Fact]
+    public async Task ParallelWritersAndDeletion_NoDeadlock()
+    {
+        var database = await DatabaseAsync();
+        var deadlocksBefore = await DeadlockCountAsync(database);
+        var store = database.CreateStore(TimeProvider.System);
+        var (workspace, first) = await ArrangeAsync(store);
+        var sessions = new[] { first, Unique("sess"), Unique("sess") };
+        var spare = Unique("spare");
+        foreach (var name in sessions.Skip(1).Append(spare))
+        {
+            await store.Sessions.GetOrCreateAsync(workspace, name, null, null, null, Ct);
+        }
+
+        var senders = new[] { "alice", "bob", "carol" };
+        foreach (var sender in senders)
+        {
+            await store.Peers.GetOrCreateAsync(workspace, sender, null, null, Ct);
+        }
+
+        // Unchunked messages for the backfill and the metadata updates, and pending work on the spare session.
+        var existing = new List<MessageRecord>();
+        foreach (var name in sessions.Append(spare))
+        {
+            existing.AddRange(await store.Messages.AppendAsync(
+                workspace, name, [.. Enumerable.Range(0, 4).Select(i => new NewMessage("alice", $"m{i}", 2, null, null))], null, Ct));
+        }
+
+        await AppendAsync(store, workspace, spare, "bob", count: 3);
+        var shared = existing.Where(message => message.SessionName != spare).ToList();
+
+        const int Appenders = 4;
+        const int AppendsEach = 10;
+        var appending = Appenders;
+        var appended = 0;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task Run(Func<int, Task> loop, int count) =>
+            Task.WhenAll(Enumerable.Range(0, count).Select(i => Task.Run(async () =>
+            {
+                await gate.Task;
+                await loop(i);
+            })));
+
+        var appends = Run(
+            async appender =>
+            {
+                for (var i = 0; i < AppendsEach; i++)
+                {
+                    await AppendAsync(store, workspace, sessions[(appender + i) % sessions.Length], senders[i % senders.Length], count: 2);
+                    Interlocked.Increment(ref appended);
+                }
+
+                Interlocked.Decrement(ref appending);
+            },
+            Appenders);
+        var workers = Run(
+            async worker =>
+            {
+                while (true)
+                {
+                    var lease = await store.WorkQueue.TryAcquireAsync($"worker-{worker}", Batching, TimeSpan.FromMinutes(1), Ct);
+                    if (lease is null)
+                    {
+                        if (Volatile.Read(ref appending) == 0 && await OpenRepresentationItemsAsync(database, workspace) == 0)
+                        {
+                            return;
+                        }
+
+                        await Task.Delay(5, Ct);
+                        continue;
+                    }
+
+                    await store.Conclusions.CommitDerivationAsync(lease, OneConclusionPerItem(workspace, lease), Ct);
+                }
+            },
+            4);
+        var members = Run(
+            async writer =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var session = sessions[(writer + i) % sessions.Length];
+                    if (i % 2 == 0)
+                    {
+                        await store.Sessions.AddPeersAsync(workspace, session, new Dictionary<string, SessionPeerConfig> { [senders[i % 3]] = new() }, Ct);
+                    }
+                    else
+                    {
+                        await store.Sessions.SetPeersAsync(workspace, session, senders.ToDictionary(s => s, _ => new SessionPeerConfig()), Ct);
+                    }
+                }
+            },
+            2);
+        var sessionUpdates = Run(
+            async writer =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    await store.Sessions.UpdateAsync(workspace, sessions[(writer + i) % sessions.Length], new JsonObject { ["n"] = i }, null, Ct);
+                }
+            },
+            2);
+        var metadataUpdates = Run(
+            async writer =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var message = shared[(writer * 5 + i) % shared.Count];
+                    await store.Messages.UpdateMetadataAsync(workspace, message.SessionName, message.PublicId, new JsonObject { ["n"] = i }, Ct);
+                }
+            },
+            2);
+        var backfills = Run(
+            async writer =>
+            {
+                for (var i = 0; i < 5; i++)
+                {
+                    var batch = (writer % 2 == 0 ? existing : Enumerable.Reverse(existing))
+                        .Select(message => new MessageChunk(workspace, message.SessionName, message.PublicId, 0, message.Content))
+                        .ToList();
+                    await store.Embeddings.AddChunksAsync(batch, Ct);
+                }
+            },
+            2);
+        var inserts = Run(
+            async writer =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var named = writer % 2 == 0 ? sessions : Enumerable.Reverse(sessions).ToArray();
+                    await store.Conclusions.InsertAsync(
+                        workspace,
+                        [.. named.Select(session => new NewConclusion("alice", "bob", session, ConclusionLevel.Explicit, $"w{writer} {i} {session}", null, [], null))],
+                        Ct);
+                }
+            },
+            2);
+        var workspaceUpdates = Run(
+            async _ =>
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    await store.Workspaces.UpdateAsync(workspace, new JsonObject { ["n"] = i }, null, Ct);
+                }
+            },
+            1);
+        var deletion = Run(
+            async _ =>
+            {
+                while (Volatile.Read(ref appended) < Appenders * AppendsEach / 2)
+                {
+                    await Task.Delay(5, Ct);
+                }
+
+                (await store.Deletion.BeginDeleteSessionAsync(workspace, spare, Ct)).AlreadyDeleting.ShouldBeFalse();
+            },
+            1);
+
+        gate.SetResult();
+        await Task.WhenAll(appends, workers, members, sessionUpdates, metadataUpdates, backfills, inserts, workspaceUpdates, deletion);
+
+        (await store.Sessions.GetAsync(workspace, spare, Ct)).ShouldNotBeNull().State.ShouldBe(LifecycleState.Deleting);
+        (await OpenRepresentationItemsAsync(database, workspace)).ShouldBe(0);
+        (await store.Conclusions.ListAsync(workspace, null, ConclusionOrder.CreatedAt, new PageRequest(1, 1), Ct)).Total
+            .ShouldBeGreaterThanOrEqualTo(2 * 10 * sessions.Length);
+        (await DeadlockCountAsync(database) - deadlocksBefore).ShouldBe(0, "deadlocks during the run");
+    }
+
+    private static Task<int> OpenRepresentationItemsAsync(SqlTestDatabase database, string workspace) =>
+        ScalarAsync<int>(
+            database,
+            "SELECT COUNT(*) FROM dbo.WorkItems AS i JOIN dbo.Workspaces AS w ON w.Id = i.WorkspaceId WHERE w.Name = @w AND i.TaskType = 1 AND i.Status IN (0, 1)",
+            ("@w", workspace));
+
+    /// <summary>
     /// API inserts and derivations that create the same new collections, listed in opposite orders, run together. Each
     /// creates the collections in key order, so their unique-key inserts cannot deadlock (in conclusion order they did).
     /// </summary>

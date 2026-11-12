@@ -136,6 +136,6 @@ internal static partial class CliHelp
         }
     }
 
-    [GeneratedRegex(@"^  ([a-z][a-z0-9-]*)(?:, [a-z][a-z0-9-]*)*(?:\s{2,}.*)?$")]
+    [GeneratedRegex(@"^  ([a-z][a-z0-9-]*)(?: <[a-z][a-z0-9-]*>)*(?:, [a-z][a-z0-9-]*)*(?:\s{2,}.*)?$")]
     private static partial Regex CommandLine();
 }

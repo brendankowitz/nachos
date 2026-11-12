@@ -13,6 +13,7 @@ public interface IWorkspaceStore
     /// existing workspace is returned unchanged. Concurrent calls for one name yield exactly one row and identical
     /// results, whichever caller's values won.
     /// </summary>
+    /// <exception cref="ConflictException">The workspace exists and is being deleted.</exception>
     Task<WorkspaceRecord> GetOrCreateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct);
 
@@ -24,6 +25,7 @@ public interface IWorkspaceStore
     /// are gone); a null argument leaves that field unchanged.
     /// </summary>
     /// <exception cref="NotFoundException">The workspace does not exist.</exception>
+    /// <exception cref="ConflictException">The workspace is being deleted.</exception>
     Task<WorkspaceRecord> UpdateAsync(
         string name, JsonObject? metadata, JsonObject? configuration, CancellationToken ct);
 

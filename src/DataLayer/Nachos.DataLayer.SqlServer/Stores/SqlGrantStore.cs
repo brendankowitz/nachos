@@ -24,8 +24,10 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
         ReentryGuard.ThrowIfReentered();
         ColumnLimits.RequireGrant(grant.ObjectId, grant.Role);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        long? workspaceId = grant.WorkspaceName is { } workspace ? await Lookups.RequireWorkspaceIdAsync(db, workspace, ct) : null;
+        // A workspace grant is a write under the workspace (spec §13.1): its S lock keeps the row from being deleted first.
+        long? workspaceId = grant.WorkspaceName is { } workspace ? await WriteAdmission.AdmitWorkspaceAsync(db, workspace, ct) : null;
         try
         {
             // The unique constraint treats NULL workspaces as equal, so a concurrent duplicate add fails here and is a no-op.
@@ -50,6 +52,8 @@ internal sealed class SqlGrantStore(SqlStoreRuntime runtime) : IGrantStore
                     "The grant differs from an existing grant only by trailing spaces in its object id or role, which the SQL Server provider cannot store side by side.");
             }
         }
+
+        await transaction.CommitAsync(ct);
     }
 
     public async Task RemoveAsync(GrantRecord grant, CancellationToken ct)

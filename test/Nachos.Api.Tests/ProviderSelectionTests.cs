@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Nachos.Abstractions.Stores;
+using Nachos.Core.Llm;
 using Nachos.DataLayer.InMemory;
 using Nachos.DataLayer.SqlServer;
 using Nachos.DataLayer.SqlServer.Schema;
@@ -11,7 +13,7 @@ namespace Nachos.Api.Tests;
 
 /// <summary>
 /// Which provider the API registers for a given configuration. Only the registration is inspected (the SQL store opens no
-/// connection until it is used), so no database is needed.
+/// connection until it is used, and the startup embedding model check, which would, is removed), so no database is needed.
 /// </summary>
 public sealed class ProviderSelectionTests
 {
@@ -119,6 +121,15 @@ public sealed class ProviderSelectionTests
             {
                 builder.UseSetting(key, value);
             }
+
+            // The embedding model check reads the store at startup; these tests only inspect the registration.
+            builder.ConfigureTestServices(services =>
+            {
+                foreach (var check in services.Where(d => d.ImplementationType == typeof(EmbeddingSpaceCheck)).ToList())
+                {
+                    services.Remove(check);
+                }
+            });
         }
 
         public IMemoryStore Store()

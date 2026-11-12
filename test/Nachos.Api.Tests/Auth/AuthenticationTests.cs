@@ -36,7 +36,7 @@ public sealed class AuthenticationTests
         _ = host.Http;
         var routes = host.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()
             .Where(endpoint => endpoint.RoutePattern.RawText!.StartsWith("/v3", StringComparison.Ordinal)).ToArray();
-        routes.Length.ShouldBe(56);
+        routes.Length.ShouldBe(59);
         foreach (var route in routes)
             route.Metadata.GetOrderedMetadata<IAuthorizeData>().ShouldNotBeEmpty(route.RoutePattern.RawText);
     }

@@ -61,10 +61,26 @@ public interface IMemoryStore
 
     IEmbeddingStore Embeddings { get; }
 
+    /// <summary>Session summaries, saved under a fenced lease.</summary>
+    ISummaryStore Summaries { get; }
+
+    /// <summary>Vector and lexical candidate retrieval over messages.</summary>
+    IMessageSearch Search { get; }
+
+    /// <summary>Deletion acceptance, the write barrier's lifecycle, and the deletion job's purge.</summary>
+    IDeletionStore Deletion { get; }
+
     /// <summary>
     /// True when <paramref name="exception"/>, thrown by an operation of this store, is a failure that retrying later
     /// can fix: a deadlock, a timeout, a dropped connection, or a database that is briefly unavailable or throttling.
     /// The background workers retry such a failure without charging it to the work.
     /// </summary>
     bool IsTransientFailure(Exception exception);
+
+    /// <summary>
+    /// True when <paramref name="exception"/> means the store could not be reached or answered for now: a transient failure
+    /// (<see cref="IsTransientFailure"/>) or a failure to connect. Startup checks wait for such a failure to pass instead of
+    /// failing the host; anything else (a missing table, a refused schema, a denied permission) is a configuration error.
+    /// </summary>
+    bool IsUnavailableFailure(Exception exception);
 }

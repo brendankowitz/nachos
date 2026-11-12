@@ -49,6 +49,8 @@ public static class RetryClassifier
         // Adding sessions to a scope enqueues a scope_backfill (spec §14); a replay may enqueue a second one.
         // Spec §16: never auto-retried until the backfill enqueue is shown to be idempotent; revisit at M6.
         (Split("v3/workspaces/{}/scopes/{}/sessions"), RetryCategory.Never),
+        // Removal is classified with the add until M6 defines what a scope membership change enqueues.
+        (Split("v3/workspaces/{}/scopes/{}/sessions/remove"), RetryCategory.Never),
 
         // Non-idempotent and without Idempotency-Key support: each call mints a key, enqueues a dream, or
         // registers an endpoint.

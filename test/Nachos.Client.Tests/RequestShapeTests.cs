@@ -22,13 +22,13 @@ public sealed class RequestShapeTests
     private const string CreatedAt = "2026-10-08T12:00:00Z";
 
     private const string WorkspaceJson =
-        """{"id":"w1","metadata":{"tier":"gold"},"configuration":{"reasoning":{"enabled":true}},"created_at":"2026-10-08T12:00:00Z"}""";
+        """{"id":"w1","metadata":{"tier":"gold"},"configuration":{"reasoning":{"enabled":true}},"created_at":"2026-10-08T12:00:00Z","uid":"u-w1"}""";
 
     private const string PeerJson =
-        """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","metadata":{"role":"user"},"configuration":{"observe_me":true}}""";
+        """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","metadata":{"role":"user"},"configuration":{"observe_me":true},"uid":"u-alice"}""";
 
     private const string SessionJson =
-        """{"id":"s1","is_active":true,"workspace_id":"w1","metadata":{"topic":"x"},"configuration":{},"created_at":"2026-10-08T12:00:00Z"}""";
+        """{"id":"s1","is_active":true,"workspace_id":"w1","metadata":{"topic":"x"},"configuration":{},"created_at":"2026-10-08T12:00:00Z","uid":"u-s1","scopes":null}""";
 
     private const string MessageJson =
         """{"id":"m1","content":"hello","peer_id":"alice","session_id":"s1","metadata":{"k":"v"},"created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":3}""";
@@ -49,7 +49,7 @@ public sealed class RequestShapeTests
             .ToArray();
 
         missing.ShouldBeEmpty();
-        typeof(INachosClient).GetMethods().Length.ShouldBe(32);
+        typeof(INachosClient).GetMethods().Length.ShouldBe(40);
     }
 
     [Fact]
@@ -596,6 +596,138 @@ public sealed class RequestShapeTests
     }
 
     [Fact]
+    public async Task SearchWorkspaceAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchWorkspaceAsync("w1", new WorkspaceMessageSearchOptions("green tea", 5, new JsonObject { ["peer_id"] = "alice" })),
+            HttpStatusCode.OK,
+            "[" + MessageJson + "]");
+
+        AssertRequest(request, "POST", W + "/search", "/v3/workspaces/w1/search",
+            """{"query":"green tea","limit":5,"filters":{"peer_id":"alice"}}""");
+        found.Single().Id.ShouldBe("m1");
+
+        var (_, scoped) = await Send(c => c.SearchWorkspaceAsync("w1", new WorkspaceMessageSearchOptions("q", Scope: "named")),
+            HttpStatusCode.OK, "[]");
+        AssertBody(scoped, """{"query":"q","limit":10,"scope":"named"}""");
+    }
+
+    [Fact]
+    public async Task SearchSessionAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchSessionAsync("w1", "s1", new MessageSearchOptions("tea")), HttpStatusCode.OK,
+            """[{"id":"m1","content":"hello","peer_id":"alice","session_id":"s1","created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":3}]""");
+
+        AssertRequest(request, "POST", S + "/search", "/v3/workspaces/w1/sessions/s1/search", """{"query":"tea","limit":10}""");
+        found.Single().Metadata.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task SearchPeerAsync_Shape()
+    {
+        var (found, request) = await Send(
+            c => c.SearchPeerAsync("w1", "alice", new MessageSearchOptions("tea", 2, new JsonObject { ["session_id"] = "s1" })),
+            HttpStatusCode.OK, "[]");
+
+        AssertRequest(request, "POST", P + "/search", "/v3/workspaces/w1/peers/alice/search",
+            """{"query":"tea","limit":2,"filters":{"session_id":"s1"}}""");
+        found.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task GetSessionContextAsync_Shape()
+    {
+        var (context, request) = await Send(
+            c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery(
+                Tokens: 500, Summary: false, SearchQuery: "green tea", PeerTarget: "bob", PeerPerspective: "alice", Scope: "named",
+                Sessions: ["s1", "s 2"], LimitToSession: false, SearchTopK: 3, SearchMaxDistance: 0.25, IncludeMostFrequent: true,
+                MaxConclusions: 7)),
+            HttpStatusCode.OK,
+            $$"""{"id":"s1","messages":[{{MessageJson}}],"summary":{"content":"so far","message_id":"m1","summary_type":"short","created_at":"2026-10-08T12:00:00Z","token_count":2},"peer_representation":"r","peer_card":["c"]}""");
+
+        AssertRequest(request, "GET", S + "/context",
+            "/v3/workspaces/w1/sessions/s1/context?tokens=500&summary=false&search_query=green%20tea&peer_target=bob&peer_perspective=alice&scope=named&sessions=s1&sessions=s%202&limit_to_session=false&search_top_k=3&search_max_distance=0.25&include_most_frequent=true&max_conclusions=7",
+            null);
+        context.Id.ShouldBe("s1");
+        context.Messages.Single().Id.ShouldBe("m1");
+        context.Summary.ShouldBe(new Summary("so far", "m1", "short",
+            DateTimeOffset.Parse(CreatedAt, System.Globalization.CultureInfo.InvariantCulture), 2));
+        context.PeerRepresentation.ShouldBe("r");
+        context.PeerCard.ShouldBe(["c"]);
+
+        var (bare, plain) = await Send(c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery()), HttpStatusCode.OK,
+            """{"id":"s1","messages":[]}""");
+        plain.Uri.PathAndQuery.ShouldBe("/v3/workspaces/w1/sessions/s1/context");
+        bare.Summary.ShouldBeNull();
+        bare.PeerRepresentation.ShouldBeNull();
+        bare.PeerCard.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task GetSessionSummariesAsync_Shape()
+    {
+        var (summaries, request) = await Send(c => c.GetSessionSummariesAsync("w1", "s1"), HttpStatusCode.OK,
+            """{"id":"s1","long_summary":{"content":"all of it","message_id":"m9","summary_type":"long","created_at":"2026-10-08T12:00:00Z","token_count":40}}""");
+
+        AssertRequest(request, "GET", S + "/summaries", "/v3/workspaces/w1/sessions/s1/summaries", null);
+        summaries.Id.ShouldBe("s1");
+        summaries.ShortSummary.ShouldBeNull();
+        summaries.LongSummary!.SummaryType.ShouldBe("long");
+        summaries.LongSummary.TokenCount.ShouldBe(40);
+    }
+
+    [Fact]
+    public async Task DeleteSessionAsync_Shape()
+    {
+        var (_, request) = await Send(
+            async c =>
+            {
+                await c.DeleteSessionAsync("w1", "s1");
+                return 0;
+            },
+            HttpStatusCode.Accepted,
+            null);
+
+        AssertRequest(request, "DELETE", S, "/v3/workspaces/w1/sessions/s1", null);
+    }
+
+    [Fact]
+    public async Task DeleteWorkspaceAsync_Shape()
+    {
+        var (_, request) = await Send(
+            async c =>
+            {
+                await c.DeleteWorkspaceAsync("w1");
+                return 0;
+            },
+            HttpStatusCode.Accepted,
+            null);
+
+        AssertRequest(request, "DELETE", W, "/v3/workspaces/w1", null);
+    }
+
+    [Fact]
+    public async Task ListJobsAsync_Shape()
+    {
+        var (page, request) = await Send(
+            c => c.ListJobsAsync("w1", new PageRequest(2, 10, Reverse: true)),
+            HttpStatusCode.OK,
+            PageOf("""{"id":"7","type":"deletion","target":{"kind":"session","id":"s1"},"status":"completed","attempts":1,"error":"superseded_by_workspace_deletion","created_at":"2026-10-08T12:00:00Z","completed_at":"2026-10-08T12:00:00Z"}""", page: 2, size: 10));
+
+        AssertRequest(request, "GET", W + "/jobs", "/v3/workspaces/w1/jobs?page=2&size=10&reverse=true", null);
+        AssertPage(page, page: 2, size: 10);
+        var created = DateTimeOffset.Parse(CreatedAt, System.Globalization.CultureInfo.InvariantCulture);
+        page.Items.Single().ShouldBe(new Job("7", "deletion", new JobTarget("session", "s1"), "completed", 1,
+            "superseded_by_workspace_deletion", created, created));
+
+        var (pending, _) = await Send(c => c.ListJobsAsync("w1", new PageRequest()), HttpStatusCode.OK,
+            PageOf("""{"id":"8","type":"deletion","target":{"kind":"workspace","id":"w1"},"status":"pending","attempts":0,"created_at":"2026-10-08T12:00:00Z"}""", page: 1, size: 50));
+        pending.Items.Single().Error.ShouldBeNull();
+        pending.Items.Single().CompletedAt.ShouldBeNull();
+    }
+
+    [Fact]
     public async Task ApiKey_IsSentAsBearer()
     {
         var (_, request) = await Send(c => c.GetMessageAsync("w1", "s1", "m1"), HttpStatusCode.OK, MessageJson);
@@ -688,16 +820,17 @@ public sealed class RequestShapeTests
     public async Task AbsentOptionalResponseFields_AreHandled()
     {
         var (workspace, _) = await Send(
-            c => c.GetOrCreateWorkspaceAsync("w1"), HttpStatusCode.OK, """{"id":"w1","created_at":"2026-10-08T12:00:00Z"}""");
+            c => c.GetOrCreateWorkspaceAsync("w1"), HttpStatusCode.OK, """{"id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""");
         workspace.Metadata.ShouldBeEmpty();
         workspace.Configuration.ShouldBeEmpty();
 
         var (session, _) = await Send(
             c => c.GetOrCreateSessionAsync("w1", "s1"),
             HttpStatusCode.OK,
-            """{"id":"s1","is_active":false,"workspace_id":"w1","metadata":null,"created_at":"2026-10-08T12:00:00Z"}""");
+            """{"id":"s1","is_active":false,"workspace_id":"w1","metadata":null,"created_at":"2026-10-08T12:00:00Z","uid":"u"}""");
         session.Metadata.ShouldBeEmpty();
         session.Configuration.ShouldBeEmpty();
+        session.Scopes.ShouldBeNull();
 
         var (messages, _) = await Send(
             c => c.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")]),
@@ -711,8 +844,24 @@ public sealed class RequestShapeTests
         var (page, _) = await Send(
             c => c.ListPeersAsync("w1", null, null, new PageRequest()),
             HttpStatusCode.OK,
-            """{"items":[{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}],"total":1,"page":1,"size":50,"pages":1}""");
+            """{"items":[{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}],"total":1,"page":1,"size":50,"pages":1}""");
         page.Items.Single().Metadata.ShouldBeEmpty();
+
+        var (conclusion, _) = await Send(
+            c => c.GetConclusionAsync("w1", "c1"), HttpStatusCode.OK,
+            """{"id":"c1","content":"x","observer_id":"alice","observed_id":"bob","session_id":null,"level":"explicit","times_derived":1,"source_ids":[],"created_at":"2026-10-08T12:00:00Z"}""");
+        conclusion.SourceMessageIds.ShouldBeNull();
+    }
+
+    [Theory]
+    [InlineData("""{"id":"w1","created_at":"2026-10-08T12:00:00Z"}""")]
+    [InlineData("""{"id":"w1","created_at":"2026-10-08T12:00:00Z","uid":null}""")]
+    public async Task MissingOrNullUid_Throws(string body)
+    {
+        var stub = new StubHandler((_, _) => StubHandler.Json(HttpStatusCode.OK, body));
+        var client = new NachosHttpClient(new HttpClient(stub), Options);
+
+        await Should.ThrowAsync<System.Text.Json.JsonException>(() => client.GetOrCreateWorkspaceAsync("w1"));
     }
 
     [Fact]
@@ -725,8 +874,8 @@ public sealed class RequestShapeTests
     }
 
     [Theory]
-    [InlineData("""{"id":"w1","id":"w2","created_at":"2026-10-08T12:00:00Z"}""")]
-    [InlineData("""{"id":"w1","metadata":{"a":1,"a":2},"created_at":"2026-10-08T12:00:00Z"}""")]
+    [InlineData("""{"id":"w1","id":"w2","created_at":"2026-10-08T12:00:00Z","uid":"u"}""")]
+    [InlineData("""{"id":"w1","metadata":{"a":1,"a":2},"created_at":"2026-10-08T12:00:00Z","uid":"u"}""")]
     [InlineData("""{"id":"w1","created_at":"2026-10-08T12:00:00Z""")]
     public async Task MalformedOrDuplicateKeySuccessBody_ThrowsJsonException(string body)
     {
@@ -743,7 +892,7 @@ public sealed class RequestShapeTests
     {
         var stub = new StubHandler((_, _) => StubHandler.Json(
             HttpStatusCode.OK,
-            """{"items":[{"id":"p","id":"q","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}],"total":1,"page":1,"size":50,"pages":1}"""));
+            """{"items":[{"id":"p","id":"q","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}],"total":1,"page":1,"size":50,"pages":1}"""));
         var client = new NachosHttpClient(new HttpClient(stub), Options);
 
         var ex = await Should.ThrowAsync<Exception>(() => client.ListPeersAsync("w1", null, null, new PageRequest()));

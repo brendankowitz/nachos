@@ -139,7 +139,7 @@ public sealed class SqlSchemaTransitionTests(SqlServerFixture fixture)
         {
             ConnectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString,
         };
-        return new SqlMemoryStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System, NullLogger<SqlMemoryStore>.Instance);
+        return SqlTestDatabase.CreateStore(options, new SchemaGate(new SchemaDeployer(options), options), TimeProvider.System);
     }
 
     private static async Task<object?> ScalarAsync(string connectionString, string sql)

@@ -84,11 +84,11 @@ public sealed class OpenApiPathParameterTests : ApiTest
         query["page"].GetProperty("default").GetInt32().ShouldBe(1);
         query["size"].GetProperty("maximum").GetInt32().ShouldBe(100);
         query["size"].GetProperty("default").GetInt32().ShouldBe(50);
-        var responses = paths.GetProperty("/v3/workspaces/{workspace_id}").GetProperty("delete").GetProperty("responses");
+        var responses = paths.GetProperty("/v3/workspaces/{workspace_id}/schedule_dream").GetProperty("post").GetProperty("responses");
         responses.EnumerateObject().Select(response => response.Name).ShouldBe(["501"]);
         responses.GetProperty("501").GetProperty("content").GetProperty("application/json").GetProperty("schema")
             .GetProperty("$ref").GetString().ShouldBe("#/components/schemas/ErrorResponse");
-        var deferred = await Send(HttpMethod.Delete, W, status: 501);
+        var deferred = await Send(HttpMethod.Post, W + "/schedule_dream", "{}", 501);
         Problem(deferred, 501, JsonValueKind.String);
     }
 

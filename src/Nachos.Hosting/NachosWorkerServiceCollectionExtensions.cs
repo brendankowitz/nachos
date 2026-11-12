@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Nachos.Core.Deletion;
 using Nachos.Core.Worker;
 using Nachos.Hosting;
 
@@ -8,9 +9,10 @@ namespace Microsoft.Extensions.DependencyInjection;
 public static class NachosWorkerServiceCollectionExtensions
 {
     /// <summary>
-    /// Runs the background workers in this host: the <see cref="QueueConsumerService"/> (with the Deriver, see
-    /// <see cref="NachosDeriverBuilderExtensions.AddDeriver"/>) and the <see cref="ReconcilerService"/>. Options bind from
-    /// <c>Worker</c> and <c>Reconciler</c> and are validated at host start.
+    /// Runs the background workers in this host: the <see cref="QueueConsumerService"/> (with the Deriver and the Summarizer, see
+    /// <see cref="NachosDeriverBuilderExtensions.AddDeriver"/>, and the <see cref="DeletionService"/>) and the
+    /// <see cref="ReconcilerService"/>. Options bind from <c>Worker</c>, <c>Reconciler</c> and <c>Deletion</c> and are
+    /// validated at host start.
     /// </summary>
     /// <remarks>
     /// The Deriver needs a chat client and an embedding generator (<c>UseChatClient</c> and <c>UseEmbeddingGenerator</c>,
@@ -21,6 +23,7 @@ public static class NachosWorkerServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddDeriver();
+        builder.AddSummarizer();
         var services = builder.Services;
         services.AddOptions<WorkerOptions>()
             .BindConfiguration("Worker")
@@ -43,12 +46,19 @@ public static class NachosWorkerServiceCollectionExtensions
                 o => o.TombstoneRetention >= TimeSpan.Zero && o.CompletedRetention >= TimeSpan.Zero,
                 "Reconciler:TombstoneRetention and Reconciler:CompletedRetention must not be negative.")
             .Validate(
-                o => o.EmbeddingBatchSize >= 1 && o.EmbeddingMaxAttempts >= 1,
-                "Reconciler:EmbeddingBatchSize and Reconciler:EmbeddingMaxAttempts must be at least 1.")
+                o => o.EmbeddingBatchSize >= 1 && o.EmbeddingMaxAttempts >= 1 && o.BackfillBatch >= 1,
+                "Reconciler:EmbeddingBatchSize, Reconciler:EmbeddingMaxAttempts and Reconciler:BackfillBatch must be at least 1.")
             .Validate(
                 o => o.FailedEmbeddingTicksBeforeError >= 1,
                 "Reconciler:FailedEmbeddingTicksBeforeError must be at least 1.")
             .ValidateOnStart();
+        services.AddOptions<DeletionOptions>()
+            .BindConfiguration("Deletion")
+            .Validate(
+                o => o.BatchSize is >= 1 and <= DeletionOptions.MaxBatchSize,
+                $"Deletion:BatchSize must be from 1 to {DeletionOptions.MaxBatchSize}.")
+            .ValidateOnStart();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IWorkHandler, DeletionService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, QueueConsumerService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, ReconcilerService>());
         return builder;

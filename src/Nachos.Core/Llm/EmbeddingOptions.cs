@@ -8,4 +8,10 @@ public sealed class EmbeddingOptions
     /// <see cref="Abstractions.Domain.VectorSpace.Dimensions"/> (1536) the database stores.
     /// </summary>
     public int? RequestDimensions { get; set; }
+
+    /// <summary>
+    /// The most tokens in one message chunk (<see cref="Memory.MessageChunker"/>); default 512. The embedding model's own
+    /// limit (<see cref="EmbeddingChunking.MaxTokens"/>) caps it.
+    /// </summary>
+    public int ChunkTokens { get; set; } = EmbeddingChunking.DefaultMaxTokens;
 }

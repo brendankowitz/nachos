@@ -23,6 +23,8 @@ public sealed class NachosOptions
 
     public DeriverOptions Deriver { get; set; } = new();
 
+    public SearchOptions Search { get; set; } = new();
+
     /// <exception cref="OptionsValidationException">A value is out of range; the message lists every one.</exception>
     internal void Validate()
     {
@@ -57,6 +59,20 @@ public sealed class NachosOptions
             {
                 errors.Add("Summary token budgets must be positive.");
             }
+
+            if (Summary.MaxInputTokens < 1)
+            {
+                errors.Add("Summary.MaxInputTokens must be positive.");
+            }
+        }
+
+        if (Search is null)
+        {
+            errors.Add("Search is required.");
+        }
+        else if (Search.MaxVectorCandidates < 1)
+        {
+            errors.Add("Search.MaxVectorCandidates must be at least 1, or empty to compare every chunk.");
         }
 
         if (Deriver is null)

@@ -5,8 +5,9 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
-  <!-- Nachos.Testing is a shared class library, not a test project, so it only gets the base props. -->
-  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Nachos.Testing'">
+  <!-- Nachos.Testing is a shared class library and Nachos.Benchmarks a console app; neither is a test project, so they
+       only get the base props. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Nachos.Testing' And '$(MSBuildProjectName)' != 'Nachos.Benchmarks'">
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />

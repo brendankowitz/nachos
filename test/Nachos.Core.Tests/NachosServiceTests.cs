@@ -46,7 +46,7 @@ public sealed class NachosServiceTests
         var created = await Service.GetOrCreateWorkspaceAsync("W", metadata, config, _ct);
         var updated = await Service.UpdateWorkspaceAsync("W", ct: _ct);
 
-        created.ShouldBe(new Workspace(row.Name, row.Metadata, row.Configuration, Created));
+        created.ShouldBe(new Workspace(row.Name, row.Metadata, row.Configuration, Created, ResourceUid.ForWorkspace("W", Created)));
         updated.ShouldBe(created);
         await _store.Workspaces.Received(1).GetOrCreateAsync("W",
             Arg.Is<JsonObject>(m => !ReferenceEquals(m, metadata) && m["literal"]!.GetValue<string>() == "x"),
@@ -65,7 +65,7 @@ public sealed class NachosServiceTests
         var created = await Service.GetOrCreatePeerAsync("W", "P", configuration: config, ct: _ct);
         var updated = await Service.UpdatePeerAsync("W", "P", ct: _ct);
 
-        created.ShouldBe(new Peer("P", "W", Created, row.Metadata, row.Configuration));
+        created.ShouldBe(new Peer("P", "W", Created, row.Metadata, row.Configuration, ResourceUid.ForPeer("W", "P", Created)));
         updated.ShouldBe(created);
         await _store.Peers.Received(1).GetOrCreateAsync("W", "P", Arg.Is<JsonObject?>(m => m == null),
             Arg.Is<JsonObject>(c => !ReferenceEquals(c, config) && c["observe_me"]!.GetValue<bool>() == false), _ct, false);
@@ -87,7 +87,9 @@ public sealed class NachosServiceTests
             configuration: new(Reasoning: new(true)), peers: peers, ct: _ct);
         var updated = await Service.UpdateSessionAsync("W", "S", ct: _ct);
 
-        created.ShouldBe(new Session("S", active, "W", row.Metadata, row.Configuration, Created));
+        created.ShouldBe(new Session("S", active, "W", row.Metadata, row.Configuration, Created,
+            ResourceUid.ForSession("W", "S", Created)));
+        created.Scopes.ShouldBeNull();
         updated.ShouldBe(created);
         await _store.Sessions.Received(1).GetOrCreateAsync("W", "S", Arg.Is<JsonObject?>(m => m == null),
             Arg.Is<JsonObject>(c => c["reasoning"]!["enabled"]!.GetValue<bool>()),
@@ -310,6 +312,44 @@ public sealed class NachosServiceTests
             """Off:{"observers":["P"],"reasoning_enabled":true,"custom_instructions":"Note hobbies."}""",
             """On:{"observers":["P"],"custom_instructions":"Be brief."}""",
         ]);
+    }
+
+    [Fact]
+    public async Task CreateMessages_PassesChunksAndSummaryIntent()
+    {
+        using var fixture = new InMemoryServiceFixture(withEmbeddings: true);
+        await fixture.Service.GetOrCreateWorkspaceAsync("W");
+        await fixture.Service.GetOrCreateSessionAsync("W", "On");
+        await fixture.Service.GetOrCreateSessionAsync("W", "Off", configuration: new(Summary: new(Enabled: false)));
+
+        // Twenty messages cross the default short-summary interval; the blank one has no chunks.
+        MessageCreate[] batch = [.. Enumerable.Range(1, 19).Select(i => new MessageCreate($"message {i}", "P")), new MessageCreate("   ", "P")];
+        await fixture.Service.CreateMessagesAsync("W", "On", batch);
+        await fixture.Service.CreateMessagesAsync("W", "Off", batch);
+
+        var chunks = await fixture.Store.Embeddings.ListPendingAsync(100, _ct);
+        chunks.Count.ShouldBe(38);
+        chunks.ShouldAllBe(chunk => chunk.Kind == PendingEmbeddingKind.MessageChunk && chunk.ChunkIndex == 0);
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(100, _ct)).ShouldBeEmpty();
+        var policy = new Dictionary<WorkTaskType, WorkBatchPolicy> { [WorkTaskType.Summary] = WorkBatchPolicy.Immediate };
+        var lease = (await fixture.Store.WorkQueue.TryAcquireAsync("w", policy, TimeSpan.FromMinutes(1), _ct)).ShouldNotBeNull();
+        var item = lease.Items.ShouldHaveSingleItem();
+        item.SessionName.ShouldBe("On");
+        item.Payload.ToJsonString().ShouldBe("""{"kind":"short","through_seq":20}""");
+        (await fixture.Store.WorkQueue.TryAcquireAsync("w", policy, TimeSpan.FromMinutes(1), _ct)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task CreateMessages_WithoutAnEmbeddingModel_StoresNoChunks()
+    {
+        using var fixture = new InMemoryServiceFixture();
+        await fixture.Service.GetOrCreateWorkspaceAsync("W");
+        await fixture.Service.GetOrCreateSessionAsync("W", "S");
+
+        await fixture.Service.CreateMessagesAsync("W", "S", [new MessageCreate("hello", "P")]);
+
+        (await fixture.Store.Embeddings.ListPendingAsync(10, _ct)).ShouldBeEmpty();
+        (await fixture.Store.Embeddings.ListUnchunkedMessagesAsync(10, _ct)).ShouldHaveSingleItem().Content.ShouldBe("hello");
     }
 
     private static void CheckPage<T>(Page<T> page, string id, Func<T, string> getId)

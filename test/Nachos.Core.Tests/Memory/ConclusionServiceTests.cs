@@ -33,7 +33,7 @@ public sealed class ConclusionServiceTests
 
         created.Count.ShouldBe(100);
         created.ShouldAllBe(c => c.Level == "explicit" && c.SourceIds.Count == 0 && c.TimesDerived == 1
-            && c.ObserverId == "bob" && c.ObservedId == "alice" && c.SessionId == "S1");
+            && c.ObserverId == "bob" && c.ObservedId == "alice" && c.SessionId == "S1" && c.SourceMessageIds == null);
         created.Select(c => c.Content).ShouldBe(Enumerable.Range(0, 100).Select(i => $"fact {i}"));
         (await f.Service.ListConclusionsAsync(W, null, new(Size: 100))).Items.Select(c => c.Id).ShouldBe(created.Select(c => c.Id));
     }
@@ -101,7 +101,7 @@ public sealed class ConclusionServiceTests
         var created = (await f.Service.CreateConclusionsAsync(W, [Create("alice likes tea")])).Single();
 
         (await f.Service.GetConclusionAsync(W, created.Id)).Content.ShouldBe("alice likes tea");
-        (await f.Store.Embeddings.ListPendingAsync(10, default)).Single().ConclusionId.ShouldBe(created.Id);
+        (await f.Store.Embeddings.ListPendingAsync(10, default)).Single().SourceId.ShouldBe(created.Id);
         (await f.Service.QueryConclusionsAsync(W, new("alice likes tea"))).ShouldBeEmpty();
     }
 

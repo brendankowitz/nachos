@@ -15,6 +15,8 @@ public sealed class NoticeTests
             Path.Combine("eng", "licenses", "Microsoft.SqlServer.DacFx", "170.4.83", "license.txt"),
             Path.Combine("eng", "licenses", "Microsoft.Data.SqlClient.SNI.runtime", "6.0.3", "LICENSE.txt"),
             Path.Combine("eng", "licenses", "Microsoft.SqlServer.Types", "170.1000.7", "license.md"),
+            Path.Combine("eng", "licenses", "Microsoft.ML.OnnxRuntime", "1.31.1", "LICENSE"),
+            Path.Combine("eng", "licenses", "Microsoft.ML.OnnxRuntime", "1.31.1", "ThirdPartyNotices.txt"),
         ];
         foreach (var relative in notices)
         {

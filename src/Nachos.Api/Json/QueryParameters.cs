@@ -4,13 +4,17 @@ using Microsoft.OpenApi;
 namespace Nachos.Api.Json;
 
 /// <summary>
-/// Typed query-string values. An absent parameter is null; a repeated one uses its last value; a value that does not
-/// parse is a 422 located at <c>["query", name]</c>.
+/// Typed query-string values. An absent parameter is null; a repeated one uses its last value (except
+/// <see cref="Texts"/>, which keeps them all); a value that does not parse is a 422 located at <c>["query", name]</c>.
 /// </summary>
 internal static class QueryParameters
 {
     public static string? Text(HttpRequest request, string name) =>
         request.Query.TryGetValue(name, out var values) ? values[^1] : null;
+
+    /// <summary>Every value of a repeated parameter, in order; null when it is absent.</summary>
+    public static string[]? Texts(HttpRequest request, string name) =>
+        request.Query.TryGetValue(name, out var values) ? [.. values.Select(value => value ?? "")] : null;
 
     public static int? Integer(HttpRequest request, string name)
     {
@@ -56,6 +60,8 @@ internal static class QueryParameters
                     Schema = new OpenApiSchema
                     {
                         Type = parameter.Type | JsonSchemaType.Null, Minimum = parameter.Minimum, Maximum = parameter.Maximum,
+                        Items = parameter.Items is { } items ? new OpenApiSchema { Type = items } : null,
+                        MaxItems = parameter.MaxItems,
                     },
                 });
             }
@@ -63,5 +69,9 @@ internal static class QueryParameters
         });
 }
 
-/// <summary>One optional query parameter as OpenAPI documents it; the bounds are inclusive.</summary>
-internal sealed record QueryParameter(string Name, JsonSchemaType Type, string? Minimum = null, string? Maximum = null);
+/// <summary>
+/// One optional query parameter as OpenAPI documents it; the bounds are inclusive. <paramref name="Items"/> is the item
+/// type of a repeated (array) parameter, and <paramref name="MaxItems"/> its most values.
+/// </summary>
+internal sealed record QueryParameter(string Name, JsonSchemaType Type, string? Minimum = null, string? Maximum = null,
+    JsonSchemaType? Items = null, int? MaxItems = null);

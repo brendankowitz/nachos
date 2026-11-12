@@ -8,3 +8,10 @@ CREATE TABLE [dbo].[ConclusionSources]
     CONSTRAINT [PK_ConclusionSources] PRIMARY KEY CLUSTERED ([DerivedId], [Position]),
     CONSTRAINT [FK_ConclusionSources_Conclusions] FOREIGN KEY ([DerivedId]) REFERENCES [dbo].[Conclusions] ([Id])
 );
+GO
+
+-- Serves the deletion job's search for the conclusions citing one it removed (spec 13.1, D7). Added by the M3 upgrade, so an
+-- index (additive, AutoSafe), not a constraint.
+CREATE NONCLUSTERED INDEX [IX_ConclusionSources_Source]
+    ON [dbo].[ConclusionSources] ([SourceId])
+    INCLUDE ([DerivedId]);

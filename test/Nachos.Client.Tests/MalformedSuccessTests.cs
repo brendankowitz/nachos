@@ -12,9 +12,9 @@ namespace Nachos.Client.Tests;
 /// </summary>
 public sealed class MalformedSuccessTests
 {
-    private const string WorkspaceJson = """{"id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
-    private const string PeerJson = """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
-    private const string SessionJson = """{"id":"s1","is_active":true,"workspace_id":"w1","created_at":"2026-10-08T12:00:00Z"}""";
+    private const string WorkspaceJson = """{"id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
+    private const string PeerJson = """{"id":"alice","workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
+    private const string SessionJson = """{"id":"s1","is_active":true,"workspace_id":"w1","created_at":"2026-10-08T12:00:00Z","uid":"u"}""";
     private const string MessageJson =
         """{"id":"m1","content":"hi","peer_id":"alice","session_id":"s1","created_at":"2026-10-08T12:00:00Z","workspace_id":"w1","token_count":1}""";
 
@@ -26,7 +26,11 @@ public sealed class MalformedSuccessTests
         ["ListSessions"] = (c => c.ListSessionsAsync("w1", null, new PageRequest()), SessionJson),
         ["ListSessionPeers"] = (c => c.ListSessionPeersAsync("w1", "s1", new PageRequest()), PeerJson),
         ["ListMessages"] = (c => c.ListMessagesAsync("w1", "s1", null, new PageRequest()), MessageJson),
+        ["ListJobs"] = (c => c.ListJobsAsync("w1", new PageRequest()), JobJson),
     };
+
+    private const string JobJson =
+        """{"id":"1","type":"deletion","target":{"kind":"session","id":"s1"},"status":"pending","attempts":0,"error":null,"created_at":"2026-10-08T12:00:00Z","completed_at":null}""";
 
     private static readonly Dictionary<string, Func<INachosClient, Task>> EntityRoutes = new()
     {
@@ -43,6 +47,8 @@ public sealed class MalformedSuccessTests
         ["GetMessage"] = c => c.GetMessageAsync("w1", "s1", "m1"),
         ["UpdateMessage"] = c => c.UpdateMessageAsync("w1", "s1", "m1", null),
         ["CreateKey"] = c => c.CreateKeyAsync("w1"),
+        ["GetSessionContext"] = c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery()),
+        ["GetSessionSummaries"] = c => c.GetSessionSummariesAsync("w1", "s1"),
     };
 
     /// <summary>{item} is replaced by a valid entity of the route's type.</summary>
@@ -127,6 +133,24 @@ public sealed class MalformedSuccessTests
             c => c.CreateMessagesAsync("w1", "s1", [new MessageCreate("hi", "alice")]),
             HttpStatusCode.Created,
             MalformedMessageBatches[bodyIndex]);
+    }
+
+    [Theory]
+    [MemberData(nameof(MessageBatchCases))]
+    public async Task MalformedSearchResult_ThrowsJsonException(int bodyIndex)
+    {
+        await ShouldThrowJson(
+            c => c.SearchSessionAsync("w1", "s1", new MessageSearchOptions("q")), HttpStatusCode.OK, MalformedMessageBatches[bodyIndex]);
+    }
+
+    [Theory]
+    [InlineData("""{"id":"s1"}""")]
+    [InlineData("""{"id":"s1","messages":null}""")]
+    [InlineData("""{"id":"s1","messages":[null]}""")]
+    [InlineData("""{"id":"s1","messages":[],"summary":{"content":"c"}}""")]
+    public async Task MalformedSessionContext_ThrowsJsonException(string body)
+    {
+        await ShouldThrowJson(c => c.GetSessionContextAsync("w1", "s1", new SessionContextQuery()), HttpStatusCode.OK, body);
     }
 
     [Theory]

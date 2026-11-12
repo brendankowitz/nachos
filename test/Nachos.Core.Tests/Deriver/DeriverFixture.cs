@@ -48,7 +48,7 @@ internal sealed class DeriverFixture : IDisposable
             builder.UseInMemory();
             if (configureAi is null)
             {
-                builder.UseChatClient((_, _) => Chat).UseEmbeddingGenerator(_ => Embeddings);
+                builder.UseChatClient((_, _) => Chat).UseEmbeddingGenerator(_ => Embeddings, _ => EmbeddingChunking.Cl100kBase());
             }
             else
             {

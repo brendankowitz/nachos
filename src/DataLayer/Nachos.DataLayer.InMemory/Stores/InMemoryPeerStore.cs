@@ -25,6 +25,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
+                    workspace.RequireNotDeleting();
                     if (!workspace.Peers.TryGetValue(name, out var peer))
                     {
                         var record = new PeerRecord(
@@ -64,6 +65,7 @@ internal sealed class InMemoryPeerStore(InMemoryState state) : IPeerStore
                 var workspace = state.RequireWorkspace(workspaceName);
                 lock (workspace.Gate)
                 {
+                    workspace.RequireNotDeleting();
                     var peer = workspace.RequirePeer(name);
                     peer = peer with
                     {

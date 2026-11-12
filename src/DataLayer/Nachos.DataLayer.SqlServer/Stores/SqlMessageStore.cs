@@ -23,13 +23,8 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
 
     private const int WorkItemChunk = 400;
 
-    public Task<IReadOnlyList<MessageRecord>> AppendAsync(
-        string workspaceName,
-        string sessionName,
-        IReadOnlyList<NewMessage> messages,
-        IdempotencyWrite? idempotency,
-        CancellationToken ct) =>
-        AppendAsync(workspaceName, sessionName, messages, idempotency, derive: null, ct);
+    // 3 parameters per chunk plus 3 shared.
+    private const int ChunkInsertChunk = 600;
 
     public async Task<IReadOnlyList<MessageRecord>> ListRangeAsync(
         string workspaceName, string sessionName, long fromSeq, long toSeq, CancellationToken ct)
@@ -50,21 +45,26 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
 
     /// <remarks>
     /// <para>
-    /// One transaction, in the lock order documented on <see cref="Upserts"/>: (1) the <c>Seq</c> allocation
+    /// One transaction, in the lock order documented on <see cref="Upserts"/>: (0) the workspace's S lock
+    /// (<see cref="WriteAdmission"/>); (1) the <c>Seq</c> allocation
     /// <c>UPDATE Sessions SET NextMessageSeq += n OUTPUT deleted.NextMessageSeq</c>, whose exclusive row lock serializes
-    /// appends to the session and makes the allocated range contiguous; (2) the idempotency key: an expired record is
+    /// appends to the session and makes the allocated range contiguous, and is the session's barrier lock: a session being
+    /// deleted is refused under it; (2) the idempotency key: an expired record is
     /// deleted, and the key's range is then read under <c>UPDLOCK, HOLDLOCK</c>, so of concurrent appends with one key
     /// (in any session of the workspace) exactly one proceeds and the rest throw
-    /// <see cref="IdempotencyDuplicateException"/>; (3) sender peers and memberships; (4) the messages; (5) the work items
-    /// (below); (6) <see cref="IdempotencyWrite.SerializeResponse"/>; (7) the idempotency record; commit. Any exception, the
-    /// serializer's included, rolls everything back, so there is no <c>Seq</c> gap and no work without its message.
+    /// <see cref="IdempotencyDuplicateException"/>; (3) sender peers and memberships; (4) the messages; (5) their chunks,
+    /// pending in <c>dbo.MessageEmbeddings</c>; (6) the work items (below), representation items before summary items;
+    /// (7) <see cref="IdempotencyWrite.SerializeResponse"/>; (8) the idempotency record; commit. Any exception, the
+    /// serializer's included, rolls everything back, so there is no <c>Seq</c> gap and no chunk or work without its message.
     /// </para>
     /// <para>
     /// <b>Enqueue</b> (spec §10.2): for each message whose <see cref="DeriveIntent.ShouldDerive"/> is set, the
     /// observers are resolved with <see cref="ObserverRule"/> at the message's <c>CreatedAt</c>, over the session's
     /// memberships as this transaction leaves them (the <c>Seq</c> allocation's session lock keeps them stable), and one
     /// <see cref="WorkTaskType.Representation"/> item is inserted when there is at least one. Its payload snapshots the
-    /// observers and the message's own reasoning settings. A null <paramref name="derive"/> enqueues nothing.
+    /// observers and the message's own reasoning settings. A null <see cref="MessageAppend.Derive"/> enqueues nothing.
+    /// For each summary kind whose <see cref="SummaryIntent.DueThrough"/> falls in the batch's <c>Seq</c> range, one
+    /// <see cref="WorkTaskType.Summary"/> item, on the message at that <c>Seq</c>, with no tokens.
     /// </para>
     /// <para>
     /// The serializer gets its own deep copies of the staged records. While it runs, every entry point of this store
@@ -73,18 +73,17 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<MessageRecord>> AppendAsync(
-        string workspaceName,
-        string sessionName,
-        IReadOnlyList<NewMessage> messages,
-        IdempotencyWrite? idempotency,
-        IReadOnlyList<DeriveIntent>? derive,
-        CancellationToken ct)
+        string workspaceName, string sessionName, MessageAppend append, CancellationToken ct)
     {
         ReentryGuard.ThrowIfReentered();
-        if (derive is not null && derive.Count != messages.Count)
+        ArgumentNullException.ThrowIfNull(append);
+        var (messages, idempotency, derive) = (append.Messages, append.Idempotency, append.Derive);
+        RequireOnePerMessage(derive?.Count, messages.Count, nameof(append.Derive));
+        RequireOnePerMessage(append.Chunks?.Count, messages.Count, nameof(append.Chunks));
+        if (append.Chunks?.Any(chunks => chunks is null || chunks.Count > MessageChunk.MaxChunkIndex + 1 || chunks.Any(chunk => chunk is null)) == true)
         {
             throw new ArgumentException(
-                $"Expected one derive intent per message ({messages.Count}), got {derive.Count}.", nameof(derive));
+                $"A message may have at most {MessageChunk.MaxChunkIndex + 1} chunks, none of them null.", nameof(append));
         }
 
         ColumnLimits.RequireNames(messages.Select(message => message.PeerName));
@@ -98,30 +97,31 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         var now = runtime.Clock.GetUtcNow();
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
+        var workspaceId = await WriteAdmission.AdmitWorkspaceAsync(db, workspaceName, ct);
         var allocation = (await db.Database
             .SqlQueryRaw<SeqAllocation>(
                 """
-                UPDATE s SET NextMessageSeq = s.NextMessageSeq + @count
-                OUTPUT deleted.WorkspaceId, deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq
-                FROM dbo.Sessions AS s
-                JOIN dbo.Workspaces AS w ON w.Id = s.WorkspaceId
-                WHERE w.Name = @workspaceName AND DATALENGTH(w.Name) = DATALENGTH(@workspaceName)
-                  AND s.Name = @sessionName AND DATALENGTH(s.Name) = DATALENGTH(@sessionName)
+                UPDATE dbo.Sessions SET NextMessageSeq = NextMessageSeq + @count
+                OUTPUT deleted.Id AS SessionId, deleted.NextMessageSeq AS FirstSeq, deleted.LifecycleState, deleted.CreatedAt
+                WHERE WorkspaceId = @workspace AND Name = @sessionName AND DATALENGTH(Name) = DATALENGTH(@sessionName)
                 """,
                 SqlParameters.Long("@count", messages.Count),
-                SqlParameters.Text("@workspaceName", workspaceName),
+                SqlParameters.Long("@workspace", workspaceId),
                 SqlParameters.Text("@sessionName", sessionName))
             .ToListAsync(ct))
-            .SingleOrDefault();
-        if (allocation is null)
+            .SingleOrDefault() ?? throw Lookups.SessionNotFound(workspaceName, sessionName);
+        if (allocation.LifecycleState == WriteAdmission.Deleting)
         {
-            // Name the missing parent as the other stores (and the in-memory provider) do.
-            throw await Lookups.FindWorkspaceIdAsync(db, workspaceName, ct) is null
-                ? Lookups.WorkspaceNotFound(workspaceName)
-                : Lookups.SessionNotFound(workspaceName, sessionName);
+            // Rolled back with the transaction, like the allocation.
+            throw WriteAdmission.SessionDeleting();
         }
 
-        var session = new SessionKey(allocation.WorkspaceId, allocation.SessionId);
+        if (idempotency?.SessionCreatedAt is { } incarnation && incarnation != allocation.CreatedAt)
+        {
+            throw Lookups.SessionNotFound(workspaceName, sessionName);
+        }
+
+        var session = new SessionKey(workspaceId, allocation.SessionId);
 
         byte[]? keyHash = null;
         if (idempotency is not null)
@@ -135,18 +135,27 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         {
             var peer = await Upserts.EnsurePeerAsync(db, session.WorkspaceId, name, "{}", "{}", isInternal: false, now, ct);
             senderPeers.Add(name, peer);
-            await JoinAsSenderAsync(db, session, peer.Id, now, ct);
+            await JoinAsSenderAsync(db, session, peer.Id, SenderJoin.JoinedAt(messages, name, now), ct);
         }
 
         var senders = senderPeers.ToDictionary(pair => pair.Key, pair => pair.Value.Id, StringComparer.Ordinal);
         var staged = await InsertMessagesAsync(db, session, allocation.FirstSeq, messages, storedMetadata, senders, now, ct);
         var records = staged.Select((entity, i) => entity.ToRecord(workspaceName, sessionName, messages[i].PeerName)).ToList();
 
-        if (derive is not null && derive.Any(intent => intent.ShouldDerive))
+        if (append.Chunks is not null)
         {
-            var work = await RepresentationWorkAsync(db, session, workspaceName, sessionName, staged, records, derive, senderPeers, ct);
-            await InsertWorkItemsAsync(db, session, work, now, ct);
+            await InsertChunksAsync(db, session, staged, append.Chunks, now, ct);
         }
+
+        var work = derive is not null && derive.Any(intent => intent.ShouldDerive)
+            ? await RepresentationWorkAsync(db, session, workspaceName, sessionName, staged, records, derive, senderPeers, ct)
+            : [];
+        if (append.Summary is { } summary)
+        {
+            work.AddRange(SummaryWork(workspaceName, sessionName, staged, summary));
+        }
+
+        await InsertWorkItemsAsync(db, session, work, now, ct);
 
         if (idempotency is not null)
         {
@@ -179,8 +188,9 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         ReentryGuard.ThrowIfReentered();
         var storedMetadata = SqlJson.ToStorage(metadata, JsonField.Metadata);
         await using var db = await runtime.OpenAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
-        var session = await Lookups.RequireSessionAsync(db, workspaceName, sessionName, ct);
+        var session = await WriteAdmission.AdmitSessionAsync(db, workspaceName, sessionName, ct);
         var updated = await JsonUpdate.ApplyAsync(
             db.Messages,
             "dbo.Messages",
@@ -190,6 +200,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             [SqlParameters.Long("@session", session.SessionId), SqlParameters.Text("@publicId", publicId)],
             ct) ?? throw new NotFoundException($"Message '{publicId}' not found in session '{sessionName}'.");
         var peerName = await db.Peers.Where(peer => peer.Id == updated.PeerId).Select(peer => peer.Name).SingleAsync(ct);
+        await transaction.CommitAsync(ct);
         return updated.ToRecord(workspaceName, sessionName, peerName);
     }
 
@@ -217,6 +228,81 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
                 return [.. entities.Select(m => m.ToRecord(workspaceName, sessionName, names[m.PeerId]))];
             },
             ct);
+    }
+
+    /// <exception cref="ArgumentException">A list is given and does not have one entry per message.</exception>
+    private static void RequireOnePerMessage(int? count, int messageCount, string name)
+    {
+        if (count is { } given && given != messageCount)
+        {
+            throw new ArgumentException($"Expected one {name} entry per message ({messageCount}), got {given}.", name);
+        }
+    }
+
+    /// <summary>Inserts each message's chunks as pending embeddings, in message then chunk order.</summary>
+    private static async Task InsertChunksAsync(
+        NachosDbContext db,
+        SessionKey session,
+        List<MessageEntity> staged,
+        IReadOnlyList<IReadOnlyList<string>> chunks,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var all = staged
+            .Zip(chunks)
+            .SelectMany(pair => pair.Second.Select((content, index) => (MessageId: pair.First.Id, Index: index, Content: content)))
+            .ToList();
+        for (var start = 0; start < all.Count; start += ChunkInsertChunk)
+        {
+            var count = Math.Min(ChunkInsertChunk, all.Count - start);
+            var rows = new List<string>(count);
+            var parameters = new List<SqlParameter>
+            {
+                SqlParameters.Long("@workspace", session.WorkspaceId),
+                SqlParameters.Long("@session", session.SessionId),
+                SqlParameters.Time("@now", now),
+            };
+            for (var i = start; i < start + count; i++)
+            {
+                rows.Add($"(@workspace, @message{i}, @session, @index{i}, @content{i}, 0, @now, {i})");
+                parameters.Add(SqlParameters.Long($"@message{i}", all[i].MessageId));
+                parameters.Add(SqlParameters.Int($"@index{i}", all[i].Index));
+                parameters.Add(SqlParameters.LongText($"@content{i}", all[i].Content));
+            }
+
+            await db.Database.ExecuteSqlRawAsync(
+                string.Concat(
+                    "INSERT dbo.MessageEmbeddings (WorkspaceId, MessageId, SessionId, ChunkIndex, Content, SyncState, CreatedAt) " +
+                    "SELECT WorkspaceId, MessageId, SessionId, ChunkIndex, Content, SyncState, CreatedAt FROM (VALUES ",
+                    string.Join(", ", rows),
+                    ") AS v (WorkspaceId, MessageId, SessionId, ChunkIndex, Content, SyncState, CreatedAt, Ordinal) ORDER BY Ordinal"),
+                parameters,
+                ct);
+        }
+    }
+
+    /// <summary>One summary item per kind whose threshold the staged <c>Seq</c> range crosses, on the message at that <c>Seq</c>.</summary>
+    private static IEnumerable<PendingWork> SummaryWork(
+        string workspaceName, string sessionName, List<MessageEntity> staged, SummaryIntent summary)
+    {
+        if (staged.Count == 0)
+        {
+            yield break;
+        }
+
+        var first = staged[0].Seq;
+        foreach (var kind in Enum.GetValues<SummaryKind>())
+        {
+            if (summary.DueThrough(kind, first, staged[^1].Seq) is { } throughSeq)
+            {
+                yield return new PendingWork(
+                    WorkTaskType.Summary,
+                    WorkUnitKeys.Summary(workspaceName, sessionName),
+                    SummaryPayload.Create(kind, throughSeq).ToJsonString(),
+                    TokenCount: 0,
+                    staged[(int)(throughSeq - first)].Id);
+            }
+        }
     }
 
     /// <summary>
@@ -260,6 +346,7 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             if (observers.Count > 0)
             {
                 work.Add(new PendingWork(
+                    WorkTaskType.Representation,
                     WorkUnitKeys.Representation(workspaceName, sessionName, message.PeerName),
                     RepresentationPayload.Create(observers, intent.ReasoningEnabled, intent.CustomInstructions).ToJsonString(),
                     message.TokenCount,
@@ -285,12 +372,12 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
             {
                 SqlParameters.Long("@workspace", session.WorkspaceId),
                 SqlParameters.Long("@session", session.SessionId),
-                SqlParameters.Byte("@type", (byte)WorkTaskType.Representation),
                 SqlParameters.Time("@now", now),
             };
             for (var i = start; i < start + count; i++)
             {
-                rows.Add($"(@workspace, @type, @key{i}, @payload{i}, 0, 0, @now, @tokens{i}, @message{i}, @session, @now, {i})");
+                rows.Add($"(@workspace, @type{i}, @key{i}, @payload{i}, 0, 0, @now, @tokens{i}, @message{i}, @session, @now, {i})");
+                parameters.Add(SqlParameters.Byte($"@type{i}", (byte)work[i].TaskType));
                 parameters.Add(SqlParameters.Text($"@key{i}", work[i].WorkUnitKey));
                 parameters.Add(SqlParameters.LongText($"@payload{i}", work[i].Payload));
                 parameters.Add(SqlParameters.Int($"@tokens{i}", work[i].TokenCount));
@@ -334,20 +421,22 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
     }
 
     /// <summary>
-    /// Makes the sender an active member: a new member joins with the default config, a former member is reactivated in
-    /// place keeping its config, an active member is untouched. The append holds the session row lock.
+    /// Makes the sender an active member from <paramref name="joinedAt"/>: a new member joins with the default config, a
+    /// former member is reactivated in place keeping its config, an active member is untouched. The append holds the
+    /// session row lock.
     /// </summary>
-    private static async Task JoinAsSenderAsync(NachosDbContext db, SessionKey session, long peerId, DateTimeOffset now, CancellationToken ct) =>
+    private static async Task JoinAsSenderAsync(
+        NachosDbContext db, SessionKey session, long peerId, DateTimeOffset joinedAt, CancellationToken ct) =>
         await db.Database.ExecuteSqlRawAsync(
             """
-            UPDATE dbo.SessionPeers SET JoinedAt = @now, LeftAt = NULL
+            UPDATE dbo.SessionPeers SET JoinedAt = @joinedAt, LeftAt = NULL
             WHERE WorkspaceId = @workspace AND SessionId = @session AND PeerId = @peer AND LeftAt IS NOT NULL;
             IF NOT EXISTS (SELECT 1 FROM dbo.SessionPeers WHERE WorkspaceId = @workspace AND SessionId = @session AND PeerId = @peer)
                 INSERT dbo.SessionPeers (WorkspaceId, SessionId, PeerId, Configuration, JoinedAt)
-                VALUES (@workspace, @session, @peer, @config, @now);
+                VALUES (@workspace, @session, @peer, @config, @joinedAt);
             """,
             [
-                SqlParameters.Time("@now", now),
+                SqlParameters.Time("@joinedAt", joinedAt),
                 SqlParameters.Long("@workspace", session.WorkspaceId),
                 SqlParameters.Long("@session", session.SessionId),
                 SqlParameters.Long("@peer", peerId),
@@ -445,9 +534,9 @@ internal sealed class SqlMessageStore(SqlStoreRuntime runtime) : IMessageStore
         }
     }
 
-    /// <summary>The row the <c>Seq</c> allocation outputs: the session's keys and the first allocated value.</summary>
-    private sealed record SeqAllocation(long WorkspaceId, long SessionId, long FirstSeq);
+    /// <summary>The row the <c>Seq</c> allocation outputs: the session's key, the first allocated value, its state and incarnation.</summary>
+    private sealed record SeqAllocation(long SessionId, long FirstSeq, byte LifecycleState, DateTimeOffset CreatedAt);
 
-    /// <summary>A representation work item to insert for the message row <paramref name="MessageId"/>.</summary>
-    private sealed record PendingWork(string WorkUnitKey, string Payload, int TokenCount, long MessageId);
+    /// <summary>A work item to insert for the message row <paramref name="MessageId"/>.</summary>
+    private sealed record PendingWork(WorkTaskType TaskType, string WorkUnitKey, string Payload, int TokenCount, long MessageId);
 }

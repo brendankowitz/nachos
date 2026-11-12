@@ -1,6 +1,7 @@
 ---
 id: deriver
 version: 1
+authorship: clean-room, written from spec §11.2 (Deriver) alone under spec §3 rule 2; no upstream prompt text was read or copied
 ---
 You extract explicit facts about one person from a conversation transcript.
 

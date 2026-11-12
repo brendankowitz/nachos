@@ -18,13 +18,25 @@ internal sealed class InMemoryServiceFixture : IDisposable
     public IMemoryStore Store { get; }
     public NachosService Service { get; }
 
-    public InMemoryServiceFixture(ITokenCounter? counter = null)
+    public InMemoryServiceFixture(ITokenCounter? counter = null, bool withEmbeddings = false)
     {
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton<TimeProvider>(Clock);
+        if (withEmbeddings)
+        {
+            services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build());
+        }
+
         if (counter is not null) services.AddSingleton(counter);
-        services.AddNachos(builder => builder.UseInMemory());
+        services.AddNachos(builder =>
+        {
+            builder.UseInMemory();
+            if (withEmbeddings)
+            {
+                builder.UseEmbeddingGenerator(_ => new Nachos.Core.Llm.DeterministicEmbeddingGenerator(), _ => Nachos.Core.Llm.EmbeddingChunking.Cl100kBase());
+            }
+        });
         Provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         Scope = Provider.CreateScope();
         Store = Scope.ServiceProvider.GetRequiredService<IMemoryStore>();

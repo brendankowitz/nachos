@@ -90,6 +90,108 @@ public sealed class AppHostSmokeTests
         conclusion.GetProperty("level").GetString().ShouldBe("explicit");
     }
 
+    /// <summary>
+    /// The M3 read path end to end through the real hosts and SQL Server (with Full-Text Search): the worker embeds the
+    /// twenty messages' chunks and writes a short summary (the default cadence is one per 20 messages), a message is found by
+    /// session and workspace search, and the session context stays within its token budget while taking the newest messages.
+    /// </summary>
+    /// <remarks>
+    /// Every wait is polled: the reconciler embeds chunks on its own tick, the full-text index is created and populated in
+    /// the background, and its change tracking indexes new rows asynchronously, so a message can be briefly invisible to
+    /// lexical search once the index is ready.
+    /// </remarks>
+    [Fact]
+    public async Task MessagesBecomeSearchableAndSummarized_WithFakeAI()
+    {
+        // The waits overlap (the worker does all of it at once), so two conclusion windows cover them with margin.
+        using var cts = new CancellationTokenSource(StartupTimeout + 2 * ConclusionTimeout);
+        await using var app = await StartAsync(cts.Token);
+        using var client = app.CreateHttpClient("api");
+
+        var workspace = $"smoke-{Guid.NewGuid():N}";
+        var session = $"/v3/workspaces/{workspace}/sessions/s";
+        (await client.PostAsJsonAsync("/v3/workspaces", new { id = workspace }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await client.PostAsJsonAsync($"/v3/workspaces/{workspace}/sessions", new { id = "s" }, cts.Token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        var contents = Enumerable.Range(1, 20)
+            .Select(i => i == 7 ? "alice keeps a jar of saffron in the pantry" : $"message number {i} about the weather")
+            .ToArray();
+        using var posted = await client.PostAsJsonAsync(
+            $"{session}/messages",
+            new { messages = contents.Select(content => new { content, peer_id = "alice" }).ToArray() },
+            cts.Token);
+        posted.StatusCode.ShouldBe(HttpStatusCode.Created);
+
+        // Lexical search alone would find the message; this proves the worker's reconciler embedded the chunks too.
+        var connectionString = await app.GetConnectionStringAsync("nachos", cts.Token);
+        await WaitUntilAsync(async () => await CountSyncedChunksAsync(connectionString, workspace, cts.Token) >= contents.Length,
+            "embedded message chunks", cts.Token);
+
+        await WaitUntilAsync(() => SearchFindsAsync(client, $"{session}/search", "saffron", contents[6], cts.Token),
+            "session search", cts.Token);
+        await WaitUntilAsync(() => SearchFindsAsync(client, $"/v3/workspaces/{workspace}/search", "saffron", contents[6], cts.Token),
+            "workspace search", cts.Token);
+
+        var summary = default(JsonElement);
+        await WaitUntilAsync(async () =>
+        {
+            using var summaries = JsonDocument.Parse(await client.GetStringAsync($"{session}/summaries", cts.Token));
+            summary = summaries.RootElement.GetProperty("short_summary").Clone();
+            return summary.ValueKind != JsonValueKind.Null;
+        }, "short summary", cts.Token);
+        summary.GetProperty("summary_type").GetString().ShouldBe("short");
+
+        const int budget = 40;
+        using var context = JsonDocument.Parse(await client.GetStringAsync($"{session}/context?tokens={budget}&summary=false", cts.Token));
+        var messages = context.RootElement.GetProperty("messages").EnumerateArray().ToList();
+        messages.ShouldNotBeEmpty();
+        messages.Sum(message => message.GetProperty("token_count").GetInt32()).ShouldBeLessThanOrEqualTo(budget);
+        messages[^1].GetProperty("content").GetString().ShouldBe(contents[^1], "the context ends at the newest message");
+    }
+
+    private static async Task<bool> SearchFindsAsync(
+        HttpClient client, string path, string query, string content, CancellationToken cancellationToken)
+    {
+        using var response = await client.PostAsJsonAsync(path, new { query }, cancellationToken);
+        if (response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int)response.StatusCode >= 500)
+        {
+            return false;
+        }
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        using var found = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        return found.RootElement.EnumerateArray().Any(message => message.GetProperty("content").GetString() == content);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, string what, CancellationToken cancellationToken)
+    {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        limit.CancelAfter(ConclusionTimeout);
+        try
+        {
+            while (!await condition())
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), limit.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"No {what} within {ConclusionTimeout}.");
+        }
+    }
+
+    private static async Task<int> CountSyncedChunksAsync(string? connectionString, string workspace, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(
+            """
+            SELECT COUNT(*) FROM dbo.MessageEmbeddings AS e JOIN dbo.Workspaces AS w ON w.Id = e.WorkspaceId
+            WHERE w.Name = @workspace AND e.SyncState = 1
+            """, connection);
+        command.Parameters.AddWithValue("@workspace", workspace);
+        return (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
     private static async Task<JsonElement> WaitForConclusionAsync(HttpClient client, string workspace, string content, CancellationToken cancellationToken)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -137,6 +239,7 @@ public sealed class AppHostSmokeTests
             // StartAsync returns only once every resource has started, and the API starts only after the database is healthy,
             // so it is awaited alongside the bounded, named database wait rather than before it.
             using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            startup.CancelAfter(StartupTimeout);
             var starting = app.StartAsync(startup.Token);
             try
             {
@@ -148,7 +251,15 @@ public sealed class AppHostSmokeTests
                 await starting.ContinueWith(_ => { }, TaskScheduler.Default);
                 throw;
             }
-            await starting;
+            try
+            {
+                await starting;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"The AppHost's resources had not all started within {StartupTimeout}.");
+            }
+
             await WaitHealthyAsync(app, "api", ApiTimeout, cancellationToken);
             return app;
         }

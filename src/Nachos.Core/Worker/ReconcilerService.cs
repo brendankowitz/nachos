@@ -8,12 +8,14 @@ using Nachos.Abstractions.Domain;
 using Nachos.Abstractions.Stores;
 using Nachos.Abstractions.Work;
 using Nachos.Core.Llm;
+using Nachos.Core.Memory;
 
 namespace Nachos.Core.Worker;
 
 /// <summary>
 /// The cluster's housekeeping, run by one replica at a time under the <see cref="WorkUnitKeys.Reconciler"/> lease. Each
-/// tick embeds pending conclusions, deletes tombstoned conclusions older than
+/// tick embeds pending conclusions and message chunks, chunks one batch (<see cref="ReconcilerOptions.BackfillBatch"/>) of
+/// messages that have none (when a <see cref="MessageChunker"/> is registered), deletes tombstoned conclusions older than
 /// <see cref="ReconcilerOptions.TombstoneRetention"/>, prunes succeeded work items older than
 /// <see cref="ReconcilerOptions.CompletedRetention"/>, refreshes the backlog gauges of <see cref="WorkerMetrics"/>, and
 /// deletes expired idempotency records.
@@ -57,8 +59,9 @@ public sealed partial class ReconcilerService : BackgroundService
     private readonly WorkerMetrics _metrics;
     private readonly ILogger<ReconcilerService> _logger;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
+    private readonly MessageChunker? _chunker;
     private readonly string _embeddingModel;
-    private readonly Dictionary<(string Workspace, string Conclusion), int> _embeddingFailures = [];
+    private readonly Dictionary<(PendingEmbeddingKind Kind, string Workspace, string Source, int Chunk), int> _embeddingFailures = [];
     private int _failedEmbeddingTicks;
     private readonly string _owner = $"{Environment.MachineName}:{Environment.ProcessId}:reconciler:{Guid.NewGuid():N}";
 
@@ -70,7 +73,8 @@ public sealed partial class ReconcilerService : BackgroundService
         IServiceScopeFactory scopes,
         WorkerMetrics metrics,
         ILogger<ReconcilerService> logger,
-        IEmbeddingGenerator<string, Embedding<float>>? embeddings = null)
+        IEmbeddingGenerator<string, Embedding<float>>? embeddings = null,
+        MessageChunker? chunker = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(clock);
@@ -85,6 +89,7 @@ public sealed partial class ReconcilerService : BackgroundService
         _metrics = metrics;
         _logger = logger;
         _embeddings = embeddings;
+        _chunker = chunker;
         _embeddingModel = embeddings is null ? EmbeddingModelName.Unknown : EmbeddingModelName.Of(embeddings);
     }
 
@@ -218,17 +223,58 @@ public sealed partial class ReconcilerService : BackgroundService
         var items = await _store.WorkQueue.PruneSucceededAsync(_options.CompletedRetention, ct).ConfigureAwait(false);
         await RefreshBacklogAsync(policies, ct).ConfigureAwait(false);
         var idempotency = await _store.Idempotency.PurgeExpiredAsync(ct).ConfigureAwait(false);
-        LogTick(embedding.Embedded, embedding.Failed, embedding.MarkedFailed, tombstones, items, idempotency);
+        var backfilled = await TryBackfillChunksAsync(ct).ConfigureAwait(false);
+        LogTick(embedding.Embedded, embedding.Failed, embedding.MarkedFailed, backfilled, tombstones, items, idempotency);
+    }
+
+    /// <summary>
+    /// Chunks one batch of messages that have none (appended before chunking existed, or while no embedding model was
+    /// registered), oldest first, so their chunks join the embedding backlog.
+    /// </summary>
+    /// <returns>How many messages were chunked.</returns>
+    private async Task<int> TryBackfillChunksAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await BackfillChunksAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Last, and isolated, so one message the chunker or the store rejects cannot stop the purges and gauges.
+            LogBackfillFailed(ex);
+            return 0;
+        }
+    }
+
+    private async Task<int> BackfillChunksAsync(CancellationToken ct)
+    {
+        if (_chunker is null)
+        {
+            return 0;
+        }
+
+        var messages = await _store.Embeddings.ListUnchunkedMessagesAsync(_options.BackfillBatch, ct).ConfigureAwait(false);
+        var chunks = messages
+            .SelectMany(message => _chunker.Chunk(message.Content)
+                .Select((content, index) => new MessageChunk(message.WorkspaceName, message.SessionName, message.PublicId, index, content)))
+            .ToList();
+        if (chunks.Count > 0)
+        {
+            await _store.Embeddings.AddChunksAsync(chunks, ct).ConfigureAwait(false);
+        }
+
+        return messages.Count;
     }
 
     private async Task RefreshBacklogAsync(IReadOnlyDictionary<WorkTaskType, WorkBatchPolicy> policies, CancellationToken ct)
     {
         var backlog = await _store.WorkQueue.GetBacklogAsync(policies, ct).ConfigureAwait(false);
-        var embeddingPending = await _store.Embeddings.CountPendingAsync(ct).ConfigureAwait(false);
+        var conclusionsPending = await _store.Embeddings.CountPendingAsync(PendingEmbeddingKind.Conclusion, ct).ConfigureAwait(false);
+        var messagesPending = await _store.Embeddings.CountPendingAsync(PendingEmbeddingKind.MessageChunk, ct).ConfigureAwait(false);
         var oldestAge = backlog.OldestOpenItemCreatedAt is { } oldest
             ? TimeSpan.FromTicks(Math.Max(0, (_clock.GetUtcNow() - oldest).Ticks))
             : TimeSpan.Zero;
-        _metrics.RecordBacklog(backlog.EligibleUnits, oldestAge, embeddingPending);
+        _metrics.RecordBacklog(backlog.EligibleUnits, oldestAge, conclusionsPending, messagesPending);
     }
 
     /// <summary>
@@ -244,7 +290,7 @@ public sealed partial class ReconcilerService : BackgroundService
         {
             var pending = await _store.Embeddings.ListPendingAsync(_options.EmbeddingBatchSize, ct).ConfigureAwait(false);
             // A save that did not take (the store kept the conclusion pending) would otherwise repeat one batch for the rest of the tick.
-            if (pending.Count == 0 || pending.Select(p => p.ConclusionId).SequenceEqual(previous.Select(p => p.ConclusionId)))
+            if (pending.Count == 0 || pending.Select(FailureKey).SequenceEqual(previous.Select(FailureKey)))
             {
                 break;
             }
@@ -324,7 +370,7 @@ public sealed partial class ReconcilerService : BackgroundService
         {
             if (pending.Count == 1)
             {
-                LogEmbeddingFailed(ex, pending[0].ConclusionId);
+                LogEmbeddingFailed(ex, pending[0].Kind, pending[0].SourceId);
                 failures.Add((pending[0], ex));
                 return 0;
             }
@@ -364,7 +410,7 @@ public sealed partial class ReconcilerService : BackgroundService
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                LogEmbeddingFailed(ex, item.ConclusionId);
+                LogEmbeddingFailed(ex, item.Kind, item.SourceId);
                 failures.Add((item, ex));
                 continue;
             }
@@ -414,13 +460,16 @@ public sealed partial class ReconcilerService : BackgroundService
     private async Task SaveAsync(PendingEmbedding pending, ReadOnlyMemory<float> vector, CancellationToken ct)
     {
         await _store.Embeddings.SaveAsync(pending, vector, _embeddingModel, ct).ConfigureAwait(false);
-        _embeddingFailures.Remove((pending.WorkspaceName, pending.ConclusionId));
+        _embeddingFailures.Remove(FailureKey(pending));
     }
+
+    private static (PendingEmbeddingKind Kind, string Workspace, string Source, int Chunk) FailureKey(PendingEmbedding pending) =>
+        (pending.Kind, pending.WorkspaceName, pending.SourceId, pending.ChunkIndex);
 
     /// <returns>True when this failure was the last allowed and the conclusion was marked failed.</returns>
     private async Task<bool> RecordFailureAsync(PendingEmbedding pending, CancellationToken ct)
     {
-        var key = (pending.WorkspaceName, pending.ConclusionId);
+        var key = FailureKey(pending);
         var failures = _embeddingFailures.GetValueOrDefault(key) + 1;
         if (failures < _options.EmbeddingMaxAttempts)
         {
@@ -430,7 +479,7 @@ public sealed partial class ReconcilerService : BackgroundService
 
         await _store.Embeddings.MarkFailedAsync(pending, ct).ConfigureAwait(false);
         _embeddingFailures.Remove(key);
-        LogMarkedFailed(pending.ConclusionId, pending.WorkspaceName, failures);
+        LogMarkedFailed(pending.Kind, pending.SourceId, pending.WorkspaceName, failures);
         return true;
     }
 
@@ -439,7 +488,7 @@ public sealed partial class ReconcilerService : BackgroundService
     /// <summary>The generator answered with vectors of the wrong number or size: its configuration, not an input.</summary>
     private sealed class EmbeddingShapeException(string message) : InvalidOperationException(message);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "No embedding generator is registered; the reconciler will not embed pending conclusions.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No embedding generator is registered; the reconciler will not embed pending conclusions or message chunks.")]
     private partial void LogNoGenerator();
 
     [LoggerMessage(Level = LogLevel.Information, Message = "{Owner} now holds the reconciler lease.")]
@@ -454,7 +503,7 @@ public sealed partial class ReconcilerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "A reconciler tick failed; the next one is delayed.")]
     private partial void LogTickFailed(Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "{Failures} embedding failures this tick are not counted towards marking conclusions failed: they would fail any input (the service is down or the generator misconfigured), or nothing was embedded.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "{Failures} embedding failures this tick are not counted towards marking items failed: they would fail any input (the service is down or the generator misconfigured), or nothing was embedded.")]
     private partial void LogServiceUnavailable(int failures);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, with transient failures; the embedding service has been unavailable or throttling. Check its health and quota; persistent throttling (429) can also mean Reconciler:EmbeddingBatchSize is too large for the deployment's rate limit.")]
@@ -463,18 +512,21 @@ public sealed partial class ReconcilerService : BackgroundService
     [LoggerMessage(Level = LogLevel.Error, Message = "Embedding has failed with nothing embedded for {Ticks} reconciler ticks in a row, and not transiently: likely a misconfiguration. Check the Embeddings endpoint, deployment, dimensions and role assignment.")]
     private partial void LogEmbeddingMisconfigured(Exception exception, int ticks);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} conclusions failed; embedding them one by one.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} items failed; embedding them one by one.")]
     private partial void LogBatchFailed(Exception exception, int count);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} conclusions failed in a way that would fail any input (the service is throttled or unavailable, or the generator is misconfigured); retrying them next tick, not one by one.")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding a batch of {Count} items failed in a way that would fail any input (the service is throttled or unavailable, or the generator is misconfigured); retrying them next tick, not one by one.")]
     private partial void LogBatchFailedForAll(Exception exception, int count);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding conclusion {ConclusionId} failed.")]
-    private partial void LogEmbeddingFailed(Exception exception, string conclusionId);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Embedding {Kind} {SourceId} failed.")]
+    private partial void LogEmbeddingFailed(Exception exception, PendingEmbeddingKind kind, string sourceId);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Conclusion {ConclusionId} in workspace {WorkspaceName} failed to embed {Failures} times; marked failed, it is invisible to semantic reads until its content changes.")]
-    private partial void LogMarkedFailed(string conclusionId, string workspaceName, int failures);
+    [LoggerMessage(Level = LogLevel.Error, Message = "{Kind} {SourceId} in workspace {WorkspaceName} failed to embed {Failures} times; marked failed, it is invisible to semantic reads until its content changes.")]
+    private partial void LogMarkedFailed(PendingEmbeddingKind kind, string sourceId, string workspaceName, int failures);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Reconciler tick: embedded {Embedded}, {Failed} embedding failures ({MarkedFailed} marked failed), purged {Tombstones} tombstones, pruned {Items} work items and {Idempotency} idempotency records.")]
-    private partial void LogTick(int embedded, int failed, int markedFailed, int tombstones, int items, int idempotency);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Chunking unchunked messages failed; the other reconciler steps ran, and the backfill is retried next tick.")]
+    private partial void LogBackfillFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Reconciler tick: embedded {Embedded}, {Failed} embedding failures ({MarkedFailed} marked failed), chunked {Backfilled} unchunked messages, purged {Tombstones} tombstones, pruned {Items} work items and {Idempotency} idempotency records.")]
+    private partial void LogTick(int embedded, int failed, int markedFailed, int backfilled, int tombstones, int items, int idempotency);
 }

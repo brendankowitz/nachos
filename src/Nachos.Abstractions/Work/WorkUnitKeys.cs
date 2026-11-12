@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using Nachos.Abstractions.Domain;
 
 namespace Nachos.Abstractions.Work;
 
@@ -21,6 +22,12 @@ public static class WorkUnitKeys
     /// <summary>The singleton reconciler's unit, leased with <see cref="Stores.IWorkQueue.TryLeaseAsync"/>.</summary>
     public const string Reconciler = "reconciler:main";
 
+    /// <summary>
+    /// The unit leased with <see cref="Stores.IWorkQueue.TryLeaseAsync"/> by the replica that creates or repairs a
+    /// provider's full-text index of message search.
+    /// </summary>
+    public const string FullTextMaintenance = "reconciler:fts";
+
     /// <summary><c>representation:{workspace}:{session}:{observed}</c>, the unit of one sender's derivations in one session.</summary>
     public static string Representation(string workspaceName, string sessionName, string observedName)
     {
@@ -28,6 +35,26 @@ public static class WorkUnitKeys
         ArgumentNullException.ThrowIfNull(sessionName);
         ArgumentNullException.ThrowIfNull(observedName);
         return $"representation:{Component(workspaceName)}:{Component(sessionName)}:{Component(observedName)}";
+    }
+
+    /// <summary><c>summary:{workspace}:{session}</c>, the unit of one session's summaries.</summary>
+    public static string Summary(string workspaceName, string sessionName)
+    {
+        ArgumentNullException.ThrowIfNull(workspaceName);
+        ArgumentNullException.ThrowIfNull(sessionName);
+        return $"summary:{Component(workspaceName)}:{Component(sessionName)}";
+    }
+
+    /// <summary>
+    /// <c>deletion:{workspace}:{kind}:{name}</c> (<c>kind</c> is <c>session</c> or <c>workspace</c>), the unit of one
+    /// resource's deletion job.
+    /// </summary>
+    /// <param name="name">The session's name, or the workspace's own name for a workspace deletion.</param>
+    public static string Deletion(string workspaceName, DeletionTargetKind kind, string name)
+    {
+        ArgumentNullException.ThrowIfNull(workspaceName);
+        ArgumentNullException.ThrowIfNull(name);
+        return $"deletion:{Component(workspaceName)}:{DeletionPayload.Name(kind)}:{Component(name)}";
     }
 
     private static string Component(string name) =>

@@ -75,14 +75,21 @@ public sealed class TransportBoundaryTests : ApiTest
         const string captured = " [ { \"sentinel\" : 1e2, \"nullable\":null } ] \n";
         const string body = """{"messages":[{"content":"a","peer_id":"p"}]}""";
         using var document = JsonDocument.Parse(body);
+        var session = (await real.Sessions.GetAsync("w", "s", CancellationToken.None))!;
         var hash = Nachos.Core.Idempotency.RequestHasher.Hash("POST", "/v3/workspaces/{w}/sessions/{s}/messages",
-            new Dictionary<string, string> { ["w"] = "w", ["s"] = "s" },
+            new Dictionary<string, string>
+            {
+                ["w"] = "w",
+                ["s"] = "s",
+                ["s.uid"] = Nachos.Core.ResourceUid.ForSession("w", "s", session.CreatedAt),
+            },
             Nachos.Core.Idempotency.CanonicalJson.Serialize(document.RootElement));
         replay.TryGetAsync("w", "captured", Arg.Any<CancellationToken>()).Returns(
             new Nachos.Abstractions.Domain.IdempotencyRecord("captured", hash, 202, captured, DateTimeOffset.MaxValue));
         var store = Substitute.For<IMemoryStore>();
         store.Sessions.Returns(real.Sessions);
         store.Idempotency.Returns(replay);
+        store.Embeddings.Returns(real.Embeddings);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, M)
@@ -104,8 +111,14 @@ public sealed class TransportBoundaryTests : ApiTest
         var workspaces = Substitute.For<IWorkspaceStore>();
         workspaces.ListAsync(null, Arg.Any<PageRequest>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException<Page<Nachos.Abstractions.Domain.WorkspaceRecord>>(new IOException("store unavailable")));
+        var embeddings = Substitute.For<IEmbeddingStore>();
+        embeddings.GetSpaceAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<Nachos.Abstractions.Domain.EmbeddingSpace?>(new IOException("store unavailable")));
         var store = Substitute.For<IMemoryStore>();
         store.Workspaces.Returns(workspaces);
+        // An unreachable store must not stop the host from starting: the embedding model check waits for it in the background.
+        store.Embeddings.Returns(embeddings);
+        store.IsUnavailableFailure(Arg.Any<Exception>()).Returns(true);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var response = await client.GetAsync(path);
@@ -222,6 +235,7 @@ public sealed class TransportBoundaryTests : ApiTest
         var store = Substitute.For<IMemoryStore>();
         store.Sessions.Returns(Factory.Services.GetRequiredService<IMemoryStore>().Sessions);
         store.Idempotency.Returns(replay);
+        store.Embeddings.Returns(Factory.Services.GetRequiredService<IMemoryStore>().Embeddings);
         using var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services => services.AddSingleton(store)));
         using var client = factory.CreateClient();
         using var abort = new CancellationTokenSource();

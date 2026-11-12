@@ -15,6 +15,9 @@ internal sealed class SqlStoreRuntime(SqlServerOptions options, SchemaGate gate,
     /// <summary>For events a store handles itself and must not hide, such as a claim lost to a deadlock.</summary>
     public ILogger Logger { get; } = logger;
 
+    /// <summary>The test seam of <see cref="SqlServerOptions.BeforeLifecycleTransition"/>; null outside the race tests.</summary>
+    public Func<CancellationToken, Task>? BeforeLifecycleTransition { get; } = options.BeforeLifecycleTransition;
+
     /// <summary>
     /// The way into the database for one operation: waits for <see cref="SchemaGate"/> (a remembered success after the
     /// first call), then returns a new context the caller disposes. Call <see cref="ReentryGuard.ThrowIfReentered"/> first.

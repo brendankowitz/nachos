@@ -1,36 +1,115 @@
 ---
 title: Memory formation
+description: How a stored message becomes conclusions - the transactional queue, fenced leases, the Deriver, the reconciler and the summarizer.
+sidebar:
+  order: 4
 ---
 
 Posting a message stores it and, when its sender has an observer, queues one unit of
 work. A background **worker** later turns that work into **conclusions**: short
 statements about a peer that other calls can list, query and read back as a
-representation. Nothing in this path runs inside your request.
+representation. Nothing in this path runs inside your request. Which peers form memories of a
+message is decided when it is stored; see [Observation model](/nachos/concepts/observation-model/).
 
-## What happens to a message
+**Diagram key.** Solid boxes and arrows are built today. Dashed boxes and arrows marked
+*(planned)* are designed but not built yet; the label names the milestone. In sequence diagrams,
+dotted frames (`loop`, `par`) only group steps.
 
-1. **Queue.** The append that stores the message also enqueues a work item, in the same
-   transaction with SQL Server. Work is grouped per workspace, session and sender.
-2. **Eligibility.** A group becomes due when its pending messages reach
-   `Nachos:Deriver:EligibilityTokens` (512 by default) or its oldest message is
+## The pipeline
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant A as API and Core
+  participant S as SQL Server
+  participant W as Worker: consumer and Deriver
+  participant L as Chat model
+  participant E as Embedding model
+  C->>A: POST messages
+  A->>S: One transaction: messages, memberships, work items, chunks
+  A->>C: 201 with the stored messages
+  Note over S,W: The unit is due at 512 tokens or after 30 minutes
+  W->>S: Claim the unit: take its lease, fencing token + 1
+  S->>W: The unit's items, attempts + 1
+  W->>S: Read configuration, target messages, recent context
+  W->>L: Extract facts about the sender
+  L->>W: Facts, each citing its source messages
+  W->>E: Embed the facts
+  W->>S: Per observer: exact, then nearest existing conclusion
+  W->>S: One fenced commit: conclusions and completed items
+```
+
+The numbered arrows follow these steps:
+
+1. **Store and enqueue (1 to 3).** The append allocates sequence numbers, makes the senders
+   members, stores the messages, and inserts one `representation` work item per message that has
+   an observer, all in one transaction (with SQL Server and in memory alike). The item snapshots
+   the observers and the message's own `reasoning` settings. The same transaction stores the
+   messages' pending chunks for [search](/nachos/concepts/search/) (when an embedding model is
+   configured) and, when a summary threshold is crossed, a `summary` work item.
+2. **Eligibility (the note).** Work is grouped into units per workspace, session and sender
+   (`representation:{workspace}:{session}:{sender}`). A unit becomes due when its pending messages
+   reach `Nachos:Deriver:EligibilityTokens` (512 by default) or its oldest message is
    `Nachos:Deriver:MaxAge` old (30 minutes by default).
-3. **Lease.** A worker claims a due group with a lease and keeps renewing it. If the
-   worker dies, the lease expires and another worker retries the group.
-4. **Deriver.** The worker sends the recent conversation to a chat model, which returns
-   facts about the peer who sent the targeted messages; other speakers' messages are
-   context only. Reasoning can be turned off per message, session or workspace. In a batch
-   that mixes enabled and disabled messages, the disabled ones are sent as context and
-   only the enabled ones are targets; a batch where every message is disabled is
-   completed without calling a model.
-5. **Deduplication.** A new fact within `Nachos:Deriver:DedupMaxDistance` (cosine, 0.05 by
-   default) of an existing conclusion from the same session corroborates that conclusion
-   instead of inserting a copy, and raises its `times_derived`. When the new fact is
-   richer than the stored one, it replaces the conclusion's content.
-6. **Commit.** New conclusions, corroborations, replacements and the completion of the queue items are
-   written together. A crash leaves either all of it or none of it.
+3. **Lease (4 and 5).** A consumer loop claims a due unit by taking its lease row and raising the
+   row's **fencing token**, and keeps renewing the lease while it works. A unit is held by one
+   lease at a time and runs oldest item first; different units run in parallel. If the worker
+   dies, the lease expires, and the next claimer raises the token again, so the old worker can no
+   longer commit.
+4. **Deriver (6 to 8).** The worker sends the sender's messages, marked as targets, with recent
+   messages of the session as context. The chat model returns facts about the sender, each naming
+   the target messages it came from; facts that cite anything else are dropped. Other speakers'
+   messages are context only. Reasoning can be turned off per message, session or workspace. In a
+   batch that mixes enabled and disabled messages, the disabled ones are sent as context and only
+   the enabled ones are targets; a batch where every message is disabled is completed without
+   calling a model.
+5. **Deduplication (9 and 10).** Each fact is embedded, then compared, for each observer, with
+   that observer's conclusions about the sender from the same session: an exact match first, then
+   the nearest by embedding. A fact within `Nachos:Deriver:DedupMaxDistance` (cosine, 0.05 by
+   default) corroborates that conclusion instead of inserting a copy, and raises its
+   `times_derived` (a retried batch does not raise it twice; filtering conclusions on
+   `times_derived` is a Nachos extension). When the new fact is richer than the stored one, it
+   replaces the conclusion's content. Existing conclusions are compared after extraction; they are
+   not sent to the model.
+6. **Commit (11).** One transaction checks the fencing token, checks that the workspace and session
+   are not being deleted, completes the work items, and writes the new conclusions, corroborations
+   and replacements. A crash leaves either all of it or none of it, and a worker that lost its
+   lease writes nothing. Under a session that is being deleted, the result is discarded and the
+   items complete.
+
+The same consumer runs the other queued work: the session **summarizer** (see
+[Session context](/nachos/concepts/session-context/)) and **deletion jobs** (see
+[Delete sessions and workspaces](/nachos/guides/delete-data/)). The summarizer reads the
+previous summary of each kind and the messages after it; when both kinds are due it asks for them
+at the same time, and saves both, with the completion of its items, in one fenced commit.
+
+```mermaid
+sequenceDiagram
+  participant R as Reconciler
+  participant S as SQL Server
+  participant E as Embedding model
+  participant M as Summarizer
+  participant L as Chat model
+  loop Every 30 seconds, under the reconciler lease
+    R->>S: Pending chunks and conclusions
+    R->>E: Embed in batches
+    R->>S: Save vectors
+    R->>S: Chunk older messages, purge tombstones, prune old items
+  end
+  Note over M,L: A summary unit is claimed like any other
+  M->>S: Previous summary and the messages after it
+  par Short summary
+    M->>L: Summarize, concise
+  and Long summary
+    M->>L: Summarize, themes and preferences
+  end
+  M->>S: One fenced commit: both summaries and completed items
+```
 
 A **reconciler** runs alongside the consumer. It embeds conclusions that were created
-without a vector (for example through the API while a model was unavailable), purges
+without a vector (for example through the API while a model was unavailable) and message
+chunks for [search](/nachos/concepts/search/), chunks messages stored before chunking existed, purges
 tombstoned conclusions, old completed queue items and expired idempotency keys after
 their retention period, reports the queue backlog gauges, and runs as a singleton
 through its own lease.
@@ -41,6 +120,25 @@ not block the rest of the queue. A model that is down, throttling or timing out,
 transient SQL failure (such as a deadlock or failover) and a model authorization failure
 do not use up attempts: the unit is released and retries for as long as the outage lasts. [Run the
 worker](/nachos/guides/run-the-worker/) shows how to redrive dead-lettered work.
+
+## Planned: dreaming
+
+The commit already keeps two counters on each (observer, observed) collection: how many new
+explicit conclusions it has and when it last changed. They are the hook for **dreaming**, a later
+pass that reads a collection's conclusions and writes deductions, inductions and peer-card updates
+back. Nothing reads the counters yet.
+
+```mermaid
+flowchart LR
+  classDef planned stroke-dasharray: 5 5,color:#6b7280
+  commit["Deriver commit"] -->|"new explicit count, last activity"| coll[("Collection")]
+  coll -->|"holds"| concl[("Conclusions")]
+  coll -.-> sched["Dream scheduler (planned, M5)"]:::planned
+  sched -.-> spec["Deduction and induction (planned, M5)"]:::planned
+  concl -.-> spec
+  spec -.->|"higher-level conclusions"| concl
+  spec -.->|"card updates"| card[("Peer cards")]
+```
 
 ## What you can read back
 
@@ -54,7 +152,8 @@ worker](/nachos/guides/run-the-worker/) shows how to redrive dead-lettered work.
 | `GET /v3/workspaces/{id}/queue/status` | Counts of pending, in-progress and completed work. |
 
 You can also create conclusions directly with `POST /v3/workspaces/{id}/conclusions` and
-delete them by id. Dialectic chat, search, session context, summaries and dreaming are not
+delete them by id. Messages are read back through [search](/nachos/concepts/search/) and
+[session context](/nachos/concepts/session-context/). Dialectic chat and dreaming are not
 built yet and answer `501`.
 
 ## Fake AI is not memory quality
@@ -74,10 +173,16 @@ the host refuses to start.
 Real memory needs a model. Set `AzureOpenAI:Endpoint` (and the two deployment names) to use
 your own Azure OpenAI resource; see [Run the worker](/nachos/guides/run-the-worker/). The
 embedding deployment must produce 1536 dimensions, because the database stores
-`VECTOR(1536)`; a host with another size fails at startup. Vectors from different models
-are not comparable, so moving a database from the fake AI to a real model (or between
-embedding models) means starting a new database; each conclusion's internal metadata names
-the model that embedded it (`embedding_model`).
+`VECTOR(1536)`; a host with another size fails at startup. For embeddings without a paid
+service, a small model can run in-process instead; see
+[Run Nachos with local embeddings](/nachos/guides/local-embeddings/).
+
+Vectors from different models are not comparable, so a database holds one embedding model's
+vectors and records which (its embedding stamp). Every host checks its configured model
+against the stamp at startup and refuses to start on a mismatch. Moving a database to another
+model (for example from the fake AI to a real one) takes `nachos embeddings reset --model <id>`,
+which sends every vector back to the worker to be embedded again. Each conclusion's internal
+metadata also names the model that embedded it (`embedding_model`).
 
 A semantic read (`conclusions/query`, or a representation or context with `search_query`)
 answers `503` when the host has no embedding generator or the embedding service is

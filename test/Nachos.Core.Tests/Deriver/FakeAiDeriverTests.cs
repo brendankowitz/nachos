@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Nachos.Abstractions;
 using Nachos.Core.Llm;
 using Shouldly;
 
@@ -28,6 +29,13 @@ public sealed class FakeAiDeriverTests
 
         (await fixture.ConclusionsAsync("bob", observed: "bob")).ShouldBeEmpty();
         (await fixture.QueueAsync()).Completed.ShouldBe(2);
+
+        using var scope = fixture.Services.CreateScope();
+        var listed = await scope.ServiceProvider.GetRequiredService<INachosClient>()
+            .ListConclusionsAsync(DeriverFixture.WorkspaceId, null, new());
+        var cited = listed.Items.Where(c => c.Content == second.Content).ToList();
+        cited.Count.ShouldBe(2);
+        cited.ShouldAllBe(c => c.SourceMessageIds!.SequenceEqual(new[] { second.PublicId }));
     }
 
     [Fact]

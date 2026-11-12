@@ -11,15 +11,17 @@ $portableProjects = @(
     'Nachos.Abstractions.Tests', 'Nachos.Api.Tests', 'Nachos.Architecture.Tests',
     'Nachos.Client.Tests', 'Nachos.Core.Tests', 'Nachos.DataLayer.InMemory.Tests',
     'Nachos.DataLayer.SqlServer.Tests',
-    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests'
+    'Nachos.Cli.Tests', 'Nachos.AppHost.Tests', 'Nachos.DocsGen.Tests', 'Nachos.Worker.Tests'
 )
 [xml] $solution = Get-Content (Join-Path $root 'Nachos.slnx') -Raw
 $declaredTests = @($solution.SelectNodes('//Project/@Path') | Where-Object {
     $_.Value.StartsWith('test/') -and $_.Value.EndsWith('.csproj') -and
-    $_.Value -ne 'test/Nachos.Testing/Nachos.Testing.csproj'
+    $_.Value -ne 'test/Nachos.Testing/Nachos.Testing.csproj' -and
+    $_.Value -ne 'test/Nachos.Benchmarks/Nachos.Benchmarks.csproj'
 } | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Value) })
-# Nachos.Testing explicitly declares IsTestProject=false. Every other test
-# project must have a lane; adding a project requires updating this routing.
+# Nachos.Testing and Nachos.Benchmarks (a hand-run console app) explicitly declare
+# IsTestProject=false. Every other test project must have a lane; adding a
+# project requires updating this routing.
 if (Compare-Object ($portableProjects + 'Nachos.Infra.Tests' | Sort-Object) ($declaredTests | Sort-Object)) {
     throw 'Solution test projects changed: update the complete CI lane mapping.'
 }
@@ -38,7 +40,7 @@ switch ($Slice) {
         $filters['Nachos.DataLayer.SqlServer.Tests'] = ($sqlPortable | ForEach-Object {
             "FullyQualifiedName~Nachos.DataLayer.SqlServer.Tests.$_."
         }) -join '|'
-        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.'
+        $filters['Nachos.Cli.Tests'] = 'FullyQualifiedName!~.GrantCommandTests.&FullyQualifiedName!~.SchemaCommandTests.&FullyQualifiedName!~.ServerErrorDisclosureTests.&FullyQualifiedName!~.EmbeddingCommandTests.'
         $filters['Nachos.AppHost.Tests'] = 'FullyQualifiedName!~.AppHostSmokeTests.'
     }
     Sql { $projects = @('Nachos.DataLayer.SqlServer.Tests', 'Nachos.Cli.Tests', 'Nachos.AppHost.Tests') }

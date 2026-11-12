@@ -15,7 +15,7 @@ public sealed class WorkspaceEndpointsTests : ApiTest
         var second = await Post("/v3/workspaces", """{"id":"w","metadata":{"n":2}}""");
         second.GetRawText().ShouldBe(first.GetRawText());
         first.GetProperty("created_at").GetDateTimeOffset().ShouldBeGreaterThan(DateTimeOffset.UnixEpoch);
-        first.EnumerateObject().Select(p => p.Name).Order().ShouldBe(["configuration", "created_at", "id", "metadata"]);
+        first.EnumerateObject().Select(p => p.Name).Order().ShouldBe(["configuration", "created_at", "id", "metadata", "uid"]);
     }
 
     [Fact]

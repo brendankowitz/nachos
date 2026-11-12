@@ -449,7 +449,11 @@ public sealed class IdempotencyTests(ITestOutputHelper output)
         public IPeerCardStore PeerCards => inner.PeerCards;
         public IWorkQueue WorkQueue => inner.WorkQueue;
         public IEmbeddingStore Embeddings => inner.Embeddings;
+        public ISummaryStore Summaries => inner.Summaries;
+        public IMessageSearch Search => inner.Search;
+        public IDeletionStore Deletion => inner.Deletion;
         public bool IsTransientFailure(Exception exception) => inner.IsTransientFailure(exception);
+        public bool IsUnavailableFailure(Exception exception) => inner.IsUnavailableFailure(exception);
         public Task<IdempotencyRecord?> TryGetAsync(string workspaceName, string key, CancellationToken ct)
         {
             Interlocked.Increment(ref _reads);

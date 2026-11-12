@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.OpenApi;
 using Nachos.Abstractions;
 using Nachos.Abstractions.Contracts;
 using Nachos.Api.Json;
@@ -7,6 +9,8 @@ namespace Nachos.Api.Endpoints;
 
 internal static class SessionEndpoints
 {
+    private const string IncludeScopes = "include_scopes";
+
     public static void MapSessionEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/v3/workspaces/{workspace_id}/sessions");
@@ -32,15 +36,29 @@ internal static class SessionEndpoints
         group.MapPost("/list", async (string workspace_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request, allowEmpty: true);
+            RejectScopeOptions(http.Request, body.Root);
             return TypedResults.Ok(await client.ListSessionsAsync(workspace_id, body.Object("filters"),
                 PagingParameters.Read(http.Request), http.RequestAborted));
-        }).Accepts<ResourceGet>("application/json").Produces<Page<Session>>().WithPaging();
+        }).Accepts<WorkspaceSessionGet>("application/json").Produces<Page<Session>>().WithPaging()
+            .WithQuery(new QueryParameter(IncludeScopes, JsonSchemaType.Boolean))
+            .WithDescription("Scope membership is M6: a non-null scope, in_no_scope true or include_scopes true is a 422; " +
+                "the defaults are accepted.");
         group.MapPut("/{session_id}", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
             return TypedResults.Ok(await client.UpdateSessionAsync(workspace_id, session_id, body.Object("metadata"),
                 body.Optional("configuration", NachosJsonContext.Default.SessionConfiguration, strict: true), http.RequestAborted));
         }).Accepts<SessionUpdate>("application/json").Produces<Session>();
+        group.MapDelete("/{session_id}", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
+        {
+            await client.DeleteSessionAsync(workspace_id, session_id, http.RequestAborted);
+            return TypedResults.Accepted((string?)null);
+        }).Produces(202).Produces<ErrorResponse>(409)
+            .WithDescription("Accepts the deletion and returns 202 with no body: the session is inactive at once, and a job " +
+                "deletes it with its messages, summaries and session-attributed conclusions (see GET W/jobs). Once accepted, " +
+                "every write under the session is a 409, and a repeated delete while it is being deleted is again a 202 with " +
+                "no body and starts no second job; the one job stays visible in GET W/jobs. Once the job completes the session " +
+                "no longer exists and a delete is a 404. 409 when the workspace is being deleted.");
         group.MapPost("/{session_id}/peers", async (string workspace_id, string session_id, HttpContext http, INachosClient client) =>
         {
             using var body = await RequestBody.ReadAsync(http.Request);
@@ -73,5 +91,31 @@ internal static class SessionEndpoints
                     body.As(NachosJsonContext.Default.SessionPeerConfig), http.RequestAborted);
                 return TypedResults.NoContent();
             }).Accepts<SessionPeerConfig>("application/json").Produces(204);
+    }
+
+    // Each option narrows or annotates the list by scope membership. Ignoring one would answer a different question
+    // than the caller asked, so only the defaults (no scope, false, false) are accepted until scopes land.
+    private static void RejectScopeOptions(HttpRequest request, JsonElement body)
+    {
+        if (QueryParameters.Boolean(request, IncludeScopes) == true)
+        {
+            throw RequestValidationException.Unsupported(["query", IncludeScopes]);
+        }
+        if (body.TryGetProperty("scope", out var scope) && scope.ValueKind != JsonValueKind.Null)
+        {
+            throw RequestValidationException.Unsupported(["body", "scope"]);
+        }
+        if (body.TryGetProperty("in_no_scope", out var inNoScope))
+        {
+            switch (inNoScope.ValueKind)
+            {
+                case JsonValueKind.False:
+                    break;
+                case JsonValueKind.True:
+                    throw RequestValidationException.Unsupported(["body", "in_no_scope"]);
+                default:
+                    throw RequestBody.Invalid(["body", "in_no_scope"], "Input should be a valid boolean.", "bool_type");
+            }
+        }
     }
 }

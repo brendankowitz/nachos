@@ -2,16 +2,17 @@
 title: Run the worker
 ---
 
-The worker is the host that turns queued messages into conclusions. With SQL Server it is
+The worker is the host that turns queued messages into conclusions and session summaries,
+embeds message chunks for search, and runs deletion jobs. With SQL Server it is
 `src/Nachos.Worker`, a separate process from the API. With the in-memory provider you do
 not run it: the API runs the same loops itself. Read [Memory formation](/nachos/concepts/memory-formation/)
 first for what the loops do.
 
 ## Prerequisites
 
-- **A database with the M2 schema.** The worker never deploys the schema. The schema
+- **A database with the M3 schema.** The worker never deploys the schema. The schema
   version number stays `1` before the first release, so a database created by an earlier
-  build reads as current but lacks the memory tables. Recreate a pre-release database, or
+  build reads as current but lacks the newer tables. Recreate a pre-release database, or
   review and apply the change once:
 
   ```powershell
@@ -64,9 +65,12 @@ Per-agent model profiles and fallbacks bind from `Llm`; an agent with no profile
 uses `AzureOpenAI:ChatDeployment`. The option table is in [Options](/nachos/reference/options/).
 
 Each embedded conclusion records the model that produced its vector in its internal metadata
-(`embedding_model`: the deployment name, or `fake`). Vectors from two models cannot be
-compared, and this version does not re-embed existing conclusions, so **switching between the
-fake AI and a real model, or between embedding models, needs a new database**.
+(`embedding_model`: the deployment name, a local model id, or `fake`). Vectors from two
+models cannot be compared, so the database is stamped with one embedding model, and a host
+configured with another refuses to start. To switch models, stop the API and the worker, run
+`nachos embeddings reset --model <id> --connection "<connection string>"`, and start them with
+the new model: the worker re-embeds every conclusion and message chunk. See
+[Run Nachos with local embeddings](/nachos/guides/local-embeddings/).
 
 ## In Azure
 
@@ -105,8 +109,9 @@ which is written but commented out until a run proves it works with the managed 
   (20) reconciler ticks in a row, each further such tick is logged as an error.
 - Telemetry: the worker exports traces from the `Nachos.Llm` source and metrics from the
   `Nachos.Worker` and `Nachos.Llm` meters, through the same OpenTelemetry settings as the API.
-  The backlog gauges `nachos.queue.eligible_units`, `nachos.queue.oldest_age` (seconds) and
-  `nachos.conclusions.embedding_pending` are refreshed once per reconciler tick and reported
+  The backlog gauges `nachos.queue.eligible_units`, `nachos.queue.oldest_age` (seconds),
+  `nachos.conclusions.embedding_pending` and `nachos.messages.embedding_pending` (message chunks
+  waiting for a vector) are refreshed once per reconciler tick and reported
   only by the replica that holds the reconciler lease.
 
 ## Redrive dead-lettered work

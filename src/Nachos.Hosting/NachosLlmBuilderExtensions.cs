@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Nachos.Abstractions.Domain;
 using Nachos.Core.Llm;
+using Nachos.Core.Memory;
 using Nachos.Hosting;
 
 namespace Microsoft.Extensions.DependencyInjection;
@@ -34,19 +35,34 @@ public static class NachosLlmBuilderExtensions
 
     /// <summary>
     /// Registers the embedding generator, wrapped with OpenTelemetry (source <see cref="NachosChatClients.TelemetrySourceName"/>),
-    /// and a startup check that it produces <see cref="VectorSpace.Dimensions"/> dimensions.
+    /// and a startup check (<see cref="EmbeddingSpaceCheck"/>) that it produces <see cref="VectorSpace.Dimensions"/> dimensions
+    /// and that its model is the one the database is stamped with; until that is known, every request waits
+    /// (<see cref="EmbeddingSpaceGate"/>). <paramref name="createChunking"/>
+    /// supplies the model's tokenizer and input limit, which size the chunks of every message (<see cref="MessageChunker"/>).
     /// <see cref="EmbeddingOptions.RequestDimensions"/> is applied to every request when set.
     /// </summary>
     public static NachosBuilder UseEmbeddingGenerator(
-        this NachosBuilder builder, Func<IServiceProvider, IEmbeddingGenerator<string, Embedding<float>>> createGenerator)
+        this NachosBuilder builder,
+        Func<IServiceProvider, IEmbeddingGenerator<string, Embedding<float>>> createGenerator,
+        Func<IServiceProvider, EmbeddingChunking> createChunking)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(createGenerator);
-        builder.Services.AddOptions<EmbeddingOptions>().BindConfiguration("Embeddings");
+        ArgumentNullException.ThrowIfNull(createChunking);
+        builder.Services.AddOptions<EmbeddingOptions>()
+            .BindConfiguration("Embeddings")
+            .Validate(o => o.ChunkTokens >= 1, "Embeddings:ChunkTokens must be at least 1.")
+            .ValidateOnStart();
+        builder.Services.TryAddSingleton<EmbeddingSpaceGate>();
+        builder.Services.Replace(ServiceDescriptor.Singleton(createChunking));
+        builder.Services.Replace(ServiceDescriptor.Singleton(provider => new MessageChunker(
+            provider.GetRequiredService<EmbeddingChunking>(), provider.GetRequiredService<IOptions<EmbeddingOptions>>().Value.ChunkTokens)));
         builder.Services.Replace(ServiceDescriptor.Singleton(provider =>
         {
             var requestDimensions = provider.GetRequiredService<IOptions<EmbeddingOptions>>().Value.RequestDimensions;
             var pipeline = new EmbeddingGeneratorBuilder<string, Embedding<float>>(createGenerator(provider));
+            // Outermost, so a request held back by the gate is not timed as a model call.
+            pipeline.Use(inner => new GatedEmbeddingGenerator(inner, provider.GetRequiredService<EmbeddingSpaceGate>()));
             if (requestDimensions is not null)
             {
                 // Outside telemetry, so the recorded request carries the dimensions actually sent.
@@ -55,7 +71,7 @@ public static class NachosLlmBuilderExtensions
 
             return pipeline.UseOpenTelemetry(sourceName: NachosChatClients.TelemetrySourceName).Build(provider);
         }));
-        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, EmbeddingDimensionCheck>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, EmbeddingSpaceCheck>());
         return builder;
     }
 }

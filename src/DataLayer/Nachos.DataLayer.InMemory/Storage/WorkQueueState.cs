@@ -23,8 +23,68 @@ internal sealed class WorkQueueState
 
     public Lock Gate { get; } = new();
 
-    /// <summary>Enqueues an item with the next <c>Id</c>, built by <paramref name="create"/>.</summary>
-    public void Enqueue(Func<long, QueuedItem> create) => _items.Add(create(++_lastItemId));
+    /// <summary>Enqueues an item with the next <c>Id</c>, built by <paramref name="create"/>, and returns the id.</summary>
+    public long Enqueue(Func<long, QueuedItem> create)
+    {
+        _items.Add(create(++_lastItemId));
+        return _lastItemId;
+    }
+
+    /// <summary>The workspace's items, in <c>Id</c> order.</summary>
+    public IEnumerable<QueuedItem> ItemsOf(string workspaceName) =>
+        _items.Where(item => string.Equals(item.WorkspaceName, workspaceName, StringComparison.Ordinal));
+
+    /// <summary>Removes the given items; leases that claimed them fail their next check only if fenced separately.</summary>
+    public void Remove(IReadOnlySet<QueuedItem> items) => _items.RemoveAll(items.Contains);
+
+    /// <exception cref="LeaseLostException">The lease is no longer held, or it did not claim <paramref name="itemId"/>.</exception>
+    public void RequireHeldWith(WorkLease lease, long itemId)
+    {
+        RequireHeld(lease);
+        if (!_leases[lease.WorkUnitKey].ItemIds.Contains(itemId))
+        {
+            throw new LeaseLostException(lease.WorkUnitKey);
+        }
+    }
+
+    /// <summary>
+    /// The deletion job's first step (spec §13.1) for everything <paramref name="inTarget"/> selects, except the unit
+    /// <paramref name="ownWorkUnitKey"/>: removes open non-deletion items, completes open deletion items with
+    /// <paramref name="supersededReason"/>, and gives every lease on a unit with an open selected item a new fencing token,
+    /// so its holder's next check fails. A unit with only closed items there is left alone: a worker in flight on a unit
+    /// always holds an open item of it.
+    /// </summary>
+    public void CancelOtherWork(Func<QueuedItem, bool> inTarget, string ownWorkUnitKey, string supersededReason, DateTimeOffset now)
+    {
+        var others = _items
+            .Where(item => inTarget(item) && !string.Equals(item.WorkUnitKey, ownWorkUnitKey, StringComparison.Ordinal))
+            .ToList();
+        var fenced = others.Where(item => item.IsOpen).Select(item => item.WorkUnitKey).Distinct(StringComparer.Ordinal).ToList();
+        foreach (var item in others.Where(item => item.IsOpen && item.TaskType == WorkTaskType.Deletion))
+        {
+            item.Status = WorkItemStatus.Succeeded;
+            item.Error = supersededReason;
+            item.CompletedAt = now;
+        }
+
+        Remove(others.Where(item => item.IsOpen).ToHashSet());
+        foreach (var workUnitKey in fenced)
+        {
+            if (_leases.TryGetValue(workUnitKey, out var lease))
+            {
+                _leases[workUnitKey] = lease with { FencingToken = ++_lastFencingToken };
+            }
+        }
+    }
+
+    /// <summary>A job's status, by the same buckets as <see cref="Status"/>.</summary>
+    public JobStatus JobStatusOf(QueuedItem item, DateTimeOffset now) => item.Status switch
+    {
+        WorkItemStatus.Succeeded => JobStatus.Completed,
+        WorkItemStatus.DeadLettered => JobStatus.DeadLettered,
+        _ when IsTakenAt(item.WorkUnitKey, now) => JobStatus.InProgress,
+        _ => JobStatus.Pending,
+    };
 
     public WorkLease? TryAcquire(
         string owner,
@@ -65,12 +125,14 @@ internal sealed class WorkQueueState
         _leases[lease.WorkUnitKey] = _leases[lease.WorkUnitKey] with { ExpiresAt = now + leaseDuration };
     }
 
+    /// <param name="reason">Why the items succeeded without effect (such as <c>resource_deleted</c>), or null.</param>
     /// <exception cref="LeaseLostException">The lease is no longer held.</exception>
-    public void Complete(WorkLease lease, DateTimeOffset now)
+    public void Complete(WorkLease lease, DateTimeOffset now, string? reason = null)
     {
         foreach (var item in Release(lease))
         {
             item.Status = WorkItemStatus.Succeeded;
+            item.Error = reason ?? item.Error;
             item.CompletedAt = now;
         }
     }
